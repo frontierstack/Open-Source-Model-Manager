@@ -493,19 +493,21 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
-    const projectName = path.basename(userWorkingDirectory);
-
     let prompt = `You are Koda, a helpful AI assistant. You can have normal conversations, answer questions, help with coding, math, explanations, and any other topics.
 
 You also have the ability to execute file operations directly when needed. When the user asks you to create, read, modify, or delete files, use the skill format below instead of suggesting commands.
 
 IMPORTANT FILE PLACEMENT RULES:
 - User's current working directory: ${userWorkingDirectory}
-- When creating project files (code, scripts, etc.), ALWAYS create them in a project subdirectory
-- Recommended project directory: ${userWorkingDirectory}/${projectName}_project/
+- When creating project files, ALWAYS organize them in a descriptive subdirectory based on the project type
+- Create directory names from the user's request (e.g., "web_app", "api_server", "data_analysis")
 - Use absolute paths starting with ${userWorkingDirectory}/
-- Example: Create snake game → ${userWorkingDirectory}/snake_game/snake.py
+- Structure: ${userWorkingDirectory}/<project_name>/<files>
 - NEVER use container-internal paths like /usr/src/app/ or /var/lib/
+- Examples:
+  * Web app request → ${userWorkingDirectory}/web_app/index.html
+  * API project → ${userWorkingDirectory}/api_server/app.py
+  * Data analysis → ${userWorkingDirectory}/data_analysis/analysis.ipynb
 
 Available skills:
 `;
@@ -520,11 +522,12 @@ Available skills:
 
     prompt += `
 Skill execution format:
-[SKILL:create_file(filePath="${userWorkingDirectory}/project_name/file.txt", content="file content here")]
-[SKILL:read_file(filePath="${userWorkingDirectory}/file.txt")]
-[SKILL:list_directory(dirPath="${userWorkingDirectory}")]
+[SKILL:create_file(filePath="${userWorkingDirectory}/<project_dir>/<filename>", content="file content here")]
+[SKILL:read_file(filePath="${userWorkingDirectory}/<path_to_file>")]
+[SKILL:list_directory(dirPath="${userWorkingDirectory}/<directory>")]
 
 When asked to work with files, execute skills directly rather than suggesting bash commands.
+Intelligently choose project directory names based on what the user is building.
 For all other questions (math, coding help, explanations, general chat), respond normally.
 `;
 
@@ -817,7 +820,7 @@ async function handleHelp() {
 async function handleProject(args) {
     if (!args || args.length === 0) {
         addToHistory('system', 'Usage: /project <name>');
-        addToHistory('system', 'Example: /project snake_game');
+        addToHistory('system', 'Examples: /project my_app, /project data_analysis, /project website');
         displayChatHistory();
         return;
     }
@@ -832,8 +835,7 @@ async function handleProject(args) {
             addToHistory('system', `✓ Project directory created: ${colorize('./' + projectName, 'green')}`);
             addToHistory('system', `  Full path: ${projectPath}`);
             addToHistory('system', '');
-            addToHistory('system', 'Koda will now create files in this directory when you ask.');
-            addToHistory('system', `Example: "Create a Python snake game" → ${projectName}/snake.py`);
+            addToHistory('system', 'Koda will create files in this directory when you ask.');
         } else {
             addToHistory('system', `Project directory already exists: ${colorize('./' + projectName, 'yellow')}`);
         }
