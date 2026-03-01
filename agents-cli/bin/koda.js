@@ -56,6 +56,15 @@ let lastApiCallStartTime = 0;
 let lastApiCallEndTime = 0;
 let lastTokensPerSecond = 0;
 
+// API key usage tracking (from server)
+let apiKeyUsage = {
+    dailyTokens: 0,
+    rateLimitTokens: null,
+    rateLimitRequests: null,
+    tokenUsagePercentage: 0,
+    name: null
+};
+
 // Collaboration mode state
 let collabAgents = []; // Array of selected agent IDs for collaboration
 let collabContext = []; // Shared context between collaborating agents
@@ -150,12 +159,29 @@ function displayChatHistory() {
     displayStatusBar();
 }
 
+// Fetch and update API key usage from server
+async function updateApiKeyUsage(api) {
+    if (!api) return;
+
+    try {
+        const result = await api.getAuthInfo();
+        if (result.success && result.data && result.data.apiKey) {
+            const apiKey = result.data.apiKey;
+            apiKeyUsage = {
+                dailyTokens: apiKey.stats.dailyTokens || 0,
+                rateLimitTokens: apiKey.rateLimitTokens,
+                rateLimitRequests: apiKey.rateLimitRequests,
+                tokenUsagePercentage: apiKey.stats.tokenUsagePercentage || 0,
+                name: apiKey.name
+            };
+        }
+    } catch (error) {
+        // Silently fail - usage stats are not critical
+    }
+}
+
 // Display status bar with token and context stats
 function displayStatusBar() {
-    const tokensLeftPercent = contextWindowLimit > 0 ?
-        ((1 - (contextWindowUsed / contextWindowLimit)) * 100).toFixed(1) : 100;
-    const tokensLeftColor = tokensLeftPercent < 20 ? 'red' : tokensLeftPercent < 40 ? 'yellow' : 'green';
-
     const statusParts = [];
 
     // Mode indicator (display "agent collab" instead of "collab")
@@ -163,7 +189,7 @@ function displayStatusBar() {
                        currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
     statusParts.push(colorize(`Mode: ${displayMode}`, 'cyan'));
 
-    // Tokens left percentage with last usage and tokens/sec
+    // Last usage with tokens/sec
     if (lastTokenUsage.total > 0) {
         let tokensInfo = `Last: ${lastTokenUsage.total} tokens`;
         if (lastTokensPerSecond > 0) {
@@ -177,14 +203,23 @@ function displayStatusBar() {
         statusParts.push(colorize(`Context: ${contextWindowUsed}/${contextWindowLimit}`, 'white'));
     }
 
-    // Tokens left percentage
-    if (contextWindowLimit > 0) {
-        statusParts.push(colorize(`Tokens Left: ${tokensLeftPercent}%`, tokensLeftColor));
+    // API key daily token usage (if available)
+    if (apiKeyUsage.rateLimitTokens) {
+        const tokensLeft = apiKeyUsage.rateLimitTokens - apiKeyUsage.dailyTokens;
+        const percentUsed = parseFloat(apiKeyUsage.tokenUsagePercentage || 0);
+        const percentLeft = (100 - percentUsed).toFixed(1);
+        const tokensLeftColor = percentLeft < 20 ? 'red' : percentLeft < 40 ? 'yellow' : 'green';
+
+        statusParts.push(colorize(
+            `Daily: ${apiKeyUsage.dailyTokens.toLocaleString()}/${apiKeyUsage.rateLimitTokens.toLocaleString()}`,
+            'white'
+        ));
+        statusParts.push(colorize(`Remaining: ${percentLeft}%`, tokensLeftColor));
     }
 
     // Total tokens used in session
     if (totalTokensUsed > 0) {
-        statusParts.push(colorize(`Total: ${totalTokensUsed} tokens`, 'white'));
+        statusParts.push(colorize(`Session: ${totalTokensUsed} tokens`, 'white'));
     }
 
     if (statusParts.length > 0) {
@@ -311,6 +346,11 @@ class AgentAPI {
                 error: error.response?.data?.error || error.message
             };
         }
+    }
+
+    // Get current authentication info (user or API key with usage stats)
+    async getAuthInfo() {
+        return this.request('GET', '/api/auth/me');
     }
 
     // Chat with model
@@ -1012,6 +1052,7 @@ function handleClearSession() {
     contextWindowUsed = 0;
     addToHistory('system', `Session context cleared for ${currentMode} mode`);
     addToHistory('system', 'Conversation will start fresh (chat history still visible)');
+    addToHistory('system', 'Note: API key daily usage is tracked server-side and not reset');
     displayChatHistory();
 }
 
@@ -1333,6 +1374,9 @@ async function handleCollabChat(api, message, selectedAgents) {
     if (collabContext.length > 30) {
         collabContext.splice(0, collabContext.length - 30);
     }
+
+    // Update API key usage stats after collaboration
+    await updateApiKeyUsage(api);
 }
 
 // Handle natural language chat with session awareness and skill execution
@@ -1474,6 +1518,10 @@ async function handleChat(api, message) {
     if (!isOnlySkillCalls(finalResponse)) {
         addToHistory('assistant', finalResponse);
     }
+
+    // Update API key usage stats after chat
+    await updateApiKeyUsage(api);
+
     displayChatHistory();
 }
 
@@ -1481,15 +1529,20 @@ async function handleChat(api, message) {
 async function startShell() {
     const config = loadConfig();
 
+    let api = config ? new AgentAPI(config.apiUrl, config.apiKey, config.apiSecret) : null;
+
     if (!config) {
         addToHistory('system', 'Welcome to koda! Run /auth to get started.');
         addToHistory('system', 'Commands: /auth | /help');
     } else {
+        // Fetch API key usage stats on startup
+        await updateApiKeyUsage(api);
         addToHistory('system', `Connected! Mode: ${currentMode}`);
+        if (apiKeyUsage.name) {
+            addToHistory('system', `API Key: ${apiKeyUsage.name}`);
+        }
         addToHistory('system', 'Type a message to chat or use /help for commands.');
     }
-
-    let api = config ? new AgentAPI(config.apiUrl, config.apiKey, config.apiSecret) : null;
 
     // Auth state for inline authentication
     let authState = null;
@@ -1642,8 +1695,13 @@ async function startShell() {
                 if (result.success) {
                     saveConfig(authData);
                     api = testApi;
+                    // Fetch API key usage stats
+                    await updateApiKeyUsage(api);
                     addToHistory('system', '✓ Authentication configured successfully!');
                     addToHistory('system', `Config saved to ${CONFIG_FILE}`);
+                    if (apiKeyUsage.name) {
+                        addToHistory('system', `API Key: ${apiKeyUsage.name}`);
+                    }
                 } else {
                     addToHistory('system', `✗ Connection failed: ${result.error}`);
                     addToHistory('system', 'Configuration not saved.');

@@ -660,30 +660,68 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // Get current user info
-app.get('/api/auth/me', async (req, res) => {
-    if (!req.isAuthenticated || !req.isAuthenticated()) {
-        return res.status(401).json({ error: 'Not authenticated' });
-    }
-
+app.get('/api/auth/me', requireAuth, async (req, res) => {
     try {
-        const user = await getUserById(req.user.id);
+        const response = {};
 
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
+        // If session authentication, return user info
+        if (req.isAuthenticated && req.isAuthenticated()) {
+            const user = await getUserById(req.user.id);
 
-        res.json({
-            user: {
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+
+            response.user = {
                 id: user.id,
                 username: user.username,
                 email: user.email,
                 role: user.role,
                 createdAt: user.createdAt
-            }
-        });
+            };
+        }
+
+        // If API key authentication, return API key info and usage stats
+        if (req.apiKeyData) {
+            const keyData = req.apiKeyData;
+            const stats = apiKeyUsageStats.get(keyData.id) || {
+                requestCount: 0,
+                tokenCount: 0,
+                lastUsed: null,
+                requests: []
+            };
+
+            // Calculate token usage for today (calendar day, resets at midnight)
+            const startOfDay = getStartOfDay();
+            const dailyTokens = stats.requests
+                .filter(r => r.timestamp >= startOfDay)
+                .reduce((sum, r) => sum + (r.tokens || 0), 0);
+
+            // Calculate usage percentages
+            const tokenUsagePercentage = keyData.rateLimitTokens ?
+                Math.min(100, (dailyTokens / keyData.rateLimitTokens * 100)) : 0;
+
+            response.apiKey = {
+                id: keyData.id,
+                name: keyData.name,
+                permissions: keyData.permissions,
+                rateLimitRequests: keyData.rateLimitRequests,
+                rateLimitTokens: keyData.rateLimitTokens,
+                active: keyData.active,
+                stats: {
+                    requestCount: stats.requestCount,
+                    tokenCount: stats.tokenCount,
+                    dailyTokens,
+                    tokenUsagePercentage: tokenUsagePercentage.toFixed(1),
+                    lastUsed: stats.lastUsed
+                }
+            };
+        }
+
+        res.json(response);
     } catch (error) {
-        console.error('Get user error:', error);
-        res.status(500).json({ error: 'Failed to get user info' });
+        console.error('Get auth info error:', error);
+        res.status(500).json({ error: 'Failed to get authentication info' });
     }
 });
 
