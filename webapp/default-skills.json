@@ -1,0 +1,218 @@
+[
+  {
+    "name": "create_file",
+    "description": "Create a new file with specified content",
+    "type": "function",
+    "parameters": {"filePath": "string", "content": "string"},
+    "code": "def execute(params):\n    \"\"\"Create a new file with specified content.\"\"\"\n    import os\n\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    content = params.get('content', '')\n    dir_path = os.path.dirname(file_path)\n    if dir_path:\n        os.makedirs(dir_path, exist_ok=True)\n\n    with open(file_path, 'w') as f:\n        f.write(content)\n\n    return {\n        'success': True,\n        'message': f'File created: {file_path}',\n        'filePath': file_path,\n        'size': len(content)\n    }",
+    "enabled": true
+  },
+  {
+    "name": "read_file",
+    "description": "Read contents of a file",
+    "type": "function",
+    "parameters": {"filePath": "string"},
+    "code": "def execute(params):\n    \"\"\"Read contents of a file.\"\"\"\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    try:\n        with open(file_path, 'r') as f:\n            content = f.read()\n        return {\n            'success': True,\n            'content': content,\n            'filePath': file_path,\n            'size': len(content)\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "update_file",
+    "description": "Update an existing file with new content",
+    "type": "function",
+    "parameters": {"filePath": "string", "content": "string"},
+    "code": "def execute(params):\n    \"\"\"Update an existing file with new content.\"\"\"\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    content = params.get('content', '')\n\n    with open(file_path, 'w') as f:\n        f.write(content)\n\n    return {\n        'success': True,\n        'message': f'File updated: {file_path}',\n        'filePath': file_path,\n        'size': len(content)\n    }",
+    "enabled": true
+  },
+  {
+    "name": "delete_file",
+    "description": "Delete a file from the filesystem",
+    "type": "function",
+    "parameters": {"filePath": "string"},
+    "code": "def execute(params):\n    \"\"\"Delete a file from the filesystem.\"\"\"\n    import os\n\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    try:\n        os.remove(file_path)\n        return {\n            'success': True,\n            'message': f'File deleted: {file_path}'\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "list_directory",
+    "description": "List all files and directories in a path",
+    "type": "function",
+    "parameters": {"dirPath": "string", "recursive": "boolean"},
+    "code": "def execute(params):\n    \"\"\"List all files and directories in a path.\"\"\"\n    import os\n\n    dir_path = params.get('dirPath')\n    if not dir_path:\n        return {'success': False, 'error': 'dirPath parameter is required'}\n\n    recursive = params.get('recursive', False)\n\n    try:\n        if recursive:\n            files = []\n            for root, dirs, filenames in os.walk(dir_path):\n                for filename in filenames:\n                    files.append(os.path.join(root, filename))\n        else:\n            files = os.listdir(dir_path)\n\n        return {\n            'success': True,\n            'files': files,\n            'count': len(files)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "move_file",
+    "description": "Move or rename a file",
+    "type": "function",
+    "parameters": {"sourcePath": "string", "destPath": "string"},
+    "code": "def execute(params):\n    \"\"\"Move or rename a file.\"\"\"\n    import shutil\n\n    source_path = params.get('sourcePath')\n    dest_path = params.get('destPath')\n\n    if not source_path or not dest_path:\n        return {'success': False, 'error': 'sourcePath and destPath parameters are required'}\n\n    try:\n        shutil.move(source_path, dest_path)\n        return {\n            'success': True,\n            'message': f'File moved: {source_path} -> {dest_path}'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "copy_file",
+    "description": "Copy a file to a new location",
+    "type": "function",
+    "parameters": {"sourcePath": "string", "destPath": "string"},
+    "code": "def execute(params):\n    \"\"\"Copy a file to a new location.\"\"\"\n    import shutil\n\n    source_path = params.get('sourcePath')\n    dest_path = params.get('destPath')\n\n    if not source_path or not dest_path:\n        return {'success': False, 'error': 'sourcePath and destPath parameters are required'}\n\n    try:\n        shutil.copy2(source_path, dest_path)\n        return {\n            'success': True,\n            'message': f'File copied: {source_path} -> {dest_path}'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "fetch_url",
+    "description": "Fetch content from a URL",
+    "type": "tool",
+    "parameters": {"url": "string", "method": "string", "headers": "object", "timeout": "number"},
+    "code": "def execute(params):\n    \"\"\"Fetch content from a URL.\"\"\"\n    import urllib.request\n    import urllib.error\n    import json\n\n    url = params.get('url')\n    if not url:\n        return {'success': False, 'error': 'url parameter is required'}\n\n    method = params.get('method', 'GET').upper()\n    headers = params.get('headers', {})\n    timeout = params.get('timeout', 30)\n\n    try:\n        req = urllib.request.Request(url, method=method)\n        for key, value in headers.items():\n            req.add_header(key, value)\n\n        with urllib.request.urlopen(req, timeout=timeout) as response:\n            content = response.read().decode('utf-8')\n            return {\n                'success': True,\n                'status': response.status,\n                'headers': dict(response.headers),\n                'content': content,\n                'url': url\n            }\n    except urllib.error.HTTPError as e:\n        return {\n            'success': False,\n            'error': f'HTTP {e.code}: {e.reason}',\n            'status': e.code\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "dns_lookup",
+    "description": "Perform DNS lookup for a domain",
+    "type": "tool",
+    "parameters": {"domain": "string"},
+    "code": "def execute(params):\n    \"\"\"Perform DNS lookup for a domain.\"\"\"\n    import socket\n\n    domain = params.get('domain')\n    if not domain:\n        return {'success': False, 'error': 'domain parameter is required'}\n\n    try:\n        ipv4 = socket.gethostbyname(domain)\n        return {\n            'success': True,\n            'domain': domain,\n            'ipv4': ipv4\n        }\n    except socket.gaierror as e:\n        return {'success': False, 'error': f'DNS lookup failed: {str(e)}'}",
+    "enabled": true
+  },
+  {
+    "name": "check_port",
+    "description": "Check if a port is open on a host",
+    "type": "tool",
+    "parameters": {"host": "string", "port": "number", "timeout": "number"},
+    "code": "def execute(params):\n    \"\"\"Check if a port is open on a host.\"\"\"\n    import socket\n\n    host = params.get('host')\n    port = params.get('port')\n\n    if not host or not port:\n        return {'success': False, 'error': 'host and port parameters are required'}\n\n    timeout = params.get('timeout', 5)\n\n    try:\n        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n        sock.settimeout(timeout)\n        result = sock.connect_ex((host, int(port)))\n        sock.close()\n\n        return {\n            'success': True,\n            'host': host,\n            'port': port,\n            'open': result == 0\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "ping_host",
+    "description": "Ping a host to check connectivity",
+    "type": "tool",
+    "parameters": {"host": "string", "count": "number"},
+    "code": "def execute(params):\n    \"\"\"Ping a host to check connectivity.\"\"\"\n    import subprocess\n    import platform\n\n    host = params.get('host')\n    if not host:\n        return {'success': False, 'error': 'host parameter is required'}\n\n    count = params.get('count', 4)\n    system = platform.system().lower()\n\n    try:\n        if system == 'windows':\n            cmd = ['ping', '-n', str(count), host]\n        else:\n            cmd = ['ping', '-c', str(count), host]\n\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': True,\n            'host': host,\n            'count': count,\n            'output': result.stdout,\n            'reachable': result.returncode == 0\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "http_request",
+    "description": "Make custom HTTP requests (GET, POST, PUT, DELETE)",
+    "type": "tool",
+    "parameters": {"url": "string", "method": "string", "headers": "object", "body": "string"},
+    "code": "def execute(params):\n    \"\"\"Make custom HTTP requests.\"\"\"\n    import urllib.request\n    import urllib.error\n    import json\n\n    url = params.get('url')\n    if not url:\n        return {'success': False, 'error': 'url parameter is required'}\n\n    method = params.get('method', 'GET').upper()\n    headers = params.get('headers', {})\n    body = params.get('body')\n\n    try:\n        data = body.encode('utf-8') if body else None\n        req = urllib.request.Request(url, data=data, method=method)\n\n        for key, value in headers.items():\n            req.add_header(key, value)\n\n        with urllib.request.urlopen(req, timeout=30) as response:\n            content = response.read().decode('utf-8')\n            return {\n                'success': True,\n                'status': response.status,\n                'headers': dict(response.headers),\n                'data': content\n            }\n    except urllib.error.HTTPError as e:\n        return {\n            'success': False,\n            'error': f'HTTP {e.code}: {e.reason}',\n            'status': e.code\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "run_bash",
+    "description": "Execute bash commands on Linux/macOS",
+    "type": "command",
+    "parameters": {"command": "string", "timeout": "number"},
+    "code": "def execute(params):\n    \"\"\"Execute bash commands.\"\"\"\n    import subprocess\n\n    command = params.get('command')\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        result = subprocess.run(\n            command,\n            shell=True,\n            capture_output=True,\n            text=True,\n            timeout=timeout,\n            executable='/bin/bash'\n        )\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'Command timed out after {timeout} seconds'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "run_python",
+    "description": "Execute Python code",
+    "type": "command",
+    "parameters": {"code": "string", "timeout": "number"},
+    "code": "def execute(params):\n    \"\"\"Execute Python code.\"\"\"\n    import subprocess\n    import tempfile\n    import os\n\n    code = params.get('code')\n    if not code:\n        return {'success': False, 'error': 'code parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:\n            f.write(code)\n            temp_file = f.name\n\n        result = subprocess.run(\n            ['python3', temp_file],\n            capture_output=True,\n            text=True,\n            timeout=timeout\n        )\n\n        os.remove(temp_file)\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        os.remove(temp_file) if 'temp_file' in locals() else None\n        return {'success': False, 'error': f'Code execution timed out after {timeout} seconds'}\n    except Exception as e:\n        os.remove(temp_file) if 'temp_file' in locals() else None\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "system_info",
+    "description": "Get system information (CPU, memory, disk)",
+    "type": "command",
+    "parameters": {},
+    "code": "def execute(params):\n    \"\"\"Get system information.\"\"\"\n    import platform\n    import psutil\n\n    try:\n        cpu_percent = psutil.cpu_percent(interval=1)\n        memory = psutil.virtual_memory()\n        disk = psutil.disk_usage('/')\n\n        return {\n            'success': True,\n            'platform': platform.system(),\n            'platform_release': platform.release(),\n            'architecture': platform.machine(),\n            'hostname': platform.node(),\n            'processor': platform.processor(),\n            'cpu': {\n                'cores': psutil.cpu_count(logical=False),\n                'threads': psutil.cpu_count(logical=True),\n                'percent': cpu_percent\n            },\n            'memory': {\n                'total': memory.total,\n                'available': memory.available,\n                'percent': memory.percent\n            },\n            'disk': {\n                'total': disk.total,\n                'used': disk.used,\n                'free': disk.free,\n                'percent': disk.percent\n            }\n        }\n    except ImportError:\n        return {'success': False, 'error': 'psutil module not installed. Install with: pip install psutil'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "parse_json",
+    "description": "Parse and validate JSON data",
+    "type": "function",
+    "parameters": {"jsonString": "string"},
+    "code": "def execute(params):\n    \"\"\"Parse and validate JSON data.\"\"\"\n    import json\n\n    json_string = params.get('jsonString')\n    if not json_string:\n        return {'success': False, 'error': 'jsonString parameter is required'}\n\n    try:\n        data = json.loads(json_string)\n        return {\n            'success': True,\n            'data': data,\n            'type': type(data).__name__\n        }\n    except json.JSONDecodeError as e:\n        return {\n            'success': False,\n            'error': f'Invalid JSON: {str(e)}'\n        }",
+    "enabled": true
+  },
+  {
+    "name": "parse_csv",
+    "description": "Parse CSV data into structured format",
+    "type": "function",
+    "parameters": {"csvString": "string", "delimiter": "string"},
+    "code": "def execute(params):\n    \"\"\"Parse CSV data into structured format.\"\"\"\n    import csv\n    import io\n\n    csv_string = params.get('csvString')\n    if not csv_string:\n        return {'success': False, 'error': 'csvString parameter is required'}\n\n    delimiter = params.get('delimiter', ',')\n\n    try:\n        reader = csv.DictReader(io.StringIO(csv_string), delimiter=delimiter)\n        data = list(reader)\n\n        return {\n            'success': True,\n            'data': data,\n            'rows': len(data),\n            'columns': list(data[0].keys()) if data else []\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "base64_encode",
+    "description": "Encode data to Base64",
+    "type": "function",
+    "parameters": {"data": "string"},
+    "code": "def execute(params):\n    \"\"\"Encode data to Base64.\"\"\"\n    import base64\n\n    data = params.get('data')\n    if not data:\n        return {'success': False, 'error': 'data parameter is required'}\n\n    try:\n        encoded = base64.b64encode(data.encode('utf-8')).decode('utf-8')\n        return {\n            'success': True,\n            'encoded': encoded\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "base64_decode",
+    "description": "Decode Base64 data",
+    "type": "function",
+    "parameters": {"encodedData": "string"},
+    "code": "def execute(params):\n    \"\"\"Decode Base64 data.\"\"\"\n    import base64\n\n    encoded_data = params.get('encodedData')\n    if not encoded_data:\n        return {'success': False, 'error': 'encodedData parameter is required'}\n\n    try:\n        decoded = base64.b64decode(encoded_data).decode('utf-8')\n        return {\n            'success': True,\n            'decoded': decoded\n        }\n    except Exception as e:\n        return {'success': False, 'error': f'Invalid base64 data: {str(e)}'}",
+    "enabled": true
+  },
+  {
+    "name": "hash_data",
+    "description": "Generate hash (MD5, SHA1, SHA256) of data",
+    "type": "function",
+    "parameters": {"data": "string", "algorithm": "string"},
+    "code": "def execute(params):\n    \"\"\"Generate hash of data.\"\"\"\n    import hashlib\n\n    data = params.get('data')\n    if not data:\n        return {'success': False, 'error': 'data parameter is required'}\n\n    algorithm = params.get('algorithm', 'sha256').lower()\n\n    try:\n        if algorithm == 'md5':\n            h = hashlib.md5()\n        elif algorithm == 'sha1':\n            h = hashlib.sha1()\n        elif algorithm == 'sha256':\n            h = hashlib.sha256()\n        elif algorithm == 'sha512':\n            h = hashlib.sha512()\n        else:\n            return {'success': False, 'error': f'Unsupported algorithm: {algorithm}'}\n\n        h.update(data.encode('utf-8'))\n\n        return {\n            'success': True,\n            'hash': h.hexdigest(),\n            'algorithm': algorithm\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "generate_uuid",
+    "description": "Generate a UUID (v4)",
+    "type": "function",
+    "parameters": {},
+    "code": "def execute(params):\n    \"\"\"Generate a UUID.\"\"\"\n    import uuid\n\n    return {\n        'success': True,\n        'uuid': str(uuid.uuid4())\n    }",
+    "enabled": true
+  },
+  {
+    "name": "get_timestamp",
+    "description": "Get current timestamp in various formats",
+    "type": "function",
+    "parameters": {"format": "string"},
+    "code": "def execute(params):\n    \"\"\"Get current timestamp.\"\"\"\n    import datetime\n    import time\n\n    fmt = params.get('format', 'iso')\n    now = datetime.datetime.now()\n\n    formats = {\n        'iso': now.isoformat(),\n        'unix': int(time.time()),\n        'date': now.strftime('%Y-%m-%d'),\n        'time': now.strftime('%H:%M:%S'),\n        'datetime': now.strftime('%Y-%m-%d %H:%M:%S')\n    }\n\n    if fmt in formats:\n        return {\n            'success': True,\n            'timestamp': formats[fmt],\n            'format': fmt\n        }\n    else:\n        return {\n            'success': True,\n            'timestamp': now.strftime(fmt),\n            'format': 'custom'\n        }",
+    "enabled": true
+  },
+  {
+    "name": "find_patterns",
+    "description": "Search for regex patterns in text",
+    "type": "tool",
+    "parameters": {"text": "string", "pattern": "string", "flags": "string"},
+    "code": "def execute(params):\n    \"\"\"Search for regex patterns in text.\"\"\"\n    import re\n\n    text = params.get('text')\n    pattern = params.get('pattern')\n\n    if not text or not pattern:\n        return {'success': False, 'error': 'text and pattern parameters are required'}\n\n    flags_str = params.get('flags', '')\n    flags = 0\n    if 'i' in flags_str:\n        flags |= re.IGNORECASE\n    if 'm' in flags_str:\n        flags |= re.MULTILINE\n    if 's' in flags_str:\n        flags |= re.DOTALL\n\n    try:\n        matches = re.finditer(pattern, text, flags)\n        results = []\n        for match in matches:\n            results.append({\n                'match': match.group(),\n                'start': match.start(),\n                'end': match.end(),\n                'groups': match.groups()\n            })\n\n        return {\n            'success': True,\n            'count': len(results),\n            'matches': results\n        }\n    except re.error as e:\n        return {'success': False, 'error': f'Invalid regex pattern: {str(e)}'}",
+    "enabled": true
+  },
+  {
+    "name": "analyze_code",
+    "description": "Analyze code for basic metrics",
+    "type": "tool",
+    "parameters": {"code": "string", "language": "string"},
+    "code": "def execute(params):\n    \"\"\"Analyze code for basic metrics.\"\"\"\n    code = params.get('code')\n    if not code:\n        return {'success': False, 'error': 'code parameter is required'}\n\n    language = params.get('language', 'unknown')\n    lines = code.split('\\n')\n    non_empty_lines = [l for l in lines if l.strip()]\n\n    # Detect comment patterns based on language\n    comment_patterns = ['#', '//', '/*', '*', '<!--']\n    comment_lines = [l for l in lines if any(l.strip().startswith(p) for p in comment_patterns)]\n\n    return {\n        'success': True,\n        'language': language,\n        'total_lines': len(lines),\n        'code_lines': len(non_empty_lines),\n        'comment_lines': len(comment_lines),\n        'blank_lines': len(lines) - len(non_empty_lines),\n        'avg_line_length': sum(len(l) for l in lines) / len(lines) if lines else 0\n    }",
+    "enabled": true
+  },
+  {
+    "name": "count_words",
+    "description": "Count words in text",
+    "type": "function",
+    "parameters": {"text": "string"},
+    "code": "def execute(params):\n    \"\"\"Count words in text.\"\"\"\n    text = params.get('text')\n    if not text:\n        return {'success': False, 'error': 'text parameter is required'}\n\n    words = text.split()\n    unique_words = set(words)\n\n    return {\n        'success': True,\n        'total_words': len(words),\n        'unique_words': len(unique_words),\n        'characters': len(text),\n        'lines': len(text.split('\\n'))\n    }",
+    "enabled": true
+  },
+  {
+    "name": "compress_data",
+    "description": "Compress data using gzip",
+    "type": "function",
+    "parameters": {"data": "string"},
+    "code": "def execute(params):\n    \"\"\"Compress data using gzip.\"\"\"\n    import gzip\n    import base64\n\n    data = params.get('data')\n    if not data:\n        return {'success': False, 'error': 'data parameter is required'}\n\n    try:\n        compressed = gzip.compress(data.encode('utf-8'))\n        encoded = base64.b64encode(compressed).decode('utf-8')\n\n        return {\n            'success': True,\n            'compressed': encoded,\n            'original_size': len(data),\n            'compressed_size': len(compressed),\n            'ratio': f'{len(compressed) / len(data) * 100:.2f}%'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "decompress_data",
+    "description": "Decompress gzip data",
+    "type": "function",
+    "parameters": {"compressedData": "string"},
+    "code": "def execute(params):\n    \"\"\"Decompress gzip data.\"\"\"\n    import gzip\n    import base64\n\n    compressed_data = params.get('compressedData')\n    if not compressed_data:\n        return {'success': False, 'error': 'compressedData parameter is required'}\n\n    try:\n        decoded = base64.b64decode(compressed_data)\n        decompressed = gzip.decompress(decoded).decode('utf-8')\n\n        return {\n            'success': True,\n            'decompressed': decompressed,\n            'size': len(decompressed)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  }
+]

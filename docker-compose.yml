@@ -1,0 +1,92 @@
+version: '3.8'
+
+name: modelserver
+
+services:
+  # llama.cpp base image for GGUF models
+  # Supports older GPUs (Maxwell 5.2+) that don't work with vLLM's GGUF quantization
+  llamacpp:
+    build: ./llamacpp
+    image: modelserver-llamacpp:latest
+    # This service builds the base image for dynamic llama.cpp instances
+    # Instances are created and managed by the webapp via Docker API
+    # Do not run this service directly - it's only for building the image
+    profiles:
+      - build-only
+
+  # vLLM base image for HuggingFace models and GGUF (requires compute capability 6.0+)
+  vllm:
+    build: ./vllm
+    image: modelserver-vllm:latest
+    # This service builds the base image for dynamic vLLM instances
+    # Instances are created and managed by the webapp via Docker API
+    # Do not run this service directly - it's only for building the image
+    profiles:
+      - build-only
+
+  webapp:
+    build: ./webapp
+    image: modelserver-webapp:latest
+    ports:
+      - "3001:3001"      # HTTPS
+      - "3080:3080"      # HTTP redirect to HTTPS
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts:/usr/src/app/scripts
+      - ./agents-cli:/usr/src/app/agents-cli
+      - ./models:/models
+      - ./certs:/certs:ro
+      - webapp_data:/usr/src/app/data
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+      - HOST_IP=${HOST_IP:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Enable GPU access for system resource detection (nvidia-smi)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Nginx reverse proxy for Open WebUI HTTPS
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "3002:443"       # HTTPS for Open WebUI
+      - "3082:80"        # HTTP redirect to HTTPS
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/certs:ro
+    depends_on:
+      - open-webui
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    # No external port - accessed via nginx proxy
+    expose:
+      - "8080"
+    environment:
+      - ENABLE_OLLAMA_API=false
+      - ENABLE_OPENAI_API=true
+      # Pre-configure connection URL (users must add Bearer token manually in UI)
+      - OPENAI_API_BASE_URLS=http://host.docker.internal:3080/v1
+      - HOST=0.0.0.0
+      - WEBUI_SECRET_KEY=modelserver-secret-key
+      # Disable Artifacts feature (causes cross-origin errors and crashes models)
+      - ENABLE_ARTIFACTS=false
+      - ENABLE_CODE_EXECUTION=false
+      - ENABLE_SANDBOX=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - openwebui_data:/app/backend/data
+    depends_on:
+      - webapp
+
+volumes:
+  openwebui_data:
+  webapp_data:

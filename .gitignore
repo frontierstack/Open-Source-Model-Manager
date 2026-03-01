@@ -1,0 +1,154 @@
+# ============================================================================
+# DOCUMENTATION FILES (DO NOT PUSH)
+# ============================================================================
+*.md
+*.MD
+*.markdown
+*.rst
+*.txt
+
+# ============================================================================
+# SENSITIVE DATA (DO NOT PUSH)
+# ============================================================================
+
+# Environment files and secrets
+.env
+.env.*
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# SSL certificates
+certs/
+*.crt
+*.key
+*.csr
+
+# API keys and credentials
+**/api-keys.json
+**/users.json
+**/.koda/
+
+# Session data
+**/sessions/
+**/.modelserver/sessions/
+
+# ============================================================================
+# MODELS AND DATA (TOO LARGE FOR GIT)
+# ============================================================================
+
+# Model files
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.h5
+*.pb
+
+# Model metadata and locks
+models--*/
+.locks/
+**/.modelserver/
+
+# Data directories
+webapp/data/
+open-webui-data/
+**/data/*.json
+
+# ============================================================================
+# BUILD AND DEPENDENCIES
+# ============================================================================
+
+# Node modules
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Build state
+.build-state/
+*.tar
+*.tar.gz
+*.zip
+
+# Webpack
+webapp/public/bundle.js
+webapp/public/bundle.js.map
+
+# ============================================================================
+# BACKUP AND TEMPORARY FILES
+# ============================================================================
+
+# Backup files
+*.backup
+*.bak
+*.old
+*.orig
+*~
+*.swp
+*.swo
+*.tmp
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ============================================================================
+# IDE AND EDITOR FILES
+# ============================================================================
+
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.project
+.settings/
+.classpath
+
+# ============================================================================
+# LOGS AND DEBUG
+# ============================================================================
+
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# ============================================================================
+# DOCKER
+# ============================================================================
+
+# Docker volumes (data persistence)
+*_data/
+
+# ============================================================================
+# GIT
+# ============================================================================
+
+.git/
+.gitattributes

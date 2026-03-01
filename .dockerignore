@@ -1,0 +1,91 @@
+# .dockerignore
+
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Project documentation
+CLAUDE.md
+README.md
+DEPLOYMENT.md
+IMPLEMENTATION_SUMMARY.md
+TODO.md
+docs/
+*.md
+
+# Local data and models
+ollama/data
+models/
+*.gguf
+
+# Node.js
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Build artifacts
+build/
+dist/
+*.egg-info
+*.egg
+
+# Logs
+logs/
+*.log
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.*.local
+
+# Backup files
+*.backup
+*.bak
+*.orig
+*.old
+*~
+
+# IDE and editor folders
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test and coverage
+coverage/
+.coverage
+.nyc_output
+.pytest_cache/
+htmlcov/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Certificates (handled separately)
+certs/

@@ -1,0 +1,90 @@
+#!/bin/bash
+# Entrypoint for llama.cpp server
+# Configuration via environment variables:
+# - LLAMA_MODEL_PATH: Path to GGUF model file
+# - LLAMA_PORT: API server port (default: 8000)
+# - LLAMA_N_GPU_LAYERS: Number of layers to offload to GPU (-1 = all, default: -1)
+# - LLAMA_CTX_SIZE: Context size (default: 4096)
+# - LLAMA_FLASH_ATTN: Enable flash attention (default: false)
+# - LLAMA_CACHE_TYPE_K: KV cache type for keys (f16/q8_0/q4_0, default: f16)
+# - LLAMA_CACHE_TYPE_V: KV cache type for values (f16/q8_0/q4_0, default: f16)
+# - LLAMA_THREADS: Number of CPU threads (default: auto-detect)
+# - LLAMA_PARALLEL: Number of parallel slots (default: 1)
+# - LLAMA_BATCH_SIZE: Batch size for prompt processing (default: 2048)
+# - LLAMA_UBATCH_SIZE: Micro-batch size (default: 512)
+# - LLAMA_REPEAT_PENALTY: Repetition penalty (default: 1.1)
+# - LLAMA_REPEAT_LAST_N: Last N tokens for repetition penalty (default: 64)
+# - LLAMA_PRESENCE_PENALTY: Presence penalty (default: 0.0)
+# - LLAMA_FREQUENCY_PENALTY: Frequency penalty (default: 0.0)
+
+set -e
+
+# Default values
+MODEL_PATH=${LLAMA_MODEL_PATH:-/models/default.gguf}
+PORT=${LLAMA_PORT:-8000}
+N_GPU_LAYERS=${LLAMA_N_GPU_LAYERS:--1}
+CTX_SIZE=${LLAMA_CTX_SIZE:-4096}
+FLASH_ATTN=${LLAMA_FLASH_ATTN:-false}
+CACHE_TYPE_K=${LLAMA_CACHE_TYPE_K:-f16}
+CACHE_TYPE_V=${LLAMA_CACHE_TYPE_V:-f16}
+THREADS=${LLAMA_THREADS:-}
+PARALLEL=${LLAMA_PARALLEL:-1}
+BATCH_SIZE=${LLAMA_BATCH_SIZE:-2048}
+UBATCH_SIZE=${LLAMA_UBATCH_SIZE:-512}
+REPEAT_PENALTY=${LLAMA_REPEAT_PENALTY:-1.1}
+REPEAT_LAST_N=${LLAMA_REPEAT_LAST_N:-64}
+PRESENCE_PENALTY=${LLAMA_PRESENCE_PENALTY:-0.0}
+FREQUENCY_PENALTY=${LLAMA_FREQUENCY_PENALTY:-0.0}
+
+echo ">>> Starting llama.cpp server"
+echo "    Model: $MODEL_PATH"
+echo "    Port: $PORT"
+echo "    GPU Layers: $N_GPU_LAYERS"
+echo "    Context Size: $CTX_SIZE"
+echo "    Flash Attention: $FLASH_ATTN"
+echo "    Cache Type K/V: $CACHE_TYPE_K / $CACHE_TYPE_V"
+echo "    Threads: ${THREADS:-auto}"
+echo "    Parallel Slots: $PARALLEL"
+echo "    Batch Size: $BATCH_SIZE"
+echo "    Micro-batch Size: $UBATCH_SIZE"
+echo "    Repeat Penalty: $REPEAT_PENALTY"
+echo "    Repeat Last N: $REPEAT_LAST_N"
+echo "    Presence Penalty: $PRESENCE_PENALTY"
+echo "    Frequency Penalty: $FREQUENCY_PENALTY"
+
+# Build command arguments
+CMD_ARGS=(
+    --model "$MODEL_PATH"
+    --port "$PORT"
+    --host 0.0.0.0
+    --n-gpu-layers "$N_GPU_LAYERS"
+    --ctx-size "$CTX_SIZE"
+    --parallel "$PARALLEL"
+    --batch-size "$BATCH_SIZE"
+    --ubatch-size "$UBATCH_SIZE"
+    --cache-type-k "$CACHE_TYPE_K"
+    --cache-type-v "$CACHE_TYPE_V"
+    --repeat-penalty "$REPEAT_PENALTY"
+    --repeat-last-n "$REPEAT_LAST_N"
+    --presence-penalty "$PRESENCE_PENALTY"
+    --frequency-penalty "$FREQUENCY_PENALTY"
+)
+
+# Add threads if specified
+if [ -n "$THREADS" ]; then
+    CMD_ARGS+=(--threads "$THREADS")
+    echo "    [Threads set to $THREADS]"
+fi
+
+# Enable flash attention if requested
+if [ "$FLASH_ATTN" = "true" ]; then
+    CMD_ARGS+=(--flash-attn)
+    echo "    [Flash attention ENABLED]"
+fi
+
+echo ""
+echo ">>> Starting llama.cpp with OpenAI-compatible API"
+echo ""
+
+# Start the llama.cpp server
+exec llama-server "${CMD_ARGS[@]}"
