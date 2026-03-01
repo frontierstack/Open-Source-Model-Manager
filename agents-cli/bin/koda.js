@@ -45,6 +45,7 @@ const MAX_HISTORY = 50;
 // Mode tracking
 let currentMode = 'standalone'; // 'standalone', 'agent', or 'collab'
 const conversationContext = []; // For session awareness
+let userWorkingDirectory = process.cwd(); // Track user's CWD
 
 // Token and context tracking
 let lastTokenUsage = { prompt: 0, completion: 0, total: 0 };
@@ -91,7 +92,7 @@ function addToHistory(role, content) {
     }
 }
 
-// Format code blocks without borders for easier copying
+// Format code blocks cleanly without borders for easy copying
 function formatCodeBlocks(content) {
     // Match code blocks with ```language or just ```
     const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
@@ -100,15 +101,16 @@ function formatCodeBlocks(content) {
         const lang = language || 'code';
         const lines = code.trimEnd().split('\n');
 
-        // Simple header with language, no borders
-        let formatted = `\n${colorize(`[${lang.toUpperCase()}]`, 'yellow')}\n`;
+        // Clean header with language label
+        let formatted = '\n' + colorize('━━━ ', 'dim') + colorize(`${lang.toUpperCase()}`, 'yellow') + colorize(' ━━━', 'dim') + '\n';
 
-        // Code lines without any decorative characters for easy copying
+        // Code lines - plain text for easy copying
         for (const line of lines) {
-            formatted += `${line}\n`;
+            formatted += line + '\n';
         }
 
-        formatted += '\n';
+        // Footer separator
+        formatted += colorize('━'.repeat(Math.min(60, lang.length + 10)), 'dim') + '\n';
         return formatted;
     });
 }
@@ -491,9 +493,19 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
+    const projectName = path.basename(userWorkingDirectory);
+
     let prompt = `You are Koda, a helpful AI assistant. You can have normal conversations, answer questions, help with coding, math, explanations, and any other topics.
 
 You also have the ability to execute file operations directly when needed. When the user asks you to create, read, modify, or delete files, use the skill format below instead of suggesting commands.
+
+IMPORTANT FILE PLACEMENT RULES:
+- User's current working directory: ${userWorkingDirectory}
+- When creating project files (code, scripts, etc.), ALWAYS create them in a project subdirectory
+- Recommended project directory: ${userWorkingDirectory}/${projectName}_project/
+- Use absolute paths starting with ${userWorkingDirectory}/
+- Example: Create snake game → ${userWorkingDirectory}/snake_game/snake.py
+- NEVER use container-internal paths like /usr/src/app/ or /var/lib/
 
 Available skills:
 `;
@@ -508,9 +520,9 @@ Available skills:
 
     prompt += `
 Skill execution format:
-[SKILL:create_file(filePath="/path/to/file.txt", content="file content here")]
-[SKILL:read_file(filePath="/path/to/file.txt")]
-[SKILL:list_directory(dirPath="/path/to/dir")]
+[SKILL:create_file(filePath="${userWorkingDirectory}/project_name/file.txt", content="file content here")]
+[SKILL:read_file(filePath="${userWorkingDirectory}/file.txt")]
+[SKILL:list_directory(dirPath="${userWorkingDirectory}")]
 
 When asked to work with files, execute skills directly rather than suggesting bash commands.
 For all other questions (math, coding help, explanations, general chat), respond normally.
@@ -535,7 +547,19 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 success: true,
                 result: result.data
             });
-            addToHistory('system', `✓ ${call.skillName} completed successfully`);
+
+            // Enhanced messages for file operations
+            if (call.skillName === 'create_file' && result.data.filePath) {
+                const relativePath = result.data.filePath.replace(userWorkingDirectory, '.');
+                addToHistory('system', `✓ File created: ${colorize(relativePath, 'green')}`);
+            } else if (call.skillName === 'read_file') {
+                addToHistory('system', `✓ File read successfully`);
+            } else if (call.skillName === 'update_file' && result.data.filePath) {
+                const relativePath = result.data.filePath.replace(userWorkingDirectory, '.');
+                addToHistory('system', `✓ File updated: ${colorize(relativePath, 'green')}`);
+            } else {
+                addToHistory('system', `✓ ${call.skillName} completed successfully`);
+            }
         } else {
             results.push({
                 skill: call.skillName,
@@ -778,6 +802,8 @@ async function handleHelp() {
     addToHistory('system', '━━━ Available Commands ━━━');
     addToHistory('system', '/auth - Authenticate with API credentials');
     addToHistory('system', '/init - Analyze project and create koda.md context file');
+    addToHistory('system', '/project <name> - Create a project directory structure');
+    addToHistory('system', '/cwd - Show current working directory');
     addToHistory('system', '/mode <standalone|agent|agent collab> - Switch between modes');
     addToHistory('system', '  • standalone - General chat with file skill execution');
     addToHistory('system', '  • agent - Task-aware with autonomous skills');
@@ -788,11 +814,59 @@ async function handleHelp() {
     displayChatHistory();
 }
 
+async function handleProject(args) {
+    if (!args || args.length === 0) {
+        addToHistory('system', 'Usage: /project <name>');
+        addToHistory('system', 'Example: /project snake_game');
+        displayChatHistory();
+        return;
+    }
+
+    const projectName = args.join('_').replace(/[^a-zA-Z0-9_-]/g, '');
+    const projectPath = path.join(userWorkingDirectory, projectName);
+
+    try {
+        // Create project directory
+        if (!fs.existsSync(projectPath)) {
+            fs.mkdirSync(projectPath, { recursive: true });
+            addToHistory('system', `✓ Project directory created: ${colorize('./' + projectName, 'green')}`);
+            addToHistory('system', `  Full path: ${projectPath}`);
+            addToHistory('system', '');
+            addToHistory('system', 'Koda will now create files in this directory when you ask.');
+            addToHistory('system', `Example: "Create a Python snake game" → ${projectName}/snake.py`);
+        } else {
+            addToHistory('system', `Project directory already exists: ${colorize('./' + projectName, 'yellow')}`);
+        }
+    } catch (error) {
+        addToHistory('system', `✗ Failed to create project directory: ${error.message}`);
+    }
+
+    displayChatHistory();
+}
+
+async function handleCwd() {
+    addToHistory('system', `Current working directory: ${colorize(userWorkingDirectory, 'cyan')}`);
+    const files = fs.readdirSync(userWorkingDirectory).slice(0, 10);
+    if (files.length > 0) {
+        addToHistory('system', '');
+        addToHistory('system', 'Contents (first 10 items):');
+        files.forEach(file => {
+            const fullPath = path.join(userWorkingDirectory, file);
+            const isDir = fs.statSync(fullPath).isDirectory();
+            const icon = isDir ? '📁' : '📄';
+            addToHistory('system', `  ${icon} ${file}`);
+        });
+    }
+    displayChatHistory();
+}
+
 // Display interactive command menu
 async function showCommandMenu() {
     addToHistory('system', '━━━ Interactive Command Menu ━━━');
     addToHistory('system', '/auth           - Authenticate with API credentials');
     addToHistory('system', '/init           - Analyze project and create koda.md');
+    addToHistory('system', '/project <name> - Create a project directory structure');
+    addToHistory('system', '/cwd            - Show current working directory');
     addToHistory('system', '/mode           - Switch between standalone, agent, or agent collab modes');
     addToHistory('system', '/help           - Show all available commands');
     addToHistory('system', '/clear          - Clear chat history');
@@ -1423,7 +1497,7 @@ async function startShell() {
     displayChatHistory();
 
     // Command autocomplete function
-    const availableCommands = ['/auth', '/init', '/mode', '/help', '/clear', '/clearsession', '/quit', '/exit'];
+    const availableCommands = ['/auth', '/init', '/project', '/cwd', '/mode', '/help', '/clear', '/clearsession', '/quit', '/exit'];
     const modeOptions = ['standalone', 'agent', 'agent collab'];
 
     function completer(line) {
@@ -1611,6 +1685,14 @@ async function startShell() {
 
                     case '/init':
                         await handleInit(api);
+                        break;
+
+                    case '/project':
+                        await handleProject(args);
+                        break;
+
+                    case '/cwd':
+                        await handleCwd();
                         break;
 
                     case '/mode':
