@@ -1015,6 +1015,11 @@ class AgentAPI {
             }
         }
 
+        // Update context window limit if provided
+        if (result.success && result.data.contextSize) {
+            contextWindowLimit = result.data.contextSize;
+        }
+
         return result;
     }
 
@@ -1173,6 +1178,11 @@ class AgentAPI {
                                             if (timeElapsed > 0 && tokensGenerated > 0) {
                                                 lastTokensPerSecond = tokensGenerated / timeElapsed;
                                             }
+                                        }
+
+                                        // Update context window limit if provided
+                                        if (data.contextSize) {
+                                            contextWindowLimit = data.contextSize;
                                         }
 
                                         if (onComplete) {

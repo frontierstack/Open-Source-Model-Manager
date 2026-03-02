@@ -4735,7 +4735,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             response: reply,
             model: targetModel,
             tokens: response.data.usage,
-            reasoning: messageData.reasoning_content ? true : false  // Indicate if reasoning was used
+            reasoning: messageData.reasoning_content ? true : false,  // Indicate if reasoning was used
+            contextSize: contextSize  // Include context window size for client tracking
         });
     } catch (error) {
         console.error('Chat error:', error.message);
@@ -4900,7 +4901,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     total_tokens: promptTokens + completionTokens
                                 },
                                 model: targetModel,
-                                response: fullResponse
+                                response: fullResponse,
+                                contextSize: contextSize  // Include context window size for client tracking
                             };
                             res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
 
@@ -4975,7 +4977,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         total_tokens: promptTokens + completionTokens
                     },
                     model: targetModel,
-                    response: fullResponse
+                    response: fullResponse,
+                    contextSize: contextSize  // Include context window size for client tracking
                 };
                 res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
 
