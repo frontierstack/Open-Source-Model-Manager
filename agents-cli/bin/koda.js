@@ -81,6 +81,134 @@ let skillPromptCache = null; // Cache for skill system prompt
 let skillPromptCacheTime = 0; // Timestamp when cache was built
 const SKILL_PROMPT_CACHE_TTL = 300000; // 5 minutes
 
+// ============================================================================
+// CODE QUALITY METRICS
+// ============================================================================
+
+// Analyze code complexity and quality
+function analyzeCodeQuality(content, filePath) {
+    const ext = path.extname(filePath);
+    const lines = content.split('\n');
+    const metrics = {
+        totalLines: lines.length,
+        codeLines: 0,
+        commentLines: 0,
+        blankLines: 0,
+        functions: 0,
+        classes: 0,
+        todos: [],
+        longFunctions: [],
+        complexityScore: 0,
+        issues: []
+    };
+
+    let inBlockComment = false;
+    let currentFunction = null;
+    let functionStartLine = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        // Blank lines
+        if (!trimmed) {
+            metrics.blankLines++;
+            continue;
+        }
+
+        // Comments
+        if (['.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp'].includes(ext)) {
+            if (trimmed.startsWith('/*')) inBlockComment = true;
+            if (inBlockComment) {
+                metrics.commentLines++;
+                if (trimmed.endsWith('*/')) inBlockComment = false;
+                continue;
+            }
+            if (trimmed.startsWith('//')) {
+                metrics.commentLines++;
+                // Check for TODOs
+                if (/TODO|FIXME|HACK|XXX/i.test(line)) {
+                    metrics.todos.push({ line: i + 1, text: trimmed });
+                }
+                continue;
+            }
+        } else if (['.py'].includes(ext)) {
+            if (trimmed.startsWith('#')) {
+                metrics.commentLines++;
+                if (/TODO|FIXME|HACK|XXX/i.test(line)) {
+                    metrics.todos.push({ line: i + 1, text: trimmed });
+                }
+                continue;
+            }
+        }
+
+        metrics.codeLines++;
+
+        // Function detection
+        if (['.js', '.ts', '.jsx', '.tsx'].includes(ext)) {
+            if (/function\s+\w+|const\s+\w+\s*=\s*(?:async\s*)?\(|=>\s*{/.test(line)) {
+                if (currentFunction) {
+                    const functionLength = i - functionStartLine;
+                    if (functionLength > 50) {
+                        metrics.longFunctions.push({
+                            name: currentFunction,
+                            startLine: functionStartLine + 1,
+                            length: functionLength
+                        });
+                    }
+                }
+                metrics.functions++;
+                const match = line.match(/function\s+(\w+)|const\s+(\w+)\s*=/);
+                currentFunction = match ? (match[1] || match[2]) : 'anonymous';
+                functionStartLine = i;
+            }
+            if (/class\s+\w+/.test(line)) metrics.classes++;
+        } else if (['.py'].includes(ext)) {
+            if (/def\s+\w+/.test(line)) {
+                if (currentFunction) {
+                    const functionLength = i - functionStartLine;
+                    if (functionLength > 50) {
+                        metrics.longFunctions.push({
+                            name: currentFunction,
+                            startLine: functionStartLine + 1,
+                            length: functionLength
+                        });
+                    }
+                }
+                metrics.functions++;
+                const match = line.match(/def\s+(\w+)/);
+                currentFunction = match ? match[1] : 'unknown';
+                functionStartLine = i;
+            }
+            if (/class\s+\w+/.test(line)) metrics.classes++;
+        }
+
+        // Complexity indicators
+        if (/if|else|for|while|switch|case|catch/.test(line)) metrics.complexityScore++;
+    }
+
+    // Calculate final complexity score
+    if (metrics.codeLines > 0) {
+        metrics.complexityScore = (metrics.complexityScore / metrics.codeLines * 100).toFixed(2);
+    }
+
+    // Generate issues
+    if (metrics.totalLines > 1000) {
+        metrics.issues.push('File is very long (>1000 lines) - consider splitting');
+    }
+    if (metrics.longFunctions.length > 0) {
+        metrics.issues.push(`${metrics.longFunctions.length} function(s) are too long (>50 lines)`);
+    }
+    if (metrics.todos.length > 5) {
+        metrics.issues.push(`Many TODOs found (${metrics.todos.length}) - consider addressing them`);
+    }
+    if (metrics.commentLines / metrics.totalLines < 0.1 && metrics.codeLines > 100) {
+        metrics.issues.push('Low comment ratio (<10%) - add more documentation');
+    }
+
+    return metrics;
+}
+
 function log(message, color = null) {
     if (color) {
         console.log(colorize(message, color));
@@ -1106,6 +1234,9 @@ async function handleHelp() {
     addToHistory('system', '/focus [path] - Toggle focus mode or focus on specific file');
     addToHistory('system', '/clear-focus - Clear all focused files');
     addToHistory('system', '');
+    addToHistory('system', colorize('Code Quality:', 'yellow'));
+    addToHistory('system', '/quality [path] - Analyze code quality (all working files or specific file)');
+    addToHistory('system', '');
     addToHistory('system', colorize('Modes:', 'yellow'));
     addToHistory('system', '/mode <standalone|agent|agent collab> - Switch between modes');
     addToHistory('system', '  • standalone - General chat with file skill execution');
@@ -1324,6 +1455,119 @@ async function handleClearFocus() {
     }
 
     addToHistory('system', '✓ Cleared all focused files and disabled focus mode');
+    displayChatHistory();
+}
+
+// Handle /quality command - code quality analysis
+async function handleQuality(args) {
+    if (!args || args.length === 0) {
+        // Analyze all files in working set
+        if (workingFiles.size === 0) {
+            addToHistory('system', 'No files in working set');
+            addToHistory('system', 'Use /add-file <path> to add files, or /quality <file>');
+            displayChatHistory();
+            return;
+        }
+
+        addToHistory('system', '━━━ Code Quality Report ━━━');
+        addToHistory('system', '');
+
+        let totalIssues = 0;
+        let totalTodos = 0;
+
+        for (const [filePath, info] of workingFiles.entries()) {
+            const relativePath = filePath.replace(userWorkingDirectory, '.');
+            const metrics = analyzeCodeQuality(info.content, filePath);
+
+            addToHistory('system', colorize(`📄 ${relativePath}`, 'cyan'));
+            addToHistory('system', `  Lines: ${metrics.totalLines} (${metrics.codeLines} code, ${metrics.commentLines} comments, ${metrics.blankLines} blank)`);
+            addToHistory('system', `  Functions: ${metrics.functions} | Classes: ${metrics.classes}`);
+            addToHistory('system', `  Complexity: ${metrics.complexityScore}%`);
+
+            if (metrics.todos.length > 0) {
+                addToHistory('system', `  TODOs: ${metrics.todos.length}`);
+                totalTodos += metrics.todos.length;
+            }
+
+            if (metrics.issues.length > 0) {
+                addToHistory('system', colorize(`  ⚠️  Issues: ${metrics.issues.length}`, 'yellow'));
+                for (const issue of metrics.issues) {
+                    addToHistory('system', `     - ${issue}`);
+                }
+                totalIssues += metrics.issues.length;
+            } else {
+                addToHistory('system', colorize('  ✓ No issues found', 'green'));
+            }
+
+            addToHistory('system', '');
+        }
+
+        addToHistory('system', colorize('━━━ Summary ━━━', 'cyan'));
+        addToHistory('system', `Total files analyzed: ${workingFiles.size}`);
+        addToHistory('system', `Total issues: ${totalIssues}`);
+        addToHistory('system', `Total TODOs: ${totalTodos}`);
+
+        displayChatHistory();
+        return;
+    }
+
+    // Analyze specific file
+    const filePath = args.join(' ');
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+
+    if (!fs.existsSync(absolutePath)) {
+        addToHistory('system', `✗ File not found: ${filePath}`);
+        displayChatHistory();
+        return;
+    }
+
+    const content = fs.readFileSync(absolutePath, 'utf8');
+    const metrics = analyzeCodeQuality(content, absolutePath);
+    const relativePath = absolutePath.replace(userWorkingDirectory, '.');
+
+    addToHistory('system', '━━━ Code Quality Report ━━━');
+    addToHistory('system', '');
+    addToHistory('system', colorize(`📄 ${relativePath}`, 'cyan'));
+    addToHistory('system', '');
+    addToHistory('system', colorize('Metrics:', 'yellow'));
+    addToHistory('system', `  Total lines: ${metrics.totalLines}`);
+    addToHistory('system', `  Code lines: ${metrics.codeLines} (${(metrics.codeLines / metrics.totalLines * 100).toFixed(1)}%)`);
+    addToHistory('system', `  Comment lines: ${metrics.commentLines} (${(metrics.commentLines / metrics.totalLines * 100).toFixed(1)}%)`);
+    addToHistory('system', `  Blank lines: ${metrics.blankLines}`);
+    addToHistory('system', `  Functions: ${metrics.functions}`);
+    addToHistory('system', `  Classes: ${metrics.classes}`);
+    addToHistory('system', `  Complexity score: ${metrics.complexityScore}%`);
+
+    if (metrics.todos.length > 0) {
+        addToHistory('system', '');
+        addToHistory('system', colorize(`TODOs (${metrics.todos.length}):`, 'yellow'));
+        for (const todo of metrics.todos.slice(0, 10)) {
+            addToHistory('system', `  Line ${todo.line}: ${todo.text}`);
+        }
+        if (metrics.todos.length > 10) {
+            addToHistory('system', `  ... and ${metrics.todos.length - 10} more`);
+        }
+    }
+
+    if (metrics.longFunctions.length > 0) {
+        addToHistory('system', '');
+        addToHistory('system', colorize(`Long Functions (${metrics.longFunctions.length}):`, 'yellow'));
+        for (const func of metrics.longFunctions) {
+            addToHistory('system', `  ${func.name} (line ${func.startLine}, ${func.length} lines)`);
+        }
+    }
+
+    if (metrics.issues.length > 0) {
+        addToHistory('system', '');
+        addToHistory('system', colorize(`⚠️  Issues (${metrics.issues.length}):`, 'red'));
+        for (const issue of metrics.issues) {
+            addToHistory('system', `  - ${issue}`);
+        }
+    } else {
+        addToHistory('system', '');
+        addToHistory('system', colorize('✓ No issues found!', 'green'));
+    }
+
     displayChatHistory();
 }
 
@@ -2222,6 +2466,10 @@ async function startShell() {
 
                     case '/clear-focus':
                         await handleClearFocus();
+                        break;
+
+                    case '/quality':
+                        await handleQuality(args);
                         break;
 
                     case '/exit':
