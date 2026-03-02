@@ -1316,7 +1316,7 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
     }
 
     // Only include the most useful file-related skills to avoid overwhelming the context
-    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory'];
+    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory', 'append_to_file', 'tail_file', 'head_file'];
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
@@ -1538,6 +1538,67 @@ async function executeFileOperationSkill(skillName, params) {
                 };
             }
 
+            case 'append_to_file': {
+                const filePath = params.filePath;
+                const content = params.content || '';
+
+                if (!filePath) {
+                    return { success: false, error: 'filePath is required' };
+                }
+
+                // Append to file
+                await fs.appendFile(filePath, content, 'utf8');
+
+                return {
+                    success: true,
+                    filePath: filePath,
+                    bytesAdded: content.length,
+                    message: `Content appended to: ${filePath}`
+                };
+            }
+
+            case 'tail_file': {
+                const filePath = params.filePath;
+                const numLines = params.lines || 10;
+
+                if (!filePath) {
+                    return { success: false, error: 'filePath is required' };
+                }
+
+                const content = await fs.readFile(filePath, 'utf8');
+                const allLines = content.split('\n');
+                const tailLines = allLines.slice(-numLines);
+
+                return {
+                    success: true,
+                    filePath: filePath,
+                    content: tailLines.join('\n'),
+                    linesReturned: tailLines.length,
+                    totalLines: allLines.length
+                };
+            }
+
+            case 'head_file': {
+                const filePath = params.filePath;
+                const numLines = params.lines || 10;
+
+                if (!filePath) {
+                    return { success: false, error: 'filePath is required' };
+                }
+
+                const content = await fs.readFile(filePath, 'utf8');
+                const allLines = content.split('\n');
+                const headLines = allLines.slice(0, numLines);
+
+                return {
+                    success: true,
+                    filePath: filePath,
+                    content: headLines.join('\n'),
+                    linesReturned: headLines.length,
+                    totalLines: allLines.length
+                };
+            }
+
             default:
                 return { success: false, error: `Unknown file operation skill: ${skillName}` };
         }
@@ -1716,6 +1777,13 @@ function buildSkillResultsMessage(results) {
             } else if (skillName === 'move_file') {
                 const newPath = result.newPath || result.data?.newPath || 'moved';
                 message += `✓ File moved to: ${newPath}\n`;
+            } else if (skillName === 'append_to_file') {
+                const path = result.filePath || result.data?.filePath || 'file';
+                const bytes = result.bytesAdded || result.data?.bytesAdded || 0;
+                message += `✓ Appended ${bytes} bytes to: ${path}\n`;
+            } else if (skillName === 'tail_file' || skillName === 'head_file') {
+                const lines = result.linesReturned || result.data?.linesReturned || 0;
+                message += `✓ ${skillName}: ${lines} lines read\n`;
             } else {
                 message += `✓ ${skillName} completed\n`;
             }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.3.18
+**Version:** 0.3.19
 
 ## Overview
 
@@ -507,7 +507,7 @@ async function execute(params) {
 - **tool**: API calls, web requests
 - **command**: Shell execution (disabled by default)
 
-### Available Default Skills (44)
+### Available Default Skills (80+)
 
 **File Operations (9 skills)**
 - `create_file` - Create new files
@@ -520,21 +520,70 @@ async function execute(params) {
 - `move_file` - Move or rename files
 - `copy_file` - Copy files
 
-**Archive Operations (2 skills)**
+**File Content Operations (5 skills)**
+- `append_to_file` - Append content to existing files
+- `tail_file` - Read last N lines of a file
+- `head_file` - Read first N lines of a file
+- `search_replace_file` - Search and replace text in files
+- `diff_files` - Compare two files and show differences
+
+**Archive Operations (5 skills)**
 - `unzip_file` - Extract ZIP archives
 - `zip_files` - Create ZIP archives
+- `tar_extract` - Extract tar/tar.gz/tar.bz2 archives
+- `tar_create` - Create tar archives with optional compression
+- `extract_archive` - Universal archive extraction (auto-detects format)
 
 **File Management (3 skills)**
 - `get_file_metadata` - Get file size, dates, permissions
 - `search_files` - Search for files by pattern
 - `download_file` - Download files from URLs
 
-**Network & Web (5 skills)**
+**Process Management (3 skills)**
+- `list_processes` - List running processes with CPU/memory usage
+- `kill_process` - Terminate a process by PID or name
+- `start_process` - Start a new process/application
+
+**Network & Web (9 skills)**
 - `fetch_url` - Fetch content from URLs
 - `http_request` - Make custom HTTP requests (GET, POST, PUT, DELETE)
 - `dns_lookup` - Perform DNS lookups
 - `check_port` - Check if a port is open
 - `ping_host` - Ping a host to check connectivity
+- `get_public_ip` - Get public IP address and geolocation
+- `list_network_interfaces` - List network interfaces with IP addresses
+- `traceroute` - Trace route to a host
+- `curl_request` - Advanced HTTP requests with headers/auth
+
+**Git Operations (4 skills)**
+- `git_status` - Get git repository status
+- `git_diff` - Show git diff for staged/unstaged changes
+- `git_log` - Show git commit history
+- `git_branch` - List, create, or switch git branches
+
+**Environment & Shell (3 skills)**
+- `get_env_var` - Get environment variable value
+- `set_env_var` - Set environment variable (session)
+- `which_command` - Find location of executable
+
+**JSON/Config Operations (4 skills)**
+- `json_get` - Extract value from JSON using JSONPath
+- `json_set` - Set value in JSON file using JSONPath
+- `yaml_parse` - Parse YAML files
+- `ini_parse` - Parse INI/config files
+
+**Database Operations (2 skills)**
+- `sqlite_query` - Execute SQL queries on SQLite databases
+- `sqlite_list_tables` - List tables in SQLite database
+
+**PDF Operations (3 skills)**
+- `read_pdf` - Extract text from PDF files
+- `pdf_page_count` - Get number of pages in PDF
+- `pdf_to_images` - Convert PDF pages to images
+
+**Clipboard Operations (2 skills)**
+- `clipboard_read` - Read from system clipboard
+- `clipboard_write` - Write to system clipboard
 
 **Email Operations (1 skill)**
 - `read_email_file` - Read and parse saved email files (.eml format) with full attachment inspection
@@ -568,8 +617,12 @@ async function execute(params) {
 - `analyze_code` - Analyze code for metrics (lines, comments, etc.)
 - `find_patterns` - Search for regex patterns in text
 
-**Utilities (4 skills)**
+**System Information (8 skills)**
 - `system_info` - Get system information (CPU, memory, disk)
+- `disk_usage` - Get disk usage for specific paths
+- `list_services` - List system services (systemd/Windows)
+- `get_uptime` - Get system uptime
+- `list_ports` - List open ports and listening services
 - `generate_uuid` - Generate UUIDs
 - `get_timestamp` - Get timestamps in various formats
 - `count_words` - Count words and characters in text
@@ -767,7 +820,24 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.3.18 (Current)
+### Version 0.3.19 (Current)
+- **Massive Skills Library Expansion** (37 new skills, 80+ total):
+  - **Process Management**: `list_processes`, `kill_process`, `start_process` - Full process control
+  - **File Content Operations**: `append_to_file`, `tail_file`, `head_file`, `search_replace_file`, `diff_files` - Advanced file manipulation
+  - **Environment & Shell**: `get_env_var`, `set_env_var`, `which_command` - Environment variable and command path utilities
+  - **Git Operations**: `git_status`, `git_diff`, `git_log`, `git_branch` - Native git integration
+  - **JSON/Config Operations**: `json_get`, `json_set`, `yaml_parse`, `ini_parse` - Configuration file manipulation
+  - **Archive Formats**: `tar_extract`, `tar_create`, `extract_archive` - Universal archive support
+  - **Network Diagnostics**: `get_public_ip`, `list_network_interfaces`, `traceroute`, `curl_request` - Advanced network tools
+  - **Clipboard Operations**: `clipboard_read`, `clipboard_write` - System clipboard access
+  - **PDF Operations**: `read_pdf`, `pdf_page_count`, `pdf_to_images` - PDF processing capabilities
+  - **Database Operations**: `sqlite_query`, `sqlite_list_tables` - SQLite database access
+  - **System Info Enhancements**: `disk_usage`, `list_services`, `get_uptime`, `list_ports` - Comprehensive system monitoring
+- **Cross-Platform Support**: All new skills automatically detect OS (Windows/Linux/macOS) and use appropriate commands
+- **Client-Side Execution**: File content operations (`append_to_file`, `tail_file`, `head_file`) execute locally for better performance
+- **Skills Organization**: Reorganized skills into 18 logical categories for better discoverability
+
+### Version 0.3.18
 - **Koda CLI Smarter Skill Execution**:
   - **Fixed Infinite Looping**: AI no longer loops after successful task completion - stops when skills succeed
   - **Smart Completion Detection**: Feedback message now explicitly tells AI "TASK COMPLETE. DO NOT execute any more skills" when all skills succeed
