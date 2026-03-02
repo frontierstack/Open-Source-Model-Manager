@@ -4304,14 +4304,35 @@ app.get('/api/search', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Query permission required for web search' });
     }
 
-    const { q, limit = 5 } = req.query;
+    const { q, limit = 5, timeRange } = req.query;
 
     if (!q) {
         return res.status(400).json({ error: 'Query parameter "q" is required' });
     }
 
+    // Enhance query with current year/month for "recent" or "latest" queries
+    let enhancedQuery = q;
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.toLocaleString('en-US', { month: 'long' });
+
+    // If query contains "recent" or "latest" and doesn't already have a year, add current year and month
+    if (/(recent|latest|current|new|today)/i.test(q) && !/(202\d|201\d)/i.test(q)) {
+        enhancedQuery = `${q} ${currentMonth} ${currentYear}`;
+    }
+
+    // Determine date filter parameter for DuckDuckGo
+    // df=d (past day), df=w (past week), df=m (past month), df=y (past year)
+    let dateFilter = '';
+    if (timeRange) {
+        dateFilter = `&df=${timeRange}`;
+    } else if (/(recent|latest|current|today)/i.test(q)) {
+        // Auto-apply "past month" filter for recent queries
+        dateFilter = '&df=m';
+    }
+
     // Check cache first
-    const cacheKey = `search:${q}:${limit}`;
+    const cacheKey = `search:${enhancedQuery}:${limit}:${dateFilter}`;
     cleanExpiredCache();
 
     if (searchCache.has(cacheKey)) {
@@ -4320,8 +4341,8 @@ app.get('/api/search', requireAuth, async (req, res) => {
     }
 
     try {
-        // DuckDuckGo HTML search
-        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+        // DuckDuckGo HTML search with date filtering
+        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(enhancedQuery)}${dateFilter}`;
         const response = await axios.get(searchUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -4366,6 +4387,7 @@ app.get('/api/search', requireAuth, async (req, res) => {
 
         const resultData = {
             query: q,
+            enhancedQuery: enhancedQuery !== q ? enhancedQuery : undefined,
             results,
             count: results.length
         };

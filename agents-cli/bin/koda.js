@@ -783,39 +783,35 @@ function displayStatusBar() {
 
 // Track if we're currently streaming (to avoid flicker)
 let isStreaming = false;
-let lastStreamingLineCount = 0;
+let lastStreamedMessage = '';
 
 // Update streaming message without full screen refresh (reduces flicker)
 function updateStreamingMessage(message) {
     if (!isStreaming) return;
 
     const formattedContent = formatCodeBlocks(message);
-    const fullMessage = `${colorize('Koda:', 'cyan')} ${formattedContent}`;
 
-    // Split into lines to handle multi-line streaming
-    const lines = fullMessage.split('\n');
-    const lineCount = lines.length;
-
-    // Clear previous streaming lines
-    if (lastStreamingLineCount > 0) {
-        // Move cursor up and clear lines
-        for (let i = 0; i < lastStreamingLineCount; i++) {
-            readline.moveCursor(process.stdout, 0, -1);
-            readline.clearLine(process.stdout, 0);
-        }
-        readline.cursorTo(process.stdout, 0);
+    // On first message, write the prefix and content
+    if (lastStreamedMessage === '') {
+        process.stdout.write(colorize('Koda:', 'cyan') + ' ');
+        process.stdout.write(formattedContent);
+        lastStreamedMessage = formattedContent;
     } else {
-        // First streaming message - ensure clean output
-        readline.cursorTo(process.stdout, 0);
+        // Only write the new content that was added since last update
+        // This prevents duplication by only appending new tokens
+        if (formattedContent.startsWith(lastStreamedMessage)) {
+            const newContent = formattedContent.substring(lastStreamedMessage.length);
+            process.stdout.write(newContent);
+            lastStreamedMessage = formattedContent;
+        } else {
+            // If message doesn't start with previous (unusual), rewrite everything
+            // This shouldn't happen in normal streaming but handles edge cases
+            process.stdout.write('\n');
+            process.stdout.write(colorize('Koda:', 'cyan') + ' ');
+            process.stdout.write(formattedContent);
+            lastStreamedMessage = formattedContent;
+        }
     }
-
-    // Write new content
-    process.stdout.write(fullMessage);
-    if (!message.endsWith('\n')) {
-        process.stdout.write('\n');
-    }
-
-    lastStreamingLineCount = lineCount;
 }
 
 // Encryption utilities
@@ -3059,6 +3055,7 @@ async function handleChat(api, message) {
 
         // Enable streaming mode to prevent flickering
         isStreaming = true;
+        lastStreamedMessage = '';
 
         const result = await api.chatStream(
             currentMessage,
@@ -3092,9 +3089,14 @@ async function handleChat(api, message) {
             },
             // onComplete callback
             (fullResponse, tokens) => {
+                // Ensure streaming output ends with newline before screen refresh
+                if (lastStreamedMessage !== '' && !fullResponse.endsWith('\n')) {
+                    process.stdout.write('\n');
+                }
+
                 // Disable streaming mode
                 isStreaming = false;
-                lastStreamingLineCount = 0;
+                lastStreamedMessage = '';
 
                 // Remove streaming cursor
                 const lastMsg = chatHistory[chatHistory.length - 1];
