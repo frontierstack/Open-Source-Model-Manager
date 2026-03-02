@@ -2277,6 +2277,1006 @@ async function executeEnvSkill(skillName, params) {
     }
 }
 
+// Execute network skills client-side
+async function executeNetworkSkill(skillName, params) {
+    const https = require('https');
+    const http = require('http');
+    const dns = require('dns').promises;
+    const net = require('net');
+
+    try {
+        switch (skillName) {
+            case 'fetch_url': {
+                const url = params.url;
+                if (!url) return { success: false, error: 'url parameter is required' };
+
+                return new Promise((resolve) => {
+                    const client = url.startsWith('https') ? https : http;
+                    const req = client.get(url, { timeout: 30000 }, (res) => {
+                        let data = '';
+                        res.on('data', chunk => data += chunk);
+                        res.on('end', () => {
+                            resolve({
+                                success: true,
+                                url: url,
+                                statusCode: res.statusCode,
+                                contentType: res.headers['content-type'],
+                                content: data.substring(0, 50000) // Limit content size
+                            });
+                        });
+                    });
+                    req.on('error', (e) => resolve({ success: false, error: e.message }));
+                    req.on('timeout', () => {
+                        req.destroy();
+                        resolve({ success: false, error: 'Request timeout' });
+                    });
+                });
+            }
+
+            case 'dns_lookup': {
+                const hostname = params.hostname;
+                if (!hostname) return { success: false, error: 'hostname parameter is required' };
+
+                try {
+                    const addresses = await dns.resolve(hostname);
+                    return { success: true, hostname, addresses };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'check_port': {
+                const host = params.host || 'localhost';
+                const port = parseInt(params.port);
+                if (!port) return { success: false, error: 'port parameter is required' };
+
+                return new Promise((resolve) => {
+                    const socket = new net.Socket();
+                    socket.setTimeout(5000);
+                    socket.on('connect', () => {
+                        socket.destroy();
+                        resolve({ success: true, host, port, open: true });
+                    });
+                    socket.on('timeout', () => {
+                        socket.destroy();
+                        resolve({ success: true, host, port, open: false });
+                    });
+                    socket.on('error', () => {
+                        resolve({ success: true, host, port, open: false });
+                    });
+                    socket.connect(port, host);
+                });
+            }
+
+            case 'ping_host': {
+                const host = params.host;
+                if (!host) return { success: false, error: 'host parameter is required' };
+
+                const platform = os.platform();
+                const cmd = platform === 'win32' ? `ping -n 1 ${host}` : `ping -c 1 ${host}`;
+
+                try {
+                    const { stdout } = await execPromise(cmd, { timeout: 10000 });
+                    const reachable = stdout.includes('1 received') || stdout.includes('Reply from') || stdout.includes('1 packets received');
+                    return { success: true, host, reachable };
+                } catch (e) {
+                    return { success: true, host, reachable: false };
+                }
+            }
+
+            case 'http_request': {
+                const url = params.url;
+                const method = (params.method || 'GET').toUpperCase();
+                if (!url) return { success: false, error: 'url parameter is required' };
+
+                return new Promise((resolve) => {
+                    const urlObj = new URL(url);
+                    const client = urlObj.protocol === 'https:' ? https : http;
+                    const options = {
+                        hostname: urlObj.hostname,
+                        port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+                        path: urlObj.pathname + urlObj.search,
+                        method: method,
+                        timeout: 30000,
+                        headers: params.headers || {}
+                    };
+
+                    const req = client.request(options, (res) => {
+                        let data = '';
+                        res.on('data', chunk => data += chunk);
+                        res.on('end', () => {
+                            resolve({
+                                success: true,
+                                statusCode: res.statusCode,
+                                headers: res.headers,
+                                body: data.substring(0, 50000)
+                            });
+                        });
+                    });
+
+                    req.on('error', (e) => resolve({ success: false, error: e.message }));
+                    req.on('timeout', () => {
+                        req.destroy();
+                        resolve({ success: false, error: 'Request timeout' });
+                    });
+
+                    if (params.body && (method === 'POST' || method === 'PUT')) {
+                        req.write(typeof params.body === 'string' ? params.body : JSON.stringify(params.body));
+                    }
+                    req.end();
+                });
+            }
+
+            case 'get_public_ip': {
+                return new Promise((resolve) => {
+                    https.get('https://api.ipify.org?format=json', { timeout: 10000 }, (res) => {
+                        let data = '';
+                        res.on('data', chunk => data += chunk);
+                        res.on('end', () => {
+                            try {
+                                const result = JSON.parse(data);
+                                resolve({ success: true, ip: result.ip });
+                            } catch (e) {
+                                resolve({ success: false, error: 'Failed to parse response' });
+                            }
+                        });
+                    }).on('error', (e) => resolve({ success: false, error: e.message }));
+                });
+            }
+
+            case 'list_network_interfaces': {
+                const interfaces = os.networkInterfaces();
+                const result = [];
+                for (const [name, addrs] of Object.entries(interfaces)) {
+                    for (const addr of addrs) {
+                        result.push({
+                            name,
+                            address: addr.address,
+                            family: addr.family,
+                            internal: addr.internal
+                        });
+                    }
+                }
+                return { success: true, interfaces: result };
+            }
+
+            case 'traceroute': {
+                const host = params.host;
+                if (!host) return { success: false, error: 'host parameter is required' };
+
+                const platform = os.platform();
+                const cmd = platform === 'win32' ? `tracert -d -h 15 ${host}` : `traceroute -n -m 15 ${host}`;
+
+                try {
+                    const { stdout } = await execPromise(cmd, { timeout: 60000 });
+                    return { success: true, host, output: stdout };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'curl_request': {
+                const url = params.url;
+                if (!url) return { success: false, error: 'url parameter is required' };
+
+                let cmd = `curl -s -w "\\n%{http_code}" "${url}"`;
+                if (params.method) cmd = `curl -s -X ${params.method} -w "\\n%{http_code}" "${url}"`;
+                if (params.headers) {
+                    const headers = typeof params.headers === 'string' ? JSON.parse(params.headers) : params.headers;
+                    for (const [k, v] of Object.entries(headers)) {
+                        cmd += ` -H "${k}: ${v}"`;
+                    }
+                }
+                if (params.data) cmd += ` -d '${params.data}'`;
+
+                try {
+                    const { stdout } = await execPromise(cmd, { timeout: 30000 });
+                    const lines = stdout.trim().split('\n');
+                    const statusCode = parseInt(lines.pop()) || 0;
+                    const body = lines.join('\n');
+                    return { success: true, statusCode, body };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown network skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute data processing skills client-side
+async function executeDataSkill(skillName, params) {
+    const crypto = require('crypto');
+    const zlib = require('zlib');
+
+    try {
+        switch (skillName) {
+            case 'parse_json': {
+                const content = params.content || params.json;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                try {
+                    const parsed = JSON.parse(content);
+                    return { success: true, data: parsed };
+                } catch (e) {
+                    return { success: false, error: 'Invalid JSON: ' + e.message };
+                }
+            }
+
+            case 'parse_csv': {
+                const content = params.content || params.csv;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                const delimiter = params.delimiter || ',';
+                const lines = content.trim().split('\n');
+                const headers = lines[0].split(delimiter).map(h => h.trim());
+                const rows = lines.slice(1).map(line => {
+                    const values = line.split(delimiter);
+                    const row = {};
+                    headers.forEach((h, i) => row[h] = values[i]?.trim() || '');
+                    return row;
+                });
+                return { success: true, headers, rows, rowCount: rows.length };
+            }
+
+            case 'base64_encode': {
+                const content = params.content || params.data;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                const encoded = Buffer.from(content).toString('base64');
+                return { success: true, encoded };
+            }
+
+            case 'base64_decode': {
+                const content = params.content || params.data;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                try {
+                    const decoded = Buffer.from(content, 'base64').toString('utf8');
+                    return { success: true, decoded };
+                } catch (e) {
+                    return { success: false, error: 'Invalid base64: ' + e.message };
+                }
+            }
+
+            case 'hash_data': {
+                const content = params.content || params.data;
+                const algorithm = params.algorithm || 'sha256';
+                if (!content) return { success: false, error: 'content parameter is required' };
+                const hash = crypto.createHash(algorithm).update(content).digest('hex');
+                return { success: true, algorithm, hash };
+            }
+
+            case 'generate_uuid': {
+                const uuid = crypto.randomUUID();
+                return { success: true, uuid };
+            }
+
+            case 'get_timestamp': {
+                const format = params.format || 'iso';
+                const now = new Date();
+                let timestamp;
+                switch (format.toLowerCase()) {
+                    case 'unix': timestamp = Math.floor(now.getTime() / 1000); break;
+                    case 'ms': timestamp = now.getTime(); break;
+                    case 'iso': default: timestamp = now.toISOString(); break;
+                }
+                return { success: true, format, timestamp };
+            }
+
+            case 'count_words': {
+                const content = params.content || params.text;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                const words = content.trim().split(/\s+/).filter(w => w).length;
+                const chars = content.length;
+                const lines = content.split('\n').length;
+                return { success: true, words, characters: chars, lines };
+            }
+
+            case 'find_patterns': {
+                const content = params.content || params.text;
+                const pattern = params.pattern;
+                if (!content || !pattern) return { success: false, error: 'content and pattern parameters are required' };
+                try {
+                    const regex = new RegExp(pattern, 'g');
+                    const matches = content.match(regex) || [];
+                    return { success: true, pattern, matchCount: matches.length, matches };
+                } catch (e) {
+                    return { success: false, error: 'Invalid regex: ' + e.message };
+                }
+            }
+
+            case 'analyze_code': {
+                const content = params.content || params.code;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                const lines = content.split('\n');
+                const totalLines = lines.length;
+                const codeLines = lines.filter(l => l.trim() && !l.trim().startsWith('//')).length;
+                const commentLines = lines.filter(l => l.trim().startsWith('//')).length;
+                const blankLines = lines.filter(l => !l.trim()).length;
+                return { success: true, totalLines, codeLines, commentLines, blankLines };
+            }
+
+            case 'compress_data': {
+                const content = params.content || params.data;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                return new Promise((resolve) => {
+                    zlib.gzip(Buffer.from(content), (err, result) => {
+                        if (err) resolve({ success: false, error: err.message });
+                        else resolve({ success: true, compressed: result.toString('base64'), originalSize: content.length, compressedSize: result.length });
+                    });
+                });
+            }
+
+            case 'decompress_data': {
+                const content = params.content || params.data;
+                if (!content) return { success: false, error: 'content parameter is required' };
+                return new Promise((resolve) => {
+                    zlib.gunzip(Buffer.from(content, 'base64'), (err, result) => {
+                        if (err) resolve({ success: false, error: err.message });
+                        else resolve({ success: true, decompressed: result.toString('utf8') });
+                    });
+                });
+            }
+
+            case 'json_get': {
+                const filePath = params.filePath;
+                const jsonPath = params.path || params.jsonPath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+                try {
+                    const content = await fs.readFile(filePath, 'utf8');
+                    const data = JSON.parse(content);
+                    if (!jsonPath) return { success: true, data };
+                    const keys = jsonPath.replace(/^\$\.?/, '').split('.');
+                    let value = data;
+                    for (const key of keys) {
+                        if (value === undefined) break;
+                        value = value[key];
+                    }
+                    return { success: true, path: jsonPath, value };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'json_set': {
+                const filePath = params.filePath;
+                const jsonPath = params.path || params.jsonPath;
+                const value = params.value;
+                if (!filePath || !jsonPath) return { success: false, error: 'filePath and path parameters are required' };
+                try {
+                    let data = {};
+                    try {
+                        const content = await fs.readFile(filePath, 'utf8');
+                        data = JSON.parse(content);
+                    } catch (e) { /* File doesn't exist, start fresh */ }
+                    const keys = jsonPath.replace(/^\$\.?/, '').split('.');
+                    let obj = data;
+                    for (let i = 0; i < keys.length - 1; i++) {
+                        if (!obj[keys[i]]) obj[keys[i]] = {};
+                        obj = obj[keys[i]];
+                    }
+                    obj[keys[keys.length - 1]] = value;
+                    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+                    return { success: true, path: jsonPath, value };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'yaml_parse': {
+                const filePath = params.filePath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+                try {
+                    const content = await fs.readFile(filePath, 'utf8');
+                    // Simple YAML parser for basic structures
+                    const lines = content.split('\n');
+                    const result = {};
+                    let currentKey = null;
+                    for (const line of lines) {
+                        if (line.trim().startsWith('#') || !line.trim()) continue;
+                        const match = line.match(/^(\s*)([^:]+):\s*(.*)$/);
+                        if (match) {
+                            const [, indent, key, value] = match;
+                            if (value) {
+                                result[key.trim()] = value.trim();
+                            }
+                        }
+                    }
+                    return { success: true, data: result };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'ini_parse': {
+                const filePath = params.filePath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+                try {
+                    const content = await fs.readFile(filePath, 'utf8');
+                    const result = {};
+                    let section = 'default';
+                    for (const line of content.split('\n')) {
+                        const trimmed = line.trim();
+                        if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#')) continue;
+                        const sectionMatch = trimmed.match(/^\[(.+)\]$/);
+                        if (sectionMatch) {
+                            section = sectionMatch[1];
+                            result[section] = result[section] || {};
+                        } else {
+                            const kvMatch = trimmed.match(/^([^=]+)=(.*)$/);
+                            if (kvMatch) {
+                                result[section] = result[section] || {};
+                                result[section][kvMatch[1].trim()] = kvMatch[2].trim();
+                            }
+                        }
+                    }
+                    return { success: true, data: result };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown data skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute archive skills client-side
+async function executeArchiveSkill(skillName, params) {
+    const zlib = require('zlib');
+    const { pipeline } = require('stream/promises');
+
+    try {
+        switch (skillName) {
+            case 'unzip_file': {
+                const filePath = params.filePath || params.zipPath;
+                const destPath = params.destPath || params.destination || '.';
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                try {
+                    await execPromise(`unzip -o "${filePath}" -d "${destPath}"`, { timeout: 120000 });
+                    return { success: true, filePath, destination: destPath };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'zip_files': {
+                const files = params.files;
+                const outputPath = params.outputPath || params.zipPath;
+                if (!files || !outputPath) return { success: false, error: 'files and outputPath parameters are required' };
+
+                const fileList = Array.isArray(files) ? files.join(' ') : files;
+                try {
+                    await execPromise(`zip -r "${outputPath}" ${fileList}`, { timeout: 120000 });
+                    return { success: true, outputPath, files };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'tar_extract': {
+                const filePath = params.filePath || params.tarPath;
+                const destPath = params.destPath || params.destination || '.';
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                let cmd = `tar -xf "${filePath}" -C "${destPath}"`;
+                if (filePath.endsWith('.gz') || filePath.endsWith('.tgz')) cmd = `tar -xzf "${filePath}" -C "${destPath}"`;
+                else if (filePath.endsWith('.bz2')) cmd = `tar -xjf "${filePath}" -C "${destPath}"`;
+
+                try {
+                    await fs.mkdir(destPath, { recursive: true });
+                    await execPromise(cmd, { timeout: 120000 });
+                    return { success: true, filePath, destination: destPath };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'tar_create': {
+                const files = params.files;
+                const outputPath = params.outputPath || params.tarPath;
+                const compress = params.compress || 'none';
+                if (!files || !outputPath) return { success: false, error: 'files and outputPath parameters are required' };
+
+                const fileList = Array.isArray(files) ? files.join(' ') : files;
+                let cmd = `tar -cf "${outputPath}" ${fileList}`;
+                if (compress === 'gzip' || compress === 'gz') cmd = `tar -czf "${outputPath}" ${fileList}`;
+                else if (compress === 'bzip2' || compress === 'bz2') cmd = `tar -cjf "${outputPath}" ${fileList}`;
+
+                try {
+                    await execPromise(cmd, { timeout: 120000 });
+                    return { success: true, outputPath, files, compression: compress };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'extract_archive': {
+                const filePath = params.filePath;
+                const destPath = params.destPath || '.';
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                let cmd;
+                if (filePath.endsWith('.zip')) cmd = `unzip -o "${filePath}" -d "${destPath}"`;
+                else if (filePath.endsWith('.tar.gz') || filePath.endsWith('.tgz')) cmd = `tar -xzf "${filePath}" -C "${destPath}"`;
+                else if (filePath.endsWith('.tar.bz2')) cmd = `tar -xjf "${filePath}" -C "${destPath}"`;
+                else if (filePath.endsWith('.tar')) cmd = `tar -xf "${filePath}" -C "${destPath}"`;
+                else if (filePath.endsWith('.gz')) cmd = `gunzip -c "${filePath}" > "${destPath}/$(basename "${filePath}" .gz)"`;
+                else return { success: false, error: 'Unsupported archive format' };
+
+                try {
+                    await fs.mkdir(destPath, { recursive: true });
+                    await execPromise(cmd, { timeout: 120000 });
+                    return { success: true, filePath, destination: destPath };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown archive skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute command skills client-side
+async function executeCommandSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'run_bash': {
+                const command = params.command;
+                if (!command) return { success: false, error: 'command parameter is required' };
+                try {
+                    const { stdout, stderr } = await execPromise(command, { timeout: 60000 });
+                    return { success: true, stdout, stderr };
+                } catch (e) {
+                    return { success: false, error: e.message, stderr: e.stderr };
+                }
+            }
+
+            case 'run_python': {
+                const code = params.code;
+                if (!code) return { success: false, error: 'code parameter is required' };
+                try {
+                    const { stdout, stderr } = await execPromise(`python3 -c "${code.replace(/"/g, '\\"')}"`, { timeout: 60000 });
+                    return { success: true, stdout, stderr };
+                } catch (e) {
+                    return { success: false, error: e.message, stderr: e.stderr };
+                }
+            }
+
+            case 'run_powershell': {
+                if (os.platform() !== 'win32') return { success: false, error: 'PowerShell is only available on Windows' };
+                const command = params.command;
+                if (!command) return { success: false, error: 'command parameter is required' };
+                try {
+                    const { stdout, stderr } = await execPromise(`powershell -Command "${command}"`, { timeout: 60000 });
+                    return { success: true, stdout, stderr };
+                } catch (e) {
+                    return { success: false, error: e.message, stderr: e.stderr };
+                }
+            }
+
+            case 'run_cmd': {
+                if (os.platform() !== 'win32') return { success: false, error: 'cmd is only available on Windows' };
+                const command = params.command;
+                if (!command) return { success: false, error: 'command parameter is required' };
+                try {
+                    const { stdout, stderr } = await execPromise(`cmd /c "${command}"`, { timeout: 60000 });
+                    return { success: true, stdout, stderr };
+                } catch (e) {
+                    return { success: false, error: e.message, stderr: e.stderr };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown command skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute extra file skills client-side
+async function executeFileExtraSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'copy_file': {
+                const sourcePath = params.sourcePath || params.source;
+                const destPath = params.destPath || params.destination;
+                if (!sourcePath || !destPath) return { success: false, error: 'sourcePath and destPath parameters are required' };
+                await fs.copyFile(sourcePath, destPath);
+                return { success: true, sourcePath, destPath };
+            }
+
+            case 'get_file_metadata': {
+                const filePath = params.filePath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+                const stat = await fs.stat(filePath);
+                return {
+                    success: true,
+                    filePath,
+                    size: stat.size,
+                    created: stat.birthtime,
+                    modified: stat.mtime,
+                    accessed: stat.atime,
+                    isDirectory: stat.isDirectory(),
+                    isFile: stat.isFile(),
+                    permissions: stat.mode.toString(8)
+                };
+            }
+
+            case 'search_files': {
+                const pattern = params.pattern;
+                const directory = params.directory || '.';
+                if (!pattern) return { success: false, error: 'pattern parameter is required' };
+
+                try {
+                    const { stdout } = await execPromise(`find "${directory}" -name "${pattern}" 2>/dev/null | head -100`, { timeout: 30000 });
+                    const files = stdout.trim().split('\n').filter(f => f);
+                    return { success: true, pattern, directory, files, count: files.length };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'download_file': {
+                const url = params.url;
+                const destPath = params.destPath || params.destination;
+                if (!url || !destPath) return { success: false, error: 'url and destPath parameters are required' };
+
+                try {
+                    await execPromise(`curl -sL -o "${destPath}" "${url}"`, { timeout: 120000 });
+                    const stat = await fs.stat(destPath);
+                    return { success: true, url, destPath, size: stat.size };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'search_replace_file': {
+                const filePath = params.filePath;
+                const search = params.search;
+                const replace = params.replace;
+                if (!filePath || search === undefined) return { success: false, error: 'filePath and search parameters are required' };
+
+                const content = await fs.readFile(filePath, 'utf8');
+                const regex = new RegExp(search, 'g');
+                const newContent = content.replace(regex, replace || '');
+                const count = (content.match(regex) || []).length;
+                await fs.writeFile(filePath, newContent);
+                return { success: true, filePath, replacements: count };
+            }
+
+            case 'diff_files': {
+                const file1 = params.file1 || params.filePath1;
+                const file2 = params.file2 || params.filePath2;
+                if (!file1 || !file2) return { success: false, error: 'file1 and file2 parameters are required' };
+
+                try {
+                    const { stdout } = await execPromise(`diff "${file1}" "${file2}"`, { timeout: 30000 });
+                    return { success: true, file1, file2, diff: stdout || '(no differences)', hasDifferences: false };
+                } catch (e) {
+                    if (e.code === 1) {
+                        return { success: true, file1, file2, diff: e.stdout, hasDifferences: true };
+                    }
+                    return { success: false, error: e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown file skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute clipboard skills client-side
+async function executeClipboardSkill(skillName, params) {
+    const platform = os.platform();
+
+    try {
+        switch (skillName) {
+            case 'clipboard_read': {
+                let cmd;
+                if (platform === 'darwin') cmd = 'pbpaste';
+                else if (platform === 'win32') cmd = 'powershell -command "Get-Clipboard"';
+                else cmd = 'xclip -selection clipboard -o 2>/dev/null || xsel --clipboard --output 2>/dev/null';
+
+                try {
+                    const { stdout } = await execPromise(cmd, { timeout: 5000 });
+                    return { success: true, content: stdout };
+                } catch (e) {
+                    return { success: false, error: 'Clipboard access failed: ' + e.message };
+                }
+            }
+
+            case 'clipboard_write': {
+                const content = params.content;
+                if (!content) return { success: false, error: 'content parameter is required' };
+
+                let cmd;
+                if (platform === 'darwin') cmd = `echo "${content.replace(/"/g, '\\"')}" | pbcopy`;
+                else if (platform === 'win32') cmd = `powershell -command "Set-Clipboard -Value '${content.replace(/'/g, "''")}'"`;
+                else cmd = `echo "${content.replace(/"/g, '\\"')}" | xclip -selection clipboard 2>/dev/null || echo "${content.replace(/"/g, '\\"')}" | xsel --clipboard --input 2>/dev/null`;
+
+                try {
+                    await execPromise(cmd, { timeout: 5000 });
+                    return { success: true, message: 'Content copied to clipboard' };
+                } catch (e) {
+                    return { success: false, error: 'Clipboard access failed: ' + e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown clipboard skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute database skills client-side
+async function executeDatabaseSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'sqlite_query': {
+                const database = params.database || params.dbPath;
+                const query = params.query;
+                if (!database || !query) return { success: false, error: 'database and query parameters are required' };
+
+                try {
+                    const { stdout } = await execPromise(`sqlite3 -json "${database}" "${query.replace(/"/g, '\\"')}"`, { timeout: 30000 });
+                    const results = stdout.trim() ? JSON.parse(stdout) : [];
+                    return { success: true, database, query, results, rowCount: results.length };
+                } catch (e) {
+                    // Try without -json flag for older sqlite versions
+                    try {
+                        const { stdout } = await execPromise(`sqlite3 -header -separator '|' "${database}" "${query.replace(/"/g, '\\"')}"`, { timeout: 30000 });
+                        return { success: true, database, query, output: stdout };
+                    } catch (e2) {
+                        return { success: false, error: e2.message };
+                    }
+                }
+            }
+
+            case 'sqlite_list_tables': {
+                const database = params.database || params.dbPath;
+                if (!database) return { success: false, error: 'database parameter is required' };
+
+                try {
+                    const { stdout } = await execPromise(`sqlite3 "${database}" ".tables"`, { timeout: 10000 });
+                    const tables = stdout.trim().split(/\s+/).filter(t => t);
+                    return { success: true, database, tables, count: tables.length };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown database skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute PDF skills client-side
+async function executePdfSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'read_pdf': {
+                const filePath = params.filePath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                try {
+                    const { stdout } = await execPromise(`pdftotext "${filePath}" - 2>/dev/null || python3 -c "import PyPDF2; f=open('${filePath}','rb'); r=PyPDF2.PdfReader(f); print(''.join(p.extract_text() for p in r.pages))"`, { timeout: 60000 });
+                    return { success: true, filePath, text: stdout };
+                } catch (e) {
+                    return { success: false, error: 'PDF extraction failed. Install pdftotext or PyPDF2: ' + e.message };
+                }
+            }
+
+            case 'pdf_page_count': {
+                const filePath = params.filePath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                try {
+                    const { stdout } = await execPromise(`pdfinfo "${filePath}" 2>/dev/null | grep Pages | awk '{print $2}' || python3 -c "import PyPDF2; f=open('${filePath}','rb'); print(len(PyPDF2.PdfReader(f).pages))"`, { timeout: 30000 });
+                    return { success: true, filePath, pageCount: parseInt(stdout.trim()) || 0 };
+                } catch (e) {
+                    return { success: false, error: 'PDF page count failed: ' + e.message };
+                }
+            }
+
+            case 'pdf_to_images': {
+                const filePath = params.filePath;
+                const outputDir = params.outputDir || '.';
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                try {
+                    await fs.mkdir(outputDir, { recursive: true });
+                    await execPromise(`pdftoppm -png "${filePath}" "${outputDir}/page"`, { timeout: 120000 });
+                    const files = await fs.readdir(outputDir);
+                    const images = files.filter(f => f.startsWith('page') && f.endsWith('.png'));
+                    return { success: true, filePath, outputDir, images, count: images.length };
+                } catch (e) {
+                    return { success: false, error: 'PDF to images failed. Install poppler-utils: ' + e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown PDF skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute image skills client-side
+async function executeImageSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'ocr_image': {
+                const filePath = params.filePath || params.imagePath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                try {
+                    const { stdout } = await execPromise(`tesseract "${filePath}" stdout 2>/dev/null`, { timeout: 60000 });
+                    return { success: true, filePath, text: stdout.trim() };
+                } catch (e) {
+                    return { success: false, error: 'OCR failed. Install tesseract-ocr: ' + e.message };
+                }
+            }
+
+            case 'screenshot': {
+                const outputPath = params.outputPath || params.savePath || 'screenshot.png';
+                const platform = os.platform();
+
+                let cmd;
+                if (platform === 'darwin') cmd = `screencapture -x "${outputPath}"`;
+                else if (platform === 'win32') cmd = `powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen | ForEach-Object { $bitmap = New-Object System.Drawing.Bitmap($_.Bounds.Width, $_.Bounds.Height); $graphics = [System.Drawing.Graphics]::FromImage($bitmap); $graphics.CopyFromScreen($_.Bounds.Location, [System.Drawing.Point]::Empty, $_.Bounds.Size); $bitmap.Save('${outputPath}') }"`;
+                else cmd = `import -window root "${outputPath}" 2>/dev/null || gnome-screenshot -f "${outputPath}" 2>/dev/null || scrot "${outputPath}" 2>/dev/null`;
+
+                try {
+                    await execPromise(cmd, { timeout: 10000 });
+                    return { success: true, outputPath };
+                } catch (e) {
+                    return { success: false, error: 'Screenshot failed: ' + e.message };
+                }
+            }
+
+            case 'convert_image': {
+                const inputPath = params.inputPath;
+                const outputPath = params.outputPath;
+                if (!inputPath || !outputPath) return { success: false, error: 'inputPath and outputPath parameters are required' };
+
+                try {
+                    await execPromise(`convert "${inputPath}" "${outputPath}"`, { timeout: 30000 });
+                    return { success: true, inputPath, outputPath };
+                } catch (e) {
+                    return { success: false, error: 'Image conversion failed. Install ImageMagick: ' + e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown image skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute Windows-specific skills client-side
+async function executeWindowsSkill(skillName, params) {
+    if (os.platform() !== 'win32') {
+        return { success: false, error: 'This skill is only available on Windows' };
+    }
+
+    try {
+        switch (skillName) {
+            case 'get_windows_services': {
+                try {
+                    const { stdout } = await execPromise('powershell -command "Get-Service | Select-Object Name, Status | ConvertTo-Json"', { timeout: 30000 });
+                    const services = JSON.parse(stdout);
+                    return { success: true, services, count: services.length };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'get_registry_value': {
+                const path = params.path;
+                const name = params.name;
+                if (!path) return { success: false, error: 'path parameter is required' };
+
+                try {
+                    const cmd = name
+                        ? `powershell -command "(Get-ItemProperty -Path '${path}').'${name}'"`
+                        : `powershell -command "Get-ItemProperty -Path '${path}' | ConvertTo-Json"`;
+                    const { stdout } = await execPromise(cmd, { timeout: 10000 });
+                    return { success: true, path, name, value: stdout.trim() };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            case 'set_registry_value': {
+                const path = params.path;
+                const name = params.name;
+                const value = params.value;
+                if (!path || !name || value === undefined) return { success: false, error: 'path, name, and value parameters are required' };
+
+                try {
+                    await execPromise(`powershell -command "Set-ItemProperty -Path '${path}' -Name '${name}' -Value '${value}'"`, { timeout: 10000 });
+                    return { success: true, path, name, value };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown Windows skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute email skills client-side
+async function executeEmailSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'read_email_file': {
+                const filePath = params.filePath;
+                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+
+                const content = await fs.readFile(filePath, 'utf8');
+                const headers = {};
+                const lines = content.split('\n');
+                let bodyStart = 0;
+
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (line.trim() === '') {
+                        bodyStart = i + 1;
+                        break;
+                    }
+                    const match = line.match(/^([^:]+):\s*(.*)$/);
+                    if (match) {
+                        headers[match[1].toLowerCase()] = match[2];
+                    }
+                }
+
+                const body = lines.slice(bodyStart).join('\n');
+
+                return {
+                    success: true,
+                    filePath,
+                    from: headers.from || '',
+                    to: headers.to || '',
+                    subject: headers.subject || '',
+                    date: headers.date || '',
+                    body: body.substring(0, 10000)
+                };
+            }
+
+            default:
+                return { success: false, error: `Unknown email skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
 // Execute skills and return results
 async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
@@ -2339,19 +3339,28 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
 
         let result;
 
-        // Execute file operation skills locally (client-side) to avoid Docker container path issues
+        // ALL skills execute client-side - Koda is a standalone CLI tool like Claude Code
         const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file', 'create_directory', 'append_to_file', 'tail_file', 'head_file'];
-        // Process management skills also run client-side to show user's actual processes
+        const fileExtraSkills = ['copy_file', 'get_file_metadata', 'search_files', 'download_file', 'search_replace_file', 'diff_files'];
         const processSkills = ['list_processes', 'kill_process', 'start_process'];
-        // System info skills run client-side to show user's actual system info
         const systemSkills = ['system_info', 'disk_usage', 'get_uptime', 'list_ports', 'list_services'];
-        // Git skills run client-side to access user's repositories
         const gitSkills = ['git_status', 'git_diff', 'git_log', 'git_branch'];
-        // Environment skills run client-side to access user's environment
         const envSkills = ['get_env_var', 'set_env_var', 'which_command'];
+        const networkSkills = ['fetch_url', 'dns_lookup', 'check_port', 'ping_host', 'http_request', 'get_public_ip', 'list_network_interfaces', 'traceroute', 'curl_request'];
+        const dataSkills = ['parse_json', 'parse_csv', 'base64_encode', 'base64_decode', 'hash_data', 'generate_uuid', 'get_timestamp', 'count_words', 'find_patterns', 'analyze_code', 'compress_data', 'decompress_data', 'json_get', 'json_set', 'yaml_parse', 'ini_parse'];
+        const archiveSkills = ['unzip_file', 'zip_files', 'tar_extract', 'tar_create', 'extract_archive'];
+        const commandSkills = ['run_bash', 'run_python', 'run_powershell', 'run_cmd'];
+        const clipboardSkills = ['clipboard_read', 'clipboard_write'];
+        const databaseSkills = ['sqlite_query', 'sqlite_list_tables'];
+        const pdfSkills = ['read_pdf', 'pdf_page_count', 'pdf_to_images'];
+        const imageSkills = ['ocr_image', 'screenshot', 'convert_image'];
+        const windowsSkills = ['get_windows_services', 'get_registry_value', 'set_registry_value'];
+        const emailSkills = ['read_email_file'];
 
         if (fileOperationSkills.includes(call.skillName)) {
             result = await executeFileOperationSkill(call.skillName, call.params);
+        } else if (fileExtraSkills.includes(call.skillName)) {
+            result = await executeFileExtraSkill(call.skillName, call.params);
         } else if (processSkills.includes(call.skillName)) {
             result = await executeProcessSkill(call.skillName, call.params);
         } else if (systemSkills.includes(call.skillName)) {
@@ -2360,9 +3369,29 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             result = await executeGitSkill(call.skillName, call.params);
         } else if (envSkills.includes(call.skillName)) {
             result = await executeEnvSkill(call.skillName, call.params);
+        } else if (networkSkills.includes(call.skillName)) {
+            result = await executeNetworkSkill(call.skillName, call.params);
+        } else if (dataSkills.includes(call.skillName)) {
+            result = await executeDataSkill(call.skillName, call.params);
+        } else if (archiveSkills.includes(call.skillName)) {
+            result = await executeArchiveSkill(call.skillName, call.params);
+        } else if (commandSkills.includes(call.skillName)) {
+            result = await executeCommandSkill(call.skillName, call.params);
+        } else if (clipboardSkills.includes(call.skillName)) {
+            result = await executeClipboardSkill(call.skillName, call.params);
+        } else if (databaseSkills.includes(call.skillName)) {
+            result = await executeDatabaseSkill(call.skillName, call.params);
+        } else if (pdfSkills.includes(call.skillName)) {
+            result = await executePdfSkill(call.skillName, call.params);
+        } else if (imageSkills.includes(call.skillName)) {
+            result = await executeImageSkill(call.skillName, call.params);
+        } else if (windowsSkills.includes(call.skillName)) {
+            result = await executeWindowsSkill(call.skillName, call.params);
+        } else if (emailSkills.includes(call.skillName)) {
+            result = await executeEmailSkill(call.skillName, call.params);
         } else {
-            // Execute other skills via API (server-side)
-            result = await api.executeSkill(call.skillName, call.params, agentId);
+            // Unknown skill - return error
+            result = { success: false, error: `Unknown skill: ${call.skillName}. All skills must execute client-side.` };
         }
 
         if (result.success) {

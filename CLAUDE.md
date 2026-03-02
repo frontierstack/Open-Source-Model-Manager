@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.3.21
+**Version:** 0.4.0
 
 ## Overview
 
@@ -820,7 +820,28 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.3.21 (Current)
+### Version 0.4.0 (Current)
+- **100% Client-Side Skill Execution** - Koda is now a fully standalone CLI tool:
+  - **No Server Dependency**: All 80 skills execute locally on user's machine
+  - **No Docker Container Execution**: Skills never run inside Docker containers
+  - **True CLI Experience**: Like Claude Code and Gemini CLI, Koda runs entirely client-side
+- **New Skill Execution Functions** (12 categories):
+  - `executeNetworkSkill`: fetch_url, dns_lookup, check_port, ping_host, http_request, get_public_ip, list_network_interfaces, traceroute, curl_request
+  - `executeDataSkill`: parse_json, parse_csv, base64_encode/decode, hash_data, generate_uuid, get_timestamp, count_words, find_patterns, analyze_code, compress/decompress_data, json_get/set, yaml_parse, ini_parse
+  - `executeArchiveSkill`: unzip_file, zip_files, tar_extract, tar_create, extract_archive
+  - `executeCommandSkill`: run_bash, run_python, run_powershell, run_cmd
+  - `executeFileExtraSkill`: copy_file, get_file_metadata, search_files, download_file, search_replace_file, diff_files
+  - `executeClipboardSkill`: clipboard_read, clipboard_write
+  - `executeDatabaseSkill`: sqlite_query, sqlite_list_tables
+  - `executePdfSkill`: read_pdf, pdf_page_count, pdf_to_images
+  - `executeImageSkill`: ocr_image, screenshot, convert_image
+  - `executeWindowsSkill`: get_windows_services, get_registry_value, set_registry_value
+  - `executeEmailSkill`: read_email_file
+- **Removed Server-Side Fallback**: API skill execution removed - all skills are local
+- **Cross-Platform**: All skills work on Linux, macOS, and Windows
+- **Koda CLI Version**: 3.0.0
+
+### Version 0.3.21
 - **Comprehensive Client-Side Skill Execution**:
   - **All System Skills Client-Side**: `system_info`, `disk_usage`, `get_uptime`, `list_ports`, `list_services` now show actual user system info
   - **All Git Skills Client-Side**: `git_status`, `git_diff`, `git_log`, `git_branch` now access user's actual repositories
