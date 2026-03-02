@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.3.13
+**Version:** 0.3.14
 
 ## Overview
 
@@ -697,7 +697,30 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.3.13 (Current)
+### Version 0.3.14 (Current)
+- **Koda CLI Skill Display Improvements**:
+  - **Real-time Skill Syntax Cleaning**: Raw `[SKILL:...]` syntax now hidden during streaming responses
+  - **Cleaner Streaming**: Created `cleanSkillSyntax()` helper function to filter skill calls from all displayed text
+  - **No More Raw Syntax**: Users see clean, natural language responses instead of technical skill invocation format
+  - **Better State Tracking**: Added `lastCleanedMessage` variable to track cleaned responses during streaming
+- **Enhanced Skill Execution Behavior**:
+  - **Directive Feedback Messages**: Skill result messages now explicitly guide AI to execute update_file when fixes are needed
+  - **Action-Oriented Prompts**: Updated system prompt with critical execution rules:
+    - "If you say 'let me fix that', you MUST execute update_file, not just display code"
+    - "When you identify bugs in code you created, use update_file to fix them"
+    - Clear instructions to recognize topic switches and respond to new requests
+  - **Reduced Over-Analysis**: AI now provides brief confirmations instead of lengthy explanations after successful skill execution
+- **Improved Context Switching**:
+  - **Topic Recognition**: Added explicit instruction for AI to recognize when user switches topics (e.g., from coding to summarizing articles)
+  - **New Request Handling**: AI instructed to respond to new, unrelated requests instead of continuing previous tasks
+  - **Better Context Awareness**: System prompt now includes 6 critical execution rules for consistent behavior
+- **User Experience Enhancements**:
+  - Skill execution now appears seamless with no technical noise
+  - AI focuses on executing tasks rather than just describing them
+  - Cleaner, more professional output for file operations
+  - Better handling of multi-turn conversations with topic changes
+
+### Version 0.3.13
 - **Koda CLI Critical Bug Fixes**:
   - **Double Character Input Fix**:
     - Fixed y/n/s confirmations showing doubled characters (yy, nn, skip)

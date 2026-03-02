@@ -825,32 +825,53 @@ function displayStatusBar() {
 // Track if we're currently streaming (to avoid flicker)
 let isStreaming = false;
 let lastStreamedMessage = '';
+let lastCleanedMessage = ''; // Track the cleaned version for comparison
+
+// Helper function to clean skill syntax from response text
+function cleanSkillSyntax(text) {
+    return text
+        .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')  // Remove [SKILL:name(...)]
+        .replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '')  // Remove JSON skill format
+        .replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '')  // Remove inline JSON
+        .trim();
+}
 
 // Update streaming message without full screen refresh (reduces flicker)
 function updateStreamingMessage(message) {
     if (!isStreaming) return;
 
-    const formattedContent = formatCodeBlocks(message);
+    // Clean skill syntax from the message before displaying
+    const cleanedMessage = cleanSkillSyntax(message);
+
+    // Only display if there's actual content (not just skill calls)
+    if (!cleanedMessage) {
+        return;
+    }
+
+    const formattedContent = formatCodeBlocks(cleanedMessage);
 
     // On first message, write the prefix and content
-    if (lastStreamedMessage === '') {
+    if (lastCleanedMessage === '') {
         process.stdout.write(colorize('Koda:', 'cyan') + ' ');
         process.stdout.write(formattedContent);
-        lastStreamedMessage = formattedContent;
+        lastStreamedMessage = message;
+        lastCleanedMessage = formattedContent;
     } else {
         // Only write the new content that was added since last update
         // This prevents duplication by only appending new tokens
-        if (formattedContent.startsWith(lastStreamedMessage)) {
-            const newContent = formattedContent.substring(lastStreamedMessage.length);
+        if (formattedContent.startsWith(lastCleanedMessage)) {
+            const newContent = formattedContent.substring(lastCleanedMessage.length);
             process.stdout.write(newContent);
-            lastStreamedMessage = formattedContent;
+            lastStreamedMessage = message;
+            lastCleanedMessage = formattedContent;
         } else {
             // If message doesn't start with previous (unusual), rewrite everything
             // This shouldn't happen in normal streaming but handles edge cases
             process.stdout.write('\n');
             process.stdout.write(colorize('Koda:', 'cyan') + ' ');
             process.stdout.write(formattedContent);
-            lastStreamedMessage = formattedContent;
+            lastStreamedMessage = message;
+            lastCleanedMessage = formattedContent;
         }
     }
 }
@@ -1320,11 +1341,16 @@ Available skills:
 Skill execution format:
 [SKILL:create_file(filePath="${userWorkingDirectory}/<project_dir>/<filename>", content="file content here")]
 [SKILL:read_file(filePath="${userWorkingDirectory}/<path_to_file>")]
+[SKILL:update_file(filePath="${userWorkingDirectory}/<path_to_file>", content="updated file content here")]
 [SKILL:list_directory(dirPath="${userWorkingDirectory}/<directory>")]
 
-When asked to work with files, execute skills directly rather than suggesting bash commands.
-Intelligently choose project directory names based on what the user is building.
-For all other questions (math, coding help, explanations, general chat), respond normally.
+CRITICAL EXECUTION RULES:
+1. When working with files, EXECUTE skills directly - don't just suggest or describe changes
+2. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
+3. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
+4. Intelligently choose project directory names based on what the user is building
+5. When the user switches topics (e.g., from coding to summarizing an article), recognize this as a NEW request and respond to it - don't continue with the previous task
+6. For non-file operations (math, coding help, explanations, general chat), respond conversationally
 
 ADDITIONAL CAPABILITIES:
 You have access to advanced development tools that you should use proactively when appropriate:
@@ -1597,7 +1623,11 @@ function buildSkillResultsMessage(results) {
         }
     }
 
-    message += '\nContinue with your response based on these results. Execute more skills if needed, or provide your final response.';
+    message += '\n\nIMPORTANT: The skills have been executed successfully. The task is complete unless:';
+    message += '\n1. A skill failed and needs to be retried with corrections';
+    message += '\n2. You need to execute additional skills to complete a multi-step task';
+    message += '\n3. You discovered an issue that requires executing update_file to fix';
+    message += '\n\nIf the task is complete, provide a brief confirmation. Do NOT just describe what should be fixed - execute update_file if fixes are needed.';
 
     return message;
 }
@@ -3222,6 +3252,7 @@ async function handleChat(api, message) {
         // Enable streaming mode to prevent flickering
         isStreaming = true;
         lastStreamedMessage = '';
+        lastCleanedMessage = '';
 
         const result = await api.chatStream(
             currentMessage,
@@ -3263,6 +3294,7 @@ async function handleChat(api, message) {
                 // Disable streaming mode
                 isStreaming = false;
                 lastStreamedMessage = '';
+                lastCleanedMessage = '';
 
                 // Remove streaming cursor
                 const lastMsg = chatHistory[chatHistory.length - 1];
@@ -3309,11 +3341,7 @@ async function handleChat(api, message) {
 
         // Clean up the displayed response by removing raw skill call syntax
         // The skill execution messages will be shown separately
-        let cleanedResponse = response
-            .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')  // Remove [SKILL:name(...)]
-            .replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '')  // Remove JSON skill format
-            .replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '')  // Remove inline JSON
-            .trim();
+        let cleanedResponse = cleanSkillSyntax(response);
 
         // Update the displayed assistant message with cleaned response
         const lastMsg = chatHistory[chatHistory.length - 1];
