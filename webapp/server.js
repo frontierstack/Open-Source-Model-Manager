@@ -4272,12 +4272,232 @@ app.post('/api/agent/file/move', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
+// WEB SEARCH & DOCUMENTATION
+// ============================================================================
+
+// Simple in-memory cache for search and docs results
+const searchCache = new Map();
+const CACHE_DURATION = 60 * 60 * 1000; // 1 hour in milliseconds
+
+// Helper function to clean cache entries older than CACHE_DURATION
+function cleanExpiredCache() {
+    const now = Date.now();
+    for (const [key, value] of searchCache.entries()) {
+        if (now - value.timestamp > CACHE_DURATION) {
+            searchCache.delete(key);
+        }
+    }
+}
+
+// Web search endpoint using DuckDuckGo HTML parsing
+app.get('/api/search', requireAuth, async (req, res) => {
+    const { q, limit = 5 } = req.query;
+
+    if (!q) {
+        return res.status(400).json({ error: 'Query parameter "q" is required' });
+    }
+
+    // Check cache first
+    const cacheKey = `search:${q}:${limit}`;
+    cleanExpiredCache();
+
+    if (searchCache.has(cacheKey)) {
+        const cached = searchCache.get(cacheKey);
+        return res.json({ ...cached.data, cached: true });
+    }
+
+    try {
+        // DuckDuckGo HTML search
+        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+        const response = await axios.get(searchUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout: 10000
+        });
+
+        const html = response.data;
+        const results = [];
+
+        // Parse DuckDuckGo HTML results
+        // DuckDuckGo uses <div class="result"> for each result
+        const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
+        const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
+        const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i;
+
+        let match;
+        while ((match = resultRegex.exec(html)) !== null && results.length < parseInt(limit)) {
+            const resultHtml = match[1];
+
+            const titleMatch = titleRegex.exec(resultHtml);
+            const snippetMatch = snippetRegex.exec(resultHtml);
+
+            if (titleMatch) {
+                const url = titleMatch[1].replace(/^\/\/duckduckgo\.com\/l\/\?uddg=/, '').split('&')[0];
+                const decodedUrl = decodeURIComponent(url);
+                const title = titleMatch[2].replace(/<[^>]*>/g, '').trim();
+                const snippet = snippetMatch
+                    ? snippetMatch[1].replace(/<[^>]*>/g, '').trim()
+                    : '';
+
+                // Only add if we have a valid URL
+                if (decodedUrl && decodedUrl.startsWith('http')) {
+                    results.push({
+                        title: title || 'No title',
+                        url: decodedUrl,
+                        snippet: snippet || 'No description available'
+                    });
+                }
+            }
+        }
+
+        const resultData = {
+            query: q,
+            results,
+            count: results.length
+        };
+
+        // Cache the results
+        searchCache.set(cacheKey, {
+            data: resultData,
+            timestamp: Date.now()
+        });
+
+        res.json(resultData);
+    } catch (error) {
+        console.error('Search error:', error);
+        res.status(500).json({
+            error: 'Search failed',
+            details: error.message
+        });
+    }
+});
+
+// Documentation endpoint - fetch from DevDocs.io
+app.get('/api/docs', requireAuth, async (req, res) => {
+    const { library, query } = req.query;
+
+    if (!library) {
+        return res.status(400).json({ error: 'Library parameter is required' });
+    }
+
+    // Check cache first
+    const cacheKey = `docs:${library}:${query || 'index'}`;
+    cleanExpiredCache();
+
+    if (searchCache.has(cacheKey)) {
+        const cached = searchCache.get(cacheKey);
+        return res.json({ ...cached.data, cached: true });
+    }
+
+    try {
+        // Map common library names to DevDocs slugs
+        const libraryMap = {
+            'javascript': 'javascript',
+            'js': 'javascript',
+            'node': 'node',
+            'nodejs': 'node',
+            'python': 'python~3.12',
+            'py': 'python~3.12',
+            'react': 'react',
+            'vue': 'vue~3',
+            'angular': 'angular',
+            'express': 'express',
+            'django': 'django~5.0',
+            'flask': 'flask~3.0',
+            'typescript': 'typescript',
+            'ts': 'typescript',
+            'docker': 'docker',
+            'git': 'git',
+            'bash': 'bash',
+            'css': 'css',
+            'html': 'html',
+            'mdn': 'mdn'
+        };
+
+        const slug = libraryMap[library.toLowerCase()] || library.toLowerCase();
+
+        // If no specific query, fetch the index
+        if (!query) {
+            const indexUrl = `https://docs.devdocs.io/${slug}/index.json`;
+            const response = await axios.get(indexUrl, { timeout: 10000 });
+
+            const entries = response.data.entries || [];
+            const topEntries = entries.slice(0, 10).map(entry => ({
+                name: entry.name,
+                path: entry.path,
+                type: entry.type || 'reference'
+            }));
+
+            const resultData = {
+                library: slug,
+                type: 'index',
+                entries: topEntries,
+                count: topEntries.length,
+                total: entries.length
+            };
+
+            // Cache the results
+            searchCache.set(cacheKey, {
+                data: resultData,
+                timestamp: Date.now()
+            });
+
+            return res.json(resultData);
+        }
+
+        // Search for specific documentation
+        const indexUrl = `https://docs.devdocs.io/${slug}/index.json`;
+        const response = await axios.get(indexUrl, { timeout: 10000 });
+
+        const entries = response.data.entries || [];
+        const searchTerm = query.toLowerCase();
+        const matches = entries
+            .filter(entry => entry.name.toLowerCase().includes(searchTerm))
+            .slice(0, 10)
+            .map(entry => ({
+                name: entry.name,
+                path: entry.path,
+                type: entry.type || 'reference',
+                url: `https://devdocs.io/${slug}/${entry.path}`
+            }));
+
+        const resultData = {
+            library: slug,
+            query: query,
+            type: 'search',
+            results: matches,
+            count: matches.length
+        };
+
+        // Cache the results
+        searchCache.set(cacheKey, {
+            data: resultData,
+            timestamp: Date.now()
+        });
+
+        res.json(resultData);
+    } catch (error) {
+        console.error('Documentation fetch error:', error);
+        res.status(500).json({
+            error: 'Failed to fetch documentation',
+            details: error.message
+        });
+    }
+});
+
+// ============================================================================
 // SIMPLIFIED WRAPPER API
 // ============================================================================
 
 // Simplified chat endpoint - wraps OpenAI API
 app.post('/api/chat', requireAuth, async (req, res) => {
-    const { message, model, temperature, maxTokens } = req.body;
+    const { message, model, temperature, maxTokens, stream } = req.body;
+
+    // If streaming requested, delegate to stream endpoint
+    if (stream) {
+        return app._router.handle({ ...req, url: '/api/chat/stream', method: 'POST' }, res);
+    }
 
     if (!message) {
         return res.status(400).json({ error: 'Message is required' });
@@ -4484,6 +4704,239 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             error: 'Failed to get response from model',
             details: error.message
         });
+    }
+});
+
+// Streaming chat endpoint - Server-Sent Events (SSE)
+app.post('/api/chat/stream', requireAuth, async (req, res) => {
+    const { message, model, temperature, maxTokens } = req.body;
+
+    if (!message) {
+        return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Check permission
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'Query permission required' });
+    }
+
+    try {
+        // Find first running instance or use specified model
+        let targetModel = model;
+        let targetInstance = null;
+
+        if (!targetModel) {
+            // Use first running instance
+            targetInstance = Array.from(modelInstances.values())[0];
+            if (!targetInstance) {
+                return res.status(400).json({ error: 'No running models. Please load a model first.' });
+            }
+            targetModel = targetInstance.modelName || 'default';
+        } else {
+            // Find specific model
+            targetInstance = modelInstances.get(targetModel);
+            if (!targetInstance) {
+                return res.status(400).json({ error: `Model ${targetModel} is not running. Please load it first.` });
+            }
+        }
+
+        // Use container name for Docker network communication
+        const targetHost = targetInstance.containerName || `host.docker.internal`;
+        const targetPort = targetInstance.internalPort || targetInstance.port;
+
+        // Get context size configuration
+        const contextSize = targetInstance.config?.contextSize || 4096;
+        const contextShift = targetInstance.config?.contextShift || false;
+
+        // Load system prompt for this model
+        const systemPrompts = await loadSystemPrompts();
+        const systemPrompt = systemPrompts[targetModel] || '';
+
+        // Estimate token count (rough estimate: 1 token ≈ 4 characters)
+        const estimateTokens = (text) => Math.ceil(text.length / 4);
+
+        let systemTokens = systemPrompt ? estimateTokens(systemPrompt) : 0;
+        let messageTokens = estimateTokens(message);
+        let totalInputTokens = systemTokens + messageTokens;
+
+        // Reserve space for response (default 20% of context or maxTokens if specified)
+        const responseReserve = maxTokens || Math.floor(contextSize * 0.2);
+        const availableContextForInput = contextSize - responseReserve;
+
+        // Check if input exceeds available context
+        if (totalInputTokens > availableContextForInput) {
+            if (!contextShift) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Not enough context window: Input requires ~${totalInputTokens} tokens but only ${availableContextForInput} available (context: ${contextSize}, reserved for response: ${responseReserve}). Enable context shifting or reduce input size.`
+                });
+            }
+            // If context shift enabled, truncate message
+            const excessTokens = totalInputTokens - availableContextForInput;
+            const targetMessageLength = message.length - (excessTokens * 4);
+
+            if (targetMessageLength <= 0) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Input too large: Your message (${totalInputTokens} tokens) exceeds the model's context window (${contextSize} tokens). Please reduce input size or increase context size in model settings.`
+                });
+            }
+        }
+
+        // Set up SSE headers
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+
+        // Build messages array
+        const messages = [];
+        if (systemPrompt) {
+            messages.push({ role: 'system', content: systemPrompt });
+        }
+        messages.push({ role: 'user', content: message });
+
+        const requestBody = {
+            messages: messages,
+            temperature: temperature || 0.7,
+            stream: true // Enable streaming from the model
+        };
+
+        if (maxTokens) {
+            requestBody.max_tokens = maxTokens;
+        }
+
+        // Make streaming request to model instance
+        const response = await axios({
+            method: 'post',
+            url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
+            data: requestBody,
+            responseType: 'stream'
+        });
+
+        let fullResponse = '';
+        let tokenCount = 0;
+        let promptTokens = 0;
+        let completionTokens = 0;
+
+        // Process the stream
+        response.data.on('data', (chunk) => {
+            try {
+                const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+
+                        // Check for [DONE] marker
+                        if (data === '[DONE]') {
+                            // Send final event with token stats
+                            const finalEvent = {
+                                done: true,
+                                tokens: {
+                                    prompt_tokens: promptTokens,
+                                    completion_tokens: completionTokens,
+                                    total_tokens: promptTokens + completionTokens
+                                },
+                                model: targetModel,
+                                response: fullResponse
+                            };
+                            res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+                            res.end();
+                            return;
+                        }
+
+                        try {
+                            const parsed = JSON.parse(data);
+
+                            // Extract token from delta
+                            if (parsed.choices && parsed.choices[0]?.delta) {
+                                const delta = parsed.choices[0].delta;
+                                const content = delta.content || delta.reasoning_content || '';
+
+                                if (content) {
+                                    fullResponse += content;
+                                    tokenCount++;
+                                    completionTokens++;
+
+                                    // Send token event
+                                    const event = {
+                                        token: content,
+                                        done: false
+                                    };
+                                    res.write(`data: ${JSON.stringify(event)}\n\n`);
+                                }
+                            }
+
+                            // Capture usage stats if available
+                            if (parsed.usage) {
+                                promptTokens = parsed.usage.prompt_tokens || 0;
+                                completionTokens = parsed.usage.completion_tokens || 0;
+                            }
+                        } catch (e) {
+                            // Skip invalid JSON chunks
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error processing stream chunk:', error);
+            }
+        });
+
+        response.data.on('end', () => {
+            // If stream ended without [DONE] marker, send final event
+            if (!res.writableEnded) {
+                const finalEvent = {
+                    done: true,
+                    tokens: {
+                        prompt_tokens: promptTokens,
+                        completion_tokens: completionTokens,
+                        total_tokens: promptTokens + completionTokens
+                    },
+                    model: targetModel,
+                    response: fullResponse
+                };
+                res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+                res.end();
+            }
+        });
+
+        response.data.on('error', (error) => {
+            console.error('Stream error:', error);
+            if (!res.writableEnded) {
+                const errorEvent = {
+                    error: error.message,
+                    done: true
+                };
+                res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+                res.end();
+            }
+        });
+
+        // Handle client disconnect
+        req.on('close', () => {
+            if (response.data) {
+                response.data.destroy();
+            }
+        });
+
+    } catch (error) {
+        console.error('Chat stream error:', error.message);
+
+        // Check for specific error types
+        const errorMessage = error.response?.data?.error?.message || error.message || '';
+
+        if (!res.writableEnded) {
+            // Send error as SSE event
+            const errorEvent = {
+                error: errorMessage.includes('context') ?
+                    'Not enough context window' :
+                    'Failed to get response from model',
+                done: true
+            };
+            res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+            res.end();
+        }
     }
 });
 

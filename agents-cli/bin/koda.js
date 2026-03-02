@@ -12,6 +12,10 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const Diff = require('diff');
+const { spawn } = require('child_process');
+const parser = require('@babel/parser');
+const traverse = require('@babel/traverse').default;
+const generate = require('@babel/generator').default;
 
 // Configuration
 const CONFIG_DIR = path.join(os.homedir(), '.koda');
@@ -80,6 +84,12 @@ let collabContext = []; // Shared context between collaborating agents
 let skillPromptCache = null; // Cache for skill system prompt
 let skillPromptCacheTime = 0; // Timestamp when cache was built
 const SKILL_PROMPT_CACHE_TTL = 300000; // 5 minutes
+
+// REPL mode state
+let replMode = null; // null, 'python', or 'node'
+let replProcess = null; // Child process for REPL
+let replHistory = []; // Command history in REPL mode
+let replOutput = []; // Output buffer for REPL
 
 // ============================================================================
 // CODE QUALITY METRICS
@@ -207,6 +217,237 @@ function analyzeCodeQuality(content, filePath) {
     }
 
     return metrics;
+}
+// ============================================================================
+// CODE REFACTORING TOOLS
+// ============================================================================
+
+// Parse JavaScript/TypeScript code into AST
+function parseCode(content, filePath) {
+    const ext = path.extname(filePath);
+    const isTypeScript = ['.ts', '.tsx'].includes(ext);
+    const isJSX = ['.jsx', '.tsx'].includes(ext);
+
+    try {
+        return parser.parse(content, {
+            sourceType: 'module',
+            plugins: [
+                isTypeScript && 'typescript',
+                isJSX && 'jsx',
+                'decorators-legacy',
+                'classProperties',
+                'objectRestSpread',
+                'optionalChaining',
+                'nullishCoalescingOperator'
+            ].filter(Boolean)
+        });
+    } catch (error) {
+        throw new Error(`Failed to parse ${filePath}: ${error.message}`);
+    }
+}
+
+// Find all references to a symbol in the AST
+function findReferences(ast, symbolName) {
+    const references = [];
+
+    traverse(ast, {
+        Identifier(path) {
+            if (path.node.name === symbolName) {
+                references.push({
+                    line: path.node.loc.start.line,
+                    column: path.node.loc.start.column,
+                    type: path.parent.type,
+                    path: path
+                });
+            }
+        }
+    });
+
+    return references;
+}
+
+// Extract function from selected lines
+function extractFunction(content, filePath, startLine, endLine, functionName) {
+    const lines = content.split('\n');
+
+    // Validate line numbers
+    if (startLine < 1 || endLine > lines.length || startLine > endLine) {
+        throw new Error('Invalid line range');
+    }
+
+    // Extract the selected code
+    const selectedCode = lines.slice(startLine - 1, endLine).join('\n');
+
+    // Parse to analyze variables
+    const ast = parseCode(content, filePath);
+
+    // Find variables used in selected code
+    const usedVars = new Set();
+    const declaredVars = new Set();
+
+    try {
+        const selectedAst = parser.parse(selectedCode, {
+            sourceType: 'module',
+            plugins: ['jsx', 'typescript']
+        });
+
+        traverse(selectedAst, {
+            Identifier(path) {
+                if (path.isReferencedIdentifier()) {
+                    usedVars.add(path.node.name);
+                }
+            },
+            VariableDeclarator(path) {
+                if (path.node.id.name) {
+                    declaredVars.add(path.node.id.name);
+                }
+            }
+        });
+    } catch (e) {
+        // If parsing fails, continue without variable analysis
+    }
+
+    // Parameters are variables used but not declared in selection
+    const parameters = Array.from(usedVars).filter(v => !declaredVars.has(v));
+
+    // Detect if code has return statement
+    const hasReturn = selectedCode.includes('return ');
+
+    // Generate new function
+    const indent = lines[startLine - 1].match(/^\s*/)[0];
+    const paramStr = parameters.length > 0 ? parameters.join(', ') : '';
+    const newFunction = [
+        `${indent}function ${functionName}(${paramStr}) {`,
+        selectedCode,
+        `${indent}}`
+    ].join('\n');
+
+    // Generate function call to replace selected code
+    const functionCall = `${indent}${hasReturn ? 'return ' : ''}${functionName}(${paramStr});`;
+
+    // Create new content
+    const newLines = [
+        ...lines.slice(0, startLine - 1),
+        functionCall,
+        ...lines.slice(endLine)
+    ];
+
+    // Insert function at appropriate location (before the usage)
+    const insertLine = Math.max(0, startLine - 2);
+    newLines.splice(insertLine, 0, '', newFunction, '');
+
+    return {
+        newContent: newLines.join('\n'),
+        functionCode: newFunction,
+        parameters: parameters,
+        hasReturn: hasReturn
+    };
+}
+
+// Rename symbol across file
+function renameSymbol(content, filePath, oldName, newName) {
+    const ast = parseCode(content, filePath);
+    const references = findReferences(ast, oldName);
+
+    if (references.length === 0) {
+        throw new Error(`Symbol '${oldName}' not found in ${filePath}`);
+    }
+
+    // Replace all occurrences from end to start (to preserve positions)
+    const lines = content.split('\n');
+    const sortedRefs = references.sort((a, b) => b.line - a.line || b.column - a.column);
+
+    for (const ref of sortedRefs) {
+        const lineIndex = ref.line - 1;
+        const line = lines[lineIndex];
+        const before = line.substring(0, ref.column);
+        const after = line.substring(ref.column + oldName.length);
+        lines[lineIndex] = before + newName + after;
+    }
+
+    return {
+        newContent: lines.join('\n'),
+        replacements: references.length,
+        locations: references.map(r => ({ line: r.line, column: r.column }))
+    };
+}
+
+// Move function/class to another file
+function moveCode(sourceContent, sourcePath, destPath, symbolName) {
+    const ast = parseCode(sourceContent, sourcePath);
+    let codeToMove = null;
+    let startLine = null;
+    let endLine = null;
+    let type = null;
+
+    // Find the function or class to move
+    traverse(ast, {
+        FunctionDeclaration(path) {
+            if (path.node.id && path.node.id.name === symbolName) {
+                codeToMove = generate(path.node).code;
+                startLine = path.node.loc.start.line;
+                endLine = path.node.loc.end.line;
+                type = 'function';
+                path.stop();
+            }
+        },
+        ClassDeclaration(path) {
+            if (path.node.id && path.node.id.name === symbolName) {
+                codeToMove = generate(path.node).code;
+                startLine = path.node.loc.start.line;
+                endLine = path.node.loc.end.line;
+                type = 'class';
+                path.stop();
+            }
+        },
+        VariableDeclaration(path) {
+            if (path.node.declarations[0].id.name === symbolName) {
+                codeToMove = generate(path.node).code;
+                startLine = path.node.loc.start.line;
+                endLine = path.node.loc.end.line;
+                type = 'variable';
+                path.stop();
+            }
+        }
+    });
+
+    if (!codeToMove) {
+        throw new Error(`Symbol '${symbolName}' not found in ${sourcePath}`);
+    }
+
+    // Remove from source
+    const sourceLines = sourceContent.split('\n');
+    const newSourceContent = [
+        ...sourceLines.slice(0, startLine - 1),
+        ...sourceLines.slice(endLine)
+    ].join('\n');
+
+    // Determine export statement
+    const exportLine = `export { ${symbolName} };`;
+
+    // Determine import statement for source file
+    const relativePath = path.relative(path.dirname(sourcePath), destPath).replace(/\\/g, '/');
+    const importPath = relativePath.startsWith('.') ? relativePath : './' + relativePath;
+    const importLine = `import { ${symbolName} } from '${importPath.replace(/\.\w+$/, '')}';`;
+
+    // Add to destination (create or append)
+    let newDestContent = '';
+    if (fs.existsSync(destPath)) {
+        const destContent = fs.readFileSync(destPath, 'utf8');
+        newDestContent = destContent + '\n\n' + codeToMove + '\n\n' + exportLine;
+    } else {
+        newDestContent = codeToMove + '\n\n' + exportLine;
+    }
+
+    return {
+        newSourceContent,
+        newDestContent,
+        importLine,
+        codeToMove,
+        type,
+        startLine,
+        endLine
+    };
 }
 
 function log(message, color = null) {
@@ -459,11 +700,21 @@ function displayChatHistory() {
         for (const msg of chatHistory) {
             if (msg.role === 'user') {
                 log(`${colorize('You:', 'green')} ${msg.content}`);
-            } else if (msg.role === 'assistant') {
+            } else if (msg.role === 'assistant' || msg.role === 'assistant-streaming') {
                 const formattedContent = formatCodeBlocks(msg.content);
                 log(`${colorize('Koda:', 'cyan')} ${formattedContent}`);
             } else if (msg.role === 'system') {
                 logDim(msg.content);
+            } else if (msg.role === 'repl-input') {
+                // Show REPL input with appropriate prompt
+                const prompt = replMode === 'python' ? '>>>' : '>';
+                log(`${colorize(prompt, 'yellow')} ${msg.content}`);
+            } else if (msg.role === 'repl-output') {
+                // Show REPL output in white
+                log(colorize(msg.content, 'white'));
+            } else if (msg.role === 'repl-error') {
+                // Show REPL errors in red
+                log(colorize(msg.content, 'red'));
             }
         }
         console.log('');
@@ -502,6 +753,11 @@ function displayStatusBar() {
     const displayMode = currentMode === 'collab' ? 'agent collab' :
                        currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
     statusParts.push(colorize(`Mode: ${displayMode}`, 'cyan'));
+
+    // REPL mode indicator
+    if (replMode) {
+        statusParts.push(colorize(`REPL: ${replMode}`, 'yellow'));
+    }
 
     // Last usage with tokens/sec
     if (lastTokenUsage.total > 0) {
@@ -762,6 +1018,132 @@ class AgentAPI {
             data.agentId = agentId;
         }
         return this.request('POST', `/api/skills/${skillName}/execute`, data);
+    }
+
+    // Streaming chat with model - Server-Sent Events
+    async chatStream(message, model = null, maxTokens = 4000, onToken, onComplete) {
+        lastApiCallStartTime = Date.now();
+
+        try {
+            const https = require('https');
+            const url = require('url');
+
+            const parsedUrl = url.parse(this.baseUrl);
+            const options = {
+                hostname: parsedUrl.hostname,
+                port: parsedUrl.port || 443,
+                path: '/api/chat/stream',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': this.apiKey,
+                    'X-API-Secret': this.apiSecret,
+                    'Accept': 'text/event-stream'
+                },
+                rejectUnauthorized: false
+            };
+
+            const postData = JSON.stringify({ message, model, maxTokens });
+
+            return new Promise((resolve, reject) => {
+                const req = https.request(options, (res) => {
+                    if (res.statusCode !== 200) {
+                        let errorData = '';
+                        res.on('data', (chunk) => {
+                            errorData += chunk;
+                        });
+                        res.on('end', () => {
+                            try {
+                                const error = JSON.parse(errorData);
+                                reject(new Error(error.error || 'Request failed'));
+                            } catch (e) {
+                                reject(new Error('Request failed'));
+                            }
+                        });
+                        return;
+                    }
+
+                    let buffer = '';
+                    let fullResponse = '';
+                    let tokens = null;
+
+                    res.on('data', (chunk) => {
+                        buffer += chunk.toString();
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+
+                                    if (data.error) {
+                                        reject(new Error(data.error));
+                                        return;
+                                    }
+
+                                    if (data.done) {
+                                        lastApiCallEndTime = Date.now();
+                                        tokens = data.tokens;
+
+                                        if (tokens) {
+                                            const timeElapsed = (lastApiCallEndTime - lastApiCallStartTime) / 1000;
+                                            const tokensGenerated = tokens.completion_tokens || 0;
+                                            if (timeElapsed > 0 && tokensGenerated > 0) {
+                                                lastTokensPerSecond = tokensGenerated / timeElapsed;
+                                            }
+                                        }
+
+                                        if (onComplete) {
+                                            onComplete(fullResponse, tokens);
+                                        }
+
+                                        resolve({
+                                            success: true,
+                                            data: {
+                                                response: fullResponse,
+                                                tokens: tokens,
+                                                model: data.model
+                                            }
+                                        });
+                                    } else if (data.token) {
+                                        fullResponse += data.token;
+                                        if (onToken) {
+                                            onToken(data.token);
+                                        }
+                                    }
+                                } catch (e) {
+                                    // Skip invalid JSON
+                                }
+                            }
+                        }
+                    });
+
+                    res.on('end', () => {
+                        if (!tokens) {
+                            resolve({
+                                success: true,
+                                data: { response: fullResponse, tokens: null }
+                            });
+                        }
+                    });
+
+                    res.on('error', (error) => {
+                        reject(error);
+                    });
+                });
+
+                req.on('error', (error) => {
+                    reject(error);
+                });
+
+                req.write(postData);
+                req.end();
+            });
+
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
     }
 }
 
@@ -1237,6 +1619,21 @@ async function handleHelp() {
     addToHistory('system', colorize('Code Quality:', 'yellow'));
     addToHistory('system', '/quality [path] - Analyze code quality (all working files or specific file)');
     addToHistory('system', '');
+    addToHistory('system', colorize('Refactoring Tools:', 'yellow'));
+    addToHistory('system', '/refactor extract <file> <start> <end> <funcName> - Extract code to function');
+    addToHistory('system', '/refactor rename <file> <oldName> <newName> - Rename symbol');
+    addToHistory('system', '/refactor move <source> <dest> <symbol> - Move code between files');
+    addToHistory('system', '');
+    addToHistory('system', colorize('Web Search & Documentation:', 'yellow'));
+    addToHistory('system', '/search <query> - Search the web (top 5 results)');
+    addToHistory('system', '/docs <library> [query] - Fetch documentation from DevDocs');
+    addToHistory('system', '  Examples: /docs react hooks, /docs python dict');
+    addToHistory('system', '');
+    addToHistory('system', colorize('REPL (Interactive Programming):', 'yellow'));
+    addToHistory('system', '/repl python - Start Python REPL');
+    addToHistory('system', '/repl node - Start Node.js REPL');
+    addToHistory('system', '/repl exit - Exit REPL mode');
+    addToHistory('system', '');
     addToHistory('system', colorize('Modes:', 'yellow'));
     addToHistory('system', '/mode <standalone|agent|agent collab> - Switch between modes');
     addToHistory('system', '  • standalone - General chat with file skill execution');
@@ -1439,6 +1836,225 @@ async function handleFocus(args) {
 
     if (!focusMode) {
         addToHistory('system', 'Tip: Use /focus (no args) to enable focus mode');
+// Handle /refactor command
+async function handleRefactor(args) {
+    if (!args || args.length === 0) {
+        addToHistory('system', '━━━ Refactoring Tools ━━━');
+        addToHistory('system', '');
+        addToHistory('system', colorize('Available Commands:', 'yellow'));
+        addToHistory('system', '/refactor extract <file> <start> <end> <funcName> - Extract code to function');
+        addToHistory('system', '/refactor rename <file> <oldName> <newName> - Rename symbol across file');
+        addToHistory('system', '/refactor move <source> <dest> <symbolName> - Move code between files');
+        addToHistory('system', '');
+        addToHistory('system', colorize('Examples:', 'cyan'));
+        addToHistory('system', '/refactor extract app.js 10 20 handleClick');
+        addToHistory('system', '/refactor rename utils.js oldFunc newFunc');
+        addToHistory('system', '/refactor move app.js utils.js helperFunction');
+        displayChatHistory();
+        return;
+    }
+
+    const subCommand = args[0];
+
+    try {
+        switch (subCommand) {
+            case 'extract':
+                await handleRefactorExtract(args.slice(1));
+                break;
+
+            case 'rename':
+                await handleRefactorRename(args.slice(1));
+                break;
+
+            case 'move':
+                await handleRefactorMove(args.slice(1));
+                break;
+
+            default:
+                addToHistory('system', `Unknown refactor command: ${subCommand}`);
+                addToHistory('system', 'Use /refactor for help');
+                displayChatHistory();
+        }
+    } catch (error) {
+        addToHistory('system', colorize(`✗ Refactoring failed: ${error.message}`, 'red'));
+        displayChatHistory();
+    }
+}
+
+// Handle extract function refactoring
+async function handleRefactorExtract(args) {
+    if (args.length < 4) {
+        addToHistory('system', 'Usage: /refactor extract <file> <start> <end> <funcName>');
+        addToHistory('system', 'Example: /refactor extract app.js 10 20 handleClick');
+        displayChatHistory();
+        return;
+    }
+
+    const [filePath, startStr, endStr, functionName] = args;
+    const startLine = parseInt(startStr);
+    const endLine = parseInt(endStr);
+
+    if (isNaN(startLine) || isNaN(endLine)) {
+        addToHistory('system', '✗ Start and end must be line numbers');
+        displayChatHistory();
+        return;
+    }
+
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+
+    if (!fs.existsSync(absolutePath)) {
+        addToHistory('system', `✗ File not found: ${filePath}`);
+        displayChatHistory();
+        return;
+    }
+
+    const content = fs.readFileSync(absolutePath, 'utf8');
+    const result = extractFunction(content, absolutePath, startLine, endLine, functionName);
+
+    // Show diff preview
+    addToHistory('system', '━━━ Extract Function Preview ━━━');
+    addToHistory('system', '');
+    addToHistory('system', colorize('Function created:', 'green'));
+    addToHistory('system', result.functionCode);
+    addToHistory('system', '');
+    addToHistory('system', colorize(`Parameters detected: ${result.parameters.length > 0 ? result.parameters.join(', ') : 'none'}`, 'cyan'));
+    addToHistory('system', colorize(`Has return: ${result.hasReturn ? 'yes' : 'no'}`, 'cyan'));
+    addToHistory('system', '');
+    displayChatHistory();
+
+    // Show full diff
+    displayDiff(content, result.newContent, absolutePath);
+
+    // Ask for confirmation
+    const confirmed = await promptConfirmation('Apply this refactoring?');
+
+    if (confirmed) {
+        fs.writeFileSync(absolutePath, result.newContent, 'utf8');
+        addToHistory('system', colorize(`✓ Function extracted to ${functionName}`, 'green'));
+
+        // Add to working set if not already there
+        addToWorkingSet(absolutePath, result.newContent);
+    } else {
+        addToHistory('system', 'Refactoring cancelled');
+    }
+
+    displayChatHistory();
+}
+
+// Handle rename symbol refactoring
+async function handleRefactorRename(args) {
+    if (args.length < 3) {
+        addToHistory('system', 'Usage: /refactor rename <file> <oldName> <newName>');
+        addToHistory('system', 'Example: /refactor rename utils.js oldFunc newFunc');
+        displayChatHistory();
+        return;
+    }
+
+    const [filePath, oldName, newName] = args;
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+
+    if (!fs.existsSync(absolutePath)) {
+        addToHistory('system', `✗ File not found: ${filePath}`);
+        displayChatHistory();
+        return;
+    }
+
+    const content = fs.readFileSync(absolutePath, 'utf8');
+    const result = renameSymbol(content, absolutePath, oldName, newName);
+
+    // Show preview
+    addToHistory('system', '━━━ Rename Symbol Preview ━━━');
+    addToHistory('system', '');
+    addToHistory('system', colorize(`Renaming: ${oldName} → ${newName}`, 'cyan'));
+    addToHistory('system', colorize(`Found ${result.replacements} occurrence(s)`, 'yellow'));
+    addToHistory('system', '');
+    addToHistory('system', 'Locations:');
+    result.locations.forEach(loc => {
+        addToHistory('system', `  Line ${loc.line}, Column ${loc.column}`);
+    });
+    addToHistory('system', '');
+    displayChatHistory();
+
+    // Show diff
+    displayDiff(content, result.newContent, absolutePath);
+
+    // Ask for confirmation
+    const confirmed = await promptConfirmation('Apply this refactoring?');
+
+    if (confirmed) {
+        fs.writeFileSync(absolutePath, result.newContent, 'utf8');
+        addToHistory('system', colorize(`✓ Renamed ${result.replacements} occurrence(s) of ${oldName} to ${newName}`, 'green'));
+
+        // Update working set
+        addToWorkingSet(absolutePath, result.newContent);
+    } else {
+        addToHistory('system', 'Refactoring cancelled');
+    }
+
+    displayChatHistory();
+}
+
+// Handle move code refactoring
+async function handleRefactorMove(args) {
+    if (args.length < 3) {
+        addToHistory('system', 'Usage: /refactor move <source> <dest> <symbolName>');
+        addToHistory('system', 'Example: /refactor move app.js utils.js helperFunction');
+        displayChatHistory();
+        return;
+    }
+
+    const [sourcePath, destPath, symbolName] = args;
+    const absoluteSourcePath = path.isAbsolute(sourcePath) ? sourcePath : path.join(userWorkingDirectory, sourcePath);
+    const absoluteDestPath = path.isAbsolute(destPath) ? destPath : path.join(userWorkingDirectory, destPath);
+
+    if (!fs.existsSync(absoluteSourcePath)) {
+        addToHistory('system', `✗ Source file not found: ${sourcePath}`);
+        displayChatHistory();
+        return;
+    }
+
+    const sourceContent = fs.readFileSync(absoluteSourcePath, 'utf8');
+    const result = moveCode(sourceContent, absoluteSourcePath, absoluteDestPath, symbolName);
+
+    // Show preview
+    addToHistory('system', '━━━ Move Code Preview ━━━');
+    addToHistory('system', '');
+    addToHistory('system', colorize(`Moving ${result.type}: ${symbolName}`, 'cyan'));
+    addToHistory('system', colorize(`From: ${sourcePath} (lines ${result.startLine}-${result.endLine})`, 'yellow'));
+    addToHistory('system', colorize(`To: ${destPath}`, 'yellow'));
+    addToHistory('system', '');
+    addToHistory('system', 'Code to move:');
+    addToHistory('system', result.codeToMove);
+    addToHistory('system', '');
+    addToHistory('system', colorize('Import to add in source file:', 'cyan'));
+    addToHistory('system', result.importLine);
+    addToHistory('system', '');
+    displayChatHistory();
+
+    // Show source diff
+    addToHistory('system', colorize('Changes to source file:', 'yellow'));
+    displayDiff(sourceContent, result.newSourceContent, absoluteSourcePath);
+
+    // Ask for confirmation
+    const confirmed = await promptConfirmation('Apply this refactoring?');
+
+    if (confirmed) {
+        // Write both files
+        fs.writeFileSync(absoluteSourcePath, result.newSourceContent, 'utf8');
+        fs.writeFileSync(absoluteDestPath, result.newDestContent, 'utf8');
+
+        addToHistory('system', colorize(`✓ Moved ${symbolName} to ${destPath}`, 'green'));
+        addToHistory('system', colorize(`  Import added: ${result.importLine}`, 'dim'));
+
+        // Update working sets
+        addToWorkingSet(absoluteSourcePath, result.newSourceContent);
+        addToWorkingSet(absoluteDestPath, result.newDestContent);
+    } else {
+        addToHistory('system', 'Refactoring cancelled');
+    }
+
+    displayChatHistory();
+}
     }
 
     displayChatHistory();
@@ -1571,6 +2187,308 @@ async function handleQuality(args) {
     displayChatHistory();
 }
 
+// ============================================================================
+// WEB SEARCH & DOCUMENTATION HANDLERS
+// ============================================================================
+
+// Handle /search command - web search
+async function handleSearch(api, args) {
+    if (!args || args.length === 0) {
+        addToHistory('system', 'Usage: /search <query>');
+        addToHistory('system', 'Example: /search react hooks best practices');
+        displayChatHistory();
+        return;
+    }
+
+    const query = args.join(' ');
+    addToHistory('system', `Searching for: ${colorize(query, 'cyan')}`);
+    displayChatHistory();
+
+    try {
+        const response = await api.get('/api/search', {
+            params: { q: query, limit: 5 }
+        });
+
+        const data = response.data;
+
+        if (data.results && data.results.length > 0) {
+            addToHistory('system', '');
+            addToHistory('system', colorize(`━━━ Search Results (${data.count}) ━━━`, 'green'));
+            addToHistory('system', '');
+
+            data.results.forEach((result, index) => {
+                addToHistory('system', colorize(`${index + 1}. ${result.title}`, 'yellow'));
+                addToHistory('system', `   ${colorize(result.url, 'blue')}`);
+                if (result.snippet) {
+                    const snippet = result.snippet.substring(0, 150);
+                    addToHistory('system', `   ${snippet}${result.snippet.length > 150 ? '...' : ''}`);
+                }
+                addToHistory('system', '');
+            });
+
+            if (data.cached) {
+                addToHistory('system', colorize('(Cached results)', 'dim'));
+            }
+        } else {
+            addToHistory('system', colorize('No results found', 'yellow'));
+        }
+    } catch (error) {
+        addToHistory('system', colorize(`Search failed: ${error.message}`, 'red'));
+    }
+
+    displayChatHistory();
+}
+
+// Handle /docs command - documentation lookup
+async function handleDocs(api, args) {
+    if (!args || args.length === 0) {
+        addToHistory('system', 'Usage: /docs <library> [query]');
+        addToHistory('system', '');
+        addToHistory('system', 'Supported libraries:');
+        addToHistory('system', '  javascript, js, node, nodejs, python, py');
+        addToHistory('system', '  react, vue, angular, express, django, flask');
+        addToHistory('system', '  typescript, ts, docker, git, bash, css, html');
+        addToHistory('system', '');
+        addToHistory('system', 'Examples:');
+        addToHistory('system', '  /docs react          - Show React documentation index');
+        addToHistory('system', '  /docs react hooks    - Search for "hooks" in React docs');
+        addToHistory('system', '  /docs python dict    - Search for "dict" in Python docs');
+        displayChatHistory();
+        return;
+    }
+
+    const library = args[0];
+    const query = args.slice(1).join(' ');
+
+    if (query) {
+        addToHistory('system', `Searching ${colorize(library, 'cyan')} docs for: ${colorize(query, 'yellow')}`);
+    } else {
+        addToHistory('system', `Fetching ${colorize(library, 'cyan')} documentation index...`);
+    }
+    displayChatHistory();
+
+    try {
+        const params = { library };
+        if (query) {
+            params.query = query;
+        }
+
+        const response = await api.get('/api/docs', { params });
+        const data = response.data;
+
+        if (data.type === 'index') {
+            // Show index entries
+            addToHistory('system', '');
+            addToHistory('system', colorize(`━━━ ${data.library} Documentation Index ━━━`, 'green'));
+            addToHistory('system', `Showing ${data.count} of ${data.total} entries`);
+            addToHistory('system', '');
+
+            data.entries.forEach((entry, index) => {
+                const typeLabel = entry.type ? colorize(`[${entry.type}]`, 'dim') : '';
+                addToHistory('system', `${index + 1}. ${entry.name} ${typeLabel}`);
+                addToHistory('system', `   ${colorize(`https://devdocs.io/${data.library}/${entry.path}`, 'blue')}`);
+                addToHistory('system', '');
+            });
+
+            addToHistory('system', colorize(`Tip: Use "/docs ${library} <query>" to search specific topics`, 'dim'));
+        } else if (data.type === 'search') {
+            // Show search results
+            addToHistory('system', '');
+            addToHistory('system', colorize(`━━━ ${data.library} Documentation: "${data.query}" (${data.count} results) ━━━`, 'green'));
+            addToHistory('system', '');
+
+            if (data.results.length > 0) {
+                data.results.forEach((result, index) => {
+                    const typeLabel = result.type ? colorize(`[${result.type}]`, 'dim') : '';
+                    addToHistory('system', `${index + 1}. ${result.name} ${typeLabel}`);
+                    addToHistory('system', `   ${colorize(result.url, 'blue')}`);
+                    addToHistory('system', '');
+                });
+            } else {
+                addToHistory('system', colorize('No matching documentation found', 'yellow'));
+                addToHistory('system', `Try: /docs ${library} (without search term for index)`);
+            }
+        }
+
+        if (data.cached) {
+            addToHistory('system', colorize('(Cached results)', 'dim'));
+        }
+    } catch (error) {
+        if (error.response && error.response.status === 500) {
+            addToHistory('system', colorize(`Documentation not found for "${library}"`, 'red'));
+            addToHistory('system', 'Supported libraries: javascript, node, python, react, vue, angular, express, django, flask, typescript, docker, git, bash, css, html');
+        } else {
+            addToHistory('system', colorize(`Failed to fetch documentation: ${error.message}`, 'red'));
+        }
+    }
+
+    displayChatHistory();
+}
+
+// ============================================================================
+// REPL MODE HANDLERS
+// ============================================================================
+
+// Start a REPL session
+async function handleReplStart(language) {
+    if (replMode) {
+        addToHistory('system', `Already in ${replMode} REPL. Use /repl exit to exit first.`);
+        displayChatHistory();
+        return;
+    }
+
+    if (language !== 'python' && language !== 'node') {
+        addToHistory('system', 'Invalid language. Use: /repl python or /repl node');
+        displayChatHistory();
+        return;
+    }
+
+    // Determine the command to run
+    const command = language === 'python' ? 'python3' : 'node';
+    const args = language === 'python' ? ['-i', '-u'] : ['-i'];
+
+    try {
+        // Spawn the REPL process
+        replProcess = spawn(command, args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            shell: false,
+            cwd: userWorkingDirectory
+        });
+
+        replMode = language;
+        replHistory = [];
+        replOutput = [];
+
+        // Handle stdout
+        replProcess.stdout.on('data', (data) => {
+            const output = data.toString();
+            replOutput.push({ type: 'stdout', content: output });
+            addToHistory('repl-output', output.trimEnd());
+            displayChatHistory();
+        });
+
+        // Handle stderr
+        replProcess.stderr.on('data', (data) => {
+            const output = data.toString();
+            replOutput.push({ type: 'stderr', content: output });
+            addToHistory('repl-error', output.trimEnd());
+            displayChatHistory();
+        });
+
+        // Handle process exit
+        replProcess.on('exit', (code) => {
+            addToHistory('system', `${language} REPL exited with code ${code}`);
+            replMode = null;
+            replProcess = null;
+            displayChatHistory();
+        });
+
+        // Handle process error
+        replProcess.on('error', (error) => {
+            addToHistory('system', `Error starting ${language} REPL: ${error.message}`);
+            addToHistory('system', `Make sure ${command} is installed and in your PATH.`);
+            replMode = null;
+            replProcess = null;
+            displayChatHistory();
+        });
+
+        addToHistory('system', `━━━ ${language.toUpperCase()} REPL Started ━━━`);
+        addToHistory('system', `Type your ${language} code and press Enter to execute.`);
+        addToHistory('system', 'Use /repl exit to exit REPL mode.');
+        addToHistory('system', '');
+        displayChatHistory();
+
+    } catch (error) {
+        addToHistory('system', `Failed to start ${language} REPL: ${error.message}`);
+        replMode = null;
+        replProcess = null;
+        displayChatHistory();
+    }
+}
+
+// Exit REPL mode
+function handleReplExit() {
+    if (!replMode) {
+        addToHistory('system', 'Not in REPL mode.');
+        displayChatHistory();
+        return;
+    }
+
+    const lang = replMode;
+
+    if (replProcess) {
+        try {
+            // Send exit command
+            if (replMode === 'python') {
+                replProcess.stdin.write('exit()\n');
+            } else if (replMode === 'node') {
+                replProcess.stdin.write('.exit\n');
+            }
+
+            // Force kill after a short delay if not exited
+            setTimeout(() => {
+                if (replProcess && !replProcess.killed) {
+                    replProcess.kill('SIGTERM');
+                }
+            }, 1000);
+
+        } catch (error) {
+            // Ignore errors during cleanup
+        }
+    }
+
+    replMode = null;
+    replProcess = null;
+
+    addToHistory('system', `✓ Exited ${lang} REPL`);
+    displayChatHistory();
+}
+
+// Execute code in REPL
+function executeReplCommand(input) {
+    if (!replProcess || !replMode) {
+        addToHistory('system', 'REPL session not active.');
+        displayChatHistory();
+        return;
+    }
+
+    // Add to history
+    replHistory.push(input);
+    addToHistory('repl-input', input);
+
+    // Send to REPL process
+    try {
+        replProcess.stdin.write(input + '\n');
+    } catch (error) {
+        addToHistory('system', `Error executing command: ${error.message}`);
+        displayChatHistory();
+    }
+}
+
+// Main REPL command handler
+async function handleRepl(args) {
+    if (!args || args.length === 0) {
+        addToHistory('system', 'Usage: /repl <python|node|exit>');
+        addToHistory('system', '  /repl python - Start Python REPL');
+        addToHistory('system', '  /repl node   - Start Node.js REPL');
+        addToHistory('system', '  /repl exit   - Exit REPL mode');
+        displayChatHistory();
+        return;
+    }
+
+    const subcommand = args[0].toLowerCase();
+
+    if (subcommand === 'exit') {
+        handleReplExit();
+    } else if (subcommand === 'python' || subcommand === 'node') {
+        await handleReplStart(subcommand);
+    } else {
+        addToHistory('system', `Unknown REPL command: ${subcommand}`);
+        addToHistory('system', 'Use: /repl python, /repl node, or /repl exit');
+        displayChatHistory();
+    }
+}
+
 // Display interactive command menu
 async function showCommandMenu() {
     addToHistory('system', '━━━ Interactive Command Menu ━━━');
@@ -1578,7 +2496,10 @@ async function showCommandMenu() {
     addToHistory('system', '/init           - Analyze project and create koda.md');
     addToHistory('system', '/project <name> - Create a project directory structure');
     addToHistory('system', '/cwd            - Show current working directory');
+    addToHistory('system', '/search <query> - Search the web for information');
+    addToHistory('system', '/docs <library> - Fetch documentation from DevDocs');
     addToHistory('system', '/mode           - Switch between standalone, agent, or agent collab modes');
+    addToHistory('system', '/repl           - Start interactive REPL (Python or Node.js)');
     addToHistory('system', '/help           - Show all available commands');
     addToHistory('system', '/clear          - Clear chat history');
     addToHistory('system', '/clearsession   - Clear session context (keeps history visible)');
@@ -2048,7 +2969,7 @@ async function handleCollabChat(api, message, selectedAgents) {
     await updateApiKeyUsage(api);
 }
 
-// Handle natural language chat with session awareness and skill execution
+// Handle natural language chat with session awareness and skill execution (with streaming)
 async function handleChat(api, message) {
     // Add user message to history
     addToHistory('user', message);
@@ -2060,10 +2981,6 @@ async function handleChat(api, message) {
     const skillsResult = await api.getSkills();
     const skills = skillsResult.success ? skillsResult.data : [];
     const skillPrompt = buildSkillSystemPrompt(skills, currentMode);
-
-    // Show "thinking" indicator
-    addToHistory('system', 'Thinking...');
-    displayChatHistory();
 
     // Build context-aware message for the API
     let userMessage = message;
@@ -2119,31 +3036,73 @@ async function handleChat(api, message) {
     while (iteration < MAX_SKILL_ITERATIONS) {
         iteration++;
 
-        const result = await api.chat(currentMessage);
-
-        // Remove "thinking" indicator on first iteration
+        // Show streaming indicator for first iteration
         if (iteration === 1) {
-            chatHistory.pop();
+            addToHistory('system', 'Koda is thinking...');
+            displayChatHistory();
         }
+
+        // Use streaming API
+        let streamingResponse = '';
+        let tokenCount = 0;
+
+        const result = await api.chatStream(
+            currentMessage,
+            null,
+            4000,
+            // onToken callback - display tokens in real-time
+            (token) => {
+                streamingResponse += token;
+                tokenCount++;
+
+                // Update display incrementally (every 5 tokens or on newline to reduce flicker)
+                if (tokenCount % 5 === 0 || token.includes('\n')) {
+                    // Remove thinking indicator on first token
+                    if (iteration === 1 && chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'system') {
+                        chatHistory.pop();
+                    }
+
+                    // Update or add assistant message
+                    const lastMsg = chatHistory[chatHistory.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant-streaming') {
+                        lastMsg.message = streamingResponse + colorize(' ▊', 'cyan'); // Streaming cursor
+                    } else {
+                        addToHistory('assistant-streaming', streamingResponse + colorize(' ▊', 'cyan'));
+                    }
+                    displayChatHistory();
+                }
+            },
+            // onComplete callback
+            (fullResponse, tokens) => {
+                // Remove streaming cursor
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant-streaming') {
+                    lastMsg.role = 'assistant';
+                    lastMsg.message = fullResponse;
+                }
+
+                // Update token usage stats
+                if (tokens) {
+                    lastTokenUsage = {
+                        prompt: tokens.prompt_tokens || 0,
+                        completion: tokens.completion_tokens || 0,
+                        total: tokens.total_tokens || 0
+                    };
+                    totalTokensUsed += lastTokenUsage.total;
+
+                    // Update context window tracking
+                    contextWindowUsed = conversationContext.length > 0 ?
+                        conversationContext.reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0) : 0;
+                }
+
+                displayChatHistory();
+            }
+        );
 
         if (!result.success) {
             addToHistory('system', `Error: ${result.error}`);
             displayChatHistory();
             return;
-        }
-
-        // Update token usage stats
-        if (result.data.tokens) {
-            lastTokenUsage = {
-                prompt: result.data.tokens.prompt_tokens || 0,
-                completion: result.data.tokens.completion_tokens || 0,
-                total: result.data.tokens.total_tokens || 0
-            };
-            totalTokensUsed += lastTokenUsage.total;
-
-            // Update context window tracking
-            contextWindowUsed = conversationContext.length > 0 ?
-                conversationContext.reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0) : 0;
         }
 
         const response = result.data.response;
@@ -2157,13 +3116,8 @@ async function handleChat(api, message) {
             break;
         }
 
-        // Display what AI said before executing skills
-        if (!isOnlySkillCalls(response)) {
-            addToHistory('assistant', response);
-            displayChatHistory();
-        }
-
-        // Execute the skills
+        // Display what AI said before executing skills (already displayed during streaming)
+        // Just execute the skills
         const skillResults = await executeSkillCalls(api, skillCalls);
 
         // Build feedback message for the AI
@@ -2187,11 +3141,6 @@ async function handleChat(api, message) {
     // Keep context manageable (last 20 messages)
     if (conversationContext.length > 20) {
         conversationContext.splice(0, conversationContext.length - 20);
-    }
-
-    // Add final assistant response to history (if not already added)
-    if (!isOnlySkillCalls(finalResponse)) {
-        addToHistory('assistant', finalResponse);
     }
 
     // Update API key usage stats after chat
@@ -2227,7 +3176,7 @@ async function startShell() {
     displayChatHistory();
 
     // Command autocomplete function
-    const availableCommands = ['/auth', '/init', '/project', '/cwd', '/mode', '/help', '/clear', '/clearsession', '/quit', '/exit'];
+    const availableCommands = ['/auth', '/init', '/project', '/cwd', '/mode', '/repl', '/help', '/clear', '/clearsession', '/quit', '/exit'];
     const modeOptions = ['standalone', 'agent', 'agent collab'];
 
     function completer(line) {
@@ -2472,8 +3421,38 @@ async function startShell() {
                         await handleQuality(args);
                         break;
 
+                    case '/refactor':
+                        await handleRefactor(args);
+                        break;
+
+                    case '/search':
+                        if (!api) {
+                            addToHistory('system', 'Not authenticated. Run /auth first.');
+                            displayChatHistory();
+                        } else {
+                            await handleSearch(api, args);
+                        }
+                        break;
+
+                    case '/docs':
+                        if (!api) {
+                            addToHistory('system', 'Not authenticated. Run /auth first.');
+                            displayChatHistory();
+                        } else {
+                            await handleDocs(api, args);
+                        }
+                        break;
+
+                    case '/repl':
+                        await handleRepl(args);
+                        break;
+
                     case '/exit':
                     case '/quit':
+                        // Clean up REPL if active
+                        if (replMode) {
+                            handleReplExit();
+                        }
                         logDim('Goodbye!');
                         process.exit(0);
                         break;
@@ -2483,8 +3462,10 @@ async function startShell() {
                         displayChatHistory();
                 }
             } else {
-                // Natural language chat or agent selection
-                if (!api) {
+                // Check if in REPL mode first
+                if (replMode) {
+                    executeReplCommand(input);
+                } else if (!api) {
                     addToHistory('system', 'Not authenticated. Run /auth first to chat with AI.');
                     displayChatHistory();
                 } else if (currentMode === 'collab-select') {
@@ -2522,6 +3503,28 @@ async function startShell() {
     rl.on('close', () => {
         log('');
         process.exit(0);
+    });
+
+    // Handle Ctrl+C gracefully in REPL mode
+    process.on('SIGINT', () => {
+        if (replMode && replProcess) {
+            // Forward Ctrl+C to REPL process
+            try {
+                replProcess.kill('SIGINT');
+            } catch (error) {
+                // Ignore errors
+            }
+            // Redisplay the prompt
+            setTimeout(() => {
+                if (rl) {
+                    rl.prompt();
+                }
+            }, 50);
+        } else {
+            // Exit normally if not in REPL
+            log('\nUse /quit to exit koda');
+            rl.prompt();
+        }
     });
 }
 
