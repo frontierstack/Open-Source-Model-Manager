@@ -1316,7 +1316,7 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
     }
 
     // Only include the most useful file-related skills to avoid overwhelming the context
-    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'list_directory'];
+    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'delete_directory', 'list_directory'];
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
@@ -1447,6 +1447,29 @@ async function executeFileOperationSkill(skillName, params) {
                 };
             }
 
+            case 'delete_directory': {
+                const dirPath = params.dirPath;
+
+                if (!dirPath) {
+                    return { success: false, error: 'dirPath is required' };
+                }
+
+                // Check if path exists and is a directory
+                const stats = await fs.stat(dirPath);
+                if (!stats.isDirectory()) {
+                    return { success: false, error: `Path is a file, not a directory. Use delete_file instead: ${dirPath}` };
+                }
+
+                // Delete directory recursively
+                await fs.rm(dirPath, { recursive: true, force: true });
+
+                return {
+                    success: true,
+                    dirPath: dirPath,
+                    message: `Directory deleted: ${dirPath}`
+                };
+            }
+
             case 'list_directory': {
                 const dirPath = params.dirPath;
 
@@ -1562,7 +1585,7 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         let result;
 
         // Execute file operation skills locally (client-side) to avoid Docker container path issues
-        const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'list_directory', 'move_file'];
+        const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file'];
 
         if (fileOperationSkills.includes(call.skillName)) {
             result = await executeFileOperationSkill(call.skillName, call.params);

@@ -506,13 +506,14 @@ async function execute(params) {
 - **tool**: API calls, web requests
 - **command**: Shell execution (disabled by default)
 
-### Available Default Skills (41+)
+### Available Default Skills (42+)
 
-**File Operations (7 skills)**
+**File Operations (8 skills)**
 - `create_file` - Create new files
 - `read_file` - Read file contents
 - `update_file` - Update existing files
 - `delete_file` - Delete files
+- `delete_directory` - Delete directories and all contents recursively
 - `list_directory` - List directory contents
 - `move_file` - Move or rename files
 - `copy_file` - Copy files
@@ -766,7 +767,7 @@ Presence Penalty: 0.2
 
 ### Version 0.3.17 (Current)
 - **Enhanced Skills Library**:
-  - **Expanded from 27 to 41+ default skills** for comprehensive automation capabilities
+  - **Expanded from 27 to 42+ default skills** for comprehensive automation capabilities
   - **Windows-Specific Skills**: PowerShell execution, cmd.exe commands, Windows services management, registry read/write
   - **Archive Operations**: ZIP file extraction and creation (`unzip_file`, `zip_files`)
   - **Email File Parsing**: Read and parse saved .eml email files with full attachment inspection (`read_email_file`)
@@ -1007,7 +1008,7 @@ Presence Penalty: 0.2
 
 ### Version 0.3.3
 - **Open Model Agents System**: Full agent management with CRUD API
-- **Skills Library**: 41+ default skills for file ops, web requests, data processing, Windows management, OCR, email parsing, and more
+- **Skills Library**: 42+ default skills for file ops, web requests, data processing, Windows management, OCR, email parsing, and more
 - **Task Tracking**: Dashboard with status management
 - **Cross-Platform CLI**: Interactive shell (koda) for Linux/macOS/Windows
 - **File Operations API**: Complete file management for agents
