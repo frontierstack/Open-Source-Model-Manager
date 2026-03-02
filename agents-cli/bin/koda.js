@@ -66,6 +66,12 @@ let apiKeyUsage = {
     name: null
 };
 
+// Multi-file awareness - working set tracking
+let workingFiles = new Map(); // Map of filePath -> { content, lastModified, size, inFocus }
+const MAX_WORKING_FILES = 20; // Maximum files in working set
+let focusMode = false; // If true, only focused files are included in context
+let focusFiles = new Set(); // Set of file paths that are focused
+
 // Collaboration mode state
 let collabAgents = []; // Array of selected agent IDs for collaboration
 let collabContext = []; // Shared context between collaborating agents
@@ -169,6 +175,134 @@ function promptConfirmation(message) {
             }
         });
     });
+}
+
+// ============================================================================
+// MULTI-FILE AWARENESS & SMART CONTEXT MANAGEMENT
+// ============================================================================
+
+// Add file to working set
+function addToWorkingSet(filePath, content = null) {
+    // Resolve to absolute path
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+
+    // Check if file exists and read content if not provided
+    if (content === null && fs.existsSync(absolutePath)) {
+        try {
+            content = fs.readFileSync(absolutePath, 'utf8');
+        } catch (error) {
+            return false;
+        }
+    }
+
+    // Check working set size limit
+    if (workingFiles.size >= MAX_WORKING_FILES && !workingFiles.has(absolutePath)) {
+        // Remove least recently used file (first one in Map)
+        const firstKey = workingFiles.keys().next().value;
+        workingFiles.delete(firstKey);
+    }
+
+    workingFiles.set(absolutePath, {
+        content: content || '',
+        lastModified: Date.now(),
+        size: (content || '').length,
+        inFocus: focusFiles.has(absolutePath)
+    });
+
+    return true;
+}
+
+// Remove file from working set
+function removeFromWorkingSet(filePath) {
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+    workingFiles.delete(absolutePath);
+    focusFiles.delete(absolutePath);
+}
+
+// Get working set summary
+function getWorkingSetSummary() {
+    if (workingFiles.size === 0) {
+        return 'No files in working set';
+    }
+
+    const files = Array.from(workingFiles.entries()).map(([filePath, info]) => {
+        const relativePath = filePath.replace(userWorkingDirectory, '.');
+        const focusMarker = info.inFocus || focusFiles.has(filePath) ? ' 🎯' : '';
+        const sizeKB = (info.size / 1024).toFixed(1);
+        return `  ${relativePath}${focusMarker} (${sizeKB} KB)`;
+    });
+
+    return files.join('\n');
+}
+
+// Build context from working files
+function buildWorkingFilesContext() {
+    if (workingFiles.size === 0) {
+        return '';
+    }
+
+    // Filter files based on focus mode
+    let filesToInclude = Array.from(workingFiles.entries());
+    if (focusMode && focusFiles.size > 0) {
+        filesToInclude = filesToInclude.filter(([filePath]) => focusFiles.has(filePath));
+    }
+
+    if (filesToInclude.length === 0) {
+        return '';
+    }
+
+    let context = '\n[Working Files Context]\n';
+    for (const [filePath, info] of filesToInclude) {
+        const relativePath = filePath.replace(userWorkingDirectory, '.');
+        context += `\n--- ${relativePath} ---\n`;
+        context += info.content;
+        context += '\n';
+    }
+    context += '[End Working Files]\n\n';
+
+    return context;
+}
+
+// Auto-detect imports and suggest related files
+function detectImports(content, filePath) {
+    const imports = [];
+    const fileDir = path.dirname(filePath);
+
+    // JavaScript/TypeScript imports
+    const jsImportRegex = /(?:import|require)\s*\(?['"]([^'"]+)['"]\)?/g;
+    let match;
+    while ((match = jsImportRegex.exec(content)) !== null) {
+        let importPath = match[1];
+        // Resolve relative imports
+        if (importPath.startsWith('.')) {
+            importPath = path.resolve(fileDir, importPath);
+            // Add common extensions if not present
+            if (!path.extname(importPath)) {
+                for (const ext of ['.js', '.ts', '.jsx', '.tsx']) {
+                    if (fs.existsSync(importPath + ext)) {
+                        imports.push(importPath + ext);
+                        break;
+                    }
+                }
+            } else if (fs.existsSync(importPath)) {
+                imports.push(importPath);
+            }
+        }
+    }
+
+    // Python imports
+    const pythonImportRegex = /from\s+(\S+)\s+import|import\s+(\S+)/g;
+    while ((match = pythonImportRegex.exec(content)) !== null) {
+        const module = match[1] || match[2];
+        if (module && module.startsWith('.')) {
+            const modulePath = path.resolve(fileDir, module.replace(/\./g, '/') + '.py');
+            if (fs.existsSync(modulePath)) {
+                imports.push(modulePath);
+            }
+        }
+    }
+
+    return imports;
 }
 
 // Display chat history
@@ -694,11 +828,22 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             if (call.skillName === 'create_file' && result.data.filePath) {
                 const relativePath = result.data.filePath.replace(userWorkingDirectory, '.');
                 addToHistory('system', `✓ File created: ${colorize(relativePath, 'green')}`);
+
+                // Auto-add to working set
+                addToWorkingSet(result.data.filePath, call.params.content);
             } else if (call.skillName === 'read_file') {
                 addToHistory('system', `✓ File read successfully`);
+
+                // Auto-add to working set if not already there
+                if (result.data.filePath && result.data.content) {
+                    addToWorkingSet(result.data.filePath, result.data.content);
+                }
             } else if (call.skillName === 'update_file' && result.data.filePath) {
                 const relativePath = result.data.filePath.replace(userWorkingDirectory, '.');
                 addToHistory('system', `✓ File updated: ${colorize(relativePath, 'green')}`);
+
+                // Auto-add to working set (refresh content)
+                addToWorkingSet(result.data.filePath);
             } else {
                 addToHistory('system', `✓ ${call.skillName} completed successfully`);
             }
@@ -942,14 +1087,27 @@ async function handleInit(api) {
 
 async function handleHelp() {
     addToHistory('system', '━━━ Available Commands ━━━');
+    addToHistory('system', '');
+    addToHistory('system', colorize('Setup & Configuration:', 'yellow'));
     addToHistory('system', '/auth - Authenticate with API credentials');
     addToHistory('system', '/init - Analyze project and create koda.md context file');
     addToHistory('system', '/project <name> - Create a project directory structure');
     addToHistory('system', '/cwd - Show current working directory');
+    addToHistory('system', '');
+    addToHistory('system', colorize('File Management (Multi-file awareness):', 'yellow'));
+    addToHistory('system', '/files - Show working file set');
+    addToHistory('system', '/add-file <path> - Add file to working set (auto-detects imports)');
+    addToHistory('system', '/remove-file <path> - Remove file from working set');
+    addToHistory('system', '/focus [path] - Toggle focus mode or focus on specific file');
+    addToHistory('system', '/clear-focus - Clear all focused files');
+    addToHistory('system', '');
+    addToHistory('system', colorize('Modes:', 'yellow'));
     addToHistory('system', '/mode <standalone|agent|agent collab> - Switch between modes');
     addToHistory('system', '  • standalone - General chat with file skill execution');
     addToHistory('system', '  • agent - Task-aware with autonomous skills');
     addToHistory('system', '  • agent collab - Multi-agent with skill execution');
+    addToHistory('system', '');
+    addToHistory('system', colorize('Session Management:', 'yellow'));
     addToHistory('system', '/clear - Clear chat history');
     addToHistory('system', '/clearsession - Clear session context (keeps history visible)');
     addToHistory('system', '/quit - Exit koda');
@@ -998,6 +1156,169 @@ async function handleCwd() {
             addToHistory('system', `  ${icon} ${file}`);
         });
     }
+    displayChatHistory();
+}
+
+// Handle /files command - show working set
+async function handleFiles() {
+    addToHistory('system', '━━━ Working Files ━━━');
+    if (workingFiles.size === 0) {
+        addToHistory('system', 'No files in working set');
+        addToHistory('system', 'Use /add-file <path> to add files to context');
+    } else {
+        addToHistory('system', `${workingFiles.size}/${MAX_WORKING_FILES} files in working set:`);
+        addToHistory('system', '');
+        addToHistory('system', getWorkingSetSummary());
+
+        if (focusMode) {
+            addToHistory('system', '');
+            addToHistory('system', colorize('🎯 Focus mode enabled - only focused files in context', 'yellow'));
+        }
+
+        // Calculate total context size
+        const totalSize = Array.from(workingFiles.values()).reduce((sum, info) => sum + info.size, 0);
+        const totalKB = (totalSize / 1024).toFixed(1);
+        addToHistory('system', '');
+        addToHistory('system', `Total size: ${totalKB} KB (~${Math.ceil(totalSize / 4)} tokens)`);
+    }
+    displayChatHistory();
+}
+
+// Handle /add-file command
+async function handleAddFile(args) {
+    if (!args || args.length === 0) {
+        addToHistory('system', 'Usage: /add-file <path>');
+        addToHistory('system', 'Example: /add-file ./src/index.js');
+        displayChatHistory();
+        return;
+    }
+
+    const filePath = args.join(' ');
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+
+    if (!fs.existsSync(absolutePath)) {
+        addToHistory('system', `✗ File not found: ${filePath}`);
+        displayChatHistory();
+        return;
+    }
+
+    const success = addToWorkingSet(absolutePath);
+    if (success) {
+        const relativePath = absolutePath.replace(userWorkingDirectory, '.');
+        const fileInfo = workingFiles.get(absolutePath);
+        const sizeKB = (fileInfo.size / 1024).toFixed(1);
+
+        addToHistory('system', `✓ Added to working set: ${colorize(relativePath, 'green')} (${sizeKB} KB)`);
+
+        // Detect imports and suggest related files
+        const imports = detectImports(fileInfo.content, absolutePath);
+        if (imports.length > 0) {
+            addToHistory('system', '');
+            addToHistory('system', 'Detected imports:');
+            const notInWorkingSet = imports.filter(imp => !workingFiles.has(imp));
+            if (notInWorkingSet.length > 0) {
+                for (const imp of notInWorkingSet.slice(0, 5)) {
+                    const relImp = imp.replace(userWorkingDirectory, '.');
+                    addToHistory('system', `  ${relImp} (not in working set)`);
+                }
+                if (notInWorkingSet.length > 5) {
+                    addToHistory('system', `  ... and ${notInWorkingSet.length - 5} more`);
+                }
+                addToHistory('system', '');
+                addToHistory('system', 'Tip: Use /add-imports to add all detected imports');
+            }
+        }
+    } else {
+        addToHistory('system', `✗ Failed to add file: ${filePath}`);
+    }
+
+    displayChatHistory();
+}
+
+// Handle /remove-file command
+async function handleRemoveFile(args) {
+    if (!args || args.length === 0) {
+        addToHistory('system', 'Usage: /remove-file <path>');
+        displayChatHistory();
+        return;
+    }
+
+    const filePath = args.join(' ');
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+
+    if (workingFiles.has(absolutePath)) {
+        removeFromWorkingSet(absolutePath);
+        const relativePath = absolutePath.replace(userWorkingDirectory, '.');
+        addToHistory('system', `✓ Removed from working set: ${relativePath}`);
+    } else {
+        addToHistory('system', `File not in working set: ${filePath}`);
+    }
+
+    displayChatHistory();
+}
+
+// Handle /focus command
+async function handleFocus(args) {
+    if (!args || args.length === 0) {
+        // Toggle focus mode
+        focusMode = !focusMode;
+        if (focusMode) {
+            if (focusFiles.size === 0) {
+                addToHistory('system', '🎯 Focus mode enabled, but no files are focused');
+                addToHistory('system', 'Use /focus <file> to focus on specific files');
+            } else {
+                addToHistory('system', `🎯 Focus mode enabled - only ${focusFiles.size} focused file(s) in context`);
+            }
+        } else {
+            addToHistory('system', '✓ Focus mode disabled - all working files in context');
+        }
+        displayChatHistory();
+        return;
+    }
+
+    // Add file to focus set
+    const filePath = args.join(' ');
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
+
+    // Add to working set if not already there
+    if (!workingFiles.has(absolutePath)) {
+        if (fs.existsSync(absolutePath)) {
+            addToWorkingSet(absolutePath);
+        } else {
+            addToHistory('system', `✗ File not found: ${filePath}`);
+            displayChatHistory();
+            return;
+        }
+    }
+
+    focusFiles.add(absolutePath);
+    const relativePath = absolutePath.replace(userWorkingDirectory, '.');
+    addToHistory('system', `🎯 Focused on: ${colorize(relativePath, 'yellow')}`);
+
+    // Update inFocus flag
+    const fileInfo = workingFiles.get(absolutePath);
+    if (fileInfo) {
+        fileInfo.inFocus = true;
+    }
+
+    if (!focusMode) {
+        addToHistory('system', 'Tip: Use /focus (no args) to enable focus mode');
+    }
+
+    displayChatHistory();
+}
+
+// Handle /clear-focus command
+async function handleClearFocus() {
+    focusFiles.clear();
+    focusMode = false;
+
+    // Update all files
+    for (const [filePath, info] of workingFiles.entries()) {
+        info.inFocus = false;
+    }
+
+    addToHistory('system', '✓ Cleared all focused files and disabled focus mode');
     displayChatHistory();
 }
 
@@ -1519,8 +1840,14 @@ async function handleChat(api, message) {
         }
     }
 
-    // Build final message: system prefix + conversation context + user message
+    // Build final message: system prefix + working files + conversation context + user message
     let contextMessage = systemPrefix;
+
+    // Add working files context if available
+    const workingFilesContext = buildWorkingFilesContext();
+    if (workingFilesContext) {
+        contextMessage += workingFilesContext;
+    }
 
     if (conversationContext.length > 1) {
         // Include recent context (last 5 exchanges, but skip the current message we just added)
@@ -1870,6 +2197,26 @@ async function startShell() {
                         handleClearSession();
                         collabAgents = [];
                         collabContext = [];
+                        break;
+
+                    case '/files':
+                        await handleFiles();
+                        break;
+
+                    case '/add-file':
+                        await handleAddFile(args);
+                        break;
+
+                    case '/remove-file':
+                        await handleRemoveFile(args);
+                        break;
+
+                    case '/focus':
+                        await handleFocus(args);
+                        break;
+
+                    case '/clear-focus':
+                        await handleClearFocus();
                         break;
 
                     case '/exit':
