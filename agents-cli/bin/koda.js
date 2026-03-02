@@ -525,24 +525,42 @@ function displayDiff(oldContent, newContent, filePath) {
 }
 
 // Prompt user for confirmation
+// Uses raw stdin to avoid conflicts with main readline interface
 function promptConfirmation(message) {
     return new Promise((resolve) => {
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout
-        });
+        // Save terminal state
+        const wasRaw = process.stdin.isRaw;
+        if (process.stdin.setRawMode) {
+            process.stdin.setRawMode(false);
+        }
 
-        rl.question(colorize(`${message} (y/n/s=skip): `, 'yellow'), (answer) => {
-            rl.close();
-            const normalized = answer.trim().toLowerCase();
-            if (normalized === 'y' || normalized === 'yes') {
+        // Write prompt
+        process.stdout.write(colorize(`${message} (y/n/s=skip): `, 'yellow'));
+
+        // Listen for a single line of input
+        const onData = (data) => {
+            const answer = data.toString().trim().toLowerCase();
+
+            // Remove listener
+            process.stdin.removeListener('data', onData);
+
+            // Restore terminal state
+            if (process.stdin.setRawMode && wasRaw) {
+                process.stdin.setRawMode(true);
+            }
+
+            // Resolve based on answer
+            if (answer === 'y' || answer === 'yes') {
                 resolve('yes');
-            } else if (normalized === 's' || normalized === 'skip') {
+            } else if (answer === 's' || answer === 'skip') {
                 resolve('skip');
             } else {
                 resolve('no');
             }
-        });
+        };
+
+        // Attach listener
+        process.stdin.once('data', onData);
     });
 }
 
@@ -1333,6 +1351,117 @@ Use these capabilities naturally as part of helping the user. You don't need exp
     return prompt;
 }
 
+// Execute file operation skills locally (client-side)
+async function executeFileOperationSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'create_file':
+            case 'update_file': {
+                const filePath = params.filePath;
+                const content = params.content || '';
+
+                if (!filePath) {
+                    return { success: false, error: 'filePath is required' };
+                }
+
+                // Ensure directory exists
+                const dir = path.dirname(filePath);
+                await fs.mkdir(dir, { recursive: true });
+
+                // Write file
+                await fs.writeFile(filePath, content, 'utf8');
+
+                return {
+                    success: true,
+                    filePath: filePath,
+                    message: `File ${skillName === 'create_file' ? 'created' : 'updated'}: ${filePath}`
+                };
+            }
+
+            case 'read_file': {
+                const filePath = params.filePath;
+
+                if (!filePath) {
+                    return { success: false, error: 'filePath is required' };
+                }
+
+                const content = await fs.readFile(filePath, 'utf8');
+
+                return {
+                    success: true,
+                    filePath: filePath,
+                    content: content
+                };
+            }
+
+            case 'delete_file': {
+                const filePath = params.filePath;
+
+                if (!filePath) {
+                    return { success: false, error: 'filePath is required' };
+                }
+
+                await fs.unlink(filePath);
+
+                return {
+                    success: true,
+                    filePath: filePath,
+                    message: `File deleted: ${filePath}`
+                };
+            }
+
+            case 'list_directory': {
+                const dirPath = params.dirPath;
+
+                if (!dirPath) {
+                    return { success: false, error: 'dirPath is required' };
+                }
+
+                const entries = await fs.readdir(dirPath, { withFileTypes: true });
+                const files = entries.map(entry => ({
+                    name: entry.name,
+                    isDirectory: entry.isDirectory(),
+                    isFile: entry.isFile()
+                }));
+
+                return {
+                    success: true,
+                    dirPath: dirPath,
+                    files: files
+                };
+            }
+
+            case 'move_file': {
+                const sourcePath = params.sourcePath;
+                const destPath = params.destPath;
+
+                if (!sourcePath || !destPath) {
+                    return { success: false, error: 'sourcePath and destPath are required' };
+                }
+
+                // Ensure destination directory exists
+                const destDir = path.dirname(destPath);
+                await fs.mkdir(destDir, { recursive: true });
+
+                // Move file
+                await fs.rename(sourcePath, destPath);
+
+                return {
+                    success: true,
+                    sourcePath: sourcePath,
+                    destPath: destPath,
+                    message: `File moved from ${sourcePath} to ${destPath}`
+                };
+            }
+
+            default:
+                return { success: false, error: `Unknown file operation skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
 // Execute skills and return results
 async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
@@ -1393,35 +1522,49 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         addToHistory('system', `Executing skill: ${call.skillName}...`);
         displayChatHistory();
 
-        const result = await api.executeSkill(call.skillName, call.params, agentId);
+        let result;
+
+        // Execute file operation skills locally (client-side) to avoid Docker container path issues
+        const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'list_directory', 'move_file'];
+
+        if (fileOperationSkills.includes(call.skillName)) {
+            result = await executeFileOperationSkill(call.skillName, call.params);
+        } else {
+            // Execute other skills via API (server-side)
+            result = await api.executeSkill(call.skillName, call.params, agentId);
+        }
 
         if (result.success) {
             results.push({
                 skill: call.skillName,
                 success: true,
-                result: result.data
+                result: result.data || result
             });
 
             // Enhanced messages for file operations
-            if (call.skillName === 'create_file' && result.data.filePath) {
-                const relativePath = result.data.filePath.replace(userWorkingDirectory, '.');
+            if (call.skillName === 'create_file' && (result.data?.filePath || result.filePath)) {
+                const filePath = result.data?.filePath || result.filePath;
+                const relativePath = filePath.replace(userWorkingDirectory, '.');
                 addToHistory('system', `✓ File created: ${colorize(relativePath, 'green')}`);
 
                 // Auto-add to working set
-                addToWorkingSet(result.data.filePath, call.params.content);
+                addToWorkingSet(filePath, call.params.content);
             } else if (call.skillName === 'read_file') {
                 addToHistory('system', `✓ File read successfully`);
 
                 // Auto-add to working set if not already there
-                if (result.data.filePath && result.data.content) {
-                    addToWorkingSet(result.data.filePath, result.data.content);
+                const filePath = result.data?.filePath || result.filePath || call.params.filePath;
+                const content = result.data?.content || result.content;
+                if (filePath && content) {
+                    addToWorkingSet(filePath, content);
                 }
-            } else if (call.skillName === 'update_file' && result.data.filePath) {
-                const relativePath = result.data.filePath.replace(userWorkingDirectory, '.');
+            } else if (call.skillName === 'update_file' && (result.data?.filePath || result.filePath)) {
+                const filePath = result.data?.filePath || result.filePath;
+                const relativePath = filePath.replace(userWorkingDirectory, '.');
                 addToHistory('system', `✓ File updated: ${colorize(relativePath, 'green')}`);
 
                 // Auto-add to working set (refresh content)
-                addToWorkingSet(result.data.filePath);
+                addToWorkingSet(filePath);
             } else {
                 addToHistory('system', `✓ ${call.skillName} completed successfully`);
             }
@@ -3163,8 +3306,27 @@ async function handleChat(api, message) {
             break;
         }
 
-        // Display what AI said before executing skills (already displayed during streaming)
-        // Just execute the skills
+        // Clean up the displayed response by removing raw skill call syntax
+        // The skill execution messages will be shown separately
+        let cleanedResponse = response
+            .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')  // Remove [SKILL:name(...)]
+            .replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '')  // Remove JSON skill format
+            .replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '')  // Remove inline JSON
+            .trim();
+
+        // Update the displayed assistant message with cleaned response
+        const lastMsg = chatHistory[chatHistory.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+            if (cleanedResponse && cleanedResponse.length > 0) {
+                lastMsg.content = cleanedResponse;
+            } else {
+                // If the response only contained skill calls, remove the message entirely
+                chatHistory.pop();
+            }
+            displayChatHistory();
+        }
+
+        // Execute the skills
         const skillResults = await executeSkillCalls(api, skillCalls);
 
         // Build feedback message for the AI
