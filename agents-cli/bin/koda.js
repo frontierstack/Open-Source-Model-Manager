@@ -1318,13 +1318,24 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
     }
 
     // Only include the most useful skills to avoid overwhelming the context
-    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory', 'append_to_file', 'tail_file', 'head_file', 'list_processes', 'kill_process', 'start_process'];
+    const prioritySkills = [
+        // File operations
+        'create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory', 'append_to_file', 'tail_file', 'head_file',
+        // Process management
+        'list_processes', 'kill_process', 'start_process',
+        // System info
+        'system_info', 'disk_usage', 'get_uptime', 'list_ports', 'list_services',
+        // Git operations
+        'git_status', 'git_diff', 'git_log', 'git_branch',
+        // Environment
+        'get_env_var', 'set_env_var', 'which_command'
+    ];
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
     let prompt = `You are Koda, a helpful AI assistant. You can have normal conversations, answer questions, help with coding, math, explanations, and any other topics.
 
-You have the ability to execute file and process operations directly when needed. When the user asks you to create, read, modify, or delete files, or to list/manage processes, use the skill format below instead of suggesting commands.
+You have the ability to execute file, process, system, git, and environment operations directly when needed. When the user asks about system info, processes, git status, or file operations, use the skill format below instead of suggesting commands.
 
 IMPORTANT FILE PLACEMENT RULES:
 - User's current working directory: ${userWorkingDirectory}
@@ -1351,20 +1362,40 @@ Available skills:
 
     prompt += `
 Skill execution format:
+
+FILE OPERATIONS:
 [SKILL:create_file(filePath="${userWorkingDirectory}/<project_dir>/<filename>", content="file content here")]
 [SKILL:read_file(filePath="${userWorkingDirectory}/<path_to_file>")]
 [SKILL:update_file(filePath="${userWorkingDirectory}/<path_to_file>", content="updated file content here")]
 [SKILL:delete_file(filePath="${userWorkingDirectory}/<path_to_file>")]
 [SKILL:create_directory(dirPath="${userWorkingDirectory}/<directory>")]
-[SKILL:delete_directory(dirPath="${userWorkingDirectory}/<directory>")]
 [SKILL:list_directory(dirPath="${userWorkingDirectory}/<directory>")]
-[SKILL:move_file(sourcePath="${userWorkingDirectory}/<old_path>", destPath="${userWorkingDirectory}/<new_path>")]
+
+PROCESS MANAGEMENT:
 [SKILL:list_processes(sort_by="cpu", limit="20")]
 [SKILL:kill_process(pid="1234")]
-[SKILL:start_process(command="python", args="['script.py', '--arg']")]
+[SKILL:start_process(command="python", args="['script.py']")]
+
+SYSTEM INFO:
+[SKILL:system_info()]
+[SKILL:disk_usage(path="/")]
+[SKILL:get_uptime()]
+[SKILL:list_ports()]
+[SKILL:list_services()]
+
+GIT OPERATIONS:
+[SKILL:git_status()]
+[SKILL:git_diff(staged="false")]
+[SKILL:git_log(limit="10")]
+[SKILL:git_branch()]
+
+ENVIRONMENT:
+[SKILL:get_env_var(name="PATH")]
+[SKILL:set_env_var(name="MY_VAR", value="my_value")]
+[SKILL:which_command(command="node")]
 
 CRITICAL EXECUTION RULES:
-1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process.
+1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command.
 2. When working with files, EXECUTE skills directly - don't just suggest or describe changes
 3. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
 4. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
@@ -1794,6 +1825,458 @@ async function executeProcessSkill(skillName, params) {
     }
 }
 
+// Execute system info skills client-side
+async function executeSystemSkill(skillName, params) {
+    const platform = os.platform();
+
+    try {
+        switch (skillName) {
+            case 'system_info': {
+                const cpus = os.cpus();
+                const totalMem = os.totalmem();
+                const freeMem = os.freemem();
+                const usedMem = totalMem - freeMem;
+
+                // Get disk usage
+                let diskInfo = { total: 0, used: 0, free: 0, percent: 0 };
+                try {
+                    if (platform === 'win32') {
+                        const { stdout } = await execPromise('wmic logicaldisk get size,freespace,caption', { timeout: 10000 });
+                        const lines = stdout.trim().split('\n').slice(1);
+                        for (const line of lines) {
+                            const parts = line.trim().split(/\s+/);
+                            if (parts.length >= 3 && parts[0].includes(':')) {
+                                diskInfo.free += parseInt(parts[1]) || 0;
+                                diskInfo.total += parseInt(parts[2]) || 0;
+                            }
+                        }
+                        diskInfo.used = diskInfo.total - diskInfo.free;
+                        diskInfo.percent = diskInfo.total > 0 ? Math.round((diskInfo.used / diskInfo.total) * 100) : 0;
+                    } else {
+                        const { stdout } = await execPromise("df -k / | tail -1", { timeout: 10000 });
+                        const parts = stdout.trim().split(/\s+/);
+                        if (parts.length >= 4) {
+                            diskInfo.total = parseInt(parts[1]) * 1024;
+                            diskInfo.used = parseInt(parts[2]) * 1024;
+                            diskInfo.free = parseInt(parts[3]) * 1024;
+                            diskInfo.percent = parseInt(parts[4]) || 0;
+                        }
+                    }
+                } catch (e) {
+                    // Disk info unavailable
+                }
+
+                return {
+                    success: true,
+                    platform: platform,
+                    platform_release: os.release(),
+                    architecture: os.arch(),
+                    hostname: os.hostname(),
+                    cpu: {
+                        model: cpus[0]?.model || 'Unknown',
+                        cores: cpus.length,
+                        speed: cpus[0]?.speed || 0
+                    },
+                    memory: {
+                        total: totalMem,
+                        used: usedMem,
+                        free: freeMem,
+                        percent: Math.round((usedMem / totalMem) * 100)
+                    },
+                    disk: diskInfo,
+                    uptime: os.uptime()
+                };
+            }
+
+            case 'disk_usage': {
+                const targetPath = params.path || '/';
+                let result = { success: false };
+
+                if (platform === 'win32') {
+                    const drive = targetPath.substring(0, 2) || 'C:';
+                    const { stdout } = await execPromise(`wmic logicaldisk where "caption='${drive}'" get size,freespace`, { timeout: 10000 });
+                    const lines = stdout.trim().split('\n').slice(1);
+                    if (lines.length > 0) {
+                        const parts = lines[0].trim().split(/\s+/);
+                        if (parts.length >= 2) {
+                            const free = parseInt(parts[0]) || 0;
+                            const total = parseInt(parts[1]) || 0;
+                            const used = total - free;
+                            result = {
+                                success: true,
+                                path: drive,
+                                total: total,
+                                used: used,
+                                free: free,
+                                percent: total > 0 ? Math.round((used / total) * 100) : 0
+                            };
+                        }
+                    }
+                } else {
+                    const { stdout } = await execPromise(`df -k "${targetPath}" | tail -1`, { timeout: 10000 });
+                    const parts = stdout.trim().split(/\s+/);
+                    if (parts.length >= 4) {
+                        result = {
+                            success: true,
+                            path: targetPath,
+                            total: parseInt(parts[1]) * 1024,
+                            used: parseInt(parts[2]) * 1024,
+                            free: parseInt(parts[3]) * 1024,
+                            percent: parseInt(parts[4]) || 0
+                        };
+                    }
+                }
+
+                return result.success ? result : { success: false, error: 'Could not get disk usage' };
+            }
+
+            case 'get_uptime': {
+                const uptimeSeconds = os.uptime();
+                const days = Math.floor(uptimeSeconds / 86400);
+                const hours = Math.floor((uptimeSeconds % 86400) / 3600);
+                const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+                const seconds = Math.floor(uptimeSeconds % 60);
+
+                return {
+                    success: true,
+                    uptime_seconds: uptimeSeconds,
+                    uptime_formatted: `${days}d ${hours}h ${minutes}m ${seconds}s`,
+                    days, hours, minutes, seconds
+                };
+            }
+
+            case 'list_ports': {
+                let ports = [];
+
+                if (platform === 'win32') {
+                    const { stdout } = await execPromise('netstat -ano | findstr LISTENING', { timeout: 30000 });
+                    const lines = stdout.trim().split('\n');
+                    for (const line of lines) {
+                        const parts = line.trim().split(/\s+/);
+                        if (parts.length >= 5) {
+                            const localAddr = parts[1];
+                            const portMatch = localAddr.match(/:(\d+)$/);
+                            if (portMatch) {
+                                ports.push({
+                                    port: parseInt(portMatch[1]),
+                                    protocol: parts[0].toLowerCase(),
+                                    pid: parseInt(parts[4]) || 0,
+                                    address: localAddr
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    try {
+                        // Try ss first (modern Linux)
+                        const { stdout } = await execPromise("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null", { timeout: 30000 });
+                        const lines = stdout.trim().split('\n').slice(1);
+                        for (const line of lines) {
+                            const parts = line.trim().split(/\s+/);
+                            if (parts.length >= 4) {
+                                const localAddr = parts[3] || parts[4];
+                                const portMatch = localAddr.match(/:(\d+)$/);
+                                if (portMatch) {
+                                    ports.push({
+                                        port: parseInt(portMatch[1]),
+                                        protocol: 'tcp',
+                                        address: localAddr
+                                    });
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // Fallback for macOS
+                        const { stdout } = await execPromise("lsof -iTCP -sTCP:LISTEN -n -P 2>/dev/null | tail -n +2", { timeout: 30000 });
+                        const lines = stdout.trim().split('\n');
+                        for (const line of lines) {
+                            const parts = line.trim().split(/\s+/);
+                            if (parts.length >= 9) {
+                                const addr = parts[8];
+                                const portMatch = addr.match(/:(\d+)$/);
+                                if (portMatch) {
+                                    ports.push({
+                                        port: parseInt(portMatch[1]),
+                                        protocol: 'tcp',
+                                        process: parts[0],
+                                        pid: parseInt(parts[1]) || 0
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Remove duplicates
+                const uniquePorts = [...new Map(ports.map(p => [p.port, p])).values()];
+                uniquePorts.sort((a, b) => a.port - b.port);
+
+                return {
+                    success: true,
+                    count: uniquePorts.length,
+                    ports: uniquePorts
+                };
+            }
+
+            case 'list_services': {
+                let services = [];
+
+                if (platform === 'win32') {
+                    const { stdout } = await execPromise('sc query state= all', { timeout: 30000 });
+                    const blocks = stdout.split('SERVICE_NAME:').slice(1);
+                    for (const block of blocks) {
+                        const lines = block.trim().split('\n');
+                        const name = lines[0]?.trim() || '';
+                        let state = 'unknown';
+                        for (const line of lines) {
+                            if (line.includes('STATE')) {
+                                if (line.includes('RUNNING')) state = 'running';
+                                else if (line.includes('STOPPED')) state = 'stopped';
+                                break;
+                            }
+                        }
+                        if (name) {
+                            services.push({ name, state });
+                        }
+                    }
+                } else if (platform === 'linux') {
+                    try {
+                        const { stdout } = await execPromise("systemctl list-units --type=service --no-pager --no-legend 2>/dev/null | head -50", { timeout: 30000 });
+                        const lines = stdout.trim().split('\n');
+                        for (const line of lines) {
+                            const parts = line.trim().split(/\s+/);
+                            if (parts.length >= 4) {
+                                services.push({
+                                    name: parts[0].replace('.service', ''),
+                                    load: parts[1],
+                                    active: parts[2],
+                                    state: parts[3]
+                                });
+                            }
+                        }
+                    } catch (e) {
+                        // Fallback to service command
+                        const { stdout } = await execPromise("service --status-all 2>/dev/null", { timeout: 30000 });
+                        const lines = stdout.trim().split('\n');
+                        for (const line of lines) {
+                            const match = line.match(/\[\s*([+-?])\s*\]\s+(.+)/);
+                            if (match) {
+                                services.push({
+                                    name: match[2].trim(),
+                                    state: match[1] === '+' ? 'running' : match[1] === '-' ? 'stopped' : 'unknown'
+                                });
+                            }
+                        }
+                    }
+                } else if (platform === 'darwin') {
+                    const { stdout } = await execPromise("launchctl list 2>/dev/null | head -50", { timeout: 30000 });
+                    const lines = stdout.trim().split('\n').slice(1);
+                    for (const line of lines) {
+                        const parts = line.trim().split(/\s+/);
+                        if (parts.length >= 3) {
+                            services.push({
+                                name: parts[2],
+                                pid: parts[0] !== '-' ? parseInt(parts[0]) : null,
+                                state: parts[0] !== '-' ? 'running' : 'stopped'
+                            });
+                        }
+                    }
+                }
+
+                return {
+                    success: true,
+                    platform: platform,
+                    count: services.length,
+                    services: services.slice(0, 50) // Limit to 50
+                };
+            }
+
+            default:
+                return { success: false, error: `Unknown system skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute git skills client-side
+async function executeGitSkill(skillName, params) {
+    const cwd = params.path || userWorkingDirectory;
+
+    try {
+        switch (skillName) {
+            case 'git_status': {
+                const { stdout } = await execPromise('git status --porcelain', { cwd, timeout: 30000 });
+                const { stdout: branch } = await execPromise('git branch --show-current', { cwd, timeout: 10000 });
+
+                const files = {
+                    staged: [],
+                    modified: [],
+                    untracked: []
+                };
+
+                const lines = stdout.trim().split('\n').filter(l => l);
+                for (const line of lines) {
+                    const status = line.substring(0, 2);
+                    const file = line.substring(3);
+
+                    if (status[0] === 'A' || status[0] === 'M' || status[0] === 'D' || status[0] === 'R') {
+                        files.staged.push({ status: status[0], file });
+                    }
+                    if (status[1] === 'M' || status[1] === 'D') {
+                        files.modified.push({ status: status[1], file });
+                    }
+                    if (status === '??') {
+                        files.untracked.push(file);
+                    }
+                }
+
+                return {
+                    success: true,
+                    branch: branch.trim(),
+                    staged: files.staged,
+                    modified: files.modified,
+                    untracked: files.untracked,
+                    clean: lines.length === 0
+                };
+            }
+
+            case 'git_diff': {
+                const staged = params.staged === true || params.staged === 'true';
+                const cmd = staged ? 'git diff --cached' : 'git diff';
+                const { stdout } = await execPromise(cmd, { cwd, timeout: 30000 });
+
+                return {
+                    success: true,
+                    staged: staged,
+                    diff: stdout || '(no changes)',
+                    hasChanges: stdout.trim().length > 0
+                };
+            }
+
+            case 'git_log': {
+                const limit = parseInt(params.limit) || 10;
+                const { stdout } = await execPromise(`git log --oneline -${limit}`, { cwd, timeout: 30000 });
+
+                const commits = stdout.trim().split('\n').filter(l => l).map(line => {
+                    const spaceIdx = line.indexOf(' ');
+                    return {
+                        hash: line.substring(0, spaceIdx),
+                        message: line.substring(spaceIdx + 1)
+                    };
+                });
+
+                return {
+                    success: true,
+                    count: commits.length,
+                    commits: commits
+                };
+            }
+
+            case 'git_branch': {
+                const { stdout: branchOutput } = await execPromise('git branch -a', { cwd, timeout: 30000 });
+                const { stdout: currentBranch } = await execPromise('git branch --show-current', { cwd, timeout: 10000 });
+
+                const branches = branchOutput.trim().split('\n').map(b => {
+                    const name = b.replace(/^\*?\s+/, '').trim();
+                    return {
+                        name: name,
+                        current: b.startsWith('*'),
+                        remote: name.startsWith('remotes/')
+                    };
+                });
+
+                return {
+                    success: true,
+                    current: currentBranch.trim(),
+                    branches: branches
+                };
+            }
+
+            default:
+                return { success: false, error: `Unknown git skill: ${skillName}` };
+        }
+    } catch (error) {
+        if (error.message.includes('not a git repository')) {
+            return { success: false, error: 'Not a git repository' };
+        }
+        return { success: false, error: error.message };
+    }
+}
+
+// Execute environment skills client-side
+async function executeEnvSkill(skillName, params) {
+    try {
+        switch (skillName) {
+            case 'get_env_var': {
+                const name = params.name;
+                if (!name) {
+                    return { success: false, error: 'name parameter is required' };
+                }
+
+                const value = process.env[name];
+                return {
+                    success: true,
+                    name: name,
+                    value: value || null,
+                    exists: value !== undefined
+                };
+            }
+
+            case 'set_env_var': {
+                const name = params.name;
+                const value = params.value;
+
+                if (!name) {
+                    return { success: false, error: 'name parameter is required' };
+                }
+
+                process.env[name] = value || '';
+                return {
+                    success: true,
+                    name: name,
+                    value: value || '',
+                    message: `Environment variable ${name} set for this session`
+                };
+            }
+
+            case 'which_command': {
+                const command = params.command;
+                if (!command) {
+                    return { success: false, error: 'command parameter is required' };
+                }
+
+                const platform = os.platform();
+                const cmd = platform === 'win32' ? `where ${command}` : `which ${command}`;
+
+                try {
+                    const { stdout } = await execPromise(cmd, { timeout: 10000 });
+                    const paths = stdout.trim().split('\n').filter(p => p);
+                    return {
+                        success: true,
+                        command: command,
+                        found: true,
+                        path: paths[0],
+                        allPaths: paths
+                    };
+                } catch (e) {
+                    return {
+                        success: true,
+                        command: command,
+                        found: false,
+                        path: null
+                    };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown environment skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
 // Execute skills and return results
 async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
@@ -1860,11 +2343,23 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file', 'create_directory', 'append_to_file', 'tail_file', 'head_file'];
         // Process management skills also run client-side to show user's actual processes
         const processSkills = ['list_processes', 'kill_process', 'start_process'];
+        // System info skills run client-side to show user's actual system info
+        const systemSkills = ['system_info', 'disk_usage', 'get_uptime', 'list_ports', 'list_services'];
+        // Git skills run client-side to access user's repositories
+        const gitSkills = ['git_status', 'git_diff', 'git_log', 'git_branch'];
+        // Environment skills run client-side to access user's environment
+        const envSkills = ['get_env_var', 'set_env_var', 'which_command'];
 
         if (fileOperationSkills.includes(call.skillName)) {
             result = await executeFileOperationSkill(call.skillName, call.params);
         } else if (processSkills.includes(call.skillName)) {
             result = await executeProcessSkill(call.skillName, call.params);
+        } else if (systemSkills.includes(call.skillName)) {
+            result = await executeSystemSkill(call.skillName, call.params);
+        } else if (gitSkills.includes(call.skillName)) {
+            result = await executeGitSkill(call.skillName, call.params);
+        } else if (envSkills.includes(call.skillName)) {
+            result = await executeEnvSkill(call.skillName, call.params);
         } else {
             // Execute other skills via API (server-side)
             result = await api.executeSkill(call.skillName, call.params, agentId);
@@ -1931,6 +2426,49 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 const pid = result.data?.pid || result.pid;
                 const command = result.data?.command || result.command || '';
                 addToHistory('system', `✓ Started process: ${colorize(command, 'cyan')} (PID: ${pid})`);
+            } else if (call.skillName === 'system_info') {
+                const platform = result.data?.platform || result.platform || os.platform();
+                const memPercent = result.data?.memory?.percent || result.memory?.percent || 0;
+                addToHistory('system', `✓ System info: ${colorize(platform, 'cyan')} - Memory: ${memPercent}% used`);
+            } else if (call.skillName === 'disk_usage') {
+                const path = result.data?.path || result.path || '/';
+                const percent = result.data?.percent || result.percent || 0;
+                addToHistory('system', `✓ Disk usage for ${colorize(path, 'cyan')}: ${percent}% used`);
+            } else if (call.skillName === 'get_uptime') {
+                const formatted = result.data?.uptime_formatted || result.uptime_formatted || '';
+                addToHistory('system', `✓ System uptime: ${colorize(formatted, 'cyan')}`);
+            } else if (call.skillName === 'list_ports') {
+                const count = result.data?.count || result.count || 0;
+                addToHistory('system', `✓ Listed ${colorize(count.toString(), 'cyan')} open ports`);
+            } else if (call.skillName === 'list_services') {
+                const count = result.data?.count || result.count || 0;
+                addToHistory('system', `✓ Listed ${colorize(count.toString(), 'cyan')} services`);
+            } else if (call.skillName === 'git_status') {
+                const branch = result.data?.branch || result.branch || 'unknown';
+                const clean = result.data?.clean || result.clean;
+                const status = clean ? 'clean' : 'has changes';
+                addToHistory('system', `✓ Git status: branch ${colorize(branch, 'cyan')} (${status})`);
+            } else if (call.skillName === 'git_diff') {
+                const hasChanges = result.data?.hasChanges || result.hasChanges;
+                addToHistory('system', `✓ Git diff: ${hasChanges ? 'changes found' : 'no changes'}`);
+            } else if (call.skillName === 'git_log') {
+                const count = result.data?.count || result.count || 0;
+                addToHistory('system', `✓ Git log: ${colorize(count.toString(), 'cyan')} commits`);
+            } else if (call.skillName === 'git_branch') {
+                const current = result.data?.current || result.current || '';
+                const count = result.data?.branches?.length || result.branches?.length || 0;
+                addToHistory('system', `✓ Git branches: ${colorize(current, 'cyan')} (${count} total)`);
+            } else if (call.skillName === 'get_env_var') {
+                const name = result.data?.name || result.name || '';
+                const exists = result.data?.exists || result.exists;
+                addToHistory('system', `✓ Env var ${colorize(name, 'cyan')}: ${exists ? 'found' : 'not set'}`);
+            } else if (call.skillName === 'set_env_var') {
+                const name = result.data?.name || result.name || '';
+                addToHistory('system', `✓ Set env var: ${colorize(name, 'cyan')}`);
+            } else if (call.skillName === 'which_command') {
+                const command = result.data?.command || result.command || '';
+                const found = result.data?.found || result.found;
+                addToHistory('system', `✓ which ${colorize(command, 'cyan')}: ${found ? result.path || result.data?.path : 'not found'}`);
             } else {
                 addToHistory('system', `✓ ${call.skillName} completed successfully`);
             }
@@ -2003,6 +2541,47 @@ function buildSkillResultsMessage(results) {
                 const pid = result.pid || result.data?.pid;
                 const command = result.command || result.data?.command || '';
                 message += `✓ Started process: ${command} (PID: ${pid})\n`;
+            } else if (skillName === 'system_info') {
+                const platform = result.platform || result.data?.platform || 'system';
+                const memPercent = result.memory?.percent || result.data?.memory?.percent || 0;
+                message += `✓ System info: ${platform}, memory ${memPercent}% used\n`;
+            } else if (skillName === 'disk_usage') {
+                const path = result.path || result.data?.path || '/';
+                const percent = result.percent || result.data?.percent || 0;
+                message += `✓ Disk usage: ${path} at ${percent}%\n`;
+            } else if (skillName === 'get_uptime') {
+                const formatted = result.uptime_formatted || result.data?.uptime_formatted || '';
+                message += `✓ Uptime: ${formatted}\n`;
+            } else if (skillName === 'list_ports') {
+                const count = result.count || result.data?.count || 0;
+                message += `✓ Listed ${count} open ports\n`;
+            } else if (skillName === 'list_services') {
+                const count = result.count || result.data?.count || 0;
+                message += `✓ Listed ${count} services\n`;
+            } else if (skillName === 'git_status') {
+                const branch = result.branch || result.data?.branch || '';
+                const clean = result.clean || result.data?.clean;
+                message += `✓ Git status: ${branch} (${clean ? 'clean' : 'has changes'})\n`;
+            } else if (skillName === 'git_diff') {
+                const hasChanges = result.hasChanges || result.data?.hasChanges;
+                message += `✓ Git diff: ${hasChanges ? 'changes found' : 'no changes'}\n`;
+            } else if (skillName === 'git_log') {
+                const count = result.count || result.data?.count || 0;
+                message += `✓ Git log: ${count} commits\n`;
+            } else if (skillName === 'git_branch') {
+                const current = result.current || result.data?.current || '';
+                message += `✓ Git branch: ${current}\n`;
+            } else if (skillName === 'get_env_var') {
+                const name = result.name || result.data?.name || '';
+                const exists = result.exists || result.data?.exists;
+                message += `✓ Env var ${name}: ${exists ? 'found' : 'not set'}\n`;
+            } else if (skillName === 'set_env_var') {
+                const name = result.name || result.data?.name || '';
+                message += `✓ Set env var: ${name}\n`;
+            } else if (skillName === 'which_command') {
+                const command = result.command || result.data?.command || '';
+                const found = result.found || result.data?.found;
+                message += `✓ which ${command}: ${found ? 'found' : 'not found'}\n`;
             } else {
                 message += `✓ ${skillName} completed\n`;
             }
@@ -2021,7 +2600,7 @@ function buildSkillResultsMessage(results) {
         // Check if it's a "skill not found" error - suggest alternatives
         const skillNotFound = failureMessages.some(m => m.toLowerCase().includes('skill not found'));
         if (skillNotFound) {
-            message += '\nA skill was not found. Only use these skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process.';
+            message += '\nA skill was not found. Available client-side skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command.';
         } else {
             message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
         }

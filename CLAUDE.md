@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.3.20
+**Version:** 0.3.21
 
 ## Overview
 
@@ -820,7 +820,22 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.3.20 (Current)
+### Version 0.3.21 (Current)
+- **Comprehensive Client-Side Skill Execution**:
+  - **All System Skills Client-Side**: `system_info`, `disk_usage`, `get_uptime`, `list_ports`, `list_services` now show actual user system info
+  - **All Git Skills Client-Side**: `git_status`, `git_diff`, `git_log`, `git_branch` now access user's actual repositories
+  - **All Environment Skills Client-Side**: `get_env_var`, `set_env_var`, `which_command` now access user's actual environment
+  - **Cross-Platform Support**: All skills work on Linux, macOS, and Windows with native commands
+  - **Clean Output Messages**: All new skills display concise, color-coded status messages
+- **Skills Now Run Locally**: 26 skills now execute client-side for accurate results:
+  - File Operations (11): create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, append_to_file, tail_file, head_file
+  - Process Management (3): list_processes, kill_process, start_process
+  - System Info (5): system_info, disk_usage, get_uptime, list_ports, list_services
+  - Git Operations (4): git_status, git_diff, git_log, git_branch
+  - Environment (3): get_env_var, set_env_var, which_command
+- **Koda CLI Version**: 2.9.0
+
+### Version 0.3.20
 - **Process Skills Client-Side Execution**:
   - **Fixed Process Listing**: `list_processes` now executes client-side, showing user's actual system processes instead of Docker container processes
   - **Client-Side Process Management**: `list_processes`, `kill_process`, and `start_process` all execute locally for accurate results
