@@ -214,5 +214,125 @@
     "parameters": {"compressedData": "string"},
     "code": "def execute(params):\n    \"\"\"Decompress gzip data.\"\"\"\n    import gzip\n    import base64\n\n    compressed_data = params.get('compressedData')\n    if not compressed_data:\n        return {'success': False, 'error': 'compressedData parameter is required'}\n\n    try:\n        decoded = base64.b64decode(compressed_data)\n        decompressed = gzip.decompress(decoded).decode('utf-8')\n\n        return {\n            'success': True,\n            'decompressed': decompressed,\n            'size': len(decompressed)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
+  },
+  {
+    "name": "run_powershell",
+    "description": "Execute PowerShell commands on Windows",
+    "type": "command",
+    "parameters": {"command": "string", "timeout": "number"},
+    "code": "def execute(params):\n    \"\"\"Execute PowerShell commands.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'PowerShell is only available on Windows'}\n\n    command = params.get('command')\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        result = subprocess.run(\n            ['powershell', '-Command', command],\n            capture_output=True,\n            text=True,\n            timeout=timeout\n        )\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'Command timed out after {timeout} seconds'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "run_cmd",
+    "description": "Execute cmd.exe commands on Windows",
+    "type": "command",
+    "parameters": {"command": "string", "timeout": "number"},
+    "code": "def execute(params):\n    \"\"\"Execute cmd.exe commands.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'cmd.exe is only available on Windows'}\n\n    command = params.get('command')\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        result = subprocess.run(\n            ['cmd', '/c', command],\n            capture_output=True,\n            text=True,\n            timeout=timeout\n        )\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'Command timed out after {timeout} seconds'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "get_windows_services",
+    "description": "List Windows services and their status",
+    "type": "command",
+    "parameters": {"serviceName": "string"},
+    "code": "def execute(params):\n    \"\"\"List Windows services.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'Windows services are only available on Windows'}\n\n    service_name = params.get('serviceName')\n\n    try:\n        if service_name:\n            cmd = ['sc', 'query', service_name]\n        else:\n            cmd = ['sc', 'query']\n\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': True,\n            'output': result.stdout,\n            'returncode': result.returncode\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "get_registry_value",
+    "description": "Read Windows registry value",
+    "type": "command",
+    "parameters": {"key": "string", "valueName": "string"},
+    "code": "def execute(params):\n    \"\"\"Read Windows registry value.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'Windows registry is only available on Windows'}\n\n    key = params.get('key')\n    value_name = params.get('valueName')\n\n    if not key or not value_name:\n        return {'success': False, 'error': 'key and valueName parameters are required'}\n\n    try:\n        cmd = ['reg', 'query', key, '/v', value_name]\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': result.returncode == 0,\n            'output': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "set_registry_value",
+    "description": "Write Windows registry value (requires admin)",
+    "type": "command",
+    "parameters": {"key": "string", "valueName": "string", "valueType": "string", "data": "string"},
+    "code": "def execute(params):\n    \"\"\"Write Windows registry value.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'Windows registry is only available on Windows'}\n\n    key = params.get('key')\n    value_name = params.get('valueName')\n    value_type = params.get('valueType', 'REG_SZ')\n    data = params.get('data')\n\n    if not key or not value_name or not data:\n        return {'success': False, 'error': 'key, valueName, and data parameters are required'}\n\n    try:\n        cmd = ['reg', 'add', key, '/v', value_name, '/t', value_type, '/d', data, '/f']\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': result.returncode == 0,\n            'output': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "ocr_image",
+    "description": "Extract text from an image using OCR (requires pytesseract)",
+    "type": "tool",
+    "parameters": {"imagePath": "string", "language": "string"},
+    "code": "def execute(params):\n    \"\"\"Extract text from an image using OCR.\"\"\"\n    image_path = params.get('imagePath')\n    if not image_path:\n        return {'success': False, 'error': 'imagePath parameter is required'}\n\n    language = params.get('language', 'eng')\n\n    try:\n        import pytesseract\n        from PIL import Image\n\n        img = Image.open(image_path)\n        text = pytesseract.image_to_string(img, lang=language)\n\n        return {\n            'success': True,\n            'text': text,\n            'language': language,\n            'imagePath': image_path\n        }\n    except ImportError:\n        return {'success': False, 'error': 'pytesseract and/or PIL not installed. Install with: pip install pytesseract pillow'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "unzip_file",
+    "description": "Extract a ZIP archive to a directory",
+    "type": "function",
+    "parameters": {"zipPath": "string", "extractPath": "string"},
+    "code": "def execute(params):\n    \"\"\"Extract a ZIP archive.\"\"\"\n    import zipfile\n    import os\n\n    zip_path = params.get('zipPath')\n    extract_path = params.get('extractPath')\n\n    if not zip_path:\n        return {'success': False, 'error': 'zipPath parameter is required'}\n\n    if not extract_path:\n        extract_path = os.path.dirname(zip_path)\n\n    try:\n        with zipfile.ZipFile(zip_path, 'r') as zip_ref:\n            zip_ref.extractall(extract_path)\n            file_list = zip_ref.namelist()\n\n        return {\n            'success': True,\n            'message': f'Extracted {len(file_list)} files',\n            'files': file_list,\n            'extractPath': extract_path\n        }\n    except zipfile.BadZipFile:\n        return {'success': False, 'error': 'Invalid or corrupted ZIP file'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "zip_files",
+    "description": "Create a ZIP archive from files/directories",
+    "type": "function",
+    "parameters": {"zipPath": "string", "sourcePaths": "array"},
+    "code": "def execute(params):\n    \"\"\"Create a ZIP archive.\"\"\"\n    import zipfile\n    import os\n\n    zip_path = params.get('zipPath')\n    source_paths = params.get('sourcePaths', [])\n\n    if not zip_path:\n        return {'success': False, 'error': 'zipPath parameter is required'}\n\n    if not source_paths:\n        return {'success': False, 'error': 'sourcePaths parameter is required'}\n\n    try:\n        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:\n            file_count = 0\n            for source_path in source_paths:\n                if os.path.isfile(source_path):\n                    zip_ref.write(source_path, os.path.basename(source_path))\n                    file_count += 1\n                elif os.path.isdir(source_path):\n                    for root, dirs, files in os.walk(source_path):\n                        for file in files:\n                            file_path = os.path.join(root, file)\n                            arcname = os.path.relpath(file_path, os.path.dirname(source_path))\n                            zip_ref.write(file_path, arcname)\n                            file_count += 1\n\n        return {\n            'success': True,\n            'message': f'Created ZIP with {file_count} files',\n            'zipPath': zip_path,\n            'fileCount': file_count\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "read_email",
+    "description": "Read emails from an IMAP server",
+    "type": "tool",
+    "parameters": {"server": "string", "username": "string", "password": "string", "mailbox": "string", "limit": "number"},
+    "code": "def execute(params):\n    \"\"\"Read emails from IMAP server.\"\"\"\n    import imaplib\n    import email\n    from email.header import decode_header\n\n    server = params.get('server')\n    username = params.get('username')\n    password = params.get('password')\n\n    if not server or not username or not password:\n        return {'success': False, 'error': 'server, username, and password parameters are required'}\n\n    mailbox = params.get('mailbox', 'INBOX')\n    limit = params.get('limit', 10)\n\n    try:\n        mail = imaplib.IMAP4_SSL(server)\n        mail.login(username, password)\n        mail.select(mailbox)\n\n        status, messages = mail.search(None, 'ALL')\n        email_ids = messages[0].split()\n        email_ids = email_ids[-limit:] if len(email_ids) > limit else email_ids\n\n        emails = []\n        for email_id in email_ids:\n            status, msg_data = mail.fetch(email_id, '(RFC822)')\n            msg = email.message_from_bytes(msg_data[0][1])\n\n            subject = decode_header(msg['Subject'])[0][0]\n            if isinstance(subject, bytes):\n                subject = subject.decode()\n\n            from_addr = msg.get('From')\n            date = msg.get('Date')\n\n            body = ''\n            if msg.is_multipart():\n                for part in msg.walk():\n                    if part.get_content_type() == 'text/plain':\n                        body = part.get_payload(decode=True).decode()\n                        break\n            else:\n                body = msg.get_payload(decode=True).decode()\n\n            attachments = []\n            if msg.is_multipart():\n                for part in msg.walk():\n                    if part.get_content_disposition() == 'attachment':\n                        filename = part.get_filename()\n                        if filename:\n                            attachments.append({\n                                'filename': filename,\n                                'content_type': part.get_content_type(),\n                                'size': len(part.get_payload(decode=True))\n                            })\n\n            emails.append({\n                'id': email_id.decode(),\n                'subject': subject,\n                'from': from_addr,\n                'date': date,\n                'body': body[:500] + '...' if len(body) > 500 else body,\n                'attachments': attachments\n            })\n\n        mail.close()\n        mail.logout()\n\n        return {\n            'success': True,\n            'count': len(emails),\n            'emails': emails\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "send_email",
+    "description": "Send email via SMTP",
+    "type": "tool",
+    "parameters": {"server": "string", "port": "number", "username": "string", "password": "string", "to": "string", "subject": "string", "body": "string"},
+    "code": "def execute(params):\n    \"\"\"Send email via SMTP.\"\"\"\n    import smtplib\n    from email.mime.text import MIMEText\n    from email.mime.multipart import MIMEMultipart\n\n    server = params.get('server')\n    port = params.get('port', 587)\n    username = params.get('username')\n    password = params.get('password')\n    to = params.get('to')\n    subject = params.get('subject')\n    body = params.get('body')\n\n    if not all([server, username, password, to, subject, body]):\n        return {'success': False, 'error': 'server, username, password, to, subject, and body parameters are required'}\n\n    try:\n        msg = MIMEMultipart()\n        msg['From'] = username\n        msg['To'] = to\n        msg['Subject'] = subject\n        msg.attach(MIMEText(body, 'plain'))\n\n        with smtplib.SMTP(server, port) as smtp:\n            smtp.starttls()\n            smtp.login(username, password)\n            smtp.send_message(msg)\n\n        return {\n            'success': True,\n            'message': f'Email sent to {to}'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false
+  },
+  {
+    "name": "get_file_metadata",
+    "description": "Get file metadata (size, dates, permissions)",
+    "type": "function",
+    "parameters": {"filePath": "string"},
+    "code": "def execute(params):\n    \"\"\"Get file metadata.\"\"\"\n    import os\n    import stat\n    import datetime\n\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    try:\n        stats = os.stat(file_path)\n\n        return {\n            'success': True,\n            'path': file_path,\n            'size': stats.st_size,\n            'created': datetime.datetime.fromtimestamp(stats.st_ctime).isoformat(),\n            'modified': datetime.datetime.fromtimestamp(stats.st_mtime).isoformat(),\n            'accessed': datetime.datetime.fromtimestamp(stats.st_atime).isoformat(),\n            'permissions': oct(stat.S_IMODE(stats.st_mode)),\n            'is_file': os.path.isfile(file_path),\n            'is_directory': os.path.isdir(file_path)\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "search_files",
+    "description": "Search for files by name pattern in a directory",
+    "type": "function",
+    "parameters": {"directory": "string", "pattern": "string", "recursive": "boolean"},
+    "code": "def execute(params):\n    \"\"\"Search for files by name pattern.\"\"\"\n    import os\n    import fnmatch\n\n    directory = params.get('directory')\n    pattern = params.get('pattern')\n\n    if not directory or not pattern:\n        return {'success': False, 'error': 'directory and pattern parameters are required'}\n\n    recursive = params.get('recursive', True)\n\n    try:\n        matches = []\n\n        if recursive:\n            for root, dirs, files in os.walk(directory):\n                for filename in fnmatch.filter(files, pattern):\n                    matches.append(os.path.join(root, filename))\n        else:\n            files = os.listdir(directory)\n            for filename in fnmatch.filter(files, pattern):\n                full_path = os.path.join(directory, filename)\n                if os.path.isfile(full_path):\n                    matches.append(full_path)\n\n        return {\n            'success': True,\n            'count': len(matches),\n            'files': matches\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "download_file",
+    "description": "Download a file from a URL",
+    "type": "tool",
+    "parameters": {"url": "string", "savePath": "string"},
+    "code": "def execute(params):\n    \"\"\"Download a file from a URL.\"\"\"\n    import urllib.request\n    import os\n\n    url = params.get('url')\n    save_path = params.get('savePath')\n\n    if not url:\n        return {'success': False, 'error': 'url parameter is required'}\n\n    if not save_path:\n        save_path = os.path.basename(url)\n\n    try:\n        urllib.request.urlretrieve(url, save_path)\n        file_size = os.path.getsize(save_path)\n\n        return {\n            'success': True,\n            'message': f'Downloaded {file_size} bytes',\n            'savePath': save_path,\n            'size': file_size\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "screenshot",
+    "description": "Take a screenshot and save to file",
+    "type": "tool",
+    "parameters": {"savePath": "string"},
+    "code": "def execute(params):\n    \"\"\"Take a screenshot.\"\"\"\n    save_path = params.get('savePath', 'screenshot.png')\n\n    try:\n        import mss\n\n        with mss.mss() as sct:\n            monitor = sct.monitors[1]\n            screenshot = sct.grab(monitor)\n            mss.tools.to_png(screenshot.rgb, screenshot.size, output=save_path)\n\n        return {\n            'success': True,\n            'message': f'Screenshot saved to {save_path}',\n            'savePath': save_path\n        }\n    except ImportError:\n        return {'success': False, 'error': 'mss module not installed. Install with: pip install mss'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
+  },
+  {
+    "name": "convert_image",
+    "description": "Convert image format (PNG, JPG, BMP, GIF, etc.)",
+    "type": "tool",
+    "parameters": {"inputPath": "string", "outputPath": "string", "format": "string"},
+    "code": "def execute(params):\n    \"\"\"Convert image format.\"\"\"\n    input_path = params.get('inputPath')\n    output_path = params.get('outputPath')\n\n    if not input_path or not output_path:\n        return {'success': False, 'error': 'inputPath and outputPath parameters are required'}\n\n    format_param = params.get('format', '').upper()\n\n    try:\n        from PIL import Image\n\n        img = Image.open(input_path)\n\n        if format_param:\n            img.save(output_path, format=format_param)\n        else:\n            img.save(output_path)\n\n        return {\n            'success': True,\n            'message': f'Image converted: {input_path} -> {output_path}',\n            'inputPath': input_path,\n            'outputPath': output_path,\n            'format': format_param if format_param else 'auto'\n        }\n    except ImportError:\n        return {'success': False, 'error': 'PIL (Pillow) not installed. Install with: pip install pillow'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": true
   }
 ]

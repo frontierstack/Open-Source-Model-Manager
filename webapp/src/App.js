@@ -5094,76 +5094,12 @@ curl -X GET ${baseUrl}/api/models \\
                                                     </Box>
 
                                                     <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
-                                                        <Tab label="Agents" />
                                                         <Tab label="Skills" />
                                                         <Tab label="Permissions" />
                                                     </Tabs>
 
-                                                    {/* Agents Sub-Tab */}
-                                                    {agentSubTab === 0 && (
-                                                        <Box>
-                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
-                                                                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                                                                    Agent Management
-                                                                </Typography>
-                                                                <Button
-                                                                    variant="contained"
-                                                                    size="small"
-                                                                    onClick={() => {
-                                                                        setEditingAgent(null);
-                                                                        setAgentFormData({ name: '', description: '', modelName: '', systemPrompt: '', skills: [] });
-                                                                        setAgentDialogOpen(true);
-                                                                    }}
-                                                                >
-                                                                    Create Agent
-                                                                </Button>
-                                                            </Box>
-
-                                                            {agents.length === 0 ? (
-                                                                <Alert severity="info">No agents created yet. Click "Create Agent" to get started.</Alert>
-                                                            ) : (
-                                                                <Grid container spacing={2}>
-                                                                    {agents.map(agent => (
-                                                                        <Grid item xs={12} md={6} key={agent.id}>
-                                                                            <Card variant="outlined">
-                                                                                <CardContent>
-                                                                                    <Typography variant="h6" sx={{ mb: 1 }}>{agent.name}</Typography>
-                                                                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                                                                        {agent.description || 'No description'}
-                                                                                    </Typography>
-                                                                                    <Divider sx={{ my: 1 }} />
-                                                                                    <Typography variant="caption" color="text.secondary">Model: {agent.modelName || 'Not assigned'}</Typography><br />
-                                                                                    <Typography variant="caption" color="text.secondary">Skills: {agent.skills.length}</Typography><br />
-                                                                                    <Typography variant="caption" color="text.secondary">Created: {new Date(agent.createdAt).toLocaleDateString()}</Typography>
-                                                                                </CardContent>
-                                                                                <CardActions>
-                                                                                    <Button
-                                                                                        size="small"
-                                                                                        onClick={() => {
-                                                                                            setEditingAgent(agent);
-                                                                                            setAgentFormData(agent);
-                                                                                            setAgentDialogOpen(true);
-                                                                                        }}
-                                                                                    >
-                                                                                        Edit
-                                                                                    </Button>
-                                                                                    <Button size="small" onClick={() => handleRegenerateAgentKey(agent.id)}>
-                                                                                        Regenerate Key
-                                                                                    </Button>
-                                                                                    <Button size="small" color="error" onClick={() => handleDeleteAgent(agent.id)}>
-                                                                                        Delete
-                                                                                    </Button>
-                                                                                </CardActions>
-                                                                            </Card>
-                                                                        </Grid>
-                                                                    ))}
-                                                                </Grid>
-                                                            )}
-                                                        </Box>
-                                                    )}
-
                                                     {/* Skills Sub-Tab */}
-                                                    {agentSubTab === 1 && (
+                                                    {agentSubTab === 0 && (
                                                         <Box>
                                                             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
                                                                 <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
@@ -5254,7 +5190,7 @@ curl -X GET ${baseUrl}/api/models \\
                                                     )}
 
                                                     {/* Permissions Sub-Tab */}
-                                                    {agentSubTab === 2 && (
+                                                    {agentSubTab === 1 && (
                                                         <Box>
                                                             <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
                                                                 Global Agent Permissions
