@@ -3095,24 +3095,20 @@ async function handleChat(api, message) {
                     chatHistory[chatHistory.length - 1].role === 'system') {
                     chatHistory.pop();
                     hasRemovedThinkingIndicator = true;
-
-                    // Enable streaming mode and do initial full refresh
-                    isStreaming = true;
-                    lastStreamingLineCount = 0;
-                    displayChatHistory();
                 }
 
                 // Update or add assistant message in history
                 const lastMsg = chatHistory[chatHistory.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant-streaming') {
-                    lastMsg.message = streamingResponse + colorize(' ▊', 'cyan'); // Streaming cursor
+                    lastMsg.content = streamingResponse + colorize(' ▊', 'cyan'); // Streaming cursor
                 } else {
                     addToHistory('assistant-streaming', streamingResponse + colorize(' ▊', 'cyan'));
                 }
 
-                // Update display without flicker (every 3 tokens or on newline)
-                if (tokenCount % 3 === 0 || token.includes('\n')) {
-                    updateStreamingMessage(streamingResponse + colorize(' ▊', 'cyan'));
+                // Update display periodically (every 10 tokens or on newline)
+                // Use displayChatHistory instead of updateStreamingMessage to avoid duplication
+                if (tokenCount % 10 === 0 || token.includes('\n')) {
+                    displayChatHistory();
                 }
             },
             // onComplete callback
@@ -3125,7 +3121,7 @@ async function handleChat(api, message) {
                 const lastMsg = chatHistory[chatHistory.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant-streaming') {
                     lastMsg.role = 'assistant';
-                    lastMsg.message = fullResponse;
+                    lastMsg.content = fullResponse;
                 }
 
                 // Update token usage stats
