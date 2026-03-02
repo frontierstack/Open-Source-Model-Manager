@@ -13,7 +13,9 @@ const fs = require('fs').promises;
 const os = require('os');
 const crypto = require('crypto');
 const Diff = require('diff');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
+const { promisify } = require('util');
+const execPromise = promisify(exec);
 const parser = require('@babel/parser');
 const traverse = require('@babel/traverse').default;
 const generate = require('@babel/generator').default;
@@ -1315,14 +1317,14 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
         return '';
     }
 
-    // Only include the most useful file-related skills to avoid overwhelming the context
-    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory', 'append_to_file', 'tail_file', 'head_file'];
+    // Only include the most useful skills to avoid overwhelming the context
+    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory', 'append_to_file', 'tail_file', 'head_file', 'list_processes', 'kill_process', 'start_process'];
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
     let prompt = `You are Koda, a helpful AI assistant. You can have normal conversations, answer questions, help with coding, math, explanations, and any other topics.
 
-You also have the ability to execute file operations directly when needed. When the user asks you to create, read, modify, or delete files, use the skill format below instead of suggesting commands.
+You have the ability to execute file and process operations directly when needed. When the user asks you to create, read, modify, or delete files, or to list/manage processes, use the skill format below instead of suggesting commands.
 
 IMPORTANT FILE PLACEMENT RULES:
 - User's current working directory: ${userWorkingDirectory}
@@ -1357,9 +1359,12 @@ Skill execution format:
 [SKILL:delete_directory(dirPath="${userWorkingDirectory}/<directory>")]
 [SKILL:list_directory(dirPath="${userWorkingDirectory}/<directory>")]
 [SKILL:move_file(sourcePath="${userWorkingDirectory}/<old_path>", destPath="${userWorkingDirectory}/<new_path>")]
+[SKILL:list_processes(sort_by="cpu", limit="20")]
+[SKILL:kill_process(pid="1234")]
+[SKILL:start_process(command="python", args="['script.py', '--arg']")]
 
 CRITICAL EXECUTION RULES:
-1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file.
+1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process.
 2. When working with files, EXECUTE skills directly - don't just suggest or describe changes
 3. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
 4. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
@@ -1607,6 +1612,188 @@ async function executeFileOperationSkill(skillName, params) {
     }
 }
 
+// Execute process management skills client-side
+async function executeProcessSkill(skillName, params) {
+    const platform = os.platform();
+    const isWindows = platform === 'win32';
+
+    try {
+        switch (skillName) {
+            case 'list_processes': {
+                const sortBy = params.sort_by || 'pid';
+                const limit = parseInt(params.limit) || 50;
+                let processes = [];
+
+                if (isWindows) {
+                    // Windows: use tasklist
+                    const { stdout } = await execPromise('tasklist /fo csv /nh', { timeout: 30000 });
+                    const lines = stdout.trim().split('\n');
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            const parts = line.trim().split('","');
+                            if (parts.length >= 5) {
+                                const name = parts[0].replace(/^"/, '');
+                                const pid = parts[1].replace(/"/g, '');
+                                const mem = parts[4].replace(/"/g, '').replace(' K', '').replace(/,/g, '');
+                                try {
+                                    processes.push({
+                                        pid: parseInt(pid),
+                                        name: name,
+                                        cpu_percent: 0.0,
+                                        memory_mb: Math.round(parseInt(mem) / 1024) || 0
+                                    });
+                                } catch (e) {}
+                            }
+                        }
+                    }
+                } else {
+                    // Linux/macOS: use ps aux
+                    const cmd = platform === 'linux' ? 'ps aux --no-headers' : 'ps aux';
+                    const { stdout } = await execPromise(cmd, { timeout: 30000 });
+                    const lines = stdout.trim().split('\n');
+                    const startIdx = platform === 'darwin' ? 1 : 0;
+
+                    for (let i = startIdx; i < lines.length; i++) {
+                        const line = lines[i];
+                        if (line.trim()) {
+                            const parts = line.trim().split(/\s+/);
+                            if (parts.length >= 11) {
+                                try {
+                                    processes.push({
+                                        pid: parseInt(parts[1]),
+                                        name: parts.slice(10).join(' '),
+                                        cpu_percent: parseFloat(parts[2]) || 0,
+                                        memory_mb: Math.round(parseInt(parts[5]) / 1024) || 0
+                                    });
+                                } catch (e) {}
+                            }
+                        }
+                    }
+                }
+
+                // Sort processes
+                const sortKey = sortBy.toLowerCase();
+                if (sortKey === 'cpu') {
+                    processes.sort((a, b) => b.cpu_percent - a.cpu_percent);
+                } else if (sortKey === 'memory' || sortKey === 'mem') {
+                    processes.sort((a, b) => b.memory_mb - a.memory_mb);
+                } else if (sortKey === 'name') {
+                    processes.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+                } else {
+                    processes.sort((a, b) => a.pid - b.pid);
+                }
+
+                // Limit results
+                if (limit > 0) {
+                    processes = processes.slice(0, limit);
+                }
+
+                return {
+                    success: true,
+                    platform: platform,
+                    count: processes.length,
+                    processes: processes
+                };
+            }
+
+            case 'kill_process': {
+                const pid = params.pid;
+                const name = params.name;
+
+                if (!pid && !name) {
+                    return { success: false, error: 'Either pid or name parameter is required' };
+                }
+
+                const killed = [];
+
+                if (pid) {
+                    const pidNum = parseInt(pid);
+                    if (isWindows) {
+                        const { stderr } = await execPromise(`taskkill /PID ${pidNum} /F`, { timeout: 10000 }).catch(e => ({ stderr: e.message }));
+                        if (!stderr || stderr.includes('SUCCESS')) {
+                            killed.push({ pid: pidNum });
+                        } else {
+                            return { success: false, error: stderr.trim() };
+                        }
+                    } else {
+                        try {
+                            process.kill(pidNum, 'SIGTERM');
+                            killed.push({ pid: pidNum });
+                        } catch (e) {
+                            return { success: false, error: e.message };
+                        }
+                    }
+                }
+
+                if (name) {
+                    if (isWindows) {
+                        const { stderr } = await execPromise(`taskkill /IM "${name}" /F`, { timeout: 10000 }).catch(e => ({ stderr: e.message }));
+                        if (!stderr || stderr.includes('SUCCESS')) {
+                            killed.push({ name: name });
+                        }
+                    } else {
+                        try {
+                            await execPromise(`pkill -f "${name}"`, { timeout: 10000 });
+                            killed.push({ name: name });
+                        } catch (e) {
+                            // pkill returns non-zero if no processes matched, which is OK
+                            if (e.code !== 1) {
+                                return { success: false, error: e.message };
+                            }
+                        }
+                    }
+                }
+
+                return killed.length > 0
+                    ? { success: true, killed: killed }
+                    : { success: false, error: 'No processes killed' };
+            }
+
+            case 'start_process': {
+                const command = params.command;
+                const args = params.args || [];
+
+                if (!command) {
+                    return { success: false, error: 'command parameter is required' };
+                }
+
+                const argsArray = Array.isArray(args) ? args.map(String) : [];
+
+                try {
+                    const options = {
+                        detached: true,
+                        stdio: 'ignore'
+                    };
+
+                    if (isWindows) {
+                        options.windowsHide = true;
+                    }
+
+                    const child = spawn(command, argsArray, options);
+                    child.unref();
+
+                    return {
+                        success: true,
+                        pid: child.pid,
+                        command: command,
+                        args: argsArray
+                    };
+                } catch (e) {
+                    if (e.code === 'ENOENT') {
+                        return { success: false, error: `Command not found: ${command}` };
+                    }
+                    return { success: false, error: e.message };
+                }
+            }
+
+            default:
+                return { success: false, error: `Unknown process skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
 // Execute skills and return results
 async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
@@ -1670,10 +1857,14 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         let result;
 
         // Execute file operation skills locally (client-side) to avoid Docker container path issues
-        const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file'];
+        const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file', 'create_directory', 'append_to_file', 'tail_file', 'head_file'];
+        // Process management skills also run client-side to show user's actual processes
+        const processSkills = ['list_processes', 'kill_process', 'start_process'];
 
         if (fileOperationSkills.includes(call.skillName)) {
             result = await executeFileOperationSkill(call.skillName, call.params);
+        } else if (processSkills.includes(call.skillName)) {
+            result = await executeProcessSkill(call.skillName, call.params);
         } else {
             // Execute other skills via API (server-side)
             result = await api.executeSkill(call.skillName, call.params, agentId);
@@ -1724,6 +1915,22 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 const newPath = result.data?.newPath || result.newPath;
                 const relativePath = newPath.replace(userWorkingDirectory, '.');
                 addToHistory('system', `✓ File moved to: ${colorize(relativePath, 'green')}`);
+            } else if (call.skillName === 'list_processes') {
+                const count = result.data?.count || result.count || 0;
+                const platform = result.data?.platform || result.platform || os.platform();
+                addToHistory('system', `✓ Listed ${colorize(count.toString(), 'cyan')} processes on ${platform}`);
+            } else if (call.skillName === 'kill_process') {
+                const killed = result.data?.killed || result.killed || [];
+                if (killed.length > 0) {
+                    const desc = killed.map(k => k.pid ? `PID ${k.pid}` : k.name).join(', ');
+                    addToHistory('system', `✓ Killed process: ${colorize(desc, 'yellow')}`);
+                } else {
+                    addToHistory('system', `✓ kill_process completed`);
+                }
+            } else if (call.skillName === 'start_process') {
+                const pid = result.data?.pid || result.pid;
+                const command = result.data?.command || result.command || '';
+                addToHistory('system', `✓ Started process: ${colorize(command, 'cyan')} (PID: ${pid})`);
             } else {
                 addToHistory('system', `✓ ${call.skillName} completed successfully`);
             }
@@ -1784,6 +1991,18 @@ function buildSkillResultsMessage(results) {
             } else if (skillName === 'tail_file' || skillName === 'head_file') {
                 const lines = result.linesReturned || result.data?.linesReturned || 0;
                 message += `✓ ${skillName}: ${lines} lines read\n`;
+            } else if (skillName === 'list_processes') {
+                const count = result.count || result.data?.count || 0;
+                const platform = result.platform || result.data?.platform || 'system';
+                message += `✓ Listed ${count} processes on ${platform}\n`;
+            } else if (skillName === 'kill_process') {
+                const killed = result.killed || result.data?.killed || [];
+                const desc = killed.map(k => k.pid ? `PID ${k.pid}` : k.name).join(', ');
+                message += `✓ Killed process: ${desc}\n`;
+            } else if (skillName === 'start_process') {
+                const pid = result.pid || result.data?.pid;
+                const command = result.command || result.data?.command || '';
+                message += `✓ Started process: ${command} (PID: ${pid})\n`;
             } else {
                 message += `✓ ${skillName} completed\n`;
             }
@@ -1802,7 +2021,7 @@ function buildSkillResultsMessage(results) {
         // Check if it's a "skill not found" error - suggest alternatives
         const skillNotFound = failureMessages.some(m => m.toLowerCase().includes('skill not found'));
         if (skillNotFound) {
-            message += '\nA skill was not found. Only use these skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file.';
+            message += '\nA skill was not found. Only use these skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process.';
         } else {
             message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
         }

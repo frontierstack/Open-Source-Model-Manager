@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.3.19
+**Version:** 0.3.20
 
 ## Overview
 
@@ -820,7 +820,21 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.3.19 (Current)
+### Version 0.3.20 (Current)
+- **Process Skills Client-Side Execution**:
+  - **Fixed Process Listing**: `list_processes` now executes client-side, showing user's actual system processes instead of Docker container processes
+  - **Client-Side Process Management**: `list_processes`, `kill_process`, and `start_process` all execute locally for accurate results
+  - **Cross-Platform Support**: Works on Linux, macOS, and Windows using native system commands (`ps aux`, `tasklist`, etc.)
+  - **Sorting Options**: `list_processes` supports sorting by `pid`, `cpu`, `memory`, or `name`
+  - **Result Limits**: Configurable limit parameter to control number of returned processes
+  - **Clean Output Messages**: Process skill results display concise, color-coded status messages
+- **Skills Integration**:
+  - Added process skills to default-skills.json for consistency
+  - Updated system prompt to include process skill examples
+  - Process skills now appear in skill availability list
+- **Koda CLI Version**: 2.8.0
+
+### Version 0.3.19
 - **Massive Skills Library Expansion** (37 new skills, 80+ total):
   - **Process Management**: `list_processes`, `kill_process`, `start_process` - Full process control
   - **File Content Operations**: `append_to_file`, `tail_file`, `head_file`, `search_replace_file`, `diff_files` - Advanced file manipulation
