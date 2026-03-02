@@ -4902,6 +4902,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 response: fullResponse
                             };
                             res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+
+                            // Manually update token usage stats (streaming doesn't use res.send interceptor)
+                            if (req.apiKeyData) {
+                                const stats = apiKeyUsageStats.get(req.apiKeyData.id);
+                                if (stats && stats.requests.length > 0) {
+                                    const totalTokens = promptTokens + completionTokens;
+                                    const lastReq = stats.requests[stats.requests.length - 1];
+                                    lastReq.tokens = totalTokens;
+                                    stats.tokenCount += totalTokens;
+                                    apiKeyUsageStats.set(req.apiKeyData.id, stats);
+                                }
+                            }
+
                             res.end();
                             return;
                         }
@@ -4957,6 +4970,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     response: fullResponse
                 };
                 res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+
+                // Manually update token usage stats (streaming doesn't use res.send interceptor)
+                if (req.apiKeyData) {
+                    const stats = apiKeyUsageStats.get(req.apiKeyData.id);
+                    if (stats && stats.requests.length > 0) {
+                        const totalTokens = promptTokens + completionTokens;
+                        const lastReq = stats.requests[stats.requests.length - 1];
+                        lastReq.tokens = totalTokens;
+                        stats.tokenCount += totalTokens;
+                        apiKeyUsageStats.set(req.apiKeyData.id, stats);
+                    }
+                }
+
                 res.end();
             }
         });
