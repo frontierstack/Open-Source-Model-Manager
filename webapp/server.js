@@ -5826,24 +5826,93 @@ async function initializeDefaultSkillsOld() {
             {
                 id: crypto.randomBytes(16).toString('hex'),
                 name: 'web_search',
-                description: 'Search the web for information using search engines',
+                description: 'Search the web for information using DuckDuckGo (news, articles, websites)',
                 type: 'tool',
                 parameters: { query: 'string', maxResults: 'number' },
                 code: `async function execute(params) {
     if (!params.query) {
         throw new Error('query parameter is required');
     }
-    // Note: This is a placeholder. Implement with your preferred search API
-    // Examples: DuckDuckGo API, Google Custom Search, Bing Search API
-    return {
-        success: true,
-        message: 'Web search requires API key configuration',
-        query: params.query,
-        maxResults: params.maxResults || 10,
-        note: 'Configure your search API endpoint in the skill code'
-    };
+
+    const axios = require('axios');
+    const maxResults = Math.min(params.maxResults || 10, 20); // Cap at 20 results
+
+    try {
+        // Use DuckDuckGo HTML search (no API key required)
+        const response = await axios.get('https://html.duckduckgo.com/html/', {
+            params: { q: params.query },
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
+            timeout: 15000
+        });
+
+        const html = response.data;
+        const results = [];
+
+        // Parse DuckDuckGo HTML results
+        // Results are in divs with class "result"
+        const resultRegex = /<div class="result[^"]*"[^>]*>(.*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/gs;
+        const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\\/a>/s;
+        const snippetRegex = /<a class="result__snippet"[^>]*>(.*?)<\\/a>/s;
+
+        let match;
+        let count = 0;
+
+        while ((match = resultRegex.exec(html)) !== null && count < maxResults) {
+            const resultHtml = match[1];
+
+            const titleMatch = titleRegex.exec(resultHtml);
+            const snippetMatch = snippetRegex.exec(resultHtml);
+
+            if (titleMatch) {
+                const url = titleMatch[1].replace(/&amp;/g, '&');
+                const title = titleMatch[2]
+                    .replace(/<[^>]*>/g, '') // Remove HTML tags
+                    .replace(/&quot;/g, '"')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&#x27;/g, "'")
+                    .trim();
+
+                const snippet = snippetMatch ? snippetMatch[1]
+                    .replace(/<[^>]*>/g, '')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&#x27;/g, "'")
+                    .trim() : '';
+
+                if (url && title) {
+                    results.push({
+                        title: title,
+                        url: url,
+                        snippet: snippet
+                    });
+                    count++;
+                }
+            }
+        }
+
+        if (results.length === 0) {
+            return {
+                success: true,
+                query: params.query,
+                results: [],
+                message: 'No results found. Try a different search query.'
+            };
+        }
+
+        return {
+            success: true,
+            query: params.query,
+            resultCount: results.length,
+            results: results
+        };
+
+    } catch (error) {
+        throw new Error(\`Web search failed: \${error.message}\`);
+    }
 }`,
-                enabled: false,
+                enabled: true,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             },

@@ -800,6 +800,40 @@ function displayStatusBar() {
     console.log('');
 }
 
+// Track if we're currently streaming (to avoid flicker)
+let isStreaming = false;
+let lastStreamingLineCount = 0;
+
+// Update streaming message without full screen refresh (reduces flicker)
+function updateStreamingMessage(message) {
+    if (!isStreaming) return;
+
+    const formattedContent = formatCodeBlocks(message);
+    const fullMessage = `${colorize('Koda:', 'cyan')} ${formattedContent}`;
+
+    // Split into lines to handle multi-line streaming
+    const lines = fullMessage.split('\n');
+    const lineCount = lines.length;
+
+    // Clear previous streaming lines
+    if (lastStreamingLineCount > 0) {
+        // Move cursor up and clear lines
+        for (let i = 0; i < lastStreamingLineCount; i++) {
+            readline.moveCursor(process.stdout, 0, -1);
+            readline.clearLine(process.stdout, 0);
+        }
+        readline.cursorTo(process.stdout, 0);
+    }
+
+    // Write new content
+    process.stdout.write(fullMessage);
+    if (!message.endsWith('\n')) {
+        process.stdout.write('\n');
+    }
+
+    lastStreamingLineCount = lineCount;
+}
+
 // Encryption utilities
 function getEncryptionKey() {
     // Generate a machine-specific key from hostname and username
@@ -3045,6 +3079,7 @@ async function handleChat(api, message) {
         // Use streaming API
         let streamingResponse = '';
         let tokenCount = 0;
+        let hasRemovedThinkingIndicator = false;
 
         const result = await api.chatStream(
             currentMessage,
@@ -3055,25 +3090,37 @@ async function handleChat(api, message) {
                 streamingResponse += token;
                 tokenCount++;
 
-                // Update display incrementally (every 5 tokens or on newline to reduce flicker)
-                if (tokenCount % 5 === 0 || token.includes('\n')) {
-                    // Remove thinking indicator on first token
-                    if (iteration === 1 && chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'system') {
-                        chatHistory.pop();
-                    }
+                // Remove thinking indicator on first token
+                if (!hasRemovedThinkingIndicator && iteration === 1 && chatHistory.length > 0 &&
+                    chatHistory[chatHistory.length - 1].role === 'system') {
+                    chatHistory.pop();
+                    hasRemovedThinkingIndicator = true;
 
-                    // Update or add assistant message
-                    const lastMsg = chatHistory[chatHistory.length - 1];
-                    if (lastMsg && lastMsg.role === 'assistant-streaming') {
-                        lastMsg.message = streamingResponse + colorize(' ▊', 'cyan'); // Streaming cursor
-                    } else {
-                        addToHistory('assistant-streaming', streamingResponse + colorize(' ▊', 'cyan'));
-                    }
+                    // Enable streaming mode and do initial full refresh
+                    isStreaming = true;
+                    lastStreamingLineCount = 0;
                     displayChatHistory();
+                }
+
+                // Update or add assistant message in history
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant-streaming') {
+                    lastMsg.message = streamingResponse + colorize(' ▊', 'cyan'); // Streaming cursor
+                } else {
+                    addToHistory('assistant-streaming', streamingResponse + colorize(' ▊', 'cyan'));
+                }
+
+                // Update display without flicker (every 3 tokens or on newline)
+                if (tokenCount % 3 === 0 || token.includes('\n')) {
+                    updateStreamingMessage(streamingResponse + colorize(' ▊', 'cyan'));
                 }
             },
             // onComplete callback
             (fullResponse, tokens) => {
+                // Disable streaming mode
+                isStreaming = false;
+                lastStreamingLineCount = 0;
+
                 // Remove streaming cursor
                 const lastMsg = chatHistory[chatHistory.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant-streaming') {
@@ -3095,6 +3142,7 @@ async function handleChat(api, message) {
                         conversationContext.reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0) : 0;
                 }
 
+                // Final full refresh with updated stats
                 displayChatHistory();
             }
         );
