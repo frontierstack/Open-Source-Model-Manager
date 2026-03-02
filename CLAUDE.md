@@ -142,6 +142,7 @@ koda
 ### Features
 - Interactive terminal chat with AI models
 - **Autonomous Skill Execution**: AI executes skills directly (create files, read files, etc.)
+- **Clean Skill Messages**: Concise, professional output for all skill executions (no verbose JSON)
 - Agent creation and management
 - **Agent Collaboration Mode**: Multiple agents work together on tasks
 - File operations (read/write/delete)
@@ -766,6 +767,14 @@ Presence Penalty: 0.2
 ## Recent Updates
 
 ### Version 0.3.17 (Current)
+- **Koda CLI Skill Execution Improvements** (Latest):
+  - **Clean Skill Messages**: Removed verbose JSON output from all skill execution feedback
+  - **Universal Clean Formatting**: All 42+ skills now display concise, user-friendly messages
+  - **Directory Deletion Enhancement**: `delete_directory` now shows "✓ Directory deleted: <path>" instead of generic message
+  - **Consistent File Operation Messages**: All file operations (create, read, update, delete, list, move) have clean, color-highlighted output
+  - **Simplified AI Feedback**: Reduced verbose "[SKILL EXECUTION RESULTS]" to clean "[SKILL RESULTS]" with minimal text
+  - **Future-Proof**: Fallback handling ensures any new skills automatically use clean message formatting
+  - **Better UX**: Users see professional, readable output like "✓ File deleted: ./path" instead of raw JSON structures
 - **Enhanced Skills Library**:
   - **Expanded from 27 to 42+ default skills** for comprehensive automation capabilities
   - **Windows-Specific Skills**: PowerShell execution, cmd.exe commands, Windows services management, registry read/write
