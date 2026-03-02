@@ -76,6 +76,11 @@ let focusFiles = new Set(); // Set of file paths that are focused
 let collabAgents = []; // Array of selected agent IDs for collaboration
 let collabContext = []; // Shared context between collaborating agents
 
+// Performance optimizations
+let skillPromptCache = null; // Cache for skill system prompt
+let skillPromptCacheTime = 0; // Timestamp when cache was built
+const SKILL_PROMPT_CACHE_TTL = 300000; // 5 minutes
+
 function log(message, color = null) {
     if (color) {
         console.log(colorize(message, color));
