@@ -8,7 +8,8 @@
 const readline = require('readline');
 const axios = require('axios');
 const path = require('path');
-const fs = require('fs');
+const fsSync = require('fs');
+const fs = require('fs').promises;
 const os = require('os');
 const crypto = require('crypto');
 const Diff = require('diff');
@@ -427,8 +428,8 @@ function moveCode(sourceContent, sourcePath, destPath, symbolName) {
 
     // Add to destination (create or append)
     let newDestContent = '';
-    if (fs.existsSync(destPath)) {
-        const destContent = fs.readFileSync(destPath, 'utf8');
+    if (fsSync.existsSync(destPath)) {
+        const destContent = fsSync.readFileSync(destPath, 'utf8');
         newDestContent = destContent + '\n\n' + codeToMove + '\n\n' + exportLine;
     } else {
         newDestContent = codeToMove + '\n\n' + exportLine;
@@ -574,9 +575,9 @@ function addToWorkingSet(filePath, content = null) {
     const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
 
     // Check if file exists and read content if not provided
-    if (content === null && fs.existsSync(absolutePath)) {
+    if (content === null && fsSync.existsSync(absolutePath)) {
         try {
-            content = fs.readFileSync(absolutePath, 'utf8');
+            content = fsSync.readFileSync(absolutePath, 'utf8');
         } catch (error) {
             return false;
         }
@@ -666,12 +667,12 @@ function detectImports(content, filePath) {
             // Add common extensions if not present
             if (!path.extname(importPath)) {
                 for (const ext of ['.js', '.ts', '.jsx', '.tsx']) {
-                    if (fs.existsSync(importPath + ext)) {
+                    if (fsSync.existsSync(importPath + ext)) {
                         imports.push(importPath + ext);
                         break;
                     }
                 }
-            } else if (fs.existsSync(importPath)) {
+            } else if (fsSync.existsSync(importPath)) {
                 imports.push(importPath);
             }
         }
@@ -683,7 +684,7 @@ function detectImports(content, filePath) {
         const module = match[1] || match[2];
         if (module && module.startsWith('.')) {
             const modulePath = path.resolve(fileDir, module.replace(/\./g, '/') + '.py');
-            if (fs.existsSync(modulePath)) {
+            if (fsSync.existsSync(modulePath)) {
                 imports.push(modulePath);
             }
         }
@@ -884,8 +885,8 @@ function decryptData(encryptedData) {
 // Load configuration
 function loadConfig() {
     try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const fileContent = fs.readFileSync(CONFIG_FILE, 'utf8');
+        if (fsSync.existsSync(CONFIG_FILE)) {
+            const fileContent = fsSync.readFileSync(CONFIG_FILE, 'utf8');
 
             // Try to decrypt first (new format)
             if (fileContent.includes(':')) {
@@ -919,13 +920,13 @@ function loadConfig() {
 // Save configuration (encrypted)
 function saveConfig(config) {
     try {
-        if (!fs.existsSync(CONFIG_DIR)) {
-            fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        if (!fsSync.existsSync(CONFIG_DIR)) {
+            fsSync.mkdirSync(CONFIG_DIR, { recursive: true });
         }
         const encrypted = encryptData(config);
-        fs.writeFileSync(CONFIG_FILE, encrypted, 'utf8');
+        fsSync.writeFileSync(CONFIG_FILE, encrypted, 'utf8');
         // Set restrictive permissions (owner read/write only)
-        fs.chmodSync(CONFIG_FILE, 0o600);
+        fsSync.chmodSync(CONFIG_FILE, 0o600);
         return true;
     } catch (error) {
         console.error(colorize('Error saving config:', 'red'), error.message);
@@ -1477,8 +1478,8 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             const filePath = call.params.filePath;
 
             try {
-                if (fs.existsSync(filePath)) {
-                    oldContent = fs.readFileSync(filePath, 'utf8');
+                if (fsSync.existsSync(filePath)) {
+                    oldContent = fsSync.readFileSync(filePath, 'utf8');
                 }
             } catch (error) {
                 // File doesn't exist or can't be read - that's OK for create_file
@@ -1624,7 +1625,7 @@ function scanDirectory(dir, maxDepth = 2, currentDepth = 0) {
     if (currentDepth >= maxDepth) return files;
 
     try {
-        const items = fs.readdirSync(dir);
+        const items = fsSync.readdirSync(dir);
         for (const item of items) {
             // Skip common ignore patterns
             if (item.startsWith('.') || item === 'node_modules' || item === 'dist' || item === 'build') {
@@ -1632,7 +1633,7 @@ function scanDirectory(dir, maxDepth = 2, currentDepth = 0) {
             }
 
             const fullPath = path.join(dir, item);
-            const stat = fs.statSync(fullPath);
+            const stat = fsSync.statSync(fullPath);
 
             if (stat.isDirectory()) {
                 files.push({ path: fullPath, type: 'directory', name: item });
@@ -1669,9 +1670,9 @@ function readProjectFiles(cwd) {
     // Find and read key files
     for (const fileName of keyFileNames) {
         const filePath = path.join(cwd, fileName);
-        if (fs.existsSync(filePath)) {
+        if (fsSync.existsSync(filePath)) {
             try {
-                const content = fs.readFileSync(filePath, 'utf8');
+                const content = fsSync.readFileSync(filePath, 'utf8');
                 projectInfo.keyFiles.push({
                     name: fileName,
                     path: filePath,
@@ -1800,7 +1801,7 @@ async function handleInit(api) {
 
     // Write koda.md
     const kodaPath = path.join(cwd, 'koda.md');
-    fs.writeFileSync(kodaPath, kodaContent);
+    fsSync.writeFileSync(kodaPath, kodaContent);
 
     logSuccess(`Project understanding saved to koda.md`);
     logDim(`File: ${kodaPath}\n`);
@@ -1851,8 +1852,8 @@ async function handleProject(args) {
 
     try {
         // Create project directory
-        if (!fs.existsSync(projectPath)) {
-            fs.mkdirSync(projectPath, { recursive: true });
+        if (!fsSync.existsSync(projectPath)) {
+            fsSync.mkdirSync(projectPath, { recursive: true });
             addToHistory('system', `✓ Project directory created: ${colorize('./' + projectName, 'green')}`);
             addToHistory('system', `  Full path: ${projectPath}`);
             addToHistory('system', '');
@@ -1869,13 +1870,13 @@ async function handleProject(args) {
 
 async function handleCwd() {
     addToHistory('system', `Current working directory: ${colorize(userWorkingDirectory, 'cyan')}`);
-    const files = fs.readdirSync(userWorkingDirectory).slice(0, 10);
+    const files = fsSync.readdirSync(userWorkingDirectory).slice(0, 10);
     if (files.length > 0) {
         addToHistory('system', '');
         addToHistory('system', 'Contents (first 10 items):');
         files.forEach(file => {
             const fullPath = path.join(userWorkingDirectory, file);
-            const isDir = fs.statSync(fullPath).isDirectory();
+            const isDir = fsSync.statSync(fullPath).isDirectory();
             const icon = isDir ? '📁' : '📄';
             addToHistory('system', `  ${icon} ${file}`);
         });
@@ -1920,7 +1921,7 @@ async function handleAddFile(args) {
     const filePath = args.join(' ');
     const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
 
-    if (!fs.existsSync(absolutePath)) {
+    if (!fsSync.existsSync(absolutePath)) {
         addToHistory('system', `✗ File not found: ${filePath}`);
         displayChatHistory();
         return;
@@ -2006,7 +2007,7 @@ async function handleFocus(args) {
 
     // Add to working set if not already there
     if (!workingFiles.has(absolutePath)) {
-        if (fs.existsSync(absolutePath)) {
+        if (fsSync.existsSync(absolutePath)) {
             addToWorkingSet(absolutePath);
         } else {
             addToHistory('system', `✗ File not found: ${filePath}`);
@@ -2093,13 +2094,13 @@ async function handleRefactorExtract(args) {
 
     const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
 
-    if (!fs.existsSync(absolutePath)) {
+    if (!fsSync.existsSync(absolutePath)) {
         addToHistory('system', `✗ File not found: ${filePath}`);
         displayChatHistory();
         return;
     }
 
-    const content = fs.readFileSync(absolutePath, 'utf8');
+    const content = fsSync.readFileSync(absolutePath, 'utf8');
     const result = extractFunction(content, absolutePath, startLine, endLine, functionName);
 
     // Show diff preview
@@ -2120,7 +2121,7 @@ async function handleRefactorExtract(args) {
     const confirmed = await promptConfirmation('Apply this refactoring?');
 
     if (confirmed) {
-        fs.writeFileSync(absolutePath, result.newContent, 'utf8');
+        fsSync.writeFileSync(absolutePath, result.newContent, 'utf8');
         addToHistory('system', colorize(`✓ Function extracted to ${functionName}`, 'green'));
 
         // Add to working set if not already there
@@ -2144,13 +2145,13 @@ async function handleRefactorRename(args) {
     const [filePath, oldName, newName] = args;
     const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
 
-    if (!fs.existsSync(absolutePath)) {
+    if (!fsSync.existsSync(absolutePath)) {
         addToHistory('system', `✗ File not found: ${filePath}`);
         displayChatHistory();
         return;
     }
 
-    const content = fs.readFileSync(absolutePath, 'utf8');
+    const content = fsSync.readFileSync(absolutePath, 'utf8');
     const result = renameSymbol(content, absolutePath, oldName, newName);
 
     // Show preview
@@ -2173,7 +2174,7 @@ async function handleRefactorRename(args) {
     const confirmed = await promptConfirmation('Apply this refactoring?');
 
     if (confirmed) {
-        fs.writeFileSync(absolutePath, result.newContent, 'utf8');
+        fsSync.writeFileSync(absolutePath, result.newContent, 'utf8');
         addToHistory('system', colorize(`✓ Renamed ${result.replacements} occurrence(s) of ${oldName} to ${newName}`, 'green'));
 
         // Update working set
@@ -2198,13 +2199,13 @@ async function handleRefactorMove(args) {
     const absoluteSourcePath = path.isAbsolute(sourcePath) ? sourcePath : path.join(userWorkingDirectory, sourcePath);
     const absoluteDestPath = path.isAbsolute(destPath) ? destPath : path.join(userWorkingDirectory, destPath);
 
-    if (!fs.existsSync(absoluteSourcePath)) {
+    if (!fsSync.existsSync(absoluteSourcePath)) {
         addToHistory('system', `✗ Source file not found: ${sourcePath}`);
         displayChatHistory();
         return;
     }
 
-    const sourceContent = fs.readFileSync(absoluteSourcePath, 'utf8');
+    const sourceContent = fsSync.readFileSync(absoluteSourcePath, 'utf8');
     const result = moveCode(sourceContent, absoluteSourcePath, absoluteDestPath, symbolName);
 
     // Show preview
@@ -2231,8 +2232,8 @@ async function handleRefactorMove(args) {
 
     if (confirmed) {
         // Write both files
-        fs.writeFileSync(absoluteSourcePath, result.newSourceContent, 'utf8');
-        fs.writeFileSync(absoluteDestPath, result.newDestContent, 'utf8');
+        fsSync.writeFileSync(absoluteSourcePath, result.newSourceContent, 'utf8');
+        fsSync.writeFileSync(absoluteDestPath, result.newDestContent, 'utf8');
 
         addToHistory('system', colorize(`✓ Moved ${symbolName} to ${destPath}`, 'green'));
         addToHistory('system', colorize(`  Import added: ${result.importLine}`, 'dim'));
@@ -2322,13 +2323,13 @@ async function handleQuality(args) {
     const filePath = args.join(' ');
     const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(userWorkingDirectory, filePath);
 
-    if (!fs.existsSync(absolutePath)) {
+    if (!fsSync.existsSync(absolutePath)) {
         addToHistory('system', `✗ File not found: ${filePath}`);
         displayChatHistory();
         return;
     }
 
-    const content = fs.readFileSync(absolutePath, 'utf8');
+    const content = fsSync.readFileSync(absolutePath, 'utf8');
     const metrics = analyzeCodeQuality(content, absolutePath);
     const relativePath = absolutePath.replace(userWorkingDirectory, '.');
 
