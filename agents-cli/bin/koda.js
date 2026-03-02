@@ -1352,7 +1352,10 @@ Skill execution format:
 [SKILL:create_file(filePath="${userWorkingDirectory}/<project_dir>/<filename>", content="file content here")]
 [SKILL:read_file(filePath="${userWorkingDirectory}/<path_to_file>")]
 [SKILL:update_file(filePath="${userWorkingDirectory}/<path_to_file>", content="updated file content here")]
+[SKILL:delete_file(filePath="${userWorkingDirectory}/<path_to_file>")]
+[SKILL:delete_directory(dirPath="${userWorkingDirectory}/<directory>")]
 [SKILL:list_directory(dirPath="${userWorkingDirectory}/<directory>")]
+[SKILL:move_file(sourcePath="${userWorkingDirectory}/<old_path>", destPath="${userWorkingDirectory}/<new_path>")]
 
 CRITICAL EXECUTION RULES:
 1. When working with files, EXECUTE skills directly - don't just suggest or describe changes
@@ -1625,6 +1628,20 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
 
                 // Auto-add to working set (refresh content)
                 addToWorkingSet(filePath);
+            } else if (call.skillName === 'delete_file' && (result.data?.filePath || result.filePath)) {
+                const filePath = result.data?.filePath || result.filePath;
+                const relativePath = filePath.replace(userWorkingDirectory, '.');
+                addToHistory('system', `✓ File deleted: ${colorize(relativePath, 'green')}`);
+            } else if (call.skillName === 'delete_directory' && (result.data?.dirPath || result.dirPath)) {
+                const dirPath = result.data?.dirPath || result.dirPath;
+                const relativePath = dirPath.replace(userWorkingDirectory, '.');
+                addToHistory('system', `✓ Directory deleted: ${colorize(relativePath, 'green')}`);
+            } else if (call.skillName === 'list_directory') {
+                addToHistory('system', `✓ Directory listed successfully`);
+            } else if (call.skillName === 'move_file' && (result.data?.newPath || result.newPath)) {
+                const newPath = result.data?.newPath || result.newPath;
+                const relativePath = newPath.replace(userWorkingDirectory, '.');
+                addToHistory('system', `✓ File moved to: ${colorize(relativePath, 'green')}`);
             } else {
                 addToHistory('system', `✓ ${call.skillName} completed successfully`);
             }
@@ -1646,21 +1663,41 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
 function buildSkillResultsMessage(results) {
     if (results.length === 0) return '';
 
-    let message = '\n\n[SKILL EXECUTION RESULTS]\n';
+    let message = '\n\n[SKILL RESULTS]\n';
 
     for (const r of results) {
         if (r.success) {
-            message += `✓ ${r.skill}: ${JSON.stringify(r.result, null, 2)}\n`;
+            // Provide concise, clean feedback without verbose JSON
+            const skillName = r.skill;
+            const result = r.result;
+
+            // Extract key information based on skill type
+            if (skillName === 'create_file' || skillName === 'update_file') {
+                const path = result.filePath || result.data?.filePath || 'unknown';
+                message += `✓ ${skillName}: ${path}\n`;
+            } else if (skillName === 'delete_file') {
+                const path = result.filePath || result.data?.filePath || 'file deleted';
+                message += `✓ File deleted: ${path}\n`;
+            } else if (skillName === 'delete_directory') {
+                const path = result.dirPath || result.data?.dirPath || 'directory deleted';
+                message += `✓ Directory deleted: ${path}\n`;
+            } else if (skillName === 'read_file') {
+                message += `✓ File read successfully\n`;
+            } else if (skillName === 'list_directory') {
+                const count = result.files?.length || result.data?.files?.length || 0;
+                message += `✓ Directory listed: ${count} items\n`;
+            } else if (skillName === 'move_file') {
+                const newPath = result.newPath || result.data?.newPath || 'moved';
+                message += `✓ File moved to: ${newPath}\n`;
+            } else {
+                message += `✓ ${skillName} completed\n`;
+            }
         } else {
-            message += `✗ ${r.skill}: ERROR - ${r.error}\n`;
+            message += `✗ ${r.skill} failed: ${r.error}\n`;
         }
     }
 
-    message += '\n\nIMPORTANT: The skills have been executed successfully. The task is complete unless:';
-    message += '\n1. A skill failed and needs to be retried with corrections';
-    message += '\n2. You need to execute additional skills to complete a multi-step task';
-    message += '\n3. You discovered an issue that requires executing update_file to fix';
-    message += '\n\nIf the task is complete, provide a brief confirmation. Do NOT just describe what should be fixed - execute update_file if fixes are needed.';
+    message += '\nProvide a brief confirmation. If fixes are needed, execute update_file immediately.';
 
     return message;
 }
