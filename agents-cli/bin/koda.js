@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const Diff = require('diff');
 
 // Configuration
 const CONFIG_DIR = path.join(os.homedir(), '.koda');
@@ -121,6 +122,52 @@ function formatCodeBlocks(content) {
         // Footer separator
         formatted += colorize('━'.repeat(Math.min(60, lang.length + 10)), 'dim') + '\n';
         return formatted;
+    });
+}
+
+// Display colored diff
+function displayDiff(oldContent, newContent, filePath) {
+    const diff = Diff.createPatch(filePath, oldContent || '', newContent || '', 'original', 'modified');
+    const lines = diff.split('\n');
+
+    log('\n' + colorize('━━━ DIFF PREVIEW ━━━', 'yellow'));
+    log(colorize(`File: ${filePath}`, 'cyan'));
+    log(colorize('━'.repeat(60), 'dim'));
+
+    for (const line of lines.slice(4)) { // Skip header lines
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+            log(colorize(line, 'green')); // Added lines
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+            log(colorize(line, 'red')); // Removed lines
+        } else if (line.startsWith('@@')) {
+            log(colorize(line, 'cyan')); // Line numbers
+        } else {
+            logDim(line); // Context lines
+        }
+    }
+
+    log(colorize('━'.repeat(60), 'dim') + '\n');
+}
+
+// Prompt user for confirmation
+function promptConfirmation(message) {
+    return new Promise((resolve) => {
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+
+        rl.question(colorize(`${message} (y/n/s=skip): `, 'yellow'), (answer) => {
+            rl.close();
+            const normalized = answer.trim().toLowerCase();
+            if (normalized === 'y' || normalized === 'yes') {
+                resolve('yes');
+            } else if (normalized === 's' || normalized === 'skip') {
+                resolve('skip');
+            } else {
+                resolve('no');
+            }
+        });
     });
 }
 
@@ -577,8 +624,60 @@ For all other questions (math, coding help, explanations, general chat), respond
 // Execute skills and return results
 async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
+    const fileModifyingSkills = ['create_file', 'update_file'];
 
     for (const call of skillCalls) {
+        // Check if this is a file-modifying skill that needs diff preview
+        const needsDiffPreview = fileModifyingSkills.includes(call.skillName) && call.params.filePath;
+
+        if (needsDiffPreview) {
+            // Read current file content (if exists)
+            let oldContent = '';
+            const filePath = call.params.filePath;
+
+            try {
+                if (fs.existsSync(filePath)) {
+                    oldContent = fs.readFileSync(filePath, 'utf8');
+                }
+            } catch (error) {
+                // File doesn't exist or can't be read - that's OK for create_file
+            }
+
+            const newContent = call.params.content || '';
+
+            // Show diff preview
+            const relativePath = filePath.replace(userWorkingDirectory, '.');
+            const operation = call.skillName === 'create_file' ? 'Create' : 'Update';
+
+            displayDiff(oldContent, newContent, relativePath);
+
+            // Prompt for confirmation
+            const confirmation = await promptConfirmation(`${operation} ${relativePath}?`);
+
+            if (confirmation === 'no') {
+                addToHistory('system', `✗ ${operation} cancelled by user: ${relativePath}`);
+                results.push({
+                    skill: call.skillName,
+                    success: false,
+                    error: 'Cancelled by user',
+                    skipped: false
+                });
+                displayChatHistory();
+                continue;
+            } else if (confirmation === 'skip') {
+                addToHistory('system', `⊘ ${operation} skipped: ${relativePath}`);
+                results.push({
+                    skill: call.skillName,
+                    success: true,
+                    result: { filePath, skipped: true },
+                    skipped: true
+                });
+                displayChatHistory();
+                continue;
+            }
+            // If 'yes', continue with execution below
+        }
+
         addToHistory('system', `Executing skill: ${call.skillName}...`);
         displayChatHistory();
 
