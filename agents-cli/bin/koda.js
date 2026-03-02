@@ -1316,7 +1316,7 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
     }
 
     // Only include the most useful file-related skills to avoid overwhelming the context
-    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'delete_directory', 'list_directory'];
+    const prioritySkills = ['create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory'];
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
@@ -1353,17 +1353,21 @@ Skill execution format:
 [SKILL:read_file(filePath="${userWorkingDirectory}/<path_to_file>")]
 [SKILL:update_file(filePath="${userWorkingDirectory}/<path_to_file>", content="updated file content here")]
 [SKILL:delete_file(filePath="${userWorkingDirectory}/<path_to_file>")]
+[SKILL:create_directory(dirPath="${userWorkingDirectory}/<directory>")]
 [SKILL:delete_directory(dirPath="${userWorkingDirectory}/<directory>")]
 [SKILL:list_directory(dirPath="${userWorkingDirectory}/<directory>")]
 [SKILL:move_file(sourcePath="${userWorkingDirectory}/<old_path>", destPath="${userWorkingDirectory}/<new_path>")]
 
 CRITICAL EXECUTION RULES:
-1. When working with files, EXECUTE skills directly - don't just suggest or describe changes
-2. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
-3. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
-4. Intelligently choose project directory names based on what the user is building
-5. When the user switches topics (e.g., from coding to summarizing an article), recognize this as a NEW request and respond to it - don't continue with the previous task
-6. For non-file operations (math, coding help, explanations, general chat), respond conversationally
+1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file.
+2. When working with files, EXECUTE skills directly - don't just suggest or describe changes
+3. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
+4. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
+5. Intelligently choose project directory names based on what the user is building
+6. When the user switches topics (e.g., from coding to summarizing an article), recognize this as a NEW request and respond to it - don't continue with the previous task
+7. For non-file operations (math, coding help, explanations, general chat), respond conversationally
+8. STOP LOOPING: After skills execute successfully, respond with a brief natural language confirmation - do NOT execute more skills to "verify" or "confirm" (no read_file to check, no list_directory to verify)
+9. Only continue with more skills if a previous skill FAILED and you need to fix it
 
 ADDITIONAL CAPABILITIES:
 You have access to advanced development tools that you should use proactively when appropriate:
@@ -1447,6 +1451,23 @@ async function executeFileOperationSkill(skillName, params) {
                     success: true,
                     filePath: filePath,
                     message: `File deleted: ${filePath}`
+                };
+            }
+
+            case 'create_directory': {
+                const dirPath = params.dirPath;
+
+                if (!dirPath) {
+                    return { success: false, error: 'dirPath is required' };
+                }
+
+                // Create directory recursively
+                await fs.mkdir(dirPath, { recursive: true });
+
+                return {
+                    success: true,
+                    dirPath: dirPath,
+                    message: `Directory created: ${dirPath}`
                 };
             }
 
@@ -1664,6 +1685,9 @@ function buildSkillResultsMessage(results) {
     if (results.length === 0) return '';
 
     let message = '\n\n[SKILL RESULTS]\n';
+    let allSucceeded = true;
+    let hasFailures = false;
+    let failureMessages = [];
 
     for (const r of results) {
         if (r.success) {
@@ -1678,6 +1702,9 @@ function buildSkillResultsMessage(results) {
             } else if (skillName === 'delete_file') {
                 const path = result.filePath || result.data?.filePath || 'file deleted';
                 message += `✓ File deleted: ${path}\n`;
+            } else if (skillName === 'create_directory') {
+                const path = result.dirPath || result.data?.dirPath || 'directory created';
+                message += `✓ Directory created: ${path}\n`;
             } else if (skillName === 'delete_directory') {
                 const path = result.dirPath || result.data?.dirPath || 'directory deleted';
                 message += `✓ Directory deleted: ${path}\n`;
@@ -1693,11 +1720,25 @@ function buildSkillResultsMessage(results) {
                 message += `✓ ${skillName} completed\n`;
             }
         } else {
+            allSucceeded = false;
+            hasFailures = true;
             message += `✗ ${r.skill} failed: ${r.error}\n`;
+            failureMessages.push(`${r.skill}: ${r.error}`);
         }
     }
 
-    message += '\nProvide a brief confirmation. If fixes are needed, execute update_file immediately.';
+    // Smart feedback based on results
+    if (allSucceeded) {
+        message += '\nTASK COMPLETE. Respond with a brief confirmation in natural language. DO NOT execute any more skills.';
+    } else if (hasFailures) {
+        // Check if it's a "skill not found" error - suggest alternatives
+        const skillNotFound = failureMessages.some(m => m.toLowerCase().includes('skill not found'));
+        if (skillNotFound) {
+            message += '\nA skill was not found. Only use these skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file.';
+        } else {
+            message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
+        }
+    }
 
     return message;
 }

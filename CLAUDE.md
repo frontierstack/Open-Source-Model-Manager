@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.3.17
+**Version:** 0.3.18
 
 ## Overview
 
@@ -507,13 +507,14 @@ async function execute(params) {
 - **tool**: API calls, web requests
 - **command**: Shell execution (disabled by default)
 
-### Available Default Skills (42+)
+### Available Default Skills (44)
 
-**File Operations (8 skills)**
+**File Operations (9 skills)**
 - `create_file` - Create new files
 - `read_file` - Read file contents
 - `update_file` - Update existing files
 - `delete_file` - Delete files
+- `create_directory` - Create directories (with automatic parent directory creation)
 - `delete_directory` - Delete directories and all contents recursively
 - `list_directory` - List directory contents
 - `move_file` - Move or rename files
@@ -766,8 +767,21 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.3.17 (Current)
-- **Koda CLI Skill Execution Improvements** (Latest):
+### Version 0.3.18 (Current)
+- **Koda CLI Smarter Skill Execution**:
+  - **Fixed Infinite Looping**: AI no longer loops after successful task completion - stops when skills succeed
+  - **Smart Completion Detection**: Feedback message now explicitly tells AI "TASK COMPLETE. DO NOT execute any more skills" when all skills succeed
+  - **Skill Availability Awareness**: System prompt now lists exact available skills, preventing attempts to use non-existent skills
+  - **New `create_directory` Skill**: Added client-side and server-side support for creating directories
+  - **Better Error Recovery**: When a skill isn't found, clear guidance provided on available skills
+  - **Reduced Repetition**: AI no longer unnecessarily verifies work with read_file/list_directory after successful operations
+  - **Clearer Stop Conditions**: Critical rule added: "STOP LOOPING: After skills execute successfully, respond with a brief natural language confirmation"
+- **Skills Library Update**:
+  - **New Skill: `create_directory`** - Create directories with automatic parent directory creation
+  - **Total Skills: 44** - Added create_directory and delete_directory to server-side skills.json
+
+### Version 0.3.17
+- **Koda CLI Skill Execution Improvements**:
   - **Clean Skill Messages**: Removed verbose JSON output from all skill execution feedback
   - **Universal Clean Formatting**: All 42+ skills now display concise, user-friendly messages
   - **Directory Deletion Enhancement**: `delete_directory` now shows "✓ Directory deleted: <path>" instead of generic message
