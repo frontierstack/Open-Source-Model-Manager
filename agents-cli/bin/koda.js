@@ -1094,9 +1094,13 @@ class AgentAPI {
         return this.request('POST', '/api/agent/file/move', { sourcePath, destPath });
     }
 
-    // Web search using DuckDuckGo
-    async webSearch(query, limit = 5) {
-        return this.request('GET', `/api/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+    // Web search using DuckDuckGo (with optional content fetching)
+    async webSearch(query, limit = 5, fetchContent = false, contentLimit = 3) {
+        let url = `/api/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+        if (fetchContent) {
+            url += `&fetchContent=true&contentLimit=${contentLimit}`;
+        }
+        return this.request('GET', url);
     }
 
     // Execute a skill
@@ -4919,7 +4923,7 @@ async function handleCollabChat(api, message, selectedAgents) {
     addToHistory('system', `Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
     displayChatHistory();
 
-    // If websearch mode is enabled, perform web search first
+    // If websearch mode is enabled, perform search with content fetching
     let webSearchContext = '';
     if (websearchMode) {
         try {
@@ -4928,7 +4932,8 @@ async function handleCollabChat(api, message, selectedAgents) {
             addToHistory('system', colorize('Searching the web...', 'yellow'));
             displayChatHistory();
 
-            const searchResponse = await api.webSearch(message, 10);
+            // Search with content fetching enabled (8 results, fetch content from top 5)
+            const searchResponse = await api.webSearch(message, 8, true, 5);
 
             if (!searchResponse.success) {
                 throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
@@ -4936,23 +4941,34 @@ async function handleCollabChat(api, message, selectedAgents) {
 
             if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
                 const searchResults = searchResponse.data.results;
+                const contentCount = searchResponse.data.contentFetchedCount || 0;
 
-                // Build search context for agents with enhanced formatting
+                // Build search context for agents with actual content
                 webSearchContext = '\n\n=== WEB SEARCH RESULTS ===\n';
-                webSearchContext += `Query: "${message}"\n`;
-                webSearchContext += `Found ${searchResults.length} results:\n\n`;
+                webSearchContext += `Query: "${message}"`;
+                if (searchResponse.data.enhancedQuery) {
+                    webSearchContext += ` (enhanced: "${searchResponse.data.enhancedQuery}")`;
+                }
+                webSearchContext += `\nFound ${searchResults.length} results (${contentCount} with content):\n\n`;
 
                 searchResults.forEach((result, idx) => {
-                    webSearchContext += `[${idx + 1}] ${result.title}\n`;
-                    webSearchContext += `    URL: ${result.url}\n`;
-                    webSearchContext += `    ${result.snippet}\n\n`;
+                    webSearchContext += `━━━ SOURCE [${idx + 1}] ━━━\n`;
+                    webSearchContext += `Title: ${result.title}\n`;
+                    webSearchContext += `URL: ${result.url}\n`;
+
+                    if (result.content && result.contentFetched) {
+                        webSearchContext += `\nCONTENT:\n${result.content}\n`;
+                    } else if (result.snippet) {
+                        webSearchContext += `\nSnippet: ${result.snippet}\n`;
+                    }
+                    webSearchContext += '\n';
                 });
                 webSearchContext += '=== END OF SEARCH RESULTS ===\n';
-                webSearchContext += 'IMPORTANT: Use the above web search results to provide accurate, current, and well-sourced information.\n';
+                webSearchContext += `IMPORTANT: Use the actual page content above to answer questions. Cite sources by number.\n`;
 
                 // Update indicator
                 chatHistory.pop();
-                addToHistory('system', `${colorize(`Found ${searchResults.length} web results`, 'green')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+                addToHistory('system', `${colorize(`Found ${searchResults.length} results (${contentCount} with content)`, 'green')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
                 displayChatHistory();
             } else {
                 chatHistory.pop();
@@ -5139,38 +5155,56 @@ async function handleChat(api, message) {
         systemPrefix = skillPrompt + '\n\n';
     }
 
-    // If websearch mode is enabled, perform web search first
+    // If websearch mode is enabled, perform search with content fetching
     let searchResults = null;
     if (websearchMode) {
         try {
             addToHistory('system', colorize('Searching the web...', 'yellow'));
             displayChatHistory();
 
-            const searchResponse = await api.webSearch(message, 10);
+            // Search with content fetching enabled (8 results, fetch content from top 5)
+            const searchResponse = await api.webSearch(message, 8, true, 5);
 
-            // Debug logging
             if (!searchResponse.success) {
                 throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
             }
 
             if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
                 searchResults = searchResponse.data.results;
+                const contentCount = searchResponse.data.contentFetchedCount || 0;
 
-                // Add search results to system prefix with enhanced formatting
+                // Add search results to system prefix with actual content
                 systemPrefix += '=== WEB SEARCH RESULTS ===\n';
-                systemPrefix += `Query: "${message}"\n`;
-                systemPrefix += `Found ${searchResults.length} results:\n\n`;
+                systemPrefix += `Query: "${message}"`;
+                if (searchResponse.data.enhancedQuery) {
+                    systemPrefix += ` (enhanced: "${searchResponse.data.enhancedQuery}")`;
+                }
+                systemPrefix += `\nFound ${searchResults.length} results (${contentCount} with full content):\n\n`;
 
                 searchResults.forEach((result, idx) => {
-                    systemPrefix += `[${idx + 1}] ${result.title}\n`;
-                    systemPrefix += `    URL: ${result.url}\n`;
-                    systemPrefix += `    ${result.snippet}\n\n`;
+                    systemPrefix += `━━━ SOURCE [${idx + 1}] ━━━\n`;
+                    systemPrefix += `Title: ${result.title}\n`;
+                    systemPrefix += `URL: ${result.url}\n`;
+
+                    if (result.content && result.contentFetched) {
+                        // Include actual fetched content
+                        systemPrefix += `\nCONTENT:\n${result.content}\n`;
+                    } else if (result.snippet) {
+                        // Fall back to snippet if content wasn't fetched
+                        systemPrefix += `\nSnippet: ${result.snippet}\n`;
+                    }
+                    systemPrefix += '\n';
                 });
                 systemPrefix += '=== END OF SEARCH RESULTS ===\n\n';
-                systemPrefix += 'IMPORTANT: Use the above web search results to provide accurate, current, and well-sourced information in your response. Reference specific sources when relevant.\n\n';
+                systemPrefix += `IMPORTANT INSTRUCTIONS:
+1. The search results above contain ACTUAL PAGE CONTENT - use it to answer the question
+2. Extract specific facts, quotes, and data from the content provided
+3. Cite which source (by number or title) information came from
+4. If asked to create a file with summaries, use the content above to write real summaries
+5. Do NOT say you cannot access web content - the content IS provided above\n\n`;
 
                 // Show results to user
-                addToHistory('system', colorize(`Found ${searchResults.length} web results`, 'green'));
+                addToHistory('system', colorize(`Found ${searchResults.length} results (${contentCount} with content)`, 'green'));
                 displayChatHistory();
             } else {
                 const noResultsMsg = searchResponse.data && searchResponse.data.results

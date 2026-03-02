@@ -4298,13 +4298,14 @@ function cleanExpiredCache() {
 }
 
 // Web search endpoint using DuckDuckGo HTML parsing
+// Now with optional content fetching for richer results
 app.get('/api/search', requireAuth, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'query')) {
         return res.status(403).json({ error: 'Query permission required for web search' });
     }
 
-    const { q, limit = 5, timeRange } = req.query;
+    const { q, limit = 5, timeRange, fetchContent = 'false', contentLimit = 3 } = req.query;
 
     if (!q) {
         return res.status(400).json({ error: 'Query parameter "q" is required' });
@@ -4316,8 +4317,8 @@ app.get('/api/search', requireAuth, async (req, res) => {
     const currentYear = now.getFullYear();
     const currentMonth = now.toLocaleString('en-US', { month: 'long' });
 
-    // If query contains "recent" or "latest" and doesn't already have a year, add current year and month
-    if (/(recent|latest|current|new|today)/i.test(q) && !/(202\d|201\d)/i.test(q)) {
+    // If query contains "recent", "latest", "news", etc. and doesn't already have a year
+    if (/(recent|latest|current|new|today|news)/i.test(q) && !/(202\d|201\d)/i.test(q)) {
         enhancedQuery = `${q} ${currentMonth} ${currentYear}`;
     }
 
@@ -4326,13 +4327,14 @@ app.get('/api/search', requireAuth, async (req, res) => {
     let dateFilter = '';
     if (timeRange) {
         dateFilter = `&df=${timeRange}`;
-    } else if (/(recent|latest|current|today)/i.test(q)) {
-        // Auto-apply "past month" filter for recent queries
+    } else if (/(recent|latest|current|today|news)/i.test(q)) {
+        // Auto-apply "past month" filter for recent/news queries
         dateFilter = '&df=m';
     }
 
-    // Check cache first
-    const cacheKey = `search:${enhancedQuery}:${limit}:${dateFilter}`;
+    // Check cache first (include fetchContent in cache key)
+    const shouldFetchContent = fetchContent === 'true';
+    const cacheKey = `search:${enhancedQuery}:${limit}:${dateFilter}:${shouldFetchContent}:${contentLimit}`;
     cleanExpiredCache();
 
     if (searchCache.has(cacheKey)) {
@@ -4352,9 +4354,9 @@ app.get('/api/search', requireAuth, async (req, res) => {
 
         const html = response.data;
         const results = [];
+        const seenUrls = new Set(); // Deduplication
 
         // Parse DuckDuckGo HTML results
-        // DuckDuckGo uses <div class="result"> for each result
         const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
         const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
         const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i;
@@ -4374,22 +4376,46 @@ app.get('/api/search', requireAuth, async (req, res) => {
                     ? snippetMatch[1].replace(/<[^>]*>/g, '').trim()
                     : '';
 
-                // Only add if we have a valid URL
-                if (decodedUrl && decodedUrl.startsWith('http')) {
+                // Only add if we have a valid URL and haven't seen it before
+                if (decodedUrl && decodedUrl.startsWith('http') && !seenUrls.has(decodedUrl)) {
+                    seenUrls.add(decodedUrl);
                     results.push({
                         title: title || 'No title',
                         url: decodedUrl,
-                        snippet: snippet || 'No description available'
+                        snippet: snippet || 'No description available',
+                        content: null // Will be populated if fetchContent is true
                     });
                 }
             }
+        }
+
+        // Optionally fetch actual content from top URLs (in parallel)
+        let contentFetchedCount = 0;
+        if (shouldFetchContent && results.length > 0) {
+            const urlsToFetch = results.slice(0, parseInt(contentLimit));
+
+            const fetchPromises = urlsToFetch.map(async (result) => {
+                const fetchResult = await fetchUrlContent(result.url);
+                if (fetchResult.success) {
+                    result.content = fetchResult.content;
+                    result.contentFetched = true;
+                } else {
+                    result.contentFetched = false;
+                    result.fetchError = fetchResult.error;
+                }
+                return result;
+            });
+
+            await Promise.all(fetchPromises);
+            contentFetchedCount = results.filter(r => r.contentFetched).length;
         }
 
         const resultData = {
             query: q,
             enhancedQuery: enhancedQuery !== q ? enhancedQuery : undefined,
             results,
-            count: results.length
+            count: results.length,
+            contentFetchedCount: shouldFetchContent ? contentFetchedCount : undefined
         };
 
         // Cache the results
@@ -4432,6 +4458,123 @@ app.get('/api/search', requireAuth, async (req, res) => {
         });
     }
 });
+
+// Helper function to extract readable text content from HTML
+function extractTextFromHtml(html, maxLength = 5000) {
+    if (!html) return '';
+
+    // Remove script and style elements
+    let text = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ');
+    text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ');
+    text = text.replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, ' ');
+    text = text.replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, ' ');
+    text = text.replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, ' ');
+    text = text.replace(/<header\b[^<]*(?:(?!<\/header>)<[^<]*)*<\/header>/gi, ' ');
+    text = text.replace(/<!--[\s\S]*?-->/g, ' ');
+
+    // Extract title
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : '';
+
+    // Extract meta description
+    const metaDescMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i) ||
+                          html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["']/i);
+    const metaDesc = metaDescMatch ? metaDescMatch[1].trim() : '';
+
+    // Extract article content (prioritize article, main, or content divs)
+    const articleMatch = text.match(/<article[^>]*>([\s\S]*?)<\/article>/gi) ||
+                         text.match(/<main[^>]*>([\s\S]*?)<\/main>/gi) ||
+                         text.match(/<div[^>]*(?:class|id)=["'][^"']*(?:content|article|post|story|body)[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi);
+
+    let mainContent = '';
+    if (articleMatch && articleMatch.length > 0) {
+        mainContent = articleMatch.join(' ');
+    } else {
+        // Fall back to body content
+        const bodyMatch = text.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        mainContent = bodyMatch ? bodyMatch[1] : text;
+    }
+
+    // Extract paragraphs
+    const paragraphs = [];
+    const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+    let pMatch;
+    while ((pMatch = pRegex.exec(mainContent)) !== null) {
+        const pText = pMatch[1].replace(/<[^>]*>/g, ' ').trim();
+        if (pText.length > 50) { // Only include substantial paragraphs
+            paragraphs.push(pText);
+        }
+    }
+
+    // Also extract headings for context
+    const headings = [];
+    const hRegex = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi;
+    let hMatch;
+    while ((hMatch = hRegex.exec(mainContent)) !== null) {
+        const hText = hMatch[1].replace(/<[^>]*>/g, ' ').trim();
+        if (hText.length > 3) {
+            headings.push(hText);
+        }
+    }
+
+    // Build final content
+    let content = '';
+    if (title) content += `Title: ${title}\n\n`;
+    if (metaDesc) content += `Summary: ${metaDesc}\n\n`;
+    if (headings.length > 0) content += `Key Points:\n- ${headings.slice(0, 5).join('\n- ')}\n\n`;
+    if (paragraphs.length > 0) content += `Content:\n${paragraphs.join('\n\n')}`;
+
+    // Clean up whitespace and entities
+    content = content.replace(/&nbsp;/g, ' ')
+                     .replace(/&amp;/g, '&')
+                     .replace(/&lt;/g, '<')
+                     .replace(/&gt;/g, '>')
+                     .replace(/&quot;/g, '"')
+                     .replace(/&#39;/g, "'")
+                     .replace(/&[a-z]+;/gi, ' ')
+                     .replace(/\s+/g, ' ')
+                     .replace(/\n\s*\n/g, '\n\n')
+                     .trim();
+
+    // Truncate if too long
+    if (content.length > maxLength) {
+        content = content.substring(0, maxLength) + '... [truncated]';
+    }
+
+    return content;
+}
+
+// Helper function to fetch content from a URL with timeout
+async function fetchUrlContent(url, timeout = 8000) {
+    try {
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+            },
+            timeout: timeout,
+            maxRedirects: 3,
+            validateStatus: (status) => status < 400,
+        });
+
+        const contentType = response.headers['content-type'] || '';
+        if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+            return { success: false, error: 'Not HTML content' };
+        }
+
+        const content = extractTextFromHtml(response.data);
+        return { success: true, content, url };
+    } catch (error) {
+        return {
+            success: false,
+            error: error.code || error.message || 'Fetch failed',
+            url
+        };
+    }
+}
 
 // Documentation endpoint - fetch from DevDocs.io
 app.get('/api/docs', requireAuth, async (req, res) => {
