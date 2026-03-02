@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.4.0
+**Version:** 0.4.1
 
 ## Overview
 
@@ -303,13 +303,17 @@ DELETE /api/llamacpp/instances/:name   # Stop llama.cpp instance
 
 **Search & Documentation**
 ```bash
-GET  /api/search?q=query&limit=10&timeRange=m  # Web search using DuckDuckGo
+GET  /api/search?q=query&limit=10&timeRange=m&fetchContent=true&contentLimit=3
+     # Web search using DuckDuckGo with optional content fetching
      # Parameters:
      #   q (required) - search query
      #   limit (optional, default 5) - max results
      #   timeRange (optional) - d/w/m/y for day/week/month/year
-     # Auto-enhances "recent/latest" queries with current month/year
-     # Returns: { query, enhancedQuery, results, count }
+     #   fetchContent (optional, default false) - fetch actual page content from URLs
+     #   contentLimit (optional, default 3) - number of URLs to fetch content from
+     # Auto-enhances "recent/latest/news" queries with current month/year
+     # Returns: { query, enhancedQuery, results, count, contentFetchedCount }
+     # When fetchContent=true, results include extracted page content (title, summary, headings, paragraphs)
 
 GET  /api/docs                         # Fetch documentation
 ```
@@ -820,7 +824,21 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.4.0 (Current)
+### Version 0.4.1 (Current)
+- **Enhanced Web Search with Content Fetching**:
+  - **Actual Page Content**: Search now fetches real HTML content from result URLs, not just snippets
+  - **Smart Content Extraction**: Extracts title, meta description, headings, and paragraphs from pages
+  - **New API Parameters**: `fetchContent=true` and `contentLimit=N` for `/api/search` endpoint
+  - **URL Deduplication**: Prevents duplicate results in search output
+  - **Improved Query Enhancement**: Added "news" to triggers for auto-enhancing with current date
+  - **Better AI Instructions**: Koda websearch mode now tells AI to use fetched content and cite sources
+- **Koda CLI Websearch Improvements**:
+  - Automatically fetches content from top 5 URLs when websearch mode is enabled
+  - Shows "Found X results (Y with content)" status
+  - Provides actual article text to AI for accurate summaries and answers
+  - Clear instructions prevent AI from saying "I can't access web content"
+
+### Version 0.4.0
 - **100% Client-Side Skill Execution** - Koda is now a fully standalone CLI tool:
   - **No Server Dependency**: All 80 skills execute locally on user's machine
   - **No Docker Container Execution**: Skills never run inside Docker containers
