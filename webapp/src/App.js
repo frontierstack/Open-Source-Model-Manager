@@ -4460,6 +4460,21 @@ curl -X GET ${baseUrl}/api/models \\
                                                         <TableCell>POST</TableCell>
                                                         <TableCell>Generate text completions from prompts without chat formatting</TableCell>
                                                     </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/chat/stream</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Streaming chat endpoint using Server-Sent Events (SSE)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/search</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Search the web using DuckDuckGo with auto-enhanced recent queries</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/docs</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Fetch library documentation from DevDocs.io</TableCell>
+                                                    </TableRow>
 
                                                     {/* Models Permission */}
                                                     <TableRow>
@@ -4542,6 +4557,21 @@ curl -X GET ${baseUrl}/api/models \\
                                                         <TableCell>PUT</TableCell>
                                                         <TableCell>Update configuration for a specific model</TableCell>
                                                     </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system/resources</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Get hardware information (CPU cores, RAM, GPU VRAM)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system/optimal-settings</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Calculate optimal launch settings based on model size and hardware</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/backend/active</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Get current active backend (llama.cpp or vLLM) and instance counts</TableCell>
+                                                    </TableRow>
 
                                                     {/* Instances Permission */}
                                                     <TableRow>
@@ -4595,6 +4625,16 @@ curl -X GET ${baseUrl}/api/models \\
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys/:id/stats</TableCell>
                                                         <TableCell>GET</TableCell>
                                                         <TableCell>Get usage statistics for a specific API key</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys/:id/clear-usage</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Clear usage statistics for a specific API key</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/backend/active</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Set active backend (llama.cpp or vLLM) and optionally stop old instances</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system/reset</TableCell>
@@ -4682,6 +4722,26 @@ curl -X GET ${baseUrl}/api/models \\
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills/:id</TableCell>
                                                         <TableCell>DELETE</TableCell>
                                                         <TableCell>Delete a skill</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills/:skillName/execute</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Execute a skill with provided parameters</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/skills/available</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Get available skills (filtered by enabled status)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/skills/discover</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Discover skills by search query or category</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/skills/recommend</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Get skill recommendations based on task description</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/tasks</TableCell>

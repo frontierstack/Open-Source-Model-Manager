@@ -4435,6 +4435,10 @@ app.get('/api/search', requireAuth, async (req, res) => {
 
 // Documentation endpoint - fetch from DevDocs.io
 app.get('/api/docs', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'query permission required' });
+    }
+
     const { library, query } = req.query;
 
     if (!library) {
@@ -5503,6 +5507,10 @@ app.post('/api/apps/:name/restart', requireAuth, async (req, res) => {
 
 // Get current active backend
 app.get('/api/backend/active', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'models')) {
+        return res.status(403).json({ error: 'models permission required' });
+    }
+
     try {
         // Count running instances per backend
         let llamacppCount = 0;
