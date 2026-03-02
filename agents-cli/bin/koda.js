@@ -86,12 +86,6 @@ let skillPromptCache = null; // Cache for skill system prompt
 let skillPromptCacheTime = 0; // Timestamp when cache was built
 const SKILL_PROMPT_CACHE_TTL = 300000; // 5 minutes
 
-// REPL mode state
-let replMode = null; // null, 'python', or 'node'
-let replProcess = null; // Child process for REPL
-let replHistory = []; // Command history in REPL mode
-let replOutput = []; // Output buffer for REPL
-
 // ============================================================================
 // CODE QUALITY METRICS
 // ============================================================================
@@ -706,16 +700,6 @@ function displayChatHistory() {
                 log(`${colorize('Koda:', 'cyan')} ${formattedContent}`);
             } else if (msg.role === 'system') {
                 logDim(msg.content);
-            } else if (msg.role === 'repl-input') {
-                // Show REPL input with appropriate prompt
-                const prompt = replMode === 'python' ? '>>>' : '>';
-                log(`${colorize(prompt, 'yellow')} ${msg.content}`);
-            } else if (msg.role === 'repl-output') {
-                // Show REPL output in white
-                log(colorize(msg.content, 'white'));
-            } else if (msg.role === 'repl-error') {
-                // Show REPL errors in red
-                log(colorize(msg.content, 'red'));
             }
         }
         console.log('');
@@ -755,11 +739,6 @@ function displayStatusBar() {
                        currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
     const modeStr = websearchMode ? `${displayMode},websearch` : displayMode;
     statusParts.push(colorize(`Mode: ${modeStr}`, 'cyan'));
-
-    // REPL mode indicator
-    if (replMode) {
-        statusParts.push(colorize(`REPL: ${replMode}`, 'yellow'));
-    }
 
     // Last usage with tokens/sec
     if (lastTokenUsage.total > 0) {
@@ -1306,6 +1285,28 @@ Skill execution format:
 When asked to work with files, execute skills directly rather than suggesting bash commands.
 Intelligently choose project directory names based on what the user is building.
 For all other questions (math, coding help, explanations, general chat), respond normally.
+
+ADDITIONAL CAPABILITIES:
+You have access to advanced development tools that you should use proactively when appropriate:
+
+1. WEB SEARCH & DOCUMENTATION:
+   - When you need current information, API docs, or external knowledge, suggest using web search
+   - Example: "Let me search for the latest React 19 documentation" or "I can look up current best practices"
+
+2. CODE ANALYSIS:
+   - When analyzing code quality, you can provide insights on complexity, maintainability, and patterns
+   - Consider file size, function complexity, code duplication, and best practices
+
+3. FILE CONTEXT MANAGEMENT:
+   - Track which files are relevant to the current conversation
+   - When working across multiple files, maintain awareness of dependencies and imports
+   - Suggest analyzing related files when making changes
+
+4. REFACTORING SUGGESTIONS:
+   - When you see opportunities to extract functions, rename symbols, or reorganize code, suggest improvements
+   - Explain the benefits of proposed refactorings
+
+Use these capabilities naturally as part of helping the user. You don't need explicit commands - just incorporate these tools into your responses when they would be helpful.
 `;
 
     return prompt;
@@ -1650,44 +1651,26 @@ async function handleHelp() {
     addToHistory('system', '/project <name> - Create a project directory structure');
     addToHistory('system', '/cwd - Show current working directory');
     addToHistory('system', '');
-    addToHistory('system', colorize('File Management (Multi-file awareness):', 'yellow'));
-    addToHistory('system', '/files - Show working file set');
-    addToHistory('system', '/add-file <path> - Add file to working set (auto-detects imports)');
-    addToHistory('system', '/remove-file <path> - Remove file from working set');
-    addToHistory('system', '/focus [path] - Toggle focus mode or focus on specific file');
-    addToHistory('system', '/clear-focus - Clear all focused files');
-    addToHistory('system', '');
-    addToHistory('system', colorize('Code Quality:', 'yellow'));
-    addToHistory('system', '/quality [path] - Analyze code quality (all working files or specific file)');
-    addToHistory('system', '');
-    addToHistory('system', colorize('Refactoring Tools:', 'yellow'));
-    addToHistory('system', '/refactor extract <file> <start> <end> <funcName> - Extract code to function');
-    addToHistory('system', '/refactor rename <file> <oldName> <newName> - Rename symbol');
-    addToHistory('system', '/refactor move <source> <dest> <symbol> - Move code between files');
-    addToHistory('system', '');
-    addToHistory('system', colorize('Web Search & Documentation:', 'yellow'));
-    addToHistory('system', '/search <query> - Search the web (top 5 results)');
-    addToHistory('system', '/websearch <query> - Alias for /search');
-    addToHistory('system', '/docs <library> [query] - Fetch documentation from DevDocs');
-    addToHistory('system', '  Examples: /docs react hooks, /docs python dict');
-    addToHistory('system', '');
-    addToHistory('system', colorize('REPL (Interactive Programming):', 'yellow'));
-    addToHistory('system', '/repl python - Start Python REPL');
-    addToHistory('system', '/repl node - Start Node.js REPL');
-    addToHistory('system', '/repl exit - Exit REPL mode');
-    addToHistory('system', '');
     addToHistory('system', colorize('Modes:', 'yellow'));
     addToHistory('system', '/mode <standalone|agent|agent collab>[,websearch] - Switch between modes');
-    addToHistory('system', '  • standalone - General chat with file skill execution');
+    addToHistory('system', '  • standalone - General chat with autonomous tool execution');
     addToHistory('system', '  • agent - Task-aware with autonomous skills');
-    addToHistory('system', '  • agent collab - Multi-agent with skill execution');
-    addToHistory('system', '  • websearch - Enable automatic web search with queries');
-    addToHistory('system', '  Examples: /mode standalone,websearch | /mode agent,websearch');
+    addToHistory('system', '  • agent collab - Multi-agent collaboration with skill execution');
+    addToHistory('system', '  • websearch - Enable automatic web search (can be combined with any mode)');
+    addToHistory('system', '');
+    addToHistory('system', '  Examples:');
+    addToHistory('system', '    /mode standalone          - Chat mode with tools');
+    addToHistory('system', '    /mode standalone,websearch - Chat mode with web search');
+    addToHistory('system', '    /mode agent,websearch     - Agent mode with web search');
     addToHistory('system', '');
     addToHistory('system', colorize('Session Management:', 'yellow'));
     addToHistory('system', '/clear - Clear chat history');
     addToHistory('system', '/clearsession - Clear session context (keeps history visible)');
     addToHistory('system', '/quit - Exit koda');
+    addToHistory('system', '');
+    addToHistory('system', colorize('Note:', 'dim'));
+    addToHistory('system', colorize('Koda has automatic access to file operations, code analysis, refactoring,', 'dim'));
+    addToHistory('system', colorize('web search, and documentation tools. Just ask naturally!', 'dim'));
     displayChatHistory();
 }
 
@@ -2369,170 +2352,6 @@ async function handleDocs(api, args) {
     displayChatHistory();
 }
 
-// ============================================================================
-// REPL MODE HANDLERS
-// ============================================================================
-
-// Start a REPL session
-async function handleReplStart(language) {
-    if (replMode) {
-        addToHistory('system', `Already in ${replMode} REPL. Use /repl exit to exit first.`);
-        displayChatHistory();
-        return;
-    }
-
-    if (language !== 'python' && language !== 'node') {
-        addToHistory('system', 'Invalid language. Use: /repl python or /repl node');
-        displayChatHistory();
-        return;
-    }
-
-    // Determine the command to run
-    const command = language === 'python' ? 'python3' : 'node';
-    const args = language === 'python' ? ['-i', '-u'] : ['-i'];
-
-    try {
-        // Spawn the REPL process
-        replProcess = spawn(command, args, {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: false,
-            cwd: userWorkingDirectory
-        });
-
-        replMode = language;
-        replHistory = [];
-        replOutput = [];
-
-        // Handle stdout
-        replProcess.stdout.on('data', (data) => {
-            const output = data.toString();
-            replOutput.push({ type: 'stdout', content: output });
-            addToHistory('repl-output', output.trimEnd());
-            displayChatHistory();
-        });
-
-        // Handle stderr
-        replProcess.stderr.on('data', (data) => {
-            const output = data.toString();
-            replOutput.push({ type: 'stderr', content: output });
-            addToHistory('repl-error', output.trimEnd());
-            displayChatHistory();
-        });
-
-        // Handle process exit
-        replProcess.on('exit', (code) => {
-            addToHistory('system', `${language} REPL exited with code ${code}`);
-            replMode = null;
-            replProcess = null;
-            displayChatHistory();
-        });
-
-        // Handle process error
-        replProcess.on('error', (error) => {
-            addToHistory('system', `Error starting ${language} REPL: ${error.message}`);
-            addToHistory('system', `Make sure ${command} is installed and in your PATH.`);
-            replMode = null;
-            replProcess = null;
-            displayChatHistory();
-        });
-
-        addToHistory('system', `━━━ ${language.toUpperCase()} REPL Started ━━━`);
-        addToHistory('system', `Type your ${language} code and press Enter to execute.`);
-        addToHistory('system', 'Use /repl exit to exit REPL mode.');
-        addToHistory('system', '');
-        displayChatHistory();
-
-    } catch (error) {
-        addToHistory('system', `Failed to start ${language} REPL: ${error.message}`);
-        replMode = null;
-        replProcess = null;
-        displayChatHistory();
-    }
-}
-
-// Exit REPL mode
-function handleReplExit() {
-    if (!replMode) {
-        addToHistory('system', 'Not in REPL mode.');
-        displayChatHistory();
-        return;
-    }
-
-    const lang = replMode;
-
-    if (replProcess) {
-        try {
-            // Send exit command
-            if (replMode === 'python') {
-                replProcess.stdin.write('exit()\n');
-            } else if (replMode === 'node') {
-                replProcess.stdin.write('.exit\n');
-            }
-
-            // Force kill after a short delay if not exited
-            setTimeout(() => {
-                if (replProcess && !replProcess.killed) {
-                    replProcess.kill('SIGTERM');
-                }
-            }, 1000);
-
-        } catch (error) {
-            // Ignore errors during cleanup
-        }
-    }
-
-    replMode = null;
-    replProcess = null;
-
-    addToHistory('system', `✓ Exited ${lang} REPL`);
-    displayChatHistory();
-}
-
-// Execute code in REPL
-function executeReplCommand(input) {
-    if (!replProcess || !replMode) {
-        addToHistory('system', 'REPL session not active.');
-        displayChatHistory();
-        return;
-    }
-
-    // Add to history
-    replHistory.push(input);
-    addToHistory('repl-input', input);
-
-    // Send to REPL process
-    try {
-        replProcess.stdin.write(input + '\n');
-    } catch (error) {
-        addToHistory('system', `Error executing command: ${error.message}`);
-        displayChatHistory();
-    }
-}
-
-// Main REPL command handler
-async function handleRepl(args) {
-    if (!args || args.length === 0) {
-        addToHistory('system', 'Usage: /repl <python|node|exit>');
-        addToHistory('system', '  /repl python - Start Python REPL');
-        addToHistory('system', '  /repl node   - Start Node.js REPL');
-        addToHistory('system', '  /repl exit   - Exit REPL mode');
-        displayChatHistory();
-        return;
-    }
-
-    const subcommand = args[0].toLowerCase();
-
-    if (subcommand === 'exit') {
-        handleReplExit();
-    } else if (subcommand === 'python' || subcommand === 'node') {
-        await handleReplStart(subcommand);
-    } else {
-        addToHistory('system', `Unknown REPL command: ${subcommand}`);
-        addToHistory('system', 'Use: /repl python, /repl node, or /repl exit');
-        displayChatHistory();
-    }
-}
-
 // Display interactive command menu
 async function showCommandMenu() {
     addToHistory('system', '━━━ Interactive Command Menu ━━━');
@@ -2540,10 +2359,7 @@ async function showCommandMenu() {
     addToHistory('system', '/init           - Analyze project and create koda.md');
     addToHistory('system', '/project <name> - Create a project directory structure');
     addToHistory('system', '/cwd            - Show current working directory');
-    addToHistory('system', '/search <query> - Search the web for information');
-    addToHistory('system', '/docs <library> - Fetch documentation from DevDocs');
     addToHistory('system', '/mode           - Switch between standalone, agent, or agent collab modes');
-    addToHistory('system', '/repl           - Start interactive REPL (Python or Node.js)');
     addToHistory('system', '/help           - Show all available commands');
     addToHistory('system', '/clear          - Clear chat history');
     addToHistory('system', '/clearsession   - Clear session context (keeps history visible)');
@@ -3329,7 +3145,7 @@ async function startShell() {
     displayChatHistory();
 
     // Command autocomplete function
-    const availableCommands = ['/auth', '/init', '/project', '/cwd', '/mode', '/repl', '/help', '/clear', '/clearsession', '/quit', '/exit'];
+    const availableCommands = ['/auth', '/init', '/project', '/cwd', '/mode', '/help', '/clear', '/clearsession', '/quit', '/exit'];
     const modeOptions = ['standalone', 'agent', 'agent collab'];
 
     function completer(line) {
@@ -3597,16 +3413,8 @@ async function startShell() {
                         }
                         break;
 
-                    case '/repl':
-                        await handleRepl(args);
-                        break;
-
                     case '/exit':
                     case '/quit':
-                        // Clean up REPL if active
-                        if (replMode) {
-                            handleReplExit();
-                        }
                         logDim('Goodbye!');
                         process.exit(0);
                         break;
@@ -3616,10 +3424,7 @@ async function startShell() {
                         displayChatHistory();
                 }
             } else {
-                // Check if in REPL mode first
-                if (replMode) {
-                    executeReplCommand(input);
-                } else if (!api) {
+                if (!api) {
                     addToHistory('system', 'Not authenticated. Run /auth first to chat with AI.');
                     displayChatHistory();
                 } else if (currentMode === 'collab-select') {
@@ -3659,26 +3464,10 @@ async function startShell() {
         process.exit(0);
     });
 
-    // Handle Ctrl+C gracefully in REPL mode
+    // Handle Ctrl+C gracefully
     process.on('SIGINT', () => {
-        if (replMode && replProcess) {
-            // Forward Ctrl+C to REPL process
-            try {
-                replProcess.kill('SIGINT');
-            } catch (error) {
-                // Ignore errors
-            }
-            // Redisplay the prompt
-            setTimeout(() => {
-                if (rl) {
-                    rl.prompt();
-                }
-            }, 50);
-        } else {
-            // Exit normally if not in REPL
-            log('\nUse /quit to exit koda');
-            rl.prompt();
-        }
+        log('\nUse /quit to exit koda');
+        rl.prompt();
     });
 }
 
