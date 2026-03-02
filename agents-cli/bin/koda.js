@@ -3525,6 +3525,7 @@ async function startShell() {
     // Paste detection: buffer lines that arrive within 50ms and combine them
     let pasteBuffer = [];
     let pasteTimeout = null;
+    let pendingPasteInput = null;  // Holds paste content waiting for user to press Enter
 
     async function processInput(input) {
         // Handle auth flow
@@ -3733,6 +3734,26 @@ async function startShell() {
     rl.on('line', async (line) => {
         const input = line.trim();
 
+        // If we have a pending paste and user just pressed Enter, process the paste
+        if (pendingPasteInput !== null && !input) {
+            const pasteToProcess = pendingPasteInput;
+            pendingPasteInput = null;
+
+            // Clear readline buffer
+            rl.line = '';
+            rl.cursor = 0;
+
+            await processInput(pasteToProcess);
+            return;
+        }
+
+        // If we have a pending paste but user typed something, cancel the paste and process the new input
+        if (pendingPasteInput !== null && input) {
+            pendingPasteInput = null;
+            addToHistory('system', colorize('Previous paste cancelled.', 'dim'));
+            // Fall through to process the new input
+        }
+
         // Clear any existing paste timeout
         if (pasteTimeout) {
             clearTimeout(pasteTimeout);
@@ -3742,16 +3763,32 @@ async function startShell() {
         // Add line to paste buffer
         pasteBuffer.push(input);
 
-        // Set timeout to process buffered lines
+        // Set timeout to detect paste
         // If more lines arrive within 50ms, they'll be combined (paste detection)
         pasteTimeout = setTimeout(async () => {
-            // Combine all buffered lines into a single message
+            const bufferLength = pasteBuffer.length;
             const combinedInput = pasteBuffer.join('\n');
             pasteBuffer = [];
             pasteTimeout = null;
 
-            // Process the combined input
-            await processInput(combinedInput);
+            // If it's a multi-line paste, show it and wait for Enter
+            if (bufferLength > 1) {
+                // Store the paste content
+                pendingPasteInput = combinedInput;
+
+                // Clear the readline buffer to prevent text bleeding
+                rl.line = '';
+                rl.cursor = 0;
+
+                // Add to history so user can see what they pasted
+                addToHistory('user', combinedInput);
+                addToHistory('system', colorize('Press Enter to send, or type a command...', 'dim'));
+                displayChatHistory();
+                rl.prompt();
+            } else {
+                // Single line - process immediately as before
+                await processInput(combinedInput);
+            }
         }, 50);
     });
 
