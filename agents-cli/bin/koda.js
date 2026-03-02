@@ -49,6 +49,7 @@ const MAX_HISTORY = 50;
 
 // Mode tracking
 let currentMode = 'standalone'; // 'standalone', 'agent', or 'collab'
+let websearchMode = false; // Web search enhancement mode
 const conversationContext = []; // For session awareness
 let userWorkingDirectory = process.cwd(); // Track user's CWD
 
@@ -752,7 +753,8 @@ function displayStatusBar() {
     // Mode indicator (display "agent collab" instead of "collab")
     const displayMode = currentMode === 'collab' ? 'agent collab' :
                        currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
-    statusParts.push(colorize(`Mode: ${displayMode}`, 'cyan'));
+    const modeStr = websearchMode ? `${displayMode},websearch` : displayMode;
+    statusParts.push(colorize(`Mode: ${modeStr}`, 'cyan'));
 
     // REPL mode indicator
     if (replMode) {
@@ -1043,6 +1045,11 @@ class AgentAPI {
 
     async fileMove(sourcePath, destPath) {
         return this.request('POST', '/api/agent/file/move', { sourcePath, destPath });
+    }
+
+    // Web search using DuckDuckGo
+    async webSearch(query, limit = 5) {
+        return this.request('GET', `/api/search?q=${encodeURIComponent(query)}&limit=${limit}`);
     }
 
     // Execute a skill
@@ -1660,6 +1667,7 @@ async function handleHelp() {
     addToHistory('system', '');
     addToHistory('system', colorize('Web Search & Documentation:', 'yellow'));
     addToHistory('system', '/search <query> - Search the web (top 5 results)');
+    addToHistory('system', '/websearch <query> - Alias for /search');
     addToHistory('system', '/docs <library> [query] - Fetch documentation from DevDocs');
     addToHistory('system', '  Examples: /docs react hooks, /docs python dict');
     addToHistory('system', '');
@@ -1669,10 +1677,12 @@ async function handleHelp() {
     addToHistory('system', '/repl exit - Exit REPL mode');
     addToHistory('system', '');
     addToHistory('system', colorize('Modes:', 'yellow'));
-    addToHistory('system', '/mode <standalone|agent|agent collab> - Switch between modes');
+    addToHistory('system', '/mode <standalone|agent|agent collab>[,websearch] - Switch between modes');
     addToHistory('system', '  • standalone - General chat with file skill execution');
     addToHistory('system', '  • agent - Task-aware with autonomous skills');
     addToHistory('system', '  • agent collab - Multi-agent with skill execution');
+    addToHistory('system', '  • websearch - Enable automatic web search with queries');
+    addToHistory('system', '  Examples: /mode standalone,websearch | /mode agent,websearch');
     addToHistory('system', '');
     addToHistory('system', colorize('Session Management:', 'yellow'));
     addToHistory('system', '/clear - Clear chat history');
@@ -2683,14 +2693,29 @@ function handleClearSession() {
 async function handleMode(api, args) {
     if (!args || args.length === 0) {
         const displayMode = currentMode === 'collab' ? 'agent collab' : currentMode;
-        addToHistory('system', `Current mode: ${displayMode}`);
-        addToHistory('system', 'Usage: /mode <standalone|agent|agent collab>');
+        const modeStr = websearchMode ? `${displayMode},websearch` : displayMode;
+        addToHistory('system', `Current mode: ${modeStr}`);
+        addToHistory('system', 'Usage: /mode <standalone|agent|agent collab>[,websearch]');
+        addToHistory('system', 'Examples: /mode standalone,websearch | /mode agent,websearch');
         displayChatHistory();
         return;
     }
 
     // Handle "agent collab" as two words
-    let newMode = args.join(' ').toLowerCase();
+    let modeInput = args.join(' ').toLowerCase();
+
+    // Parse mode and flags (e.g., "standalone,websearch")
+    const modeParts = modeInput.split(',').map(p => p.trim());
+    let newMode = modeParts[0];
+    let newWebsearchMode = false;
+
+    // Check for websearch flag in any position
+    if (modeParts.includes('websearch')) {
+        newWebsearchMode = true;
+        // Remove websearch from mode parts
+        modeParts.splice(modeParts.indexOf('websearch'), 1);
+        newMode = modeParts.join(' '); // Re-join in case of "agent collab"
+    }
 
     // Normalize "agent collab" to "collab" internally
     if (newMode === 'agent collab') {
@@ -2698,7 +2723,8 @@ async function handleMode(api, args) {
     }
 
     if (newMode !== 'standalone' && newMode !== 'agent' && newMode !== 'collab') {
-        addToHistory('system', 'Invalid mode. Use: /mode <standalone|agent|agent collab>');
+        addToHistory('system', 'Invalid mode. Use: /mode <standalone|agent|agent collab>[,websearch]');
+        addToHistory('system', 'Examples: /mode standalone,websearch | /mode agent | /mode agent collab,websearch');
         displayChatHistory();
         return;
     }
@@ -2723,18 +2749,24 @@ async function handleMode(api, args) {
         // Store agents for selection
         collabAgents = result.data;
         currentMode = 'collab-select';
+        websearchMode = newWebsearchMode;
         return;
     }
 
     currentMode = newMode;
+    websearchMode = newWebsearchMode;
     const displayMode = currentMode === 'collab' ? 'agent collab' : currentMode;
-    addToHistory('system', `Switched to ${displayMode} mode`);
+    const modeStr = websearchMode ? `${displayMode},websearch` : displayMode;
+    addToHistory('system', `Switched to ${modeStr} mode`);
     if (currentMode === 'standalone') {
         addToHistory('system', 'Standalone mode - General AI chat with file operation skills');
     } else if (currentMode === 'agent') {
         addToHistory('system', 'Agent mode - Task-aware with autonomous skill execution');
     } else if (currentMode === 'collab') {
         addToHistory('system', 'Agent Collaboration mode - Multiple agents with autonomous skill execution');
+    }
+    if (websearchMode) {
+        addToHistory('system', colorize('Web search enabled - queries will include web search results', 'green'));
     }
     displayChatHistory();
 }
@@ -2870,13 +2902,52 @@ async function handleCollabChat(api, message, selectedAgents) {
     addToHistory('system', `Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
     displayChatHistory();
 
+    // If websearch mode is enabled, perform web search first
+    let webSearchContext = '';
+    if (websearchMode) {
+        try {
+            // Update indicator
+            chatHistory.pop();
+            addToHistory('system', colorize('Searching the web...', 'yellow'));
+            displayChatHistory();
+
+            const searchResponse = await api.webSearch(message, 5);
+            if (searchResponse.success && searchResponse.data.results && searchResponse.data.results.length > 0) {
+                const searchResults = searchResponse.data.results;
+
+                // Build search context for agents
+                webSearchContext = '\n\n[Web Search Results]\n';
+                searchResults.forEach((result, idx) => {
+                    webSearchContext += `${idx + 1}. ${result.title}\n`;
+                    webSearchContext += `   URL: ${result.url}\n`;
+                    webSearchContext += `   ${result.snippet}\n\n`;
+                });
+                webSearchContext += '[End of Search Results]\n';
+                webSearchContext += 'Use these search results to provide accurate, up-to-date information.\n';
+
+                // Update indicator
+                chatHistory.pop();
+                addToHistory('system', `${colorize(`Found ${searchResults.length} results`, 'green')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+                displayChatHistory();
+            } else {
+                chatHistory.pop();
+                addToHistory('system', `${colorize('No search results found', 'yellow')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+                displayChatHistory();
+            }
+        } catch (error) {
+            chatHistory.pop();
+            addToHistory('system', `${colorize(`Search failed: ${error.message}`, 'red')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+            displayChatHistory();
+        }
+    }
+
     // Fetch tasks and skills for context awareness
     const tasksResult = await api.getTasks();
     const skillsResult = await api.getSkills();
     const skills = skillsResult.success ? skillsResult.data : [];
     const skillPrompt = buildSkillSystemPrompt(skills, 'collab');
 
-    let contextInfo = '';
+    let contextInfo = webSearchContext;
 
     if (tasksResult.success && tasksResult.data.length > 0) {
         const pendingTasks = tasksResult.data.filter(t => t.status === 'pending' || t.status === 'in_progress');
@@ -3025,6 +3096,40 @@ async function handleChat(api, message) {
         systemPrefix = skillPrompt + '\n\n';
     }
 
+    // If websearch mode is enabled, perform web search first
+    let searchResults = null;
+    if (websearchMode) {
+        try {
+            addToHistory('system', colorize('Searching the web...', 'yellow'));
+            displayChatHistory();
+
+            const searchResponse = await api.webSearch(message, 5);
+            if (searchResponse.success && searchResponse.data.results && searchResponse.data.results.length > 0) {
+                searchResults = searchResponse.data.results;
+
+                // Add search results to system prefix
+                systemPrefix += '[Web Search Results]\n';
+                searchResults.forEach((result, idx) => {
+                    systemPrefix += `${idx + 1}. ${result.title}\n`;
+                    systemPrefix += `   URL: ${result.url}\n`;
+                    systemPrefix += `   ${result.snippet}\n\n`;
+                });
+                systemPrefix += '[End of Search Results]\n\n';
+                systemPrefix += 'Use these search results to provide accurate, up-to-date information in your response.\n\n';
+
+                // Show results to user
+                addToHistory('system', colorize(`Found ${searchResults.length} results`, 'green'));
+                displayChatHistory();
+            } else {
+                addToHistory('system', colorize('No search results found', 'yellow'));
+                displayChatHistory();
+            }
+        } catch (error) {
+            addToHistory('system', colorize(`Search failed: ${error.message}`, 'red'));
+            displayChatHistory();
+        }
+    }
+
     // In agent mode, add task awareness
     if (currentMode === 'agent') {
         const tasksResult = await api.getTasks();
@@ -3081,6 +3186,9 @@ async function handleChat(api, message) {
         let tokenCount = 0;
         let hasRemovedThinkingIndicator = false;
 
+        // Enable streaming mode to prevent flickering
+        isStreaming = true;
+
         const result = await api.chatStream(
             currentMessage,
             null,
@@ -3095,20 +3203,21 @@ async function handleChat(api, message) {
                     chatHistory[chatHistory.length - 1].role === 'system') {
                     chatHistory.pop();
                     hasRemovedThinkingIndicator = true;
+                    // Display full history once after removing thinking indicator
+                    displayChatHistory();
                 }
 
                 // Update or add assistant message in history
                 const lastMsg = chatHistory[chatHistory.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant-streaming') {
-                    lastMsg.content = streamingResponse + colorize(' ▊', 'cyan'); // Streaming cursor
+                    lastMsg.content = streamingResponse;
                 } else {
-                    addToHistory('assistant-streaming', streamingResponse + colorize(' ▊', 'cyan'));
+                    addToHistory('assistant-streaming', streamingResponse);
                 }
 
-                // Update display periodically (every 10 tokens or on newline)
-                // Use displayChatHistory instead of updateStreamingMessage to avoid duplication
-                if (tokenCount % 10 === 0 || token.includes('\n')) {
-                    displayChatHistory();
+                // Update display periodically without full screen refresh
+                if (tokenCount % 5 === 0 || token.includes('\n')) {
+                    updateStreamingMessage(streamingResponse);
                 }
             },
             // onComplete callback
@@ -3470,6 +3579,7 @@ async function startShell() {
                         break;
 
                     case '/search':
+                    case '/websearch':
                         if (!api) {
                             addToHistory('system', 'Not authenticated. Run /auth first.');
                             displayChatHistory();
