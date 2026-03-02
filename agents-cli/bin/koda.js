@@ -804,6 +804,9 @@ function updateStreamingMessage(message) {
             readline.clearLine(process.stdout, 0);
         }
         readline.cursorTo(process.stdout, 0);
+    } else {
+        // First streaming message - ensure clean output
+        readline.cursorTo(process.stdout, 0);
     }
 
     // Write new content
@@ -2727,32 +2730,58 @@ async function handleCollabChat(api, message, selectedAgents) {
             addToHistory('system', colorize('Searching the web...', 'yellow'));
             displayChatHistory();
 
-            const searchResponse = await api.webSearch(message, 5);
-            if (searchResponse.success && searchResponse.data.results && searchResponse.data.results.length > 0) {
+            const searchResponse = await api.webSearch(message, 10);
+
+            if (!searchResponse.success) {
+                throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
+            }
+
+            if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
                 const searchResults = searchResponse.data.results;
 
-                // Build search context for agents
-                webSearchContext = '\n\n[Web Search Results]\n';
+                // Build search context for agents with enhanced formatting
+                webSearchContext = '\n\n=== WEB SEARCH RESULTS ===\n';
+                webSearchContext += `Query: "${message}"\n`;
+                webSearchContext += `Found ${searchResults.length} results:\n\n`;
+
                 searchResults.forEach((result, idx) => {
-                    webSearchContext += `${idx + 1}. ${result.title}\n`;
-                    webSearchContext += `   URL: ${result.url}\n`;
-                    webSearchContext += `   ${result.snippet}\n\n`;
+                    webSearchContext += `[${idx + 1}] ${result.title}\n`;
+                    webSearchContext += `    URL: ${result.url}\n`;
+                    webSearchContext += `    ${result.snippet}\n\n`;
                 });
-                webSearchContext += '[End of Search Results]\n';
-                webSearchContext += 'Use these search results to provide accurate, up-to-date information.\n';
+                webSearchContext += '=== END OF SEARCH RESULTS ===\n';
+                webSearchContext += 'IMPORTANT: Use the above web search results to provide accurate, current, and well-sourced information.\n';
 
                 // Update indicator
                 chatHistory.pop();
-                addToHistory('system', `${colorize(`Found ${searchResults.length} results`, 'green')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+                addToHistory('system', `${colorize(`Found ${searchResults.length} web results`, 'green')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
                 displayChatHistory();
             } else {
                 chatHistory.pop();
-                addToHistory('system', `${colorize('No search results found', 'yellow')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+                const noResultsMsg = searchResponse.data && searchResponse.data.results
+                    ? 'No search results found'
+                    : 'Search returned empty response';
+                addToHistory('system', `${colorize(noResultsMsg, 'yellow')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
                 displayChatHistory();
             }
         } catch (error) {
             chatHistory.pop();
-            addToHistory('system', `${colorize(`Search failed: ${error.message}`, 'red')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+
+            // Handle improved error responses from backend
+            let errorMsg = 'Web search failed';
+            if (error.response?.data?.error) {
+                errorMsg = error.response.data.error;
+            } else if (error.message) {
+                errorMsg = error.message;
+            }
+
+            addToHistory('system', `${colorize(errorMsg, 'red')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+
+            // Show retry suggestion if error is retryable
+            if (error.response?.data?.retryable) {
+                addToHistory('system', colorize('Search may work if retried in a few seconds', 'yellow'));
+            }
+
             displayChatHistory();
         }
     }
@@ -2919,29 +2948,55 @@ async function handleChat(api, message) {
             addToHistory('system', colorize('Searching the web...', 'yellow'));
             displayChatHistory();
 
-            const searchResponse = await api.webSearch(message, 5);
-            if (searchResponse.success && searchResponse.data.results && searchResponse.data.results.length > 0) {
+            const searchResponse = await api.webSearch(message, 10);
+
+            // Debug logging
+            if (!searchResponse.success) {
+                throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
+            }
+
+            if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
                 searchResults = searchResponse.data.results;
 
-                // Add search results to system prefix
-                systemPrefix += '[Web Search Results]\n';
+                // Add search results to system prefix with enhanced formatting
+                systemPrefix += '=== WEB SEARCH RESULTS ===\n';
+                systemPrefix += `Query: "${message}"\n`;
+                systemPrefix += `Found ${searchResults.length} results:\n\n`;
+
                 searchResults.forEach((result, idx) => {
-                    systemPrefix += `${idx + 1}. ${result.title}\n`;
-                    systemPrefix += `   URL: ${result.url}\n`;
-                    systemPrefix += `   ${result.snippet}\n\n`;
+                    systemPrefix += `[${idx + 1}] ${result.title}\n`;
+                    systemPrefix += `    URL: ${result.url}\n`;
+                    systemPrefix += `    ${result.snippet}\n\n`;
                 });
-                systemPrefix += '[End of Search Results]\n\n';
-                systemPrefix += 'Use these search results to provide accurate, up-to-date information in your response.\n\n';
+                systemPrefix += '=== END OF SEARCH RESULTS ===\n\n';
+                systemPrefix += 'IMPORTANT: Use the above web search results to provide accurate, current, and well-sourced information in your response. Reference specific sources when relevant.\n\n';
 
                 // Show results to user
-                addToHistory('system', colorize(`Found ${searchResults.length} results`, 'green'));
+                addToHistory('system', colorize(`Found ${searchResults.length} web results`, 'green'));
                 displayChatHistory();
             } else {
-                addToHistory('system', colorize('No search results found', 'yellow'));
+                const noResultsMsg = searchResponse.data && searchResponse.data.results
+                    ? 'No search results found'
+                    : 'Search returned empty response';
+                addToHistory('system', colorize(noResultsMsg, 'yellow'));
                 displayChatHistory();
             }
         } catch (error) {
-            addToHistory('system', colorize(`Search failed: ${error.message}`, 'red'));
+            // Handle improved error responses from backend
+            let errorMsg = 'Web search failed';
+            if (error.response?.data?.error) {
+                errorMsg = error.response.data.error;
+            } else if (error.message) {
+                errorMsg = error.message;
+            }
+
+            addToHistory('system', colorize(errorMsg, 'red'));
+
+            // Show retry suggestion if error is retryable
+            if (error.response?.data?.retryable) {
+                addToHistory('system', colorize('Try again in a few seconds', 'yellow'));
+            }
+
             displayChatHistory();
         }
     }
@@ -3019,8 +3074,6 @@ async function handleChat(api, message) {
                     chatHistory[chatHistory.length - 1].role === 'system') {
                     chatHistory.pop();
                     hasRemovedThinkingIndicator = true;
-                    // Display full history once after removing thinking indicator
-                    displayChatHistory();
                 }
 
                 // Update or add assistant message in history
@@ -3031,8 +3084,9 @@ async function handleChat(api, message) {
                     addToHistory('assistant-streaming', streamingResponse);
                 }
 
-                // Update display periodically without full screen refresh
-                if (tokenCount % 5 === 0 || token.includes('\n')) {
+                // Update display in real-time during streaming (no full refresh)
+                // Show first token immediately, then update periodically
+                if (tokenCount === 1 || tokenCount % 3 === 0 || token.includes('\n')) {
                     updateStreamingMessage(streamingResponse);
                 }
             },

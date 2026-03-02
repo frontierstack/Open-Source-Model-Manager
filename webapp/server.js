@@ -726,10 +726,9 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 });
 
 // Change password
-app.put('/api/auth/password', async (req, res) => {
-    if (!req.isAuthenticated || !req.isAuthenticated()) {
-        return res.status(401).json({ error: 'Not authenticated' });
-    }
+app.put('/api/auth/password', requireAuth, async (req, res) => {
+    // requireAuth middleware handles both session and API key authentication
+    // No need for additional isAuthenticated check
 
     try {
         const { currentPassword, newPassword } = req.body;
@@ -4278,6 +4277,7 @@ app.post('/api/agent/file/move', requireAuth, async (req, res) => {
 // Simple in-memory cache for search and docs results
 const searchCache = new Map();
 const CACHE_DURATION = 60 * 60 * 1000; // 1 hour in milliseconds
+const MAX_CACHE_SIZE = 1000; // Maximum cache entries
 
 // Helper function to clean cache entries older than CACHE_DURATION
 function cleanExpiredCache() {
@@ -4287,10 +4287,23 @@ function cleanExpiredCache() {
             searchCache.delete(key);
         }
     }
+
+    // If cache is too large, remove oldest entries
+    if (searchCache.size > MAX_CACHE_SIZE) {
+        const entries = Array.from(searchCache.entries())
+            .sort((a, b) => a[1].timestamp - b[1].timestamp);
+        const toRemove = entries.slice(0, Math.floor(MAX_CACHE_SIZE * 0.2));
+        toRemove.forEach(([key]) => searchCache.delete(key));
+    }
 }
 
 // Web search endpoint using DuckDuckGo HTML parsing
 app.get('/api/search', requireAuth, async (req, res) => {
+    // Check permission
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'Query permission required for web search' });
+    }
+
     const { q, limit = 5 } = req.query;
 
     if (!q) {
@@ -4366,9 +4379,34 @@ app.get('/api/search', requireAuth, async (req, res) => {
         res.json(resultData);
     } catch (error) {
         console.error('Search error:', error);
-        res.status(500).json({
-            error: 'Search failed',
-            details: error.message
+
+        // Provide specific error messages based on error type
+        let errorMsg = 'Search failed';
+        let statusCode = 500;
+        let retryable = false;
+
+        if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+            errorMsg = 'Search request timed out';
+            statusCode = 504;
+            retryable = true;
+        } else if (error.response?.status === 403) {
+            errorMsg = 'Search service temporarily unavailable';
+            statusCode = 503;
+            retryable = true;
+        } else if (error.response?.status === 429) {
+            errorMsg = 'Too many search requests';
+            statusCode = 429;
+            retryable = true;
+        } else if (!error.response) {
+            errorMsg = 'Unable to reach search service';
+            statusCode = 503;
+            retryable = true;
+        }
+
+        res.status(statusCode).json({
+            success: false,
+            error: errorMsg,
+            retryable
         });
     }
 });
@@ -6943,18 +6981,24 @@ app.use((err, req, res, next) => {
         console.error('Failed to broadcast error:', broadcastError);
     }
 
-    // Don't expose internal error details to client in production
+    // Don't expose internal error details to client
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
+    // In production, use generic error messages to prevent information leakage
+    const errorMessage = isDevelopment
+        ? (err.message || 'Internal server error')
+        : 'Request could not be processed';
+
     res.status(err.status || 500).json({
-        error: err.message || 'Internal server error',
-        ...(isDevelopment && { stack: err.stack, details: err.toString() })
+        error: errorMessage
+        // Stack traces removed for security - check server logs for details
     });
 });
 
 // 404 handler - must come after all other routes
+// Don't reveal endpoint information to prevent API discovery attacks
 app.use((req, res) => {
-    res.status(404).json({ error: 'Endpoint not found' });
+    res.status(404).json({ error: 'Invalid request' });
 });
 
 // ============================================================================

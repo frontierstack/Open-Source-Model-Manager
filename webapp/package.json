@@ -1,6 +1,6 @@
 {
   "name": "model-management-webapp",
-  "version": "0.3.5",
+  "version": "0.3.10",
   "description": "Web application for managing ML models",
   "main": "server.js",
   "dependencies": {
