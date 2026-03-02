@@ -694,7 +694,29 @@ function displayChatHistory() {
     } else {
         for (const msg of chatHistory) {
             if (msg.role === 'user') {
-                log(`${colorize('You:', 'green')} ${msg.content}`);
+                // Format multi-line user messages in a clean, contained box
+                const lines = msg.content.split('\n');
+                if (lines.length > 1) {
+                    // Multi-line message - show in a contained format
+                    log(`${colorize('You:', 'green')}`);
+                    const boxWidth = Math.min(process.stdout.columns - 4 || 76, 120);
+                    log(colorize('┌' + '─'.repeat(boxWidth - 2) + '┐', 'dim'));
+                    for (const line of lines) {
+                        // Wrap long lines
+                        if (line.length > boxWidth - 4) {
+                            const chunks = line.match(new RegExp(`.{1,${boxWidth - 4}}`, 'g')) || [line];
+                            for (const chunk of chunks) {
+                                log(colorize('│ ', 'dim') + chunk.padEnd(boxWidth - 4) + colorize(' │', 'dim'));
+                            }
+                        } else {
+                            log(colorize('│ ', 'dim') + line.padEnd(boxWidth - 4) + colorize(' │', 'dim'));
+                        }
+                    }
+                    log(colorize('└' + '─'.repeat(boxWidth - 2) + '┘', 'dim'));
+                } else {
+                    // Single line message - show inline
+                    log(`${colorize('You:', 'green')} ${msg.content}`);
+                }
             } else if (msg.role === 'assistant' || msg.role === 'assistant-streaming') {
                 const formattedContent = formatCodeBlocks(msg.content);
                 log(`${colorize('Koda:', 'cyan')} ${formattedContent}`);
@@ -3309,9 +3331,11 @@ async function startShell() {
 
     rl.prompt();
 
-    rl.on('line', async (line) => {
-        const input = line.trim();
+    // Paste detection: buffer lines that arrive within 50ms and combine them
+    let pasteBuffer = [];
+    let pasteTimeout = null;
 
+    async function processInput(input) {
         // Handle auth flow
         if (authState) {
             if (authState === 'url') {
@@ -3513,6 +3537,31 @@ async function startShell() {
         }
 
         rl.prompt();
+    }
+
+    rl.on('line', async (line) => {
+        const input = line.trim();
+
+        // Clear any existing paste timeout
+        if (pasteTimeout) {
+            clearTimeout(pasteTimeout);
+            pasteTimeout = null;
+        }
+
+        // Add line to paste buffer
+        pasteBuffer.push(input);
+
+        // Set timeout to process buffered lines
+        // If more lines arrive within 50ms, they'll be combined (paste detection)
+        pasteTimeout = setTimeout(async () => {
+            // Combine all buffered lines into a single message
+            const combinedInput = pasteBuffer.join('\n');
+            pasteBuffer = [];
+            pasteTimeout = null;
+
+            // Process the combined input
+            await processInput(combinedInput);
+        }, 50);
     });
 
     rl.on('close', () => {
