@@ -4468,7 +4468,22 @@ curl -X GET ${baseUrl}/api/models \\
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/search</TableCell>
                                                         <TableCell>GET</TableCell>
-                                                        <TableCell>Search the web using DuckDuckGo with auto-enhanced recent queries</TableCell>
+                                                        <TableCell>Search the web with Playwright content fetching (fetchContent=true for actual page content)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/playwright/fetch</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Fetch URL(s) with Playwright stealth mode - bypasses bot detection, handles JS-rendered pages</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/playwright/interact</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Interact with pages (click, type, scroll, wait) before extracting content</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/playwright/status</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Check Playwright availability and browser pool status</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/docs</TableCell>
@@ -4582,12 +4597,54 @@ curl -X GET ${baseUrl}/api/models \\
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances</TableCell>
                                                         <TableCell>GET</TableCell>
-                                                        <TableCell>List all running vLLM instances with port assignments and status information</TableCell>
+                                                        <TableCell>List all running model instances (llama.cpp and vLLM) with port assignments</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name</TableCell>
                                                         <TableCell>DELETE</TableCell>
-                                                        <TableCell>Stop and remove a specific vLLM Docker container instance</TableCell>
+                                                        <TableCell>Stop and remove a model instance (works for both llama.cpp and vLLM)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name/slots</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Get slot usage information for a running llama.cpp instance</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name/slots/clear</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Clear all slots for a running llama.cpp instance</TableCell>
+                                                    </TableRow>
+
+                                                    {/* Authentication */}
+                                                    <TableRow>
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(251, 191, 36, 0.1)', fontWeight: 600 }}>
+                                                            Authentication Endpoints (no permission required)
+                                                        </TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/register</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Create a new user account (username, password)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/login</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Login with username/password, creates session</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/logout</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>Logout and destroy current session</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/me</TableCell>
+                                                        <TableCell>GET</TableCell>
+                                                        <TableCell>Get current authenticated user info</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/password</TableCell>
+                                                        <TableCell>PUT</TableCell>
+                                                        <TableCell>Change password (requires authentication)</TableCell>
                                                     </TableRow>
 
                                                     {/* Admin Permission */}
