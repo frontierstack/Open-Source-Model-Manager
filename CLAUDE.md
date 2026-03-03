@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.5.2
+**Version:** 0.5.3
 
 ## Overview
 
@@ -603,10 +603,13 @@ async function execute(params) {
 - `sqlite_query` - Execute SQL queries on SQLite databases
 - `sqlite_list_tables` - List tables in SQLite database
 
-**PDF Operations (3 skills)**
+**PDF Operations (6 skills)**
 - `read_pdf` - Extract text from PDF files
 - `pdf_page_count` - Get number of pages in PDF
 - `pdf_to_images` - Convert PDF pages to images
+- `create_pdf` - Generate PDF from text content (uses reportlab, wkhtmltopdf, or enscript; falls back to HTML)
+- `html_to_pdf` - Convert HTML files to PDF (uses wkhtmltopdf, weasyprint, or Chrome headless)
+- `markdown_to_html` - Convert Markdown files to styled HTML (uses pandoc or built-in converter)
 
 **Clipboard Operations (2 skills)**
 - `clipboard_read` - Read from system clipboard
@@ -847,7 +850,22 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.5.2 (Current)
+### Version 0.5.3 (Current)
+- **PDF & Report Generation Skills**:
+  - **New `create_pdf` Skill**: Generate PDF files directly from text content
+    - Tries multiple methods: reportlab (Python), wkhtmltopdf, enscript+ps2pdf
+    - Automatic fallback to HTML if no PDF tools available
+    - Supports title and content parameters
+  - **New `html_to_pdf` Skill**: Convert HTML files to PDF
+    - Tries wkhtmltopdf, weasyprint, or Chrome/Chromium headless
+    - Auto-detects available PDF conversion tools
+  - **New `markdown_to_html` Skill**: Convert Markdown to styled HTML
+    - Uses pandoc if available, otherwise built-in converter
+    - Supports headers, bold, italic, links, code blocks, and lists
+  - **Total Skills Now: 88+** (added 3 new report generation skills)
+- **Koda CLI Version**: 3.3.0
+
+### Version 0.5.2
 - **Koda CLI Skill Parsing Improvements**:
   - **Fixed Incomplete Skill Display**: Partial skill calls (e.g., `[SKILL:which_command(command="pip`) no longer appear during streaming
   - **Improved Parameter Parsing**: Regex now handles escaped quotes (`\"`) and special characters in content

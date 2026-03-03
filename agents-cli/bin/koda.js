@@ -1471,7 +1471,7 @@ ENVIRONMENT:
 [SKILL:which_command(command="node")]
 
 CRITICAL EXECUTION RULES:
-1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command, run_python, run_bash.
+1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command, run_python, run_bash, create_pdf, html_to_pdf, markdown_to_html.
 2. When working with files, EXECUTE skills directly - don't just suggest or describe changes
 3. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
 4. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
@@ -1493,10 +1493,13 @@ SKILL SYNTAX RULES - FOLLOW EXACTLY:
 - GOOD: [SKILL:create_file(filePath="/path", content="text")]
 
 PDF/REPORT GENERATION:
-- For PDF creation, use run_python or run_bash with appropriate libraries
-- Create HTML reports with create_file, then convert using available tools
-- Check for tools first: [SKILL:which_command(command="wkhtmltopdf")]
-- If no PDF tools, create an HTML or Markdown report instead
+[SKILL:create_pdf(outputPath="/path/to/report.pdf", title="Report Title", content="Report content here")]
+[SKILL:html_to_pdf(htmlPath="/path/to/file.html", outputPath="/path/to/output.pdf")]
+[SKILL:markdown_to_html(mdPath="/path/to/file.md", outputPath="/path/to/output.html", title="Title")]
+- create_pdf: Creates PDF directly from text content (tries reportlab, wkhtmltopdf, enscript; falls back to HTML)
+- html_to_pdf: Converts existing HTML file to PDF (tries wkhtmltopdf, weasyprint, chromium)
+- markdown_to_html: Converts Markdown file to styled HTML (tries pandoc, then built-in converter)
+- For complex reports: create HTML first with create_file, then convert with html_to_pdf
 
 ADDITIONAL CAPABILITIES:
 You have access to advanced development tools that you should use proactively when appropriate:
@@ -3206,6 +3209,175 @@ async function executePdfSkill(skillName, params) {
                 }
             }
 
+            case 'create_pdf': {
+                const outputPath = params.outputPath || params.filePath;
+                const content = params.content || '';
+                const title = params.title || 'Document';
+                if (!outputPath) return { success: false, error: 'outputPath parameter is required' };
+                if (!content) return { success: false, error: 'content parameter is required' };
+
+                // Ensure directory exists
+                const dir = path.dirname(outputPath);
+                await fs.mkdir(dir, { recursive: true });
+
+                // Try multiple PDF generation methods
+                const escapedContent = content.replace(/'/g, "'\\''").replace(/\n/g, '\\n');
+                const escapedTitle = title.replace(/'/g, "'\\''");
+
+                // Method 1: Use Python with reportlab
+                const pythonScript = `
+import sys
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import inch
+    c = canvas.Canvas('${outputPath}', pagesize=letter)
+    c.setTitle('${escapedTitle}')
+    text = '''${escapedContent}'''
+    y = 750
+    for line in text.split('\\n'):
+        if y < 50:
+            c.showPage()
+            y = 750
+        c.drawString(50, y, line[:100])
+        y -= 14
+    c.save()
+    print('OK')
+except ImportError:
+    sys.exit(1)
+`;
+                try {
+                    const { stdout } = await execPromise(`python3 -c "${pythonScript.replace(/"/g, '\\"')}"`, { timeout: 30000 });
+                    if (stdout.includes('OK')) {
+                        return { success: true, outputPath, message: `PDF created: ${outputPath}` };
+                    }
+                } catch (e) { /* Try next method */ }
+
+                // Method 2: Use wkhtmltopdf with HTML wrapper
+                try {
+                    const htmlContent = `<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;margin:40px;}</style></head><body><h1>${title}</h1><pre style="white-space:pre-wrap;">${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></body></html>`;
+                    const tempHtml = outputPath.replace('.pdf', '.tmp.html');
+                    await fs.writeFile(tempHtml, htmlContent, 'utf8');
+                    await execPromise(`wkhtmltopdf --quiet "${tempHtml}" "${outputPath}"`, { timeout: 60000 });
+                    await fs.unlink(tempHtml).catch(() => {});
+                    return { success: true, outputPath, message: `PDF created: ${outputPath}` };
+                } catch (e) { /* Try next method */ }
+
+                // Method 3: Use enscript + ps2pdf for plain text
+                try {
+                    const tempTxt = outputPath.replace('.pdf', '.tmp.txt');
+                    await fs.writeFile(tempTxt, `${title}\n${'='.repeat(title.length)}\n\n${content}`, 'utf8');
+                    await execPromise(`enscript -B -p - "${tempTxt}" | ps2pdf - "${outputPath}"`, { timeout: 30000 });
+                    await fs.unlink(tempTxt).catch(() => {});
+                    return { success: true, outputPath, message: `PDF created: ${outputPath}` };
+                } catch (e) { /* Try next method */ }
+
+                // Method 4: Fallback - create HTML file instead
+                const htmlPath = outputPath.replace('.pdf', '.html');
+                const htmlContent = `<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;margin:40px;line-height:1.6;}h1{color:#333;}ul{margin:20px 0;}li{margin:10px 0;}</style></head><body><h1>${title}</h1><div>${content.replace(/\n/g, '<br>')}</div><p style="margin-top:40px;color:#666;font-size:12px;">Generated by Koda</p></body></html>`;
+                await fs.writeFile(htmlPath, htmlContent, 'utf8');
+                return {
+                    success: true,
+                    outputPath: htmlPath,
+                    message: `PDF tools not available. Created HTML report instead: ${htmlPath}`,
+                    fallback: true
+                };
+            }
+
+            case 'html_to_pdf': {
+                const htmlPath = params.htmlPath || params.inputPath;
+                const outputPath = params.outputPath || params.pdfPath || htmlPath.replace(/\.html?$/i, '.pdf');
+                if (!htmlPath) return { success: false, error: 'htmlPath parameter is required' };
+
+                // Ensure output directory exists
+                const dir = path.dirname(outputPath);
+                await fs.mkdir(dir, { recursive: true });
+
+                // Try multiple conversion methods
+                // Method 1: wkhtmltopdf (most common)
+                try {
+                    await execPromise(`wkhtmltopdf --quiet "${htmlPath}" "${outputPath}"`, { timeout: 60000 });
+                    return { success: true, htmlPath, outputPath, message: `PDF created: ${outputPath}` };
+                } catch (e) { /* Try next method */ }
+
+                // Method 2: WeasyPrint (Python)
+                try {
+                    await execPromise(`weasyprint "${htmlPath}" "${outputPath}"`, { timeout: 60000 });
+                    return { success: true, htmlPath, outputPath, message: `PDF created: ${outputPath}` };
+                } catch (e) { /* Try next method */ }
+
+                // Method 3: Chrome/Chromium headless
+                try {
+                    const absHtml = path.resolve(htmlPath);
+                    const absPdf = path.resolve(outputPath);
+                    await execPromise(`chromium --headless --disable-gpu --print-to-pdf="${absPdf}" "file://${absHtml}" 2>/dev/null || google-chrome --headless --disable-gpu --print-to-pdf="${absPdf}" "file://${absHtml}" 2>/dev/null`, { timeout: 60000 });
+                    return { success: true, htmlPath, outputPath, message: `PDF created: ${outputPath}` };
+                } catch (e) { /* All methods failed */ }
+
+                return {
+                    success: false,
+                    error: 'No PDF conversion tools available. Install wkhtmltopdf, weasyprint, or chromium.'
+                };
+            }
+
+            case 'markdown_to_html': {
+                const mdPath = params.mdPath || params.inputPath;
+                const outputPath = params.outputPath || params.htmlPath || mdPath.replace(/\.md$/i, '.html');
+                const title = params.title || 'Document';
+                if (!mdPath) return { success: false, error: 'mdPath parameter is required' };
+
+                // Ensure output directory exists
+                const dir = path.dirname(outputPath);
+                await fs.mkdir(dir, { recursive: true });
+
+                // Read markdown content
+                let mdContent;
+                try {
+                    mdContent = await fs.readFile(mdPath, 'utf8');
+                } catch (e) {
+                    return { success: false, error: `Cannot read markdown file: ${e.message}` };
+                }
+
+                // Try using pandoc first
+                try {
+                    await execPromise(`pandoc -f markdown -t html -s --metadata title="${title}" -o "${outputPath}" "${mdPath}"`, { timeout: 30000 });
+                    return { success: true, mdPath, outputPath, message: `HTML created: ${outputPath}` };
+                } catch (e) { /* Try fallback */ }
+
+                // Fallback: Simple markdown conversion
+                let html = mdContent
+                    // Headers
+                    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                    // Bold and italic
+                    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                    // Links
+                    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>')
+                    // Code blocks
+                    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+                    .replace(/`(.+?)`/g, '<code>$1</code>')
+                    // Lists
+                    .replace(/^\* (.+)$/gm, '<li>$1</li>')
+                    .replace(/^- (.+)$/gm, '<li>$1</li>')
+                    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+                    // Paragraphs
+                    .replace(/\n\n/g, '</p><p>')
+                    .replace(/\n/g, '<br>');
+
+                const fullHtml = `<!DOCTYPE html>
+<html><head><title>${title}</title>
+<style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}
+code{background:#f4f4f4;padding:2px 5px;border-radius:3px;}
+pre{background:#f4f4f4;padding:15px;overflow-x:auto;border-radius:5px;}
+ul{margin:15px 0;}li{margin:5px 0;}</style>
+</head><body><p>${html}</p></body></html>`;
+
+                await fs.writeFile(outputPath, fullHtml, 'utf8');
+                return { success: true, mdPath, outputPath, message: `HTML created: ${outputPath}` };
+            }
+
             default:
                 return { success: false, error: `Unknown PDF skill: ${skillName}` };
         }
@@ -3504,7 +3676,7 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         const commandSkills = ['run_bash', 'run_python', 'run_powershell', 'run_cmd'];
         const clipboardSkills = ['clipboard_read', 'clipboard_write'];
         const databaseSkills = ['sqlite_query', 'sqlite_list_tables'];
-        const pdfSkills = ['read_pdf', 'pdf_page_count', 'pdf_to_images'];
+        const pdfSkills = ['read_pdf', 'pdf_page_count', 'pdf_to_images', 'create_pdf', 'html_to_pdf', 'markdown_to_html'];
         const imageSkills = ['ocr_image', 'screenshot', 'convert_image'];
         const windowsSkills = ['get_windows_services', 'get_registry_value', 'set_registry_value'];
         const emailSkills = ['read_email_file'];
@@ -3778,6 +3950,28 @@ function buildSkillResultsMessage(results) {
                 const command = result.command || result.data?.command || '';
                 const found = result.found || result.data?.found;
                 message += `✓ which ${command}: ${found ? 'found' : 'not found'}\n`;
+            } else if (skillName === 'create_pdf') {
+                const path = result.outputPath || result.data?.outputPath || 'document.pdf';
+                const fallback = result.fallback || result.data?.fallback;
+                if (fallback) {
+                    message += `✓ PDF tools unavailable, created HTML report instead: ${path}\n`;
+                } else {
+                    message += `✓ PDF created: ${path}\n`;
+                }
+            } else if (skillName === 'html_to_pdf') {
+                const path = result.outputPath || result.data?.outputPath || 'output.pdf';
+                message += `✓ HTML converted to PDF: ${path}\n`;
+            } else if (skillName === 'markdown_to_html') {
+                const path = result.outputPath || result.data?.outputPath || 'output.html';
+                message += `✓ Markdown converted to HTML: ${path}\n`;
+            } else if (skillName === 'read_pdf') {
+                message += `✓ PDF text extracted successfully\n`;
+            } else if (skillName === 'pdf_page_count') {
+                const count = result.pageCount || result.data?.pageCount || 0;
+                message += `✓ PDF has ${count} pages\n`;
+            } else if (skillName === 'pdf_to_images') {
+                const count = result.count || result.data?.count || 0;
+                message += `✓ PDF converted to ${count} images\n`;
             } else {
                 message += `✓ ${skillName} completed\n`;
             }
@@ -3802,6 +3996,7 @@ function buildSkillResultsMessage(results) {
                 '• Git: git_status, git_diff, git_log, git_branch\n' +
                 '• Network: fetch_url, http_request, dns_lookup, check_port, ping_host, curl_request\n' +
                 '• Data: parse_json, parse_csv, base64_encode, base64_decode, hash_data, json_get, json_set\n' +
+                '• PDF/Reports: create_pdf, html_to_pdf, markdown_to_html, read_pdf, pdf_page_count, pdf_to_images\n' +
                 '• Web: playwright_fetch, playwright_interact, web_search';
         } else {
             message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
