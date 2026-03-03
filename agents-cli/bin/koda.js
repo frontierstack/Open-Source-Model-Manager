@@ -3281,6 +3281,65 @@ async function executeEmailSkill(skillName, params) {
     }
 }
 
+// Execute Playwright-based skills (via API for browser automation)
+async function executePlaywrightSkill(api, skillName, params) {
+    try {
+        switch (skillName) {
+            case 'playwright_fetch': {
+                const body = {
+                    url: params.url,
+                    urls: params.urls,
+                    timeout: params.timeout || 15000,
+                    waitForJS: params.waitForJS !== false,
+                    includeLinks: params.includeLinks || false,
+                    maxLength: params.maxLength || 8000
+                };
+
+                const result = await api.request('POST', '/api/playwright/fetch', body);
+                return { success: true, ...result };
+            }
+
+            case 'playwright_interact': {
+                const body = {
+                    url: params.url,
+                    actions: params.actions || [],
+                    timeout: params.timeout || 30000,
+                    maxLength: params.maxLength || 8000
+                };
+
+                const result = await api.request('POST', '/api/playwright/interact', body);
+                return { success: true, ...result };
+            }
+
+            case 'web_search': {
+                const query = params.query;
+                if (!query) return { success: false, error: 'query parameter is required' };
+
+                const limit = params.limit || 8;
+                const fetchContent = params.fetchContent !== false;
+                const contentLimit = params.contentLimit || 5;
+                const timeRange = params.timeRange || '';
+
+                let url = `/api/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+                if (fetchContent) {
+                    url += `&fetchContent=true&contentLimit=${contentLimit}`;
+                }
+                if (timeRange) {
+                    url += `&timeRange=${timeRange}`;
+                }
+
+                const result = await api.request('GET', url);
+                return { success: true, ...result };
+            }
+
+            default:
+                return { success: false, error: `Unknown playwright skill: ${skillName}` };
+        }
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
 // Execute skills and return results
 async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
@@ -3360,6 +3419,7 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         const imageSkills = ['ocr_image', 'screenshot', 'convert_image'];
         const windowsSkills = ['get_windows_services', 'get_registry_value', 'set_registry_value'];
         const emailSkills = ['read_email_file'];
+        const playwrightSkills = ['playwright_fetch', 'playwright_interact', 'web_search'];
 
         if (fileOperationSkills.includes(call.skillName)) {
             result = await executeFileOperationSkill(call.skillName, call.params);
@@ -3393,6 +3453,8 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             result = await executeWindowsSkill(call.skillName, call.params);
         } else if (emailSkills.includes(call.skillName)) {
             result = await executeEmailSkill(call.skillName, call.params);
+        } else if (playwrightSkills.includes(call.skillName)) {
+            result = await executePlaywrightSkill(api, call.skillName, call.params);
         } else {
             // Unknown skill - return error
             result = { success: false, error: `Unknown skill: ${call.skillName}. All skills must execute client-side.` };
@@ -3502,6 +3564,18 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 const command = result.data?.command || result.command || '';
                 const found = result.data?.found || result.found;
                 addToHistory('system', `✓ which ${colorize(command, 'cyan')}: ${found ? result.path || result.data?.path : 'not found'}`);
+            } else if (call.skillName === 'playwright_fetch') {
+                const urlCount = call.params.urls ? call.params.urls.length : 1;
+                const engine = result.data?.engine || result.engine || 'playwright';
+                addToHistory('system', `✓ Fetched ${colorize(urlCount.toString(), 'cyan')} URL(s) via ${engine}`);
+            } else if (call.skillName === 'playwright_interact') {
+                const actionCount = call.params.actions ? call.params.actions.length : 0;
+                addToHistory('system', `✓ Interacted with page (${colorize(actionCount.toString(), 'cyan')} actions)`);
+            } else if (call.skillName === 'web_search') {
+                const query = call.params.query || '';
+                const count = result.data?.count || result.count || 0;
+                const contentCount = result.data?.contentFetchedCount || result.contentFetchedCount || 0;
+                addToHistory('system', `✓ Web search: ${colorize(count.toString(), 'cyan')} results (${contentCount} with content)`);
             } else {
                 addToHistory('system', `✓ ${call.skillName} completed successfully`);
             }

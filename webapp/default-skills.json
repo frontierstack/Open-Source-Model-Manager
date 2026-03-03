@@ -366,5 +366,29 @@
     "parameters": {"dirPath": "string"},
     "code": "def execute(params):\n    \"\"\"Create a new directory.\"\"\"\n    import os\n\n    dir_path = params.get('dirPath')\n    if not dir_path:\n        return {'success': False, 'error': 'dirPath parameter is required'}\n\n    try:\n        os.makedirs(dir_path, exist_ok=True)\n        return {\n            'success': True,\n            'message': f'Directory created: {dir_path}',\n            'dirPath': dir_path\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
+  },
+  {
+    "name": "playwright_fetch",
+    "description": "Fetch webpage content using Playwright browser with stealth mode (bypasses bot detection, handles JS-rendered pages)",
+    "type": "tool",
+    "parameters": {"url": "string", "urls": "array", "timeout": "number", "waitForJS": "boolean", "includeLinks": "boolean", "maxLength": "number"},
+    "code": "# This skill is executed via the /api/playwright/fetch endpoint\n# Parameters:\n#   url (string): Single URL to fetch\n#   urls (array): Multiple URLs to fetch in parallel\n#   timeout (number): Timeout in ms (default: 15000)\n#   waitForJS (boolean): Wait for JavaScript to render (default: true)\n#   includeLinks (boolean): Extract links from page (default: false)\n#   maxLength (number): Max content length (default: 8000)\n#\n# Features:\n# - Browser pooling for fast execution\n# - Stealth mode with fingerprint randomization\n# - Handles JavaScript-rendered content\n# - Automatic bot detection avoidance\n# - Falls back to axios if Playwright unavailable",
+    "enabled": true
+  },
+  {
+    "name": "playwright_interact",
+    "description": "Interact with a webpage (click, type, scroll) before extracting content (for complex sites requiring user actions)",
+    "type": "tool",
+    "parameters": {"url": "string", "actions": "array", "timeout": "number", "maxLength": "number"},
+    "code": "# This skill is executed via the /api/playwright/interact endpoint\n# Parameters:\n#   url (string): URL to navigate to\n#   actions (array): Actions to perform, each with:\n#     - type: 'click', 'type', 'wait', 'scroll', 'waitForNavigation'\n#     - selector: CSS selector for click/type/wait\n#     - text: Text to type (for 'type' action)\n#     - timeout: Max wait time (for 'wait' and 'waitForNavigation')\n#   timeout (number): Overall timeout in ms (default: 30000)\n#   maxLength (number): Max content length (default: 8000)\n#\n# Example actions:\n#   [{\"type\": \"click\", \"selector\": \"button.accept-cookies\"}]\n#   [{\"type\": \"type\", \"selector\": \"input#search\", \"text\": \"query\"}]\n#   [{\"type\": \"scroll\"}]\n#   [{\"type\": \"waitForNavigation\"}]",
+    "enabled": true
+  },
+  {
+    "name": "web_search",
+    "description": "Search the web using DuckDuckGo with optional Playwright content fetching (returns actual page content, not just snippets)",
+    "type": "tool",
+    "parameters": {"query": "string", "limit": "number", "fetchContent": "boolean", "contentLimit": "number", "timeRange": "string"},
+    "code": "# This skill is executed via the /api/search endpoint\n# Parameters:\n#   query (string): Search query\n#   limit (number): Max number of results (default: 5)\n#   fetchContent (boolean): Fetch actual page content (default: false)\n#   contentLimit (number): Number of URLs to fetch content from (default: 3)\n#   timeRange (string): d/w/m/y for day/week/month/year filter\n#\n# Features:\n# - Auto-enhances 'recent/latest/news' queries with current date\n# - Uses Playwright for content fetching when available\n# - Falls back to axios for basic content extraction\n# - Caches results for 1 hour\n# - Returns extracted content including title, summary, headings, and paragraphs",
+    "enabled": true
   }
 ]

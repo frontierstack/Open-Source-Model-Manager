@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.4.1
+**Version:** 0.5.0
 
 ## Overview
 
@@ -17,6 +17,7 @@ A containerized MLOps platform for serving and managing large language models. F
 - Open WebUI chat interface
 - AI agent management system with skills and tasks
 - **Autonomous Skill Execution**: Koda CLI executes skills directly without manual intervention
+- **Advanced Web Scraping**: Playwright-powered content fetching with stealth mode and bot detection avoidance
 - Cross-platform CLI (koda) for terminal-based agent interaction
 - OpenAI-compatible API with authentication and rate limiting
 - **Production-Ready Stability**: Comprehensive error handling prevents crashes from model failures, download errors, or corrupted data
@@ -318,6 +319,23 @@ GET  /api/search?q=query&limit=10&timeRange=m&fetchContent=true&contentLimit=3
 GET  /api/docs                         # Fetch documentation
 ```
 
+**Playwright (Advanced Web Scraping)**
+```bash
+POST /api/playwright/fetch             # Fetch URL(s) with stealth mode
+     # Body: { url: string, urls: string[], timeout: 15000, waitForJS: true,
+     #         includeLinks: false, screenshot: false, maxLength: 8000 }
+     # Uses browser pooling, fingerprint randomization, bot detection avoidance
+     # Falls back to axios if Playwright unavailable
+
+POST /api/playwright/interact          # Interact with page before extraction
+     # Body: { url: string, actions: [...], timeout: 30000, maxLength: 8000 }
+     # Actions: { type: 'click'|'type'|'wait'|'scroll'|'waitForNavigation',
+     #            selector: string, text: string, timeout: number }
+
+GET  /api/playwright/status            # Check Playwright availability
+     # Returns: { enabled, status, browserPool: { size, inUse, available } }
+```
+
 **Agents**
 ```bash
 GET    /api/agents                    # List agents
@@ -511,7 +529,7 @@ async function execute(params) {
 - **tool**: API calls, web requests
 - **command**: Shell execution (disabled by default)
 
-### Available Default Skills (80+)
+### Available Default Skills (85+)
 
 **File Operations (9 skills)**
 - `create_file` - Create new files
@@ -558,6 +576,11 @@ async function execute(params) {
 - `list_network_interfaces` - List network interfaces with IP addresses
 - `traceroute` - Trace route to a host
 - `curl_request` - Advanced HTTP requests with headers/auth
+
+**Playwright Web Scraping (3 skills)**
+- `playwright_fetch` - Fetch webpage(s) with stealth mode and bot detection avoidance (handles JS-rendered pages)
+- `playwright_interact` - Interact with pages (click, type, scroll) before extracting content
+- `web_search` - Search the web with optional Playwright content fetching (returns actual page content)
 
 **Git Operations (4 skills)**
 - `git_status` - Get git repository status
@@ -824,7 +847,36 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.4.1 (Current)
+### Version 0.5.0 (Current)
+- **Playwright-Powered Web Scraping**:
+  - **Advanced Bot Detection Avoidance**: Browser fingerprint randomization, stealth mode, and human-like behavior
+  - **JavaScript-Rendered Pages**: Handles dynamic content that requires JS execution (React, Vue, Angular sites)
+  - **Browser Pooling**: Fast execution with reusable browser instances (max 3 concurrent)
+  - **Smart Content Extraction**: Removes ads, navigation, and noise - extracts article content, headings, and paragraphs
+  - **Page Interaction**: Click, type, scroll, and wait actions for complex sites requiring user interaction
+  - **Screenshot Capability**: Optional page screenshots for visual content
+  - **Graceful Fallback**: Falls back to axios for simple HTML pages if Playwright unavailable
+- **New Playwright API Endpoints**:
+  - `POST /api/playwright/fetch` - Fetch single or multiple URLs with stealth mode
+  - `POST /api/playwright/interact` - Interact with pages (click, type, scroll) before extraction
+  - `GET /api/playwright/status` - Check Playwright availability and browser pool status
+- **New Koda CLI Skills**:
+  - `playwright_fetch` - Fetch webpage content with bot detection avoidance
+  - `playwright_interact` - Interact with complex sites requiring user actions
+  - `web_search` - Enhanced search skill with Playwright content fetching
+- **Stealth Features**:
+  - Randomized User-Agent, viewport, locale, timezone, and device scale factor
+  - WebDriver detection bypass, Chrome runtime spoofing
+  - Plugin array spoofing, WebGL vendor masking
+  - Random delays to simulate human behavior
+  - Blocks unnecessary resources (images, fonts) for speed
+- **Infrastructure**:
+  - Chromium installed in webapp Docker image with all dependencies
+  - Browser pool with automatic cleanup (5-minute idle timeout)
+  - Concurrent fetching support (up to 3 simultaneous browsers)
+- **Koda CLI Version**: 3.1.0
+
+### Version 0.4.1
 - **Enhanced Web Search with Content Fetching**:
   - **Actual Page Content**: Search now fetches real HTML content from result URLs, not just snippets
   - **Smart Content Extraction**: Extracts title, meta description, headings, and paragraphs from pages

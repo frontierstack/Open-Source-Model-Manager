@@ -17,6 +17,18 @@ const FileStore = require('session-file-store')(session);
 const passport = require('passport');
 const initializePassport = require('./auth/passport-config');
 
+// Playwright service for advanced web scraping
+let playwrightService = null;
+let playwrightEnabled = false;
+
+try {
+    playwrightService = require('./services/playwrightService');
+    playwrightEnabled = true;
+    console.log('Playwright service loaded - advanced web scraping enabled');
+} catch (error) {
+    console.log('Playwright service not available - using axios fallback:', error.message);
+}
+
 const app = express();
 
 // SSL configuration - use HTTPS if certificates exist
@@ -4544,8 +4556,8 @@ function extractTextFromHtml(html, maxLength = 5000) {
     return content;
 }
 
-// Helper function to fetch content from a URL with timeout
-async function fetchUrlContent(url, timeout = 8000) {
+// Helper function to fetch content from a URL using axios (fallback)
+async function fetchUrlContentAxios(url, timeout = 8000) {
     try {
         const response = await axios.get(url, {
             headers: {
@@ -4575,6 +4587,145 @@ async function fetchUrlContent(url, timeout = 8000) {
         };
     }
 }
+
+// Helper function to fetch content from a URL with timeout
+// Uses Playwright for advanced bot-detection avoidance, falls back to axios
+async function fetchUrlContent(url, options = {}) {
+    const timeout = options.timeout || 12000;
+
+    // Use Playwright if available (handles JS-rendered pages, avoids bot detection)
+    if (playwrightEnabled && playwrightService) {
+        try {
+            const result = await playwrightService.fetchUrlContent(url, {
+                timeout,
+                waitForJS: options.waitForJS !== false,
+                maxLength: options.maxLength || 6000,
+                includeLinks: options.includeLinks || false
+            });
+
+            if (result.success) {
+                return result;
+            }
+
+            // If Playwright fails, fall back to axios for simple HTML pages
+            console.log(`Playwright fetch failed for ${url}, trying axios fallback`);
+            return await fetchUrlContentAxios(url, timeout);
+        } catch (error) {
+            console.error(`Playwright error for ${url}:`, error.message);
+            return await fetchUrlContentAxios(url, timeout);
+        }
+    }
+
+    // Fallback to axios
+    return await fetchUrlContentAxios(url, timeout);
+}
+
+// Playwright fetch endpoint - advanced web scraping with stealth mode
+app.post('/api/playwright/fetch', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'Query permission required' });
+    }
+
+    const { url, urls, timeout = 15000, waitForJS = true, includeLinks = false, screenshot = false, maxLength = 8000 } = req.body;
+
+    if (!url && !urls) {
+        return res.status(400).json({ error: 'URL or URLs array required' });
+    }
+
+    // Check if Playwright is available
+    if (!playwrightEnabled || !playwrightService) {
+        // Fall back to axios-based fetching
+        if (url) {
+            const result = await fetchUrlContentAxios(url, timeout);
+            return res.json({ ...result, engine: 'axios' });
+        } else {
+            const results = await Promise.all(
+                urls.slice(0, 10).map(u => fetchUrlContentAxios(u, timeout))
+            );
+            return res.json({ results, engine: 'axios' });
+        }
+    }
+
+    try {
+        if (url) {
+            // Single URL fetch
+            const result = await playwrightService.fetchUrlContent(url, {
+                timeout,
+                waitForJS,
+                includeLinks,
+                screenshot,
+                maxLength
+            });
+            return res.json({ ...result, engine: 'playwright' });
+        } else {
+            // Multiple URL fetch
+            const results = await playwrightService.fetchMultipleUrls(
+                urls.slice(0, 10),
+                { timeout, waitForJS, includeLinks, maxLength },
+                3 // concurrency
+            );
+            return res.json({ results, engine: 'playwright' });
+        }
+    } catch (error) {
+        console.error('Playwright fetch error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            engine: 'playwright'
+        });
+    }
+});
+
+// Playwright interact endpoint - advanced page interaction
+app.post('/api/playwright/interact', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'Query permission required' });
+    }
+
+    const { url, actions = [], timeout = 30000, maxLength = 8000 } = req.body;
+
+    if (!url) {
+        return res.status(400).json({ error: 'URL required' });
+    }
+
+    if (!playwrightEnabled || !playwrightService) {
+        return res.status(503).json({
+            success: false,
+            error: 'Playwright not available - interaction requires browser automation'
+        });
+    }
+
+    try {
+        const result = await playwrightService.interactAndFetch(url, actions, { timeout, maxLength });
+        res.json({ ...result, engine: 'playwright' });
+    } catch (error) {
+        console.error('Playwright interact error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            engine: 'playwright'
+        });
+    }
+});
+
+// Playwright status endpoint
+app.get('/api/playwright/status', requireAuth, (req, res) => {
+    if (playwrightEnabled && playwrightService) {
+        const poolStatus = playwrightService.getPoolStatus();
+        res.json({
+            enabled: true,
+            status: 'ready',
+            browserPool: poolStatus,
+            features: ['stealth', 'js-rendering', 'interaction', 'screenshots']
+        });
+    } else {
+        res.json({
+            enabled: false,
+            status: 'unavailable',
+            fallback: 'axios'
+        });
+    }
+});
 
 // Documentation endpoint - fetch from DevDocs.io
 app.get('/api/docs', requireAuth, async (req, res) => {
