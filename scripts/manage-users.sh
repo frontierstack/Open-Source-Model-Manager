@@ -7,8 +7,6 @@ set -e
 
 # Path inside container (for docker exec commands)
 CONTAINER_USERS_FILE="/models/.modelserver/users.json"
-# Path on host (for direct file access)
-HOST_USERS_FILE="/home/webapp/lmstudio/models/.modelserver/users.json"
 
 # Colors
 RED='\033[0;31m'
@@ -16,11 +14,44 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Dynamically detect the webapp container name
+detect_webapp_container() {
+    # Try common container name patterns
+    local patterns=("modelserver-webapp-1" "modelserver_webapp_1" "lmstudio-webapp-1" "lmstudio_webapp_1")
+
+    for pattern in "${patterns[@]}"; do
+        if docker ps --format '{{.Names}}' | grep -q "^${pattern}$"; then
+            echo "$pattern"
+            return 0
+        fi
+    done
+
+    # Fallback: search for any container with 'webapp' in the name from modelserver/lmstudio project
+    local container=$(docker ps --format '{{.Names}}' | grep -E "(modelserver|lmstudio).*webapp" | head -1)
+    if [ -n "$container" ]; then
+        echo "$container"
+        return 0
+    fi
+
+    echo ""
+    return 1
+}
+
+# Get webapp container name
+WEBAPP_CONTAINER=$(detect_webapp_container)
+
+if [ -z "$WEBAPP_CONTAINER" ]; then
+    echo -e "${RED}Error: Could not find webapp container. Make sure the server is running.${NC}"
+    echo "Run './start.sh' to start the server first."
+    exit 1
+fi
+
 show_menu() {
     echo ""
     echo "=========================================="
     echo "  User Account Management"
     echo "=========================================="
+    echo -e "  ${GREEN}Container: $WEBAPP_CONTAINER${NC}"
     echo ""
     echo "1) List all users"
     echo "2) Reset user password"
@@ -37,7 +68,7 @@ list_users() {
     echo "----------------------------------------"
 
     # Use docker exec to read and parse users.json inside the container
-    docker exec modelserver-webapp-1 sh -c "
+    docker exec "$WEBAPP_CONTAINER" sh -c "
         if [ ! -f '$CONTAINER_USERS_FILE' ]; then
             echo 'No users found.'
             exit 0
@@ -71,7 +102,7 @@ reset_password() {
     fi
 
     # Use Node.js to update the password with bcrypt
-    docker exec modelserver-webapp-1 node -e "
+    docker exec "$WEBAPP_CONTAINER" node -e "
         const fs = require('fs');
         const bcrypt = require('bcryptjs');
         const path = '/models/.modelserver/users.json';
@@ -122,7 +153,7 @@ delete_user() {
         return
     fi
 
-    docker exec modelserver-webapp-1 node -e "
+    docker exec "$WEBAPP_CONTAINER" node -e "
         const fs = require('fs');
         const path = '/models/.modelserver/users.json';
 
@@ -152,7 +183,7 @@ delete_user() {
 
 delete_all_users() {
     echo ""
-    echo -e "${RED}WARNING: This will delete ALL user accounts!${NC}"
+    echo -e "${RED}WARNING: This will delete ALL user accounts and sessions!${NC}"
     echo "This action cannot be undone."
     echo ""
     read -p "Type 'DELETE ALL' to confirm: " CONFIRM
@@ -163,7 +194,7 @@ delete_all_users() {
     fi
 
     # Use docker exec to delete users file inside the container
-    docker exec modelserver-webapp-1 sh -c "
+    docker exec "$WEBAPP_CONTAINER" sh -c "
         if [ -f '$CONTAINER_USERS_FILE' ]; then
             rm -f '$CONTAINER_USERS_FILE'
             echo 'All user accounts deleted'
@@ -175,6 +206,15 @@ delete_all_users() {
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ All user accounts deleted${NC}"
     fi
+
+    # Also clear active sessions
+    echo ""
+    echo "Clearing active sessions..."
+    docker exec "$WEBAPP_CONTAINER" rm -rf /models/.modelserver/sessions/* 2>/dev/null || true
+    echo -e "${GREEN}✓ Sessions cleared${NC}"
+
+    echo ""
+    echo "Users will need to register again at https://localhost:3001"
 }
 
 create_admin() {
@@ -191,7 +231,7 @@ create_admin() {
         return
     fi
 
-    docker exec modelserver-webapp-1 node -e "
+    docker exec "$WEBAPP_CONTAINER" node -e "
         const fs = require('fs');
         const bcrypt = require('bcryptjs');
         const crypto = require('crypto');

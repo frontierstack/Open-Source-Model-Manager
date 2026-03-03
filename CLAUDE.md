@@ -450,6 +450,25 @@ The advanced build system supports incremental builds, parallel compilation, bui
 ./reset.sh --rebuild            # Reset and rebuild images from scratch
 ./reset-openwebui.sh            # Reset only Open WebUI data
 
+# User account management
+./scripts/manage-users.sh       # Interactive user management menu
+```
+
+### User Account Management
+The `manage-users.sh` script provides an interactive menu for managing user accounts:
+
+```bash
+./scripts/manage-users.sh
+
+# Menu options:
+# 1) List all users        - Show all registered users
+# 2) Reset user password   - Change a user's password (admin function)
+# 3) Delete a user         - Remove a single user account
+# 4) Delete ALL users      - Remove all accounts and sessions (requires confirmation)
+# 5) Create admin user     - Create a new admin account
+# 6) Exit
+```
+
 # Docker Compose commands
 docker compose ps               # Check service status
 docker compose logs -f webapp   # View webapp logs (follow mode)
@@ -858,6 +877,7 @@ Presence Penalty: 0.2
 - `reload.sh` - Rebuild and restart services without data loss
 - `reset.sh` - Full system reset (removes all data except models)
 - `reset-openwebui.sh` - Reset only Open WebUI data
+- `scripts/manage-users.sh` - Interactive user account management (list, reset password, delete, create admin)
 
 ### Services
 - `webapp/` - React + Express application
