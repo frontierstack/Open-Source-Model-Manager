@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.5.3
+**Version:** 0.5.4
 
 ## Overview
 
@@ -701,6 +701,32 @@ docker logs llamacpp-{modelName}     # Check for errors
 # Common: OOM → reduce GPU layers, use q8_0 cache, enable flash attention
 ```
 
+### Model Not Found (Windows+WSL, Different Install Paths)
+If models download successfully but fail to load with "model not found" errors:
+
+1. **Check webapp logs for host path detection:**
+```bash
+docker compose logs webapp | grep "Host models path"
+# Should show: "Host models path configured: /path/to/lmstudio/models"
+```
+
+2. **If path detection fails**, set `HOST_MODELS_PATH` manually in `.env`:
+```bash
+# For Windows+WSL (find actual path in Docker Desktop > Volumes)
+echo "HOST_MODELS_PATH=/mnt/c/Users/YourUser/path/to/lmstudio/models" >> .env
+
+# Then restart webapp
+docker compose restart webapp
+```
+
+3. **Verify the path is correct:**
+```bash
+# The path must match the actual host location of ./models
+ls -la ./models  # Verify models exist here
+```
+
+**Note:** The webapp auto-detects the host models path by inspecting its own container mount. This works on most configurations (Linux, macOS, Windows+WSL). Manual override is only needed for edge cases.
+
 ### Webapp Not Responding
 ```bash
 docker compose restart webapp
@@ -850,7 +876,17 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.5.3 (Current)
+### Version 0.5.4 (Current)
+- **Cross-Platform Model Path Detection**:
+  - **Fixed Critical Bug**: Models failed to load on Windows+WSL and non-standard install paths
+  - **Root Cause**: Host models path was hardcoded as `/home/webapp/lmstudio/models` in dynamic container creation
+  - **Solution**: Auto-detect host models path by inspecting webapp container's volume mounts at startup
+  - **Multi-Method Detection**: Tries container mount inspection → `HOST_MODELS_PATH` env var → compose project labels → fallback
+  - **Supports All Platforms**: Linux (bare metal), Windows+WSL+Docker Desktop, macOS+Docker Desktop
+  - **Manual Override**: Set `HOST_MODELS_PATH` in `.env` for edge cases where auto-detection fails
+  - **Startup Logging**: Now logs "Host models path configured: /path/to/models" for verification
+
+### Version 0.5.3
 - **PDF & Report Generation Skills**:
   - **New `create_pdf` Skill**: Generate PDF files directly from text content
     - Tries multiple methods: reportlab (Python), wkhtmltopdf, enscript+ps2pdf

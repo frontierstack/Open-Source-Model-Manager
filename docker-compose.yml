@@ -40,6 +40,9 @@ services:
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - HOST_IP=${HOST_IP:-}
+      # HOST_MODELS_PATH is auto-detected from container mount.
+      # Only set manually if model loading fails (Windows+WSL edge cases):
+      # - HOST_MODELS_PATH=${HOST_MODELS_PATH:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Enable GPU access for system resource detection (nvidia-smi)

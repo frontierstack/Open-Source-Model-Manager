@@ -1695,6 +1695,1287 @@ fetch('${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF', {
 .then(res => res.json())
 .then(data => console.log(data.message))
 .catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // STREAMING CHAT
+            // ============================================================================
+            '/api/chat/stream': {
+                curl: `# Streaming Chat with Server-Sent Events
+# Bearer Token Authentication
+curl -k -N -X POST ${baseUrl}/api/chat/stream \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "message": "Write a short poem about coding",
+    "maxTokens": 500
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -N -X POST ${baseUrl}/api/chat/stream \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "message": "Write a short poem about coding",
+    "maxTokens": 500
+  }'`,
+                python: `import requests
+
+# Streaming Chat - Process tokens as they arrive
+def stream_chat(message, bearer_token):
+    response = requests.post(
+        '${baseUrl}/api/chat/stream',
+        headers={
+            'Authorization': f'Bearer {bearer_token}',
+            'Content-Type': 'application/json'
+        },
+        json={
+            'message': message,
+            'maxTokens': 500
+        },
+        stream=True,
+        verify=False
+    )
+
+    for line in response.iter_lines():
+        if line:
+            line = line.decode('utf-8')
+            if line.startswith('data: '):
+                data = line[6:]  # Remove 'data: ' prefix
+                if data == '[DONE]':
+                    break
+                import json
+                chunk = json.loads(data)
+                if 'content' in chunk:
+                    print(chunk['content'], end='', flush=True)
+    print()  # Final newline
+
+stream_chat('Write a short poem about coding', 'your_bearer_token')`,
+                powershell: `# PowerShell doesn't handle SSE natively well
+# Use the non-streaming /api/chat endpoint instead
+# Or use Python/JavaScript for streaming
+
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    message = "Write a short poem about coding"
+    maxTokens = 500
+} | ConvertTo-Json
+
+# Non-streaming alternative
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/chat" -Method Post -Headers $headers -Body $body
+Write-Output $response.response`,
+                javascript: `// Streaming Chat with EventSource-like handling
+async function streamChat(message, bearerToken) {
+  const response = await fetch('${baseUrl}/api/chat/stream', {
+    method: 'POST',
+    headers: {
+      'Authorization': \`Bearer \${bearerToken}\`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      message: message,
+      maxTokens: 500
+    })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let fullResponse = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value);
+    const lines = chunk.split('\\n');
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = line.slice(6);
+        if (data === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.content) {
+            process.stdout.write(parsed.content); // Node.js
+            // Or: document.body.innerHTML += parsed.content; // Browser
+            fullResponse += parsed.content;
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  console.log('\\nFull response:', fullResponse);
+}
+
+streamChat('Write a short poem about coding', 'your_bearer_token');`
+            },
+            // ============================================================================
+            // AUTHENTICATION
+            // ============================================================================
+            '/api/auth/register': {
+                curl: `# Register a new user account
+curl -k -X POST ${baseUrl}/api/auth/register \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "username": "newuser",
+    "password": "securepassword123"
+  }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/auth/register',
+    json={
+        'username': 'newuser',
+        'password': 'securepassword123'
+    },
+    verify=False
+)
+
+result = response.json()
+if response.status_code == 201:
+    print(f"User created: {result['user']['username']}")
+else:
+    print(f"Error: {result['error']}")`,
+                powershell: `$body = @{
+    username = "newuser"
+    password = "securepassword123"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/register" -Method Post -Body $body -ContentType "application/json"
+Write-Output "User created: $($response.user.username)"`,
+                javascript: `fetch('${baseUrl}/api/auth/register', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    username: 'newuser',
+    password: 'securepassword123'
+  })
+})
+.then(res => res.json())
+.then(data => console.log('User created:', data.user?.username))
+.catch(err => console.error(err));`
+            },
+            '/api/auth/login': {
+                curl: `# Login and get session cookie
+curl -k -c cookies.txt -X POST ${baseUrl}/api/auth/login \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "username": "youruser",
+    "password": "yourpassword"
+  }'`,
+                python: `import requests
+
+session = requests.Session()
+response = session.post(
+    '${baseUrl}/api/auth/login',
+    json={
+        'username': 'youruser',
+        'password': 'yourpassword'
+    },
+    verify=False
+)
+
+if response.status_code == 200:
+    print("Login successful!")
+    # Session cookies are stored in session object
+    # Use session for subsequent requests
+    models = session.get('${baseUrl}/api/models', verify=False)
+    print(models.json())`,
+                powershell: `$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+
+$body = @{
+    username = "youruser"
+    password = "yourpassword"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/login" -Method Post -Body $body -ContentType "application/json" -WebSession $session
+Write-Output "Login successful!"`,
+                javascript: `fetch('${baseUrl}/api/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  credentials: 'include',  // Important for session cookies
+  body: JSON.stringify({
+    username: 'youruser',
+    password: 'yourpassword'
+  })
+})
+.then(res => res.json())
+.then(data => console.log('Login successful:', data.user?.username))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // WEB SEARCH
+            // ============================================================================
+            '/api/search': {
+                curl: `# Web Search with DuckDuckGo
+# Bearer Token Authentication
+curl -k -G "${baseUrl}/api/search" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  --data-urlencode "q=latest AI news" \\
+  --data-urlencode "limit=10" \\
+  --data-urlencode "fetchContent=true" \\
+  --data-urlencode "contentLimit=3"
+
+# Parameters:
+# q - Search query (required)
+# limit - Max results (default: 5)
+# timeRange - d/w/m/y for day/week/month/year
+# fetchContent - Fetch actual page content (default: false)
+# contentLimit - Number of URLs to fetch content from`,
+                python: `import requests
+
+response = requests.get(
+    '${baseUrl}/api/search',
+    headers={
+        'Authorization': 'Bearer your_bearer_token'
+    },
+    params={
+        'q': 'latest AI news',
+        'limit': 10,
+        'fetchContent': 'true',
+        'contentLimit': 3
+    },
+    verify=False
+)
+
+results = response.json()
+print(f"Found {results['count']} results")
+for r in results['results']:
+    print(f"- {r['title']}: {r['url']}")
+    if 'content' in r:
+        print(f"  Content: {r['content'][:200]}...")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+$params = @{
+    q = "latest AI news"
+    limit = 10
+    fetchContent = "true"
+    contentLimit = 3
+}
+
+$query = ($params.GetEnumerator() | ForEach-Object { "$($_.Key)=$([uri]::EscapeDataString($_.Value))" }) -join "&"
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/search?$query" -Headers $headers
+Write-Output "Found $($response.count) results"
+$response.results | ForEach-Object { Write-Output "- $($_.title): $($_.url)" }`,
+                javascript: `const params = new URLSearchParams({
+  q: 'latest AI news',
+  limit: 10,
+  fetchContent: true,
+  contentLimit: 3
+});
+
+fetch(\`${baseUrl}/api/search?\${params}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => {
+  console.log(\`Found \${data.count} results\`);
+  data.results.forEach(r => console.log(\`- \${r.title}: \${r.url}\`));
+})
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // PLAYWRIGHT WEB SCRAPING
+            // ============================================================================
+            '/api/playwright/fetch': {
+                curl: `# Fetch webpage with Playwright (handles JS-rendered pages)
+curl -k -X POST ${baseUrl}/api/playwright/fetch \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://example.com",
+    "waitForJS": true,
+    "maxLength": 8000,
+    "includeLinks": true
+  }'
+
+# Or fetch multiple URLs
+curl -k -X POST ${baseUrl}/api/playwright/fetch \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "urls": ["https://example.com", "https://example.org"],
+    "timeout": 15000
+  }'`,
+                python: `import requests
+
+# Single URL fetch
+response = requests.post(
+    '${baseUrl}/api/playwright/fetch',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'url': 'https://example.com',
+        'waitForJS': True,
+        'maxLength': 8000,
+        'includeLinks': True
+    },
+    verify=False
+)
+
+result = response.json()
+print(f"Title: {result['title']}")
+print(f"Content: {result['content'][:500]}...")
+
+# Multiple URLs
+response = requests.post(
+    '${baseUrl}/api/playwright/fetch',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'urls': ['https://example.com', 'https://example.org']
+    },
+    verify=False
+)
+
+for page in response.json():
+    print(f"- {page['url']}: {page['title']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    url = "https://example.com"
+    waitForJS = $true
+    maxLength = 8000
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/fetch" -Method Post -Headers $headers -Body $body
+Write-Output "Title: $($response.title)"
+Write-Output "Content: $($response.content.Substring(0, 500))..."`,
+                javascript: `fetch('${baseUrl}/api/playwright/fetch', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    url: 'https://example.com',
+    waitForJS: true,
+    maxLength: 8000,
+    includeLinks: true
+  })
+})
+.then(res => res.json())
+.then(data => {
+  console.log('Title:', data.title);
+  console.log('Content:', data.content?.substring(0, 500));
+})
+.catch(err => console.error(err));`
+            },
+            '/api/playwright/interact': {
+                curl: `# Interact with page before extracting content
+curl -k -X POST ${baseUrl}/api/playwright/interact \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://example.com/login",
+    "actions": [
+      {"type": "type", "selector": "#username", "text": "user"},
+      {"type": "type", "selector": "#password", "text": "pass"},
+      {"type": "click", "selector": "#submit"},
+      {"type": "waitForNavigation", "timeout": 5000}
+    ],
+    "maxLength": 8000
+  }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/playwright/interact',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'url': 'https://example.com/login',
+        'actions': [
+            {'type': 'type', 'selector': '#username', 'text': 'user'},
+            {'type': 'type', 'selector': '#password', 'text': 'pass'},
+            {'type': 'click', 'selector': '#submit'},
+            {'type': 'waitForNavigation', 'timeout': 5000}
+        ],
+        'maxLength': 8000
+    },
+    verify=False
+)
+
+result = response.json()
+print(f"Final URL: {result['url']}")
+print(f"Content after interaction: {result['content'][:500]}...")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    url = "https://example.com/login"
+    actions = @(
+        @{type = "type"; selector = "#username"; text = "user"},
+        @{type = "type"; selector = "#password"; text = "pass"},
+        @{type = "click"; selector = "#submit"},
+        @{type = "waitForNavigation"; timeout = 5000}
+    )
+} | ConvertTo-Json -Depth 3
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/interact" -Method Post -Headers $headers -Body $body
+Write-Output "Final URL: $($response.url)"`,
+                javascript: `fetch('${baseUrl}/api/playwright/interact', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    url: 'https://example.com/login',
+    actions: [
+      {type: 'type', selector: '#username', text: 'user'},
+      {type: 'type', selector: '#password', text: 'pass'},
+      {type: 'click', selector: '#submit'},
+      {type: 'waitForNavigation', timeout: 5000}
+    ],
+    maxLength: 8000
+  })
+})
+.then(res => res.json())
+.then(data => console.log('Final URL:', data.url))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // SYSTEM ENDPOINTS
+            // ============================================================================
+            '/api/system/resources': {
+                curl: `# Get system hardware information (CPU, RAM, GPU)
+curl -k -X GET ${baseUrl}/api/system/resources \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+response = requests.get(
+    '${baseUrl}/api/system/resources',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+resources = response.json()
+print(f"CPU: {resources['cpu']['model']} ({resources['cpu']['cores']} cores)")
+print(f"RAM: {resources['memory']['total'] / 1024**3:.1f} GB")
+if resources.get('gpu'):
+    for gpu in resources['gpu']:
+        print(f"GPU: {gpu['name']} ({gpu['memory_total']} MB)")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/system/resources" -Headers $headers
+Write-Output "CPU: $($response.cpu.model) ($($response.cpu.cores) cores)"
+Write-Output "RAM: $([math]::Round($response.memory.total / 1GB, 1)) GB"`,
+                javascript: `fetch('${baseUrl}/api/system/resources', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => {
+  console.log(\`CPU: \${data.cpu.model} (\${data.cpu.cores} cores)\`);
+  console.log(\`RAM: \${(data.memory.total / 1024**3).toFixed(1)} GB\`);
+  data.gpu?.forEach(g => console.log(\`GPU: \${g.name}\`));
+})
+.catch(err => console.error(err));`
+            },
+            '/api/system/optimal-settings': {
+                curl: `# Calculate optimal launch settings for a model
+curl -k -X POST ${baseUrl}/api/system/optimal-settings \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "modelName": "Llama-2-7B-GGUF",
+    "modelSize": 4000000000,
+    "quantization": "Q4_K_M"
+  }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/system/optimal-settings',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'modelName': 'Llama-2-7B-GGUF',
+        'modelSize': 4000000000,
+        'quantization': 'Q4_K_M'
+    },
+    verify=False
+)
+
+settings = response.json()
+print(f"Recommended settings:")
+print(f"  GPU Layers: {settings['nGpuLayers']}")
+print(f"  Context Size: {settings['contextSize']}")
+print(f"  Flash Attention: {settings['flashAttention']}")
+print(f"  Parallel Slots: {settings['parallelSlots']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    modelName = "Llama-2-7B-GGUF"
+    modelSize = 4000000000
+    quantization = "Q4_K_M"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/system/optimal-settings" -Method Post -Headers $headers -Body $body
+Write-Output "Recommended GPU Layers: $($response.nGpuLayers)"
+Write-Output "Context Size: $($response.contextSize)"`,
+                javascript: `fetch('${baseUrl}/api/system/optimal-settings', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    modelName: 'Llama-2-7B-GGUF',
+    modelSize: 4000000000,
+    quantization: 'Q4_K_M'
+  })
+})
+.then(res => res.json())
+.then(settings => {
+  console.log('Recommended settings:', settings);
+})
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // BACKEND MANAGEMENT
+            // ============================================================================
+            '/api/backend/active': {
+                curl: `# Get active backend (llamacpp or vllm)
+curl -k -X GET ${baseUrl}/api/backend/active \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Set active backend
+curl -k -X POST ${baseUrl}/api/backend/active \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{"backend": "llamacpp"}'`,
+                python: `import requests
+
+# Get current backend
+response = requests.get(
+    '${baseUrl}/api/backend/active',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+print(f"Current backend: {response.json()['backend']}")
+
+# Set backend to llama.cpp
+response = requests.post(
+    '${baseUrl}/api/backend/active',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'backend': 'llamacpp'},
+    verify=False
+)
+print(f"Backend set to: {response.json()['backend']}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+# Get current backend
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/backend/active" -Headers $headers
+Write-Output "Current backend: $($response.backend)"
+
+# Set backend
+$body = @{ backend = "llamacpp" } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/backend/active" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+Write-Output "Backend set to: $($response.backend)"`,
+                javascript: `// Get current backend
+fetch('${baseUrl}/api/backend/active', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => console.log('Current backend:', data.backend));
+
+// Set backend
+fetch('${baseUrl}/api/backend/active', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ backend: 'llamacpp' })
+})
+.then(res => res.json())
+.then(data => console.log('Backend set to:', data.backend));`
+            },
+            // ============================================================================
+            // LLAMA.CPP INSTANCES
+            // ============================================================================
+            '/api/llamacpp/instances': {
+                curl: `# List running llama.cpp instances
+curl -k -X GET ${baseUrl}/api/llamacpp/instances \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+response = requests.get(
+    '${baseUrl}/api/llamacpp/instances',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+instances = response.json()
+for instance in instances:
+    print(f"{instance['name']}: {instance['status']} on port {instance['port']}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/llamacpp/instances" -Headers $headers
+$response | ForEach-Object { Write-Output "$($_.name): $($_.status) on port $($_.port)" }`,
+                javascript: `fetch('${baseUrl}/api/llamacpp/instances', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(instances => {
+  instances.forEach(i => console.log(\`\${i.name}: \${i.status} on port \${i.port}\`));
+})
+.catch(err => console.error(err));`
+            },
+            '/api/llamacpp/instances/:name': {
+                curl: `# Stop a llama.cpp instance
+curl -k -X DELETE ${baseUrl}/api/llamacpp/instances/Llama-2-7B-GGUF \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+response = requests.delete(
+    '${baseUrl}/api/llamacpp/instances/Llama-2-7B-GGUF',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+print(response.json()['message'])`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/llamacpp/instances/Llama-2-7B-GGUF" -Method Delete -Headers $headers
+Write-Output $response.message`,
+                javascript: `fetch('${baseUrl}/api/llamacpp/instances/Llama-2-7B-GGUF', {
+  method: 'DELETE',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => console.log(data.message))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // AGENTS
+            // ============================================================================
+            '/api/agents': {
+                curl: `# List all agents
+curl -k -X GET ${baseUrl}/api/agents \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Create a new agent
+curl -k -X POST ${baseUrl}/api/agents \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Code Assistant",
+    "description": "Helps with coding tasks",
+    "skills": ["create_file", "read_file", "update_file"],
+    "systemPrompt": "You are a helpful coding assistant."
+  }'`,
+                python: `import requests
+
+# List agents
+response = requests.get(
+    '${baseUrl}/api/agents',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+agents = response.json()
+for agent in agents:
+    print(f"- {agent['name']}: {agent['description']}")
+
+# Create agent
+response = requests.post(
+    '${baseUrl}/api/agents',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'name': 'Code Assistant',
+        'description': 'Helps with coding tasks',
+        'skills': ['create_file', 'read_file', 'update_file'],
+        'systemPrompt': 'You are a helpful coding assistant.'
+    },
+    verify=False
+)
+print(f"Created agent: {response.json()['name']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# List agents
+$agents = Invoke-RestMethod -Uri "${baseUrl}/api/agents" -Headers $headers
+$agents | ForEach-Object { Write-Output "- $($_.name): $($_.description)" }
+
+# Create agent
+$body = @{
+    name = "Code Assistant"
+    description = "Helps with coding tasks"
+    skills = @("create_file", "read_file", "update_file")
+    systemPrompt = "You are a helpful coding assistant."
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/agents" -Method Post -Headers $headers -Body $body
+Write-Output "Created agent: $($response.name)"`,
+                javascript: `// List agents
+fetch('${baseUrl}/api/agents', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(agents => agents.forEach(a => console.log(\`- \${a.name}: \${a.description}\`)));
+
+// Create agent
+fetch('${baseUrl}/api/agents', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    name: 'Code Assistant',
+    description: 'Helps with coding tasks',
+    skills: ['create_file', 'read_file', 'update_file'],
+    systemPrompt: 'You are a helpful coding assistant.'
+  })
+})
+.then(res => res.json())
+.then(agent => console.log('Created agent:', agent.name));`
+            },
+            // ============================================================================
+            // SKILLS
+            // ============================================================================
+            '/api/skills': {
+                curl: `# List all available skills
+curl -k -X GET ${baseUrl}/api/skills \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Execute a skill
+curl -k -X POST ${baseUrl}/api/skills/read_file/execute \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "filePath": "/path/to/file.txt"
+  }'`,
+                python: `import requests
+
+# List skills
+response = requests.get(
+    '${baseUrl}/api/skills',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+skills = response.json()
+print(f"Available skills: {len(skills)}")
+for skill in skills[:10]:  # First 10
+    print(f"  - {skill['name']}: {skill['description']}")
+
+# Execute a skill
+response = requests.post(
+    '${baseUrl}/api/skills/read_file/execute',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'filePath': '/path/to/file.txt'
+    },
+    verify=False
+)
+print(response.json())`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# List skills
+$skills = Invoke-RestMethod -Uri "${baseUrl}/api/skills" -Headers $headers
+Write-Output "Available skills: $($skills.Count)"
+$skills | Select-Object -First 10 | ForEach-Object { Write-Output "  - $($_.name): $($_.description)" }
+
+# Execute skill
+$body = @{ filePath = "/path/to/file.txt" } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/skills/read_file/execute" -Method Post -Headers $headers -Body $body
+Write-Output $response`,
+                javascript: `// List skills
+fetch('${baseUrl}/api/skills', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(skills => {
+  console.log(\`Available skills: \${skills.length}\`);
+  skills.slice(0, 10).forEach(s => console.log(\`  - \${s.name}: \${s.description}\`));
+});
+
+// Execute skill
+fetch('${baseUrl}/api/skills/read_file/execute', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ filePath: '/path/to/file.txt' })
+})
+.then(res => res.json())
+.then(result => console.log('Skill result:', result));`
+            },
+            // ============================================================================
+            // TASKS
+            // ============================================================================
+            '/api/tasks': {
+                curl: `# List all tasks
+curl -k -X GET ${baseUrl}/api/tasks \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Create a new task
+curl -k -X POST ${baseUrl}/api/tasks \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "title": "Review code changes",
+    "description": "Review PR #123 for security issues",
+    "agentId": "agent-id-here",
+    "priority": "high"
+  }'`,
+                python: `import requests
+
+# List tasks
+response = requests.get(
+    '${baseUrl}/api/tasks',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+tasks = response.json()
+for task in tasks:
+    print(f"- [{task['status']}] {task['title']}")
+
+# Create task
+response = requests.post(
+    '${baseUrl}/api/tasks',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'title': 'Review code changes',
+        'description': 'Review PR #123 for security issues',
+        'priority': 'high'
+    },
+    verify=False
+)
+print(f"Created task: {response.json()['id']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# List tasks
+$tasks = Invoke-RestMethod -Uri "${baseUrl}/api/tasks" -Headers $headers
+$tasks | ForEach-Object { Write-Output "- [$($_.status)] $($_.title)" }
+
+# Create task
+$body = @{
+    title = "Review code changes"
+    description = "Review PR #123 for security issues"
+    priority = "high"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/tasks" -Method Post -Headers $headers -Body $body
+Write-Output "Created task: $($response.id)"`,
+                javascript: `// List tasks
+fetch('${baseUrl}/api/tasks', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(tasks => tasks.forEach(t => console.log(\`- [\${t.status}] \${t.title}\`)));
+
+// Create task
+fetch('${baseUrl}/api/tasks', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    title: 'Review code changes',
+    description: 'Review PR #123 for security issues',
+    priority: 'high'
+  })
+})
+.then(res => res.json())
+.then(task => console.log('Created task:', task.id));`
+            },
+            // ============================================================================
+            // FILE OPERATIONS (Agent API)
+            // ============================================================================
+            '/api/agent/file/read': {
+                curl: `# Read a file
+curl -k -X POST ${baseUrl}/api/agent/file/read \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "path": "/path/to/file.txt"
+  }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/agent/file/read',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'path': '/path/to/file.txt'},
+    verify=False
+)
+
+result = response.json()
+if result.get('success'):
+    print(result['content'])
+else:
+    print(f"Error: {result['error']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{ path = "/path/to/file.txt" } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/read" -Method Post -Headers $headers -Body $body
+Write-Output $response.content`,
+                javascript: `fetch('${baseUrl}/api/agent/file/read', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ path: '/path/to/file.txt' })
+})
+.then(res => res.json())
+.then(data => {
+  if (data.success) console.log(data.content);
+  else console.error(data.error);
+});`
+            },
+            '/api/agent/file/write': {
+                curl: `# Write to a file
+curl -k -X POST ${baseUrl}/api/agent/file/write \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "path": "/path/to/file.txt",
+    "content": "Hello, World!\\nThis is line 2."
+  }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/agent/file/write',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'path': '/path/to/file.txt',
+        'content': 'Hello, World!\\nThis is line 2.'
+    },
+    verify=False
+)
+
+result = response.json()
+print('Success!' if result.get('success') else f"Error: {result['error']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    path = "/path/to/file.txt"
+    content = "Hello, World!\`nThis is line 2."
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/write" -Method Post -Headers $headers -Body $body
+Write-Output "File written successfully"`,
+                javascript: `fetch('${baseUrl}/api/agent/file/write', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    path: '/path/to/file.txt',
+    content: 'Hello, World!\\nThis is line 2.'
+  })
+})
+.then(res => res.json())
+.then(data => console.log(data.success ? 'Success!' : data.error));`
+            },
+            '/api/agent/file/list': {
+                curl: `# List directory contents
+curl -k -X POST ${baseUrl}/api/agent/file/list \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "path": "/path/to/directory"
+  }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/agent/file/list',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'path': '/path/to/directory'},
+    verify=False
+)
+
+result = response.json()
+if result.get('success'):
+    for item in result['files']:
+        type_icon = '📁' if item['isDirectory'] else '📄'
+        print(f"{type_icon} {item['name']} ({item['size']} bytes)")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{ path = "/path/to/directory" } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/list" -Method Post -Headers $headers -Body $body
+$response.files | ForEach-Object { Write-Output "$($_.name) ($($_.size) bytes)" }`,
+                javascript: `fetch('${baseUrl}/api/agent/file/list', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ path: '/path/to/directory' })
+})
+.then(res => res.json())
+.then(data => {
+  data.files?.forEach(f => {
+    const icon = f.isDirectory ? '📁' : '📄';
+    console.log(\`\${icon} \${f.name} (\${f.size} bytes)\`);
+  });
+});`
+            },
+            // ============================================================================
+            // API KEYS
+            // ============================================================================
+            '/api/api-keys': {
+                curl: `# List all API keys (admin only)
+curl -k -X GET ${baseUrl}/api/api-keys \\
+  -H "Authorization: Bearer your_admin_token"
+
+# Create a new API key
+curl -k -X POST ${baseUrl}/api/api-keys \\
+  -H "Authorization: Bearer your_admin_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Production API Key",
+    "permissions": ["query", "models"],
+    "rateLimit": {
+      "requestsPerHour": 1000,
+      "tokensPerDay": 100000
+    }
+  }'`,
+                python: `import requests
+
+# List API keys
+response = requests.get(
+    '${baseUrl}/api/api-keys',
+    headers={'Authorization': 'Bearer your_admin_token'},
+    verify=False
+)
+keys = response.json()
+for key in keys:
+    print(f"- {key['name']}: {key['permissions']}")
+
+# Create API key
+response = requests.post(
+    '${baseUrl}/api/api-keys',
+    headers={
+        'Authorization': 'Bearer your_admin_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'name': 'Production API Key',
+        'permissions': ['query', 'models'],
+        'rateLimit': {
+            'requestsPerHour': 1000,
+            'tokensPerDay': 100000
+        }
+    },
+    verify=False
+)
+key_data = response.json()
+print(f"API Key: {key_data['key']}")
+print(f"Secret: {key_data['secret']}")
+print("Save these - the secret won't be shown again!")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_admin_token"
+    "Content-Type" = "application/json"
+}
+
+# List keys
+$keys = Invoke-RestMethod -Uri "${baseUrl}/api/api-keys" -Headers $headers
+$keys | ForEach-Object { Write-Output "- $($_.name): $($_.permissions -join ', ')" }
+
+# Create key
+$body = @{
+    name = "Production API Key"
+    permissions = @("query", "models")
+    rateLimit = @{
+        requestsPerHour = 1000
+        tokensPerDay = 100000
+    }
+} | ConvertTo-Json -Depth 3
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/api-keys" -Method Post -Headers $headers -Body $body
+Write-Output "API Key: $($response.key)"
+Write-Output "Secret: $($response.secret)"`,
+                javascript: `// List API keys
+fetch('${baseUrl}/api/api-keys', {
+  headers: { 'Authorization': 'Bearer your_admin_token' }
+})
+.then(res => res.json())
+.then(keys => keys.forEach(k => console.log(\`- \${k.name}: \${k.permissions.join(', ')}\`)));
+
+// Create API key
+fetch('${baseUrl}/api/api-keys', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_admin_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    name: 'Production API Key',
+    permissions: ['query', 'models'],
+    rateLimit: {
+      requestsPerHour: 1000,
+      tokensPerDay: 100000
+    }
+  })
+})
+.then(res => res.json())
+.then(data => {
+  console.log('API Key:', data.key);
+  console.log('Secret:', data.secret);
+  console.log('Save these - the secret will not be shown again!');
+});`
+            },
+            // ============================================================================
+            // HUGGINGFACE SEARCH
+            // ============================================================================
+            '/api/huggingface/search': {
+                curl: `# Search HuggingFace for GGUF models
+curl -k -G "${baseUrl}/api/huggingface/search" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  --data-urlencode "q=llama 7b gguf" \\
+  --data-urlencode "limit=10"`,
+                python: `import requests
+
+response = requests.get(
+    '${baseUrl}/api/huggingface/search',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    params={
+        'q': 'llama 7b gguf',
+        'limit': 10
+    },
+    verify=False
+)
+
+results = response.json()
+for model in results:
+    print(f"- {model['id']}: {model['downloads']} downloads")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$query = [uri]::EscapeDataString("llama 7b gguf")
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/huggingface/search?q=$query&limit=10" -Headers $headers
+$response | ForEach-Object { Write-Output "- $($_.id): $($_.downloads) downloads" }`,
+                javascript: `const params = new URLSearchParams({
+  q: 'llama 7b gguf',
+  limit: 10
+});
+
+fetch(\`${baseUrl}/api/huggingface/search?\${params}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(models => models.forEach(m => console.log(\`- \${m.id}: \${m.downloads} downloads\`)));`
+            },
+            // ============================================================================
+            // APPS MANAGEMENT
+            // ============================================================================
+            '/api/apps': {
+                curl: `# List all apps and their status
+curl -k -X GET ${baseUrl}/api/apps \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Start an app (e.g., open-webui)
+curl -k -X POST ${baseUrl}/api/apps/open-webui/start \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Stop an app
+curl -k -X POST ${baseUrl}/api/apps/open-webui/stop \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# Restart an app
+curl -k -X POST ${baseUrl}/api/apps/open-webui/restart \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+# List apps
+response = requests.get(
+    '${baseUrl}/api/apps',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+apps = response.json()
+for app in apps:
+    print(f"- {app['name']}: {app['status']}")
+
+# Start an app
+response = requests.post(
+    '${baseUrl}/api/apps/open-webui/start',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+print(response.json()['message'])`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+# List apps
+$apps = Invoke-RestMethod -Uri "${baseUrl}/api/apps" -Headers $headers
+$apps | ForEach-Object { Write-Output "- $($_.name): $($_.status)" }
+
+# Start app
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/open-webui/start" -Method Post -Headers $headers
+Write-Output $response.message`,
+                javascript: `// List apps
+fetch('${baseUrl}/api/apps', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(apps => apps.forEach(a => console.log(\`- \${a.name}: \${a.status}\`)));
+
+// Start app
+fetch('${baseUrl}/api/apps/open-webui/start', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => console.log(data.message));`
             }
         };
 
@@ -4187,29 +5468,44 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                             onChange={(e) => setApiBuilderEndpoint(e.target.value)}
                                                             label="Endpoint"
                                                         >
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Chat & Completion ───</MenuItem>
                                                             <MenuItem value="/api/chat">POST /api/chat - Simple Chat</MenuItem>
+                                                            <MenuItem value="/api/chat/stream">POST /api/chat/stream - Streaming Chat (SSE)</MenuItem>
                                                             <MenuItem value="/api/complete">POST /api/complete - Text Completion</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Authentication ───</MenuItem>
+                                                            <MenuItem value="/api/auth/register">POST /api/auth/register - Register User</MenuItem>
+                                                            <MenuItem value="/api/auth/login">POST /api/auth/login - Login</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Models ───</MenuItem>
                                                             <MenuItem value="/api/models">GET /api/models - List Models</MenuItem>
                                                             <MenuItem value="/api/models/pull">POST /api/models/pull - Download Model</MenuItem>
                                                             <MenuItem value="/api/models/:name/load">POST /api/models/:name/load - Load Model</MenuItem>
                                                             <MenuItem value="/api/models/:name">DELETE /api/models/:name - Delete Model</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances">GET /api/vllm/instances - List Instances</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances/:name">DELETE /api/vllm/instances/:name - Stop Instance</MenuItem>
-                                                            <MenuItem disabled>─── Apps Management ───</MenuItem>
-                                                            <MenuItem value="/api/apps">GET /api/apps - List Apps</MenuItem>
-                                                            <MenuItem value="/api/apps/:name/start">POST /api/apps/:name/start - Start App</MenuItem>
-                                                            <MenuItem value="/api/apps/:name/stop">POST /api/apps/:name/stop - Stop App</MenuItem>
-                                                            <MenuItem value="/api/apps/:name/restart">POST /api/apps/:name/restart - Restart App</MenuItem>
-                                                            <MenuItem disabled>─── Agents System ───</MenuItem>
-                                                            <MenuItem value="/api/agents">GET /api/agents - List Agents</MenuItem>
-                                                            <MenuItem value="/api/agents/create">POST /api/agents - Create Agent</MenuItem>
-                                                            <MenuItem value="/api/agents/:id">GET /api/agents/:id - Get Agent</MenuItem>
-                                                            <MenuItem value="/api/agents/:id/update">PUT /api/agents/:id - Update Agent</MenuItem>
-                                                            <MenuItem value="/api/agents/:id/delete">DELETE /api/agents/:id - Delete Agent</MenuItem>
-                                                            <MenuItem value="/api/skills">GET /api/skills - List Skills</MenuItem>
-                                                            <MenuItem value="/api/tasks">GET /api/tasks - List Tasks</MenuItem>
-                                                            <MenuItem value="/api/tasks/create">POST /api/tasks - Create Task</MenuItem>
-                                                            <MenuItem value="/api/agent-permissions">GET /api/agent-permissions - Get Permissions</MenuItem>
+                                                            <MenuItem value="/api/huggingface/search">GET /api/huggingface/search - Search HuggingFace</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Instances ───</MenuItem>
+                                                            <MenuItem value="/api/vllm/instances">GET /api/vllm/instances - List vLLM Instances</MenuItem>
+                                                            <MenuItem value="/api/vllm/instances/:name">DELETE /api/vllm/instances/:name - Stop vLLM Instance</MenuItem>
+                                                            <MenuItem value="/api/llamacpp/instances">GET /api/llamacpp/instances - List llama.cpp Instances</MenuItem>
+                                                            <MenuItem value="/api/llamacpp/instances/:name">DELETE /api/llamacpp/instances/:name - Stop llama.cpp Instance</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Backend & System ───</MenuItem>
+                                                            <MenuItem value="/api/backend/active">GET/POST /api/backend/active - Get/Set Backend</MenuItem>
+                                                            <MenuItem value="/api/system/resources">GET /api/system/resources - System Hardware Info</MenuItem>
+                                                            <MenuItem value="/api/system/optimal-settings">POST /api/system/optimal-settings - Calculate Settings</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Search & Web Scraping ───</MenuItem>
+                                                            <MenuItem value="/api/search">GET /api/search - Web Search</MenuItem>
+                                                            <MenuItem value="/api/playwright/fetch">POST /api/playwright/fetch - Fetch Webpage (Playwright)</MenuItem>
+                                                            <MenuItem value="/api/playwright/interact">POST /api/playwright/interact - Interact with Page</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>
+                                                            <MenuItem value="/api/apps">GET/POST /api/apps - List/Control Apps</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Agents System ───</MenuItem>
+                                                            <MenuItem value="/api/agents">GET/POST /api/agents - List/Create Agents</MenuItem>
+                                                            <MenuItem value="/api/skills">GET /api/skills - List/Execute Skills</MenuItem>
+                                                            <MenuItem value="/api/tasks">GET/POST /api/tasks - List/Create Tasks</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── File Operations ───</MenuItem>
+                                                            <MenuItem value="/api/agent/file/read">POST /api/agent/file/read - Read File</MenuItem>
+                                                            <MenuItem value="/api/agent/file/write">POST /api/agent/file/write - Write File</MenuItem>
+                                                            <MenuItem value="/api/agent/file/list">POST /api/agent/file/list - List Directory</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Admin ───</MenuItem>
+                                                            <MenuItem value="/api/api-keys">GET/POST /api/api-keys - Manage API Keys</MenuItem>
                                                         </Select>
                                                     </FormControl>
                                                 </Grid>

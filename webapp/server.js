@@ -108,6 +108,121 @@ const BACKEND_DEFAULTS = {
 const activeDownloads = new Map();
 
 // ============================================================================
+// HOST MODELS PATH DETECTION
+// ============================================================================
+// Stores the actual host path to the models directory
+// This is detected at startup by inspecting the webapp container's mounts
+// Required for creating dynamic model containers with correct volume bindings
+let hostModelsPath = null;
+
+/**
+ * Detects the host path to the models directory by inspecting the webapp container.
+ * This is necessary because the webapp runs inside a container with ./models:/models mount,
+ * and we need to know the actual host path to create dynamic model containers.
+ *
+ * Works across all installation types:
+ * - Linux + Docker (bare metal)
+ * - Windows + WSL + Docker Desktop
+ * - macOS + Docker Desktop
+ *
+ * @returns {Promise<string>} The host path to the models directory
+ */
+async function detectHostModelsPath() {
+    try {
+        // Method 1: Try to find webapp container by name patterns
+        const containers = await docker.listContainers({ all: true });
+
+        // Look for containers that match our webapp patterns
+        const webappPatterns = [
+            'modelserver-webapp',
+            'modelserver_webapp',
+            'lmstudio-webapp',
+            'lmstudio_webapp'
+        ];
+
+        let webappContainer = null;
+        for (const containerInfo of containers) {
+            const names = containerInfo.Names || [];
+            const image = containerInfo.Image || '';
+
+            // Check container names
+            for (const name of names) {
+                const cleanName = name.replace(/^\//, ''); // Remove leading slash
+                if (webappPatterns.some(pattern => cleanName.includes(pattern))) {
+                    webappContainer = docker.getContainer(containerInfo.Id);
+                    break;
+                }
+            }
+
+            // Check image name
+            if (!webappContainer && image.includes('modelserver-webapp')) {
+                webappContainer = docker.getContainer(containerInfo.Id);
+            }
+
+            if (webappContainer) break;
+        }
+
+        if (webappContainer) {
+            const containerData = await webappContainer.inspect();
+            const mounts = containerData.Mounts || [];
+
+            // Find the /models mount
+            for (const mount of mounts) {
+                if (mount.Destination === '/models') {
+                    const sourcePath = mount.Source;
+                    console.log(`Detected host models path from container mount: ${sourcePath}`);
+                    return sourcePath;
+                }
+            }
+        }
+
+        // Method 2: Try to read from environment variable (can be set in docker-compose)
+        if (process.env.HOST_MODELS_PATH) {
+            console.log(`Using HOST_MODELS_PATH environment variable: ${process.env.HOST_MODELS_PATH}`);
+            return process.env.HOST_MODELS_PATH;
+        }
+
+        // Method 3: Try common installation paths
+        // Check if we're running in a Docker context and can detect the project root
+        const hostname = os.hostname();
+
+        // Try to find the compose project directory from Docker labels
+        for (const containerInfo of containers) {
+            const labels = containerInfo.Labels || {};
+            if (labels['com.docker.compose.project.working_dir']) {
+                const projectDir = labels['com.docker.compose.project.working_dir'];
+                const modelsPath = path.posix.join(projectDir, 'models');
+                console.log(`Detected host models path from compose project: ${modelsPath}`);
+                return modelsPath;
+            }
+        }
+
+        // Fallback: Use a reasonable default based on common Docker setups
+        console.warn('Could not detect host models path automatically. Using /models as fallback.');
+        console.warn('If models fail to load, set HOST_MODELS_PATH environment variable in docker-compose.yml');
+        return '/models';
+
+    } catch (error) {
+        console.error('Error detecting host models path:', error.message);
+        console.warn('Using /models as fallback. Set HOST_MODELS_PATH if needed.');
+        return '/models';
+    }
+}
+
+/**
+ * Gets the volume bind string for model containers.
+ * Uses the detected host models path.
+ * @returns {string} Volume bind string like "/path/to/models:/models:ro"
+ */
+function getModelsVolumeBind() {
+    if (!hostModelsPath) {
+        console.error('Host models path not initialized! Using /models as emergency fallback.');
+        return '/models:/models:ro';
+    }
+    return `${hostModelsPath}:/models:ro`;
+}
+
+// ============================================================================
 // GLOBAL ERROR HANDLERS - Prevent server crashes
 // ============================================================================
 
@@ -1261,7 +1376,7 @@ async function createVllmInstance(modelName, modelPath, config) {
             ],
             HostConfig: {
                 Runtime: 'nvidia',
-                Binds: ['/home/webapp/lmstudio/models:/models:ro'],
+                Binds: [getModelsVolumeBind()],
                 PortBindings: {
                     // Bind to all interfaces for container-to-container communication
                     [`${port}/tcp`]: [{ HostIp: '0.0.0.0', HostPort: `${port}` }]
@@ -1349,7 +1464,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             Env: envVars,
             HostConfig: {
                 Runtime: 'nvidia',
-                Binds: ['/home/webapp/lmstudio/models:/models:ro'],
+                Binds: [getModelsVolumeBind()],
                 PortBindings: {
                     [`${port}/tcp`]: [{ HostIp: '0.0.0.0', HostPort: `${port}` }]
                 },
@@ -7372,6 +7487,11 @@ const HTTP_REDIRECT_PORT = process.env.HTTP_REDIRECT_PORT || 3080;
 server.listen(PORT, async () => {
     const protocol = useHttps ? 'https' : 'http';
     console.log(`Server is listening on ${protocol}://localhost:${PORT}`);
+
+    // Detect the host models path for creating dynamic containers
+    // This is critical for cross-platform compatibility (Windows+WSL, macOS, Linux)
+    hostModelsPath = await detectHostModelsPath();
+    console.log(`Host models path configured: ${hostModelsPath}`);
 
     // Load API key usage stats from disk
     const loadedStats = await loadApiKeyUsageStats();
