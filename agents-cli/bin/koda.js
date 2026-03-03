@@ -1254,6 +1254,17 @@ const MAX_SKILL_ITERATIONS = 10;
 // Parse skill calls from AI response
 // Format: [SKILL:skill_name(param1="value1", param2="value2")]
 // or JSON format: {"skill": "skill_name", "params": {...}}
+// Helper function to unescape string escape sequences (like \n, \t, \\)
+function unescapeString(str) {
+    if (!str) return str;
+    return str
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\r/g, '\r')
+        .replace(/\\\\/g, '\\')
+        .replace(/\\"/g, '"');
+}
+
 function parseSkillCalls(response) {
     const skillCalls = [];
 
@@ -1269,7 +1280,8 @@ function parseSkillCalls(response) {
         const paramPattern = /(\w+)\s*=\s*"([^"]*)"/g;
         let paramMatch;
         while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
-            params[paramMatch[1]] = paramMatch[2];
+            // Unescape string values to convert \n to actual newlines, etc.
+            params[paramMatch[1]] = unescapeString(paramMatch[2]);
         }
 
         skillCalls.push({ skillName, params, fullMatch: match[0] });

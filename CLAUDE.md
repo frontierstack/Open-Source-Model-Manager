@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.5.0
+**Version:** 0.5.1
 
 ## Overview
 
@@ -847,7 +847,16 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.5.0 (Current)
+### Version 0.5.1 (Current)
+- **Koda CLI Newline Fix**:
+  - **Fixed File Content Newlines**: Skill bracket format `[SKILL:create_file(...)]` now properly converts `\n` to actual newlines
+  - **Root Cause**: Parameter regex captured literal `\n` strings without converting to newline characters
+  - **Solution**: Added `unescapeString()` helper function to process escape sequences (`\n`, `\t`, `\r`, `\\`, `\"`)
+  - **Affected Skills**: `create_file`, `update_file`, `append_to_file` (when using bracket format)
+  - **JSON Formats Unaffected**: JSON patterns already used `JSON.parse()` which handles escapes correctly
+- **Koda CLI Version**: 3.1.1
+
+### Version 0.5.0
 - **Playwright-Powered Web Scraping**:
   - **Advanced Bot Detection Avoidance**: Browser fingerprint randomization, stealth mode, and human-like behavior
   - **JavaScript-Rendered Pages**: Handles dynamic content that requires JS execution (React, Vue, Angular sites)
