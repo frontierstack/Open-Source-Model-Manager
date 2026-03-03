@@ -390,5 +390,53 @@
     "parameters": {"query": "string", "limit": "number", "fetchContent": "boolean", "contentLimit": "number", "timeRange": "string"},
     "code": "# This skill is executed via the /api/search endpoint\n# Parameters:\n#   query (string): Search query\n#   limit (number): Max number of results (default: 5)\n#   fetchContent (boolean): Fetch actual page content (default: false)\n#   contentLimit (number): Number of URLs to fetch content from (default: 3)\n#   timeRange (string): d/w/m/y for day/week/month/year filter\n#\n# Features:\n# - Auto-enhances 'recent/latest/news' queries with current date\n# - Uses Playwright for content fetching when available\n# - Falls back to axios for basic content extraction\n# - Caches results for 1 hour\n# - Returns extracted content including title, summary, headings, and paragraphs",
     "enabled": true
+  },
+  {
+    "name": "create_pdf",
+    "description": "Generate a PDF file from text content (tries reportlab, wkhtmltopdf, enscript; falls back to HTML if no PDF tools available)",
+    "type": "tool",
+    "parameters": {"outputPath": "string", "title": "string", "content": "string"},
+    "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   outputPath (string): Path to save the PDF file\n#   title (string): Document title (optional, default: 'Document')\n#   content (string): Text content for the PDF\n#\n# PDF Generation Methods (tried in order):\n# 1. Python reportlab library\n# 2. wkhtmltopdf (converts HTML wrapper to PDF)\n# 3. enscript + ps2pdf (plain text to PDF)\n# 4. Fallback: Creates HTML file instead if no PDF tools available\n#\n# Example:\n# [SKILL:create_pdf(outputPath=\"/tmp/report.pdf\", title=\"My Report\", content=\"Report content here\")]",
+    "enabled": true
+  },
+  {
+    "name": "html_to_pdf",
+    "description": "Convert an HTML file to PDF (tries wkhtmltopdf, weasyprint, or Chrome headless)",
+    "type": "tool",
+    "parameters": {"htmlPath": "string", "outputPath": "string"},
+    "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   htmlPath (string): Path to the HTML file to convert\n#   outputPath (string): Path to save the PDF (optional, defaults to same name with .pdf extension)\n#\n# PDF Conversion Methods (tried in order):\n# 1. wkhtmltopdf - Most common, fast conversion\n# 2. WeasyPrint - Python-based, good CSS support\n# 3. Chrome/Chromium headless - Print to PDF feature\n#\n# Example:\n# [SKILL:html_to_pdf(htmlPath=\"/tmp/report.html\", outputPath=\"/tmp/report.pdf\")]",
+    "enabled": true
+  },
+  {
+    "name": "markdown_to_html",
+    "description": "Convert a Markdown file to styled HTML (uses pandoc if available, otherwise built-in converter)",
+    "type": "tool",
+    "parameters": {"mdPath": "string", "outputPath": "string", "title": "string"},
+    "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   mdPath (string): Path to the Markdown file to convert\n#   outputPath (string): Path to save the HTML (optional, defaults to same name with .html extension)\n#   title (string): Document title (optional, default: 'Document')\n#\n# Conversion Methods:\n# 1. Pandoc - Full-featured Markdown processor\n# 2. Built-in converter - Supports headers, bold, italic, links, code blocks, lists\n#\n# The built-in converter handles:\n# - Headers (# ## ###)\n# - Bold (**text**) and italic (*text*)\n# - Links [text](url)\n# - Code blocks (```code```)\n# - Inline code (`code`)\n# - Bullet lists (* item or - item)\n#\n# Example:\n# [SKILL:markdown_to_html(mdPath=\"/tmp/notes.md\", outputPath=\"/tmp/notes.html\", title=\"My Notes\")]",
+    "enabled": true
+  },
+  {
+    "name": "read_pdf",
+    "description": "Extract text content from a PDF file",
+    "type": "tool",
+    "parameters": {"filePath": "string"},
+    "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   filePath (string): Path to the PDF file to read\n#\n# Text Extraction Methods (tried in order):\n# 1. pdftotext (from poppler-utils)\n# 2. Python PyPDF2 library\n#\n# Returns extracted text content from all pages.\n#\n# Example:\n# [SKILL:read_pdf(filePath=\"/tmp/document.pdf\")]",
+    "enabled": true
+  },
+  {
+    "name": "pdf_page_count",
+    "description": "Get the number of pages in a PDF file",
+    "type": "tool",
+    "parameters": {"filePath": "string"},
+    "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   filePath (string): Path to the PDF file\n#\n# Methods (tried in order):\n# 1. pdfinfo (from poppler-utils)\n# 2. Python PyPDF2 library\n#\n# Example:\n# [SKILL:pdf_page_count(filePath=\"/tmp/document.pdf\")]",
+    "enabled": true
+  },
+  {
+    "name": "pdf_to_images",
+    "description": "Convert PDF pages to PNG images",
+    "type": "tool",
+    "parameters": {"filePath": "string", "outputDir": "string"},
+    "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   filePath (string): Path to the PDF file\n#   outputDir (string): Directory to save images (optional, defaults to current directory)\n#\n# Requires: pdftoppm from poppler-utils\n#\n# Output files are named: page-1.png, page-2.png, etc.\n#\n# Example:\n# [SKILL:pdf_to_images(filePath=\"/tmp/document.pdf\", outputDir=\"/tmp/pages\")]",
+    "enabled": true
   }
 ]
