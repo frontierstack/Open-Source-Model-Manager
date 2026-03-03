@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.5.1
+**Version:** 0.5.2
 
 ## Overview
 
@@ -847,7 +847,18 @@ Presence Penalty: 0.2
 
 ## Recent Updates
 
-### Version 0.5.1 (Current)
+### Version 0.5.2 (Current)
+- **Koda CLI Skill Parsing Improvements**:
+  - **Fixed Incomplete Skill Display**: Partial skill calls (e.g., `[SKILL:which_command(command="pip`) no longer appear during streaming
+  - **Improved Parameter Parsing**: Regex now handles escaped quotes (`\"`) and special characters in content
+  - **Malformed Skill Detection**: Detects incomplete/malformed skill calls and provides AI feedback to retry with correct syntax
+  - **Clearer System Prompt**: Added explicit syntax rules with good/bad examples to prevent malformed calls
+  - **PDF Generation Guidance**: Added instructions for creating PDF/HTML reports using available tools
+  - **Root Cause**: AI models were generating incomplete skill calls that weren't being cleaned from display
+  - **Solution**: Added partial skill cleaning during streaming + malformed detection + syntax feedback loop
+- **Koda CLI Version**: 3.2.0
+
+### Version 0.5.1
 - **Koda CLI Newline Fix**:
   - **Fixed File Content Newlines**: Skill bracket format `[SKILL:create_file(...)]` now properly converts `\n` to actual newlines
   - **Root Cause**: Parameter regex captured literal `\n` strings without converting to newline characters

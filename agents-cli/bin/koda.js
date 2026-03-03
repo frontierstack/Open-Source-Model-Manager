@@ -832,9 +832,18 @@ let lastCleanedMessage = ''; // Track the cleaned version for comparison
 // Helper function to clean skill syntax from response text
 function cleanSkillSyntax(text) {
     return text
-        .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')  // Remove [SKILL:name(...)]
-        .replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '')  // Remove JSON skill format
-        .replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '')  // Remove inline JSON
+        // Remove complete skill calls: [SKILL:name(params)]
+        .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')
+        // Remove partial/incomplete skill calls during streaming: [SKILL:... (no closing bracket)
+        .replace(/\[SKILL:[^\]]*$/g, '')
+        // Remove JSON skill format: ```json { "skill": ... } ```
+        .replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '')
+        // Remove partial JSON skill blocks during streaming
+        .replace(/```json\s*\n?\s*\{[^`]*$/g, '')
+        // Remove inline JSON: {"skill": "...", "params": {...}}
+        .replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '')
+        // Remove partial inline JSON during streaming
+        .replace(/\{"skill"\s*:\s*"[^"]*"?\s*,?\s*"?params"?\s*:?\s*\{?[^}]*$/g, '')
         .trim();
 }
 
@@ -1274,15 +1283,17 @@ function parseSkillCalls(response) {
     const skillCalls = [];
 
     // Pattern 1: [SKILL:name(params)]
-    const bracketPattern = /\[SKILL:(\w+)\((.*?)\)\]/g;
+    // Use a more robust pattern that captures until )] to handle params with parentheses
+    const bracketPattern = /\[SKILL:(\w+)\(([^[\]]*)\)\]/g;
     let match;
     while ((match = bracketPattern.exec(response)) !== null) {
         const skillName = match[1];
         const paramsStr = match[2];
         const params = {};
 
-        // Parse key="value" pairs
-        const paramPattern = /(\w+)\s*=\s*"([^"]*)"/g;
+        // Parse key="value" pairs with support for escaped quotes
+        // Matches: key="value with \"escaped\" quotes"
+        const paramPattern = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
         let paramMatch;
         while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
             // Unescape string values to convert \n to actual newlines, etc.
@@ -1325,6 +1336,50 @@ function parseSkillCalls(response) {
     }
 
     return skillCalls;
+}
+
+// Detect incomplete/malformed skill calls that the AI started but didn't finish
+function detectMalformedSkillCalls(response) {
+    const issues = [];
+
+    // Check for incomplete bracket format: [SKILL:name( without closing )]
+    const incompletePattern = /\[SKILL:(\w+)\([^[\]]*(?!\)\])/g;
+    let match;
+    while ((match = incompletePattern.exec(response)) !== null) {
+        // Make sure this isn't a complete skill call
+        const fullMatch = match[0];
+        if (!fullMatch.includes(')]')) {
+            issues.push({
+                type: 'incomplete_bracket',
+                skillName: match[1],
+                context: fullMatch.substring(0, 50) + '...'
+            });
+        }
+    }
+
+    // Check for [SKILL: that's missing the closing bracket entirely
+    const openBracketPattern = /\[SKILL:\w+\([^\]]*$/g;
+    if (openBracketPattern.test(response)) {
+        issues.push({
+            type: 'missing_close_bracket',
+            context: 'Skill call started but not completed'
+        });
+    }
+
+    // Check for skill calls with malformed parameters (missing quotes)
+    const malformedParamPattern = /\[SKILL:\w+\([^"]*=[^"]*\)\]/g;
+    while ((match = malformedParamPattern.exec(response)) !== null) {
+        // This might catch valid calls, so we need to verify
+        const paramsStr = match[0];
+        if (!paramsStr.includes('="')) {
+            issues.push({
+                type: 'malformed_params',
+                context: paramsStr
+            });
+        }
+    }
+
+    return issues;
 }
 
 // Build system prompt with skill instructions
@@ -1416,7 +1471,7 @@ ENVIRONMENT:
 [SKILL:which_command(command="node")]
 
 CRITICAL EXECUTION RULES:
-1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command.
+1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command, run_python, run_bash.
 2. When working with files, EXECUTE skills directly - don't just suggest or describe changes
 3. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
 4. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
@@ -1425,6 +1480,23 @@ CRITICAL EXECUTION RULES:
 7. For non-file operations (math, coding help, explanations, general chat), respond conversationally
 8. STOP LOOPING: After skills execute successfully, respond with a brief natural language confirmation - do NOT execute more skills to "verify" or "confirm" (no read_file to check, no list_directory to verify)
 9. Only continue with more skills if a previous skill FAILED and you need to fix it
+
+SKILL SYNTAX RULES - FOLLOW EXACTLY:
+- Each skill call MUST be complete on a single line
+- ALWAYS close brackets: [SKILL:name()] - note the )] at the end
+- String parameters MUST use double quotes: param="value"
+- Escape newlines in content as \\n (e.g., content="line1\\nline2")
+- Escape quotes in content as \\" (e.g., content="he said \\"hello\\"")
+- BAD: [SKILL:which_command(command="pip   (incomplete - missing closing ")]")
+- GOOD: [SKILL:which_command(command="pip")]
+- BAD: [SKILL:create_file(filePath=/path, content=text)]  (missing quotes)
+- GOOD: [SKILL:create_file(filePath="/path", content="text")]
+
+PDF/REPORT GENERATION:
+- For PDF creation, use run_python or run_bash with appropriate libraries
+- Create HTML reports with create_file, then convert using available tools
+- Check for tools first: [SKILL:which_command(command="wkhtmltopdf")]
+- If no PDF tools, create an HTML or Markdown report instead
 
 ADDITIONAL CAPABILITIES:
 You have access to advanced development tools that you should use proactively when appropriate:
@@ -5472,7 +5544,48 @@ async function handleChat(api, message) {
         const skillCalls = parseSkillCalls(response);
 
         if (skillCalls.length === 0) {
-            // No skill calls, we're done
+            // No valid skill calls found - check if there were malformed attempts
+            const malformedCalls = detectMalformedSkillCalls(response);
+
+            if (malformedCalls.length > 0) {
+                // AI tried to use skills but syntax was wrong
+                // Clean the display and provide feedback
+                const cleanedResponse = cleanSkillSyntax(response);
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    if (cleanedResponse && cleanedResponse.length > 0) {
+                        lastMsg.content = cleanedResponse;
+                    } else {
+                        chatHistory.pop();
+                    }
+                }
+
+                // Build error feedback for the AI
+                let errorFeedback = '\n\n[SKILL SYNTAX ERROR]\n';
+                errorFeedback += 'Your skill call(s) were malformed. Correct format:\n';
+                errorFeedback += '[SKILL:skill_name(param1="value1", param2="value2")]\n\n';
+                errorFeedback += 'Issues detected:\n';
+                for (const issue of malformedCalls) {
+                    if (issue.type === 'incomplete_bracket') {
+                        errorFeedback += `- Skill "${issue.skillName}" is missing closing ")]\"\n`;
+                    } else if (issue.type === 'missing_close_bracket') {
+                        errorFeedback += '- Skill call started but not completed\n';
+                    } else if (issue.type === 'malformed_params') {
+                        errorFeedback += `- Parameters must use key="value" format\n`;
+                    }
+                }
+                errorFeedback += '\nPlease retry with correct syntax. Make sure to close all brackets and quotes.\n';
+
+                // Show error to user
+                addToHistory('system', 'Skill syntax error detected - asking AI to retry...');
+                displayChatHistory();
+
+                // Continue the conversation with error feedback
+                currentMessage = contextMessage + '\n\nPrevious response: ' + response + errorFeedback;
+                continue;
+            }
+
+            // No skill calls and no malformed attempts - we're done
             break;
         }
 
