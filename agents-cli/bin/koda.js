@@ -1255,14 +1255,19 @@ const MAX_SKILL_ITERATIONS = 10;
 // Format: [SKILL:skill_name(param1="value1", param2="value2")]
 // or JSON format: {"skill": "skill_name", "params": {...}}
 // Helper function to unescape string escape sequences (like \n, \t, \\)
+// Uses single-pass replacement to correctly handle sequences like \\n (backslash + n)
 function unescapeString(str) {
     if (!str) return str;
-    return str
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '\t')
-        .replace(/\\r/g, '\r')
-        .replace(/\\\\/g, '\\')
-        .replace(/\\"/g, '"');
+    return str.replace(/\\(.)/g, (match, char) => {
+        switch (char) {
+            case 'n': return '\n';
+            case 't': return '\t';
+            case 'r': return '\r';
+            case '\\': return '\\';
+            case '"': return '"';
+            default: return match; // Keep unknown escapes as-is
+        }
+    });
 }
 
 function parseSkillCalls(response) {
@@ -3719,7 +3724,13 @@ function buildSkillResultsMessage(results) {
         // Check if it's a "skill not found" error - suggest alternatives
         const skillNotFound = failureMessages.some(m => m.toLowerCase().includes('skill not found'));
         if (skillNotFound) {
-            message += '\nA skill was not found. Available client-side skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command.';
+            message += '\nA skill was not found. Available skills by category:\n' +
+                '• File: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, append_to_file, tail_file, head_file, copy_file, search_files, download_file, search_replace_file, diff_files\n' +
+                '• System: system_info, disk_usage, get_uptime, list_ports, list_services, list_processes, kill_process, start_process\n' +
+                '• Git: git_status, git_diff, git_log, git_branch\n' +
+                '• Network: fetch_url, http_request, dns_lookup, check_port, ping_host, curl_request\n' +
+                '• Data: parse_json, parse_csv, base64_encode, base64_decode, hash_data, json_get, json_set\n' +
+                '• Web: playwright_fetch, playwright_interact, web_search';
         } else {
             message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
         }
