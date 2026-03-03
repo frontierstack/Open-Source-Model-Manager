@@ -22,16 +22,19 @@ fi
 echo ""
 echo "Deleting all user accounts..."
 
-# Remove the users.json file (host path)
-USERS_FILE="/home/webapp/lmstudio/models/.modelserver/users.json"
+# Path inside container
+CONTAINER_USERS_FILE="/models/.modelserver/users.json"
 
-if [ -f "$USERS_FILE" ]; then
-    rm -f "$USERS_FILE"
-    echo "✓ All user accounts have been deleted"
-    echo "✓ Users file removed: $USERS_FILE"
-else
-    echo "✓ No users file found - nothing to delete"
-fi
+# Use docker exec to delete the users file inside the container
+docker exec modelserver-webapp-1 sh -c "
+    if [ -f '$CONTAINER_USERS_FILE' ]; then
+        rm -f '$CONTAINER_USERS_FILE'
+        echo '✓ All user accounts have been deleted'
+        echo '✓ Users file removed: $CONTAINER_USERS_FILE'
+    else
+        echo '✓ No users file found - nothing to delete'
+    fi
+"
 
 # Also clear sessions
 echo ""

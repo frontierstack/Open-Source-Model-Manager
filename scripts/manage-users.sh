@@ -36,12 +36,14 @@ list_users() {
     echo "Current users:"
     echo "----------------------------------------"
 
-    if [ ! -f "$HOST_USERS_FILE" ]; then
-        echo "No users found."
-        return
-    fi
-
-    cat "$HOST_USERS_FILE" | jq -r '.[] | "\(.username) (\(.email)) - Role: \(.role) - Created: \(.createdAt)"' 2>/dev/null || echo "No users found or invalid JSON"
+    # Use docker exec to read and parse users.json inside the container
+    docker exec modelserver-webapp-1 sh -c "
+        if [ ! -f '$CONTAINER_USERS_FILE' ]; then
+            echo 'No users found.'
+            exit 0
+        fi
+        cat '$CONTAINER_USERS_FILE' | jq -r '.[] | \"\(.username) (\(.email)) - Role: \(.role) - Created: \(.createdAt)\"' 2>/dev/null || echo 'No users found or invalid JSON'
+    "
 }
 
 reset_password() {
@@ -160,11 +162,18 @@ delete_all_users() {
         return
     fi
 
-    if [ -f "$HOST_USERS_FILE" ]; then
-        rm -f "$HOST_USERS_FILE"
+    # Use docker exec to delete users file inside the container
+    docker exec modelserver-webapp-1 sh -c "
+        if [ -f '$CONTAINER_USERS_FILE' ]; then
+            rm -f '$CONTAINER_USERS_FILE'
+            echo 'All user accounts deleted'
+        else
+            echo 'No users file found.'
+        fi
+    "
+
+    if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ All user accounts deleted${NC}"
-    else
-        echo "No users file found."
     fi
 }
 
