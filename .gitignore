@@ -2,7 +2,6 @@
 # DOCUMENTATION FILES (DO NOT PUSH)
 # ============================================================================
 *.md
-!CLAUDE.md
 *.MD
 *.markdown
 *.rst
