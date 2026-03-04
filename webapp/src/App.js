@@ -332,6 +332,7 @@ const SETTINGS_TOOLTIPS = {
 const LLAMACPP_TOOLTIPS = {
     nGpuLayers: "Number of model layers to offload to GPU. -1 = all layers (recommended). Lower values offload less to GPU, useful for large models that don't fit in VRAM.",
     contextSize: "Maximum context window size in tokens. Larger values allow longer conversations but require more memory. Common values: 2048, 4096, 8192, 16384.",
+    contextShift: "Enable context shifting to automatically discard old context when the limit is reached. Without this, inference stops when context is full. Recommended for long conversations.",
     flashAttention: "Enable flash attention for faster inference and lower memory usage. Recommended for most GPUs that support it.",
     cacheTypeK: "Data type for key cache. f16 = full precision, q8_0 = 8-bit quantized (saves memory), q4_0 = 4-bit quantized (maximum memory savings).",
     cacheTypeV: "Data type for value cache. Same options as key cache. Using quantized cache reduces memory but may slightly affect output quality.",
@@ -456,6 +457,7 @@ const App = () => {
     const [llamacppConfig, setLlamacppConfig] = useState({
         nGpuLayers: -1,
         contextSize: 4096,
+        contextShift: true,
         flashAttention: false,
         cacheTypeK: 'f16',
         cacheTypeV: 'f16',
@@ -568,6 +570,7 @@ const App = () => {
     // API Builder state
     const [apiBuilderEndpoint, setApiBuilderEndpoint] = useState('/api/chat');
     const [apiBuilderLang, setApiBuilderLang] = useState('curl');
+    const [apiBuilderAuthType, setApiBuilderAuthType] = useState('bearer');
 
     // Refs
     const logsEndRef = useRef(null);
@@ -2979,7 +2982,69 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
             }
         };
 
-        return examples[endpoint]?.[lang] || 'Select an endpoint and language';
+        const code = examples[endpoint]?.[lang] || 'Select an endpoint and language';
+
+        // Filter code based on selected auth type
+        if (code && apiBuilderAuthType) {
+            const lines = code.split('\n');
+            const filteredLines = [];
+            let skipUntilNextSection = false;
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const lowerLine = line.toLowerCase();
+
+                // Detect auth section markers
+                const isBearerMarker = lowerLine.includes('bearer token') && (lowerLine.includes('#') || lowerLine.includes('//'));
+                const isApiKeyMarker = (lowerLine.includes('api key') || lowerLine.includes('apikey')) &&
+                                       (lowerLine.includes('# or') || lowerLine.includes('// or'));
+
+                if (apiBuilderAuthType === 'bearer') {
+                    // Skip API Key sections (marked with "# OR API Key" or "// OR API Key")
+                    if (isApiKeyMarker) {
+                        skipUntilNextSection = true;
+                        continue;
+                    }
+                    // Stop skipping when we hit a blank line followed by non-auth content or end
+                    if (skipUntilNextSection) {
+                        // Check if this is a new section or end of code block
+                        if (line.trim() === '' && i + 1 < lines.length) {
+                            const nextLine = lines[i + 1].toLowerCase();
+                            if (nextLine.includes('# ') && !nextLine.includes('api key') && !nextLine.includes('bearer')) {
+                                skipUntilNextSection = false;
+                            }
+                        }
+                        continue;
+                    }
+                    // Remove "# Bearer Token Authentication" comment since it's the only option now
+                    if (isBearerMarker) {
+                        continue;
+                    }
+                    filteredLines.push(line);
+                } else {
+                    // apikey auth - Skip Bearer sections and show API Key sections
+                    if (isBearerMarker && !lowerLine.includes('or')) {
+                        skipUntilNextSection = true;
+                        continue;
+                    }
+                    if (isApiKeyMarker) {
+                        skipUntilNextSection = false;
+                        continue; // Skip the "# OR API Key" marker line itself
+                    }
+                    if (skipUntilNextSection) {
+                        continue;
+                    }
+                    filteredLines.push(line);
+                }
+            }
+
+            // Clean up leading/trailing blank lines
+            let result = filteredLines.join('\n');
+            result = result.replace(/^\n+/, '').replace(/\n+$/, '');
+            return result;
+        }
+
+        return code;
     };
 
     // Tab reordering handlers with drag and drop
@@ -4592,7 +4657,7 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={12}>
+                                                            <Grid item xs={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.flashAttention} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -4605,6 +4670,25 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                         label={
                                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                                                                 <Typography variant="body2">Flash Attention</Typography>
+                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                                                                            </Box>
+                                                                        }
+                                                                    />
+                                                                </Tooltip>
+                                                            </Grid>
+                                                            <Grid item xs={6}>
+                                                                <Tooltip title={LLAMACPP_TOOLTIPS.contextShift} arrow placement="top">
+                                                                    <FormControlLabel
+                                                                        control={
+                                                                            <Switch
+                                                                                checked={llamacppConfig.contextShift}
+                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, contextShift: e.target.checked})}
+                                                                                size="small"
+                                                                            />
+                                                                        }
+                                                                        label={
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                                                <Typography variant="body2">Context Shift</Typography>
                                                                                 <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
                                                                             </Box>
                                                                         }
@@ -5509,7 +5593,7 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         </Select>
                                                     </FormControl>
                                                 </Grid>
-                                                <Grid item xs={12} md={6}>
+                                                <Grid item xs={12} md={4}>
                                                     <FormControl fullWidth size="small">
                                                         <InputLabel>Language</InputLabel>
                                                         <Select
@@ -5521,6 +5605,19 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                             <MenuItem value="python">Python</MenuItem>
                                                             <MenuItem value="powershell">PowerShell</MenuItem>
                                                             <MenuItem value="javascript">JavaScript (fetch)</MenuItem>
+                                                        </Select>
+                                                    </FormControl>
+                                                </Grid>
+                                                <Grid item xs={12} md={2}>
+                                                    <FormControl fullWidth size="small">
+                                                        <InputLabel>Auth Type</InputLabel>
+                                                        <Select
+                                                            value={apiBuilderAuthType}
+                                                            onChange={(e) => setApiBuilderAuthType(e.target.value)}
+                                                            label="Auth Type"
+                                                        >
+                                                            <MenuItem value="bearer">Bearer Token</MenuItem>
+                                                            <MenuItem value="apikey">API Key + Secret</MenuItem>
                                                         </Select>
                                                     </FormControl>
                                                 </Grid>
@@ -5537,111 +5634,6 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                     {getApiBuilderCode()}
                                                 </pre>
                                             </Box>
-                                        </Box>
-
-                                        <Divider sx={{ my: 3 }} />
-
-                                        {/* Endpoint Examples */}
-                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
-                                            POST /api/chat - Simple Chat Endpoint
-                                        </Typography>
-                                        <Typography variant="body2" sx={{ mb: 2, color: 'text.secondary' }}>
-                                            Send a chat message to a running model with easy request/response format. Automatically routes to the first running model if no model specified.
-                                        </Typography>
-                                        <Box sx={{ bgcolor: '#09090b', p: 2, borderRadius: 1, mb: 2 }}>
-                                            <pre style={{ margin: 0, color: '#22c55e', fontSize: '0.75rem', overflow: 'auto' }}>
-{`# Bearer Token Authentication
-curl -X POST ${baseUrl}/api/chat \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "message": "Explain quantum computing",
-    "model": "Llama-2-7B",
-    "temperature": 0.7,
-    "maxTokens": 500
-  }'
-
-# OR API Key + Secret Authentication
-curl -X POST ${baseUrl}/api/chat \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "message": "Explain quantum computing",
-    "model": "Llama-2-7B",
-    "temperature": 0.7,
-    "maxTokens": 500
-  }'`}
-                                            </pre>
-                                        </Box>
-                                        <Typography variant="caption" sx={{ fontWeight: 600 }}>Response:</Typography>
-                                        <Box sx={{ bgcolor: '#09090b', p: 2, borderRadius: 1, mt: 1, mb: 3 }}>
-                                            <pre style={{ margin: 0, color: '#a78bfa', fontSize: '0.75rem' }}>
-{`{
-  "success": true,
-  "response": "Quantum computing is...",
-  "model": "Llama-2-7B",
-  "tokens": {
-    "prompt_tokens": 5,
-    "completion_tokens": 150,
-    "total_tokens": 155
-  }
-}`}
-                                            </pre>
-                                        </Box>
-
-                                        <Divider sx={{ my: 3 }} />
-
-                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
-                                            POST /api/complete - Text Completion
-                                        </Typography>
-                                        <Typography variant="body2" sx={{ mb: 2, color: 'text.secondary' }}>
-                                            Generate text completion for a prompt. Perfect for completion tasks without chat formatting.
-                                        </Typography>
-                                        <Box sx={{ bgcolor: '#09090b', p: 2, borderRadius: 1, mb: 3 }}>
-                                            <pre style={{ margin: 0, color: '#22c55e', fontSize: '0.75rem', overflow: 'auto' }}>
-{`# Bearer Token Authentication
-curl -X POST ${baseUrl}/api/complete \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "prompt": "The capital of France is",
-    "model": "Llama-2-7B",
-    "maxTokens": 50
-  }'
-
-# OR API Key + Secret Authentication
-curl -X POST ${baseUrl}/api/complete \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "prompt": "The capital of France is",
-    "model": "Llama-2-7B",
-    "maxTokens": 50
-  }'`}
-                                            </pre>
-                                        </Box>
-
-                                        <Divider sx={{ my: 3 }} />
-
-                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
-                                            GET /api/models - List All Models
-                                        </Typography>
-                                        <Typography variant="body2" sx={{ mb: 2, color: 'text.secondary' }}>
-                                            Retrieve all downloaded models with status, running instances, configuration, and port information.
-                                        </Typography>
-                                        <Box sx={{ bgcolor: '#09090b', p: 2, borderRadius: 1, mb: 3 }}>
-                                            <pre style={{ margin: 0, color: '#22c55e', fontSize: '0.75rem', overflow: 'auto' }}>
-{`# Bearer Token Authentication
-curl -X GET ${baseUrl}/api/models \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# OR API Key + Secret Authentication
-curl -X GET ${baseUrl}/api/models \\
-  -H "X-API-Key: your_api_key" \\
-  -H "X-API-Secret: your_api_secret"`}
-                                            </pre>
                                         </Box>
 
                                     </AccordionDetails>

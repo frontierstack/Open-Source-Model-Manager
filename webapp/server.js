@@ -1314,6 +1314,7 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             const config = {
                 nGpuLayers: req.body.nGpuLayers ?? -1,
                 contextSize: req.body.contextSize || 4096,
+                contextShift: req.body.contextShift ?? true,
                 flashAttention: req.body.flashAttention ?? false,
                 cacheTypeK: req.body.cacheTypeK || 'f16',
                 cacheTypeV: req.body.cacheTypeV || 'f16',
@@ -1441,6 +1442,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             `LLAMA_PORT=${port}`,
             `LLAMA_N_GPU_LAYERS=${config.nGpuLayers}`,
             `LLAMA_CTX_SIZE=${config.contextSize}`,
+            `LLAMA_CTX_SHIFT=${config.contextShift}`,
             `LLAMA_FLASH_ATTN=${config.flashAttention}`,
             `LLAMA_CACHE_TYPE_K=${config.cacheTypeK}`,
             `LLAMA_CACHE_TYPE_V=${config.cacheTypeV}`,

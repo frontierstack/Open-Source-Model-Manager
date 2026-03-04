@@ -5,6 +5,7 @@
 # - LLAMA_PORT: API server port (default: 8000)
 # - LLAMA_N_GPU_LAYERS: Number of layers to offload to GPU (-1 = all, default: -1)
 # - LLAMA_CTX_SIZE: Context size (default: 4096)
+# - LLAMA_CTX_SHIFT: Enable context shifting (default: true)
 # - LLAMA_FLASH_ATTN: Enable flash attention (default: false)
 # - LLAMA_CACHE_TYPE_K: KV cache type for keys (f16/q8_0/q4_0, default: f16)
 # - LLAMA_CACHE_TYPE_V: KV cache type for values (f16/q8_0/q4_0, default: f16)
@@ -24,6 +25,7 @@ MODEL_PATH=${LLAMA_MODEL_PATH:-/models/default.gguf}
 PORT=${LLAMA_PORT:-8000}
 N_GPU_LAYERS=${LLAMA_N_GPU_LAYERS:--1}
 CTX_SIZE=${LLAMA_CTX_SIZE:-4096}
+CTX_SHIFT=${LLAMA_CTX_SHIFT:-true}
 FLASH_ATTN=${LLAMA_FLASH_ATTN:-false}
 CACHE_TYPE_K=${LLAMA_CACHE_TYPE_K:-f16}
 CACHE_TYPE_V=${LLAMA_CACHE_TYPE_V:-f16}
@@ -41,6 +43,7 @@ echo "    Model: $MODEL_PATH"
 echo "    Port: $PORT"
 echo "    GPU Layers: $N_GPU_LAYERS"
 echo "    Context Size: $CTX_SIZE"
+echo "    Context Shift: $CTX_SHIFT"
 echo "    Flash Attention: $FLASH_ATTN"
 echo "    Cache Type K/V: $CACHE_TYPE_K / $CACHE_TYPE_V"
 echo "    Threads: ${THREADS:-auto}"
@@ -74,6 +77,12 @@ CMD_ARGS=(
 if [ -n "$THREADS" ]; then
     CMD_ARGS+=(--threads "$THREADS")
     echo "    [Threads set to $THREADS]"
+fi
+
+# Disable context shift if requested (enabled by default in llama.cpp)
+if [ "$CTX_SHIFT" = "false" ]; then
+    CMD_ARGS+=(--no-context-shift)
+    echo "    [Context shift DISABLED]"
 fi
 
 # Enable flash attention if requested
