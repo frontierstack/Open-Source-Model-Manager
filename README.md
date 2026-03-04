@@ -47,7 +47,7 @@ Your autonomous AI project assistant with direct skill execution:
 ```
 
 **Key Features:**
-- ✨ Autonomous skill execution (88+ built-in skills for file ops, API calls, email parsing, PDF generation)
+- ✨ Autonomous skill execution (55+ built-in skills for file ops, API calls, email parsing, PDF generation)
 - 🔄 Multi-agent collaboration for complex tasks
 - 📧 Email parsing (.eml and .msg Outlook format support)
 - 🔐 AES-256 encrypted credentials
@@ -316,7 +316,7 @@ Max Seqs: 256
 - **Web UI (Browser)**: React-based management interface for models, agents, and settings
 - **Open WebUI (Browser)**: Pre-built chat interface for model interactions
 - **Koda CLI (Terminal)**: Cross-platform AI assistant with autonomous skill execution
-  - 88+ built-in skills (file ops, Windows/Linux commands, OCR, email parsing, PDF generation, web scraping, etc.)
+  - 55+ built-in skills (file ops, Windows/Linux commands, OCR, email parsing, PDF generation, web scraping, etc.)
   - Email parsing with .eml and .msg (Outlook) format support
   - Multi-agent collaboration support
   - AES-256 encrypted credential storage
@@ -326,7 +326,7 @@ Max Seqs: 256
 - **Webapp Container**:
   - **React Frontend**: Model discovery, launch configuration, API key management
   - **Express Backend**: RESTful API, authentication, session management
-  - **Skills System**: Python-based skill execution engine (88+ skills: file I/O, networking, email parsing, PDF generation, web scraping)
+  - **Skills System**: Python-based skill execution engine (55+ skills: file I/O, networking, email parsing, PDF generation, web scraping)
   - **Docker Integration**: Dynamic model instance creation and management
   - **OpenAI Compatibility**: `/v1/chat/completions` and `/v1/completions` endpoints
 - **Nginx Reverse Proxy**: SSL/TLS termination, Open WebUI routing

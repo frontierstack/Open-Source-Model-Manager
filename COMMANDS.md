@@ -421,7 +421,7 @@ koda
 - AI can execute skills directly
 - Format: `[SKILL:skill_name(param="value")]`
 - Works in standalone, agent, and collab modes
-- 88+ built-in skills including:
+- 55+ built-in skills including:
   - File operations (create, read, update, delete, list)
   - Email parsing (.eml and .msg Outlook format)
   - PDF generation and reading
