@@ -1305,7 +1305,9 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 maxNumSeqs: req.body.maxNumSeqs || 256,
                 kvCacheDtype: req.body.kvCacheDtype || 'auto',
                 trustRemoteCode: req.body.trustRemoteCode ?? true,
-                enforceEager: req.body.enforceEager ?? false
+                enforceEager: req.body.enforceEager ?? false,
+                contextShift: req.body.contextShift ?? true,
+                contextSize: req.body.maxModelLen || 4096  // Alias for API compatibility
             };
 
             broadcast({ type: 'log', message: `Creating vLLM instance for ${modelName}...` });

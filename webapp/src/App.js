@@ -325,7 +325,8 @@ const SETTINGS_TOOLTIPS = {
     maxNumSeqs: "Maximum number of concurrent sequences (requests) that can be processed simultaneously. Higher values improve throughput but use more memory.",
     kvCacheDtype: "Data type for KV cache. 'auto' uses model's native dtype, 'fp8' uses 8-bit precision to save memory with minimal quality loss.",
     trustRemoteCode: "Whether to trust remote code from the model repository. Required for some custom model architectures.",
-    enforceEager: "Disable CUDA graphs and use eager execution. Useful for debugging but slower. Keep disabled for production."
+    enforceEager: "Disable CUDA graphs and use eager execution. Useful for debugging but slower. Keep disabled for production.",
+    contextShift: "Enable context shifting to automatically truncate old context when the limit is reached. Without this, requests fail when context is full. Recommended for long conversations."
 };
 
 // Settings tooltips for llama.cpp configuration options
@@ -450,7 +451,8 @@ const App = () => {
         maxNumSeqs: 256,
         kvCacheDtype: 'auto',
         trustRemoteCode: true,
-        enforceEager: false
+        enforceEager: false,
+        contextShift: true
     });
 
     // Model configuration state for llama.cpp
@@ -4581,7 +4583,7 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={12}>
+                                                            <Grid item xs={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.enforceEager} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -4593,7 +4595,26 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                         }
                                                                         label={
                                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Enforce Eager Mode (Debug)</Typography>
+                                                                                <Typography variant="body2">Enforce Eager Mode</Typography>
+                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                                                                            </Box>
+                                                                        }
+                                                                    />
+                                                                </Tooltip>
+                                                            </Grid>
+                                                            <Grid item xs={6}>
+                                                                <Tooltip title={SETTINGS_TOOLTIPS.contextShift} arrow placement="top">
+                                                                    <FormControlLabel
+                                                                        control={
+                                                                            <Switch
+                                                                                checked={modelConfig.contextShift}
+                                                                                onChange={(e) => setModelConfig({...modelConfig, contextShift: e.target.checked})}
+                                                                                size="small"
+                                                                            />
+                                                                        }
+                                                                        label={
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                                                <Typography variant="body2">Context Shift</Typography>
                                                                                 <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
                                                                             </Box>
                                                                         }
