@@ -8,7 +8,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo "=========================================="
-echo "  LMStudio Reset - Clean Slate"
+echo "  OpenSourceModelManager Reset - Clean Slate"
 echo "=========================================="
 echo ""
 
@@ -71,7 +71,7 @@ docker compose down 2>/dev/null || true
 
 echo ""
 echo ">>> Step 2: Removing webapp data..."
-docker volume rm lmstudio_webapp_data 2>/dev/null || true
+docker volume rm opensourcemodelmanager_webapp_data 2>/dev/null || true
 
 # Handle OpenWebUI data
 if [ "$KEEP_OPENWEBUI" = false ]; then
@@ -83,7 +83,7 @@ if [ "$KEEP_OPENWEBUI" = false ]; then
     fi
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo ">>> Removing Open WebUI data volume..."
-        docker volume rm lmstudio_openwebui_data 2>/dev/null || true
+        docker volume rm opensourcemodelmanager_openwebui_data 2>/dev/null || true
     fi
 fi
 
@@ -113,7 +113,7 @@ if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$PROJECT_DIR/certs/server.key" \
             -out "$PROJECT_DIR/certs/server.crt" \
-            -subj "/C=US/ST=Local/L=Local/O=LMStudio/OU=Development/CN=localhost" \
+            -subj "/C=US/ST=Local/L=Local/O=OpenSourceModelManager/OU=Development/CN=localhost" \
             -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1" 2>/dev/null
         chmod 600 "$PROJECT_DIR/certs/server.key"
         chmod 644 "$PROJECT_DIR/certs/server.crt"

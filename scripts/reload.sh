@@ -7,7 +7,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo "=========================================="
-echo "lmstudio Reload Script"
+echo "OpenSourceModelManager Reload Script"
 echo "=========================================="
 echo "This will rebuild and restart services without data loss"
 echo ""

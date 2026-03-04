@@ -136,8 +136,8 @@ async function detectHostModelsPath() {
         const webappPatterns = [
             'modelserver-webapp',
             'modelserver_webapp',
-            'lmstudio-webapp',
-            'lmstudio_webapp'
+            'opensourcemodelmanager-webapp',
+            'opensourcemodelmanager_webapp'
         ];
 
         let webappContainer = null;

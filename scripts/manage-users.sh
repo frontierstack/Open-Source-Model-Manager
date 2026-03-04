@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 # Dynamically detect the webapp container name
 detect_webapp_container() {
     # Try common container name patterns
-    local patterns=("modelserver-webapp-1" "modelserver_webapp_1" "lmstudio-webapp-1" "lmstudio_webapp_1")
+    local patterns=("modelserver-webapp-1" "modelserver_webapp_1" "opensourcemodelmanager-webapp-1" "opensourcemodelmanager_webapp_1")
 
     for pattern in "${patterns[@]}"; do
         if docker ps --format '{{.Names}}' | grep -q "^${pattern}$"; then
@@ -26,8 +26,8 @@ detect_webapp_container() {
         fi
     done
 
-    # Fallback: search for any container with 'webapp' in the name from modelserver/lmstudio project
-    local container=$(docker ps --format '{{.Names}}' | grep -E "(modelserver|lmstudio).*webapp" | head -1)
+    # Fallback: search for any container with 'webapp' in the name from modelserver/opensourcemodelmanager project
+    local container=$(docker ps --format '{{.Names}}' | grep -E "(modelserver|opensourcemodelmanager).*webapp" | head -1)
     if [ -n "$container" ]; then
         echo "$container"
         return 0
