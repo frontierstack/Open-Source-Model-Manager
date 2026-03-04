@@ -4130,6 +4130,38 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                                                 sx={{ fontSize: '0.7rem' }}
                                                                                             />
                                                                                         </Tooltip>
+                                                                                        {instance.config?.kvCacheDtype && instance.config?.kvCacheDtype !== 'auto' && (
+                                                                                            <Tooltip title="KV cache data type">
+                                                                                                <Chip
+                                                                                                    label={`KV: ${instance.config?.kvCacheDtype}`}
+                                                                                                    size="small"
+                                                                                                    color="warning"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {instance.config?.enforceEager && (
+                                                                                            <Tooltip title="CUDA graphs disabled">
+                                                                                                <Chip
+                                                                                                    label="Eager"
+                                                                                                    size="small"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {instance.config?.contextShift && (
+                                                                                            <Tooltip title="Context shifting enabled">
+                                                                                                <Chip
+                                                                                                    label="CtxShift"
+                                                                                                    size="small"
+                                                                                                    color="success"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
                                                                                     </>
                                                                                 ) : (
                                                                                     <>
@@ -4149,12 +4181,54 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                                                 sx={{ fontSize: '0.7rem' }}
                                                                                             />
                                                                                         </Tooltip>
+                                                                                        {instance.config?.threads > 0 && (
+                                                                                            <Tooltip title="CPU threads">
+                                                                                                <Chip
+                                                                                                    label={`Threads: ${instance.config?.threads}`}
+                                                                                                    size="small"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {instance.config?.batchSize && instance.config?.batchSize !== 2048 && (
+                                                                                            <Tooltip title="Batch size">
+                                                                                                <Chip
+                                                                                                    label={`Batch: ${instance.config?.batchSize}`}
+                                                                                                    size="small"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {(instance.config?.cacheTypeK && instance.config?.cacheTypeK !== 'f16') && (
+                                                                                            <Tooltip title="KV cache quantization">
+                                                                                                <Chip
+                                                                                                    label={`Cache: ${instance.config?.cacheTypeK}`}
+                                                                                                    size="small"
+                                                                                                    color="warning"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
                                                                                         {instance.config?.flashAttention && (
                                                                                             <Tooltip title="Flash attention enabled">
                                                                                                 <Chip
                                                                                                     label="Flash"
                                                                                                     size="small"
                                                                                                     color="info"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {instance.config?.contextShift && (
+                                                                                            <Tooltip title="Context shifting enabled">
+                                                                                                <Chip
+                                                                                                    label="CtxShift"
+                                                                                                    size="small"
+                                                                                                    color="success"
                                                                                                     variant="outlined"
                                                                                                     sx={{ fontSize: '0.7rem' }}
                                                                                                 />
@@ -4440,6 +4514,9 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                             <MenuItem value={32768}>32K</MenuItem>
                                                                             <MenuItem value={65536}>64K</MenuItem>
                                                                             <MenuItem value={131072}>128K</MenuItem>
+                                                                            <MenuItem value={262144}>256K</MenuItem>
+                                                                            <MenuItem value={524288}>512K</MenuItem>
+                                                                            <MenuItem value={1048576}>1M</MenuItem>
                                                                         </Select>
                                                                     </FormControl>
                                                                 </Tooltip>
@@ -4674,6 +4751,9 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                             <MenuItem value={32768}>32K</MenuItem>
                                                                             <MenuItem value={65536}>64K</MenuItem>
                                                                             <MenuItem value={131072}>128K</MenuItem>
+                                                                            <MenuItem value={262144}>256K</MenuItem>
+                                                                            <MenuItem value={524288}>512K</MenuItem>
+                                                                            <MenuItem value={1048576}>1M</MenuItem>
                                                                         </Select>
                                                                     </FormControl>
                                                                 </Tooltip>
@@ -4806,6 +4886,8 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                             <MenuItem value={1024}>1024</MenuItem>
                                                                             <MenuItem value={2048}>2048</MenuItem>
                                                                             <MenuItem value={4096}>4096</MenuItem>
+                                                                            <MenuItem value={8192}>8192</MenuItem>
+                                                                            <MenuItem value={16384}>16384</MenuItem>
                                                                         </Select>
                                                                     </FormControl>
                                                                 </Tooltip>
@@ -4823,6 +4905,8 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                             <MenuItem value={256}>256</MenuItem>
                                                                             <MenuItem value={512}>512</MenuItem>
                                                                             <MenuItem value={1024}>1024</MenuItem>
+                                                                            <MenuItem value={2048}>2048</MenuItem>
+                                                                            <MenuItem value={4096}>4096</MenuItem>
                                                                         </Select>
                                                                     </FormControl>
                                                                 </Tooltip>
@@ -6739,7 +6823,7 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                                                         {skill.description || 'No description'}
                                                                                     </Typography>
                                                                                     <Typography variant="caption" color="text.secondary">
-                                                                                        Created: {new Date(skill.createdAt).toLocaleDateString()}
+                                                                                        Created: {skill.createdAt ? new Date(skill.createdAt).toLocaleDateString() : 'Built-in'}
                                                                                     </Typography>
                                                                                 </CardContent>
                                                                                 <CardActions>

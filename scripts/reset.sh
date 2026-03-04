@@ -16,6 +16,7 @@ echo ""
 FORCE_RESET=false
 KEEP_OPENWEBUI=false
 REBUILD_IMAGES=false
+FULL_WIPE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -31,6 +32,10 @@ while [[ $# -gt 0 ]]; do
             REBUILD_IMAGES=true
             shift
             ;;
+        --full)
+            FULL_WIPE=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -38,7 +43,14 @@ while [[ $# -gt 0 ]]; do
             echo "  -f, --force        Skip confirmation prompts"
             echo "  --keep-openwebui   Keep Open WebUI data (users, chat history)"
             echo "  --rebuild          Rebuild Docker images from scratch"
+            echo "  --full             Full factory reset (removes EVERYTHING including models)"
             echo "  -h, --help         Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0                      # Reset API keys, settings, users"
+            echo "  $0 --keep-openwebui     # Reset but keep Open WebUI users/history"
+            echo "  $0 --full -f            # Complete factory reset (no prompts)"
+            echo "  $0 --rebuild            # Reset and rebuild all Docker images"
             exit 0
             ;;
         *)
@@ -50,11 +62,28 @@ done
 
 # Confirm reset
 if [ "$FORCE_RESET" = false ]; then
-    read -p "This will remove ALL API keys, settings, and llama.cpp instances. Continue? [y/N] " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Reset cancelled."
-        exit 0
+    if [ "$FULL_WIPE" = true ]; then
+        echo "WARNING: This is a FULL FACTORY RESET!"
+        echo "This will permanently delete:"
+        echo "  - All downloaded models"
+        echo "  - All user accounts (webapp and Open WebUI)"
+        echo "  - All API keys and sessions"
+        echo "  - All agents, skills, and tasks"
+        echo "  - All Open WebUI chat history"
+        echo ""
+        read -p "Are you absolutely sure? Type 'YES' to confirm: " -r
+        echo ""
+        if [ "$REPLY" != "YES" ]; then
+            echo "Reset cancelled."
+            exit 0
+        fi
+    else
+        read -p "This will remove ALL API keys, settings, and llama.cpp instances. Continue? [y/N] " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Reset cancelled."
+            exit 0
+        fi
     fi
 fi
 
@@ -66,25 +95,56 @@ echo ">>> Stopping llama.cpp instances..."
 docker ps --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
 docker ps -a --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
 
+# Stop all vLLM instances
+echo ">>> Stopping vLLM instances..."
+docker ps --filter "name=vllm-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
+docker ps -a --filter "name=vllm-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
+
 # Stop docker-compose services
 docker compose down 2>/dev/null || true
 
 echo ""
 echo ">>> Step 2: Removing webapp data..."
-docker volume rm opensourcemodelmanager_webapp_data 2>/dev/null || true
+# Try both possible volume names (with and without project prefix)
+docker volume rm modelserver_webapp_data 2>/dev/null || \
+docker volume rm opensourcemodelmanager_webapp_data 2>/dev/null || \
+docker volume rm webapp_data 2>/dev/null || true
 
 # Handle OpenWebUI data
 if [ "$KEEP_OPENWEBUI" = false ]; then
-    if [ "$FORCE_RESET" = false ]; then
+    if [ "$FULL_WIPE" = true ] || [ "$FORCE_RESET" = true ]; then
+        REPLY="y"
+    else
         read -p "Also reset Open WebUI data (users, chat history)? [y/N] " -n 1 -r
         echo ""
-    else
-        REPLY="y"
     fi
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo ">>> Removing Open WebUI data volume..."
-        docker volume rm opensourcemodelmanager_openwebui_data 2>/dev/null || true
+        docker volume rm modelserver_openwebui_data 2>/dev/null || \
+        docker volume rm opensourcemodelmanager_openwebui_data 2>/dev/null || \
+        docker volume rm openwebui_data 2>/dev/null || true
     fi
+fi
+
+# Handle full wipe (delete models)
+if [ "$FULL_WIPE" = true ]; then
+    echo ""
+    echo ">>> Step 2.5: Removing all downloaded models..."
+
+    # Remove models directory contents
+    if [ -d "$PROJECT_DIR/models" ]; then
+        echo ">>> Clearing models directory..."
+        rm -rf "$PROJECT_DIR/models"/* 2>/dev/null || true
+        rm -rf "$PROJECT_DIR/models"/.* 2>/dev/null || true
+        echo ">>> Models directory cleared"
+    fi
+
+    # Also remove .modelserver directory if it exists in models
+    if [ -d "$PROJECT_DIR/models/.modelserver" ]; then
+        rm -rf "$PROJECT_DIR/models/.modelserver" 2>/dev/null || true
+    fi
+
+    echo ">>> All models deleted"
 fi
 
 # Rebuild images if requested
@@ -96,8 +156,14 @@ if [ "$REBUILD_IMAGES" = true ]; then
     # Build llamacpp base image
     docker compose --profile build-only build llamacpp --no-cache
 
+    # Build vLLM base image
+    docker compose --profile build-only build vllm --no-cache
+
     # Build webapp
     docker compose build webapp --no-cache
+
+    # Build custom OpenWebUI image
+    docker compose build open-webui --no-cache
 fi
 
 # Ensure SSL certificates exist
@@ -157,6 +223,12 @@ echo "=========================================="
 echo "  Reset Complete!"
 echo "=========================================="
 echo ""
+
+if [ "$FULL_WIPE" = true ]; then
+    echo "Factory reset completed. All data has been removed."
+    echo ""
+fi
+
 echo "Services are running. Access URLs (all HTTPS):"
 echo ""
 echo "  Webapp:     https://localhost:3001"

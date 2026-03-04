@@ -68,7 +68,8 @@ services:
     restart: unless-stopped
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    build: ./openwebui
+    image: modelserver-openwebui:latest
     # No external port - accessed via nginx proxy
     expose:
       - "8080"

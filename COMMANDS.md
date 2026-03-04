@@ -62,26 +62,31 @@ Rebuild and restart services without data loss:
 
 ### Reset System
 
-Full system reset (removes all data except models):
+System reset with various options:
 
 ```bash
-# Basic reset
+# Basic reset (preserves models)
 ./reset.sh
 
 # Reset with options
 ./reset.sh --keep-openwebui     # Reset but keep Open WebUI data
 ./reset.sh --rebuild            # Reset and rebuild all images from scratch
+./reset.sh --full               # Full factory reset (removes EVERYTHING including models)
+./reset.sh --full -f            # Full factory reset without prompts
 
 # Reset only Open WebUI
 ./reset-openwebui.sh            # Removes only Open WebUI data
 ```
 
-**Warning:** These commands remove:
-- User accounts and sessions
-- API keys
-- Agents, skills, and tasks
-- Open WebUI chat history (unless --keep-openwebui)
-- Downloaded models are PRESERVED
+**Reset Levels:**
+
+| Option | Models | Webapp Users | Open WebUI | API Keys |
+|--------|--------|--------------|------------|----------|
+| `./reset.sh` | KEPT | Removed | Removed | Removed |
+| `./reset.sh --keep-openwebui` | KEPT | Removed | KEPT | Removed |
+| `./reset.sh --full` | Removed | Removed | Removed | Removed |
+
+**Warning:** The `--full` flag will permanently delete all downloaded models!
 
 ### Update Webapp
 
@@ -339,6 +344,8 @@ koda
 /mode standalone                # Direct chat with AI (default)
 /mode agent                     # Agent-specific context mode
 /mode collab                    # Multi-agent collaboration mode
+/mode standalone,websearch      # Chat mode with web search enabled
+/mode agent,websearch           # Agent mode with web search enabled
 ```
 
 ### Agent Management
@@ -414,6 +421,14 @@ koda
 - AI can execute skills directly
 - Format: `[SKILL:skill_name(param="value")]`
 - Works in standalone, agent, and collab modes
+- 88+ built-in skills including:
+  - File operations (create, read, update, delete, list)
+  - Email parsing (.eml and .msg Outlook format)
+  - PDF generation and reading
+  - Web scraping with Playwright
+  - System commands (bash, PowerShell)
+  - Git operations
+  - And more...
 
 ---
 
