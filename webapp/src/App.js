@@ -5495,56 +5495,95 @@ You are a helpful coding assistant. When writing code, always include comments e
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2 }}>
-                                            Getting Started in 4 Simple Steps
-                                        </Typography>
-
+                                        {/* Step 1: Load a Model */}
                                         <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
                                             <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                                Step 1: Load a Model
+                                                1. Load a Model
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                Go to the "Discover" tab to search and download models, then go to "My Models" tab and click "Load" on your model.
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 2, fontSize: '0.8rem', fontStyle: 'italic' }}>
-                                                Configure launch settings (GPU layers, context size, batch size) before starting.
-                                            </Typography>
-
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, mt: 2, color: 'secondary.main' }}>
-                                                Step 2: Create API Key (Optional - For External Access)
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                The webapp UI requires no authentication. For external API access or OpenWebUI, create an API key in the "API Keys" tab.
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 2, fontSize: '0.8rem', fontStyle: 'italic' }}>
-                                                Set permissions (query, models, instances, admin) and configure rate limits as needed.
-                                            </Typography>
-
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, mt: 2, color: 'secondary.main' }}>
-                                                Step 3: Install koda CLI (Optional)
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                Install the koda CLI for managing AI agents from the terminal:
-                                            </Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.3)', p: 2, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.875rem', mb: 1 }}>
-                                                curl -sk ${baseUrl}/api/cli/install | bash
-                                            </Box>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                Then run: <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>koda</code> to enter the interactive shell.
+                                                <strong>Discover</strong> tab → Search & download models → <strong>My Models</strong> tab → Click "Load"
                                             </Typography>
                                             <Typography variant="body2" sx={{ fontSize: '0.8rem', fontStyle: 'italic' }}>
-                                                Use /init to configure your API credentials, /help for available commands.
+                                                Configure launch settings (backend, GPU layers, context size) before starting.
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Step 2: Choose Your Interface */}
+                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(167, 139, 250, 0.05)', borderRadius: 1 }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'secondary.main' }}>
+                                                2. Choose Your Interface
                                             </Typography>
 
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, mt: 2, color: 'secondary.main' }}>
-                                                Step 4: Start Using Your Models
+                                            <TableContainer>
+                                                <Table size="small">
+                                                    <TableHead>
+                                                        <TableRow>
+                                                            <TableCell><strong>Interface</strong></TableCell>
+                                                            <TableCell><strong>URL / Setup</strong></TableCell>
+                                                            <TableCell><strong>Best For</strong></TableCell>
+                                                        </TableRow>
+                                                    </TableHead>
+                                                    <TableBody>
+                                                        <TableRow>
+                                                            <TableCell sx={{ fontWeight: 600 }}>Koda CLI</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                                                curl -sk {baseUrl}/api/cli/install | bash
+                                                            </TableCell>
+                                                            <TableCell>Terminal users, AI agents, file operations, automation</TableCell>
+                                                        </TableRow>
+                                                        <TableRow>
+                                                            <TableCell sx={{ fontWeight: 600 }}>Open WebUI</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                                                {openWebUIUrl}
+                                                            </TableCell>
+                                                            <TableCell>Chat interface, conversations, visual users</TableCell>
+                                                        </TableRow>
+                                                        <TableRow>
+                                                            <TableCell sx={{ fontWeight: 600 }}>Direct API</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                                                {baseUrl}/api/chat
+                                                            </TableCell>
+                                                            <TableCell>Custom integrations, scripts, programmatic access</TableCell>
+                                                        </TableRow>
+                                                    </TableBody>
+                                                </Table>
+                                            </TableContainer>
+                                        </Box>
+
+                                        {/* Interface Details */}
+                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 211, 238, 0.03)', borderRadius: 1 }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
+                                                Koda CLI Setup
                                             </Typography>
-                                            <Typography variant="body2" component="div">
-                                                <ul style={{ margin: 0, paddingLeft: '1.5rem' }}>
-                                                    <li>Webapp: Use the API Code Builder below</li>
-                                                    <li>Open WebUI: Chat interface at {openWebUIUrl}</li>
-                                                    <li>External API: cURL, Python, or any HTTP client</li>
-                                                </ul>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.3)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', mb: 1 }}>
+                                                curl -sk {baseUrl}/api/cli/install | bash && koda
+                                            </Box>
+                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                                                Run <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/auth</code> to authenticate, <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/help</code> for commands. Koda connects to: <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{baseUrl}</code>
+                                            </Typography>
+
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, mt: 2, color: 'primary.main' }}>
+                                                Open WebUI Connection
+                                            </Typography>
+                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                                                Start via <strong>Apps</strong> tab. Access at <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{openWebUIUrl}</code>. Uses internal connector to query models automatically.
+                                            </Typography>
+
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, mt: 2, color: 'primary.main' }}>
+                                                Direct API Access
+                                            </Typography>
+                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                                                Base URL: <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{baseUrl}</code> — Use the API Builder below for code examples.
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Step 3: API Keys */}
+                                        <Box sx={{ p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
+                                                3. Create API Key (Required for External Access)
+                                            </Typography>
+                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                                                <strong>API Keys</strong> tab → Create key → Copy credentials. Required for Koda CLI, Open WebUI, and external API calls. Set permissions (query, models, instances, admin) as needed.
                                             </Typography>
                                         </Box>
                                     </AccordionDetails>
@@ -5669,6 +5708,113 @@ You are a helpful coding assistant. When writing code, always include comments e
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
+                                        {/* llama.cpp Settings */}
+                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
+                                            llama.cpp Backend (GPU: Maxwell 5.2+)
+                                        </Typography>
+                                        <TableContainer sx={{ mb: 3 }}>
+                                            <Table size="small">
+                                                <TableHead>
+                                                    <TableRow>
+                                                        <TableCell><strong>Flag</strong></TableCell>
+                                                        <TableCell><strong>Type</strong></TableCell>
+                                                        <TableCell><strong>Default</strong></TableCell>
+                                                        <TableCell><strong>Description</strong></TableCell>
+                                                    </TableRow>
+                                                </TableHead>
+                                                <TableBody>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>nGpuLayers</TableCell>
+                                                        <TableCell>integer</TableCell>
+                                                        <TableCell>-1</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.nGpuLayers}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>contextSize</TableCell>
+                                                        <TableCell>integer</TableCell>
+                                                        <TableCell>4096</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.contextSize}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>contextShift</TableCell>
+                                                        <TableCell>boolean</TableCell>
+                                                        <TableCell>true</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.contextShift}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>flashAttention</TableCell>
+                                                        <TableCell>boolean</TableCell>
+                                                        <TableCell>false</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.flashAttention}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>cacheTypeK</TableCell>
+                                                        <TableCell>string</TableCell>
+                                                        <TableCell>f16</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.cacheTypeK} (Options: f16, q8_0, q4_0)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>cacheTypeV</TableCell>
+                                                        <TableCell>string</TableCell>
+                                                        <TableCell>f16</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.cacheTypeV} (Options: f16, q8_0, q4_0)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>threads</TableCell>
+                                                        <TableCell>integer</TableCell>
+                                                        <TableCell>0</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.threads}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>parallelSlots</TableCell>
+                                                        <TableCell>integer</TableCell>
+                                                        <TableCell>1</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.parallelSlots}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>batchSize</TableCell>
+                                                        <TableCell>integer</TableCell>
+                                                        <TableCell>512</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.batchSize}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>ubatchSize</TableCell>
+                                                        <TableCell>integer</TableCell>
+                                                        <TableCell>512</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.ubatchSize}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>repeatPenalty</TableCell>
+                                                        <TableCell>float</TableCell>
+                                                        <TableCell>1.0</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.repeatPenalty}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>repeatLastN</TableCell>
+                                                        <TableCell>integer</TableCell>
+                                                        <TableCell>64</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.repeatLastN}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>presencePenalty</TableCell>
+                                                        <TableCell>float</TableCell>
+                                                        <TableCell>0.0</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.presencePenalty}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>frequencyPenalty</TableCell>
+                                                        <TableCell>float</TableCell>
+                                                        <TableCell>0.0</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.frequencyPenalty}</TableCell>
+                                                    </TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </TableContainer>
+
+                                        {/* vLLM Settings */}
+                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
+                                            vLLM Backend (GPU: Pascal 6.0+)
+                                        </Typography>
                                         <TableContainer>
                                             <Table size="small">
                                                 <TableHead>
@@ -5685,6 +5831,12 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         <TableCell>integer</TableCell>
                                                         <TableCell>4096</TableCell>
                                                         <TableCell>{SETTINGS_TOOLTIPS.maxModelLen}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>contextShift</TableCell>
+                                                        <TableCell>boolean</TableCell>
+                                                        <TableCell>true</TableCell>
+                                                        <TableCell>{SETTINGS_TOOLTIPS.contextShift}</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>cpuOffloadGb</TableCell>
