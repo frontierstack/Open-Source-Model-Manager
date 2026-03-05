@@ -1527,21 +1527,104 @@ function unescapeString(str) {
 function parseSkillCalls(response) {
     const skillCalls = [];
 
-    // Pattern 1: [SKILL:name(params)]
-    // Use a more robust pattern that captures until )] to handle params with parentheses
-    const bracketPattern = /\[SKILL:(\w+)\(([^[\]]*)\)\]/g;
+    // Pattern 1: [SKILL:name(params)] - handles multi-line content with triple quotes
+    // We need to find skill calls that may contain multi-line content
+    const skillStartPattern = /\[SKILL:(\w+)\(/g;
+    let startMatch;
+    while ((startMatch = skillStartPattern.exec(response)) !== null) {
+        const skillName = startMatch[1];
+        const startIndex = startMatch.index + startMatch[0].length;
+
+        // Find the matching )] by tracking parentheses and handling quoted strings
+        let depth = 1;
+        let i = startIndex;
+        let inQuote = false;
+        let inTripleQuote = false;
+        let escapeNext = false;
+
+        while (i < response.length && depth > 0) {
+            const char = response[i];
+            const nextThree = response.substring(i, i + 3);
+
+            if (escapeNext) {
+                escapeNext = false;
+                i++;
+                continue;
+            }
+
+            if (char === '\\') {
+                escapeNext = true;
+                i++;
+                continue;
+            }
+
+            // Handle triple quotes
+            if (nextThree === '"""') {
+                inTripleQuote = !inTripleQuote;
+                i += 3;
+                continue;
+            }
+
+            // Handle single quotes (only if not in triple quote)
+            if (char === '"' && !inTripleQuote) {
+                inQuote = !inQuote;
+                i++;
+                continue;
+            }
+
+            // Track parentheses (only if not in any quote)
+            if (!inQuote && !inTripleQuote) {
+                if (char === '(') depth++;
+                if (char === ')') depth--;
+            }
+
+            i++;
+        }
+
+        // Check if we found the closing )]
+        if (depth === 0 && response[i] === ']') {
+            const paramsStr = response.substring(startIndex, i - 1);
+            const fullMatch = response.substring(startMatch.index, i + 1);
+            const params = {};
+
+            // Parse key="value" pairs with support for escaped quotes
+            // Also handle key="""multi-line value"""
+            const tripleQuotePattern = /(\w+)\s*=\s*"""([\s\S]*?)"""/g;
+            let paramMatch;
+            while ((paramMatch = tripleQuotePattern.exec(paramsStr)) !== null) {
+                // Triple-quoted strings keep their content as-is (no unescape needed)
+                params[paramMatch[1]] = paramMatch[2].trim();
+            }
+
+            // Parse single-quoted params (that weren't already captured by triple quotes)
+            const singleQuotePattern = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
+            while ((paramMatch = singleQuotePattern.exec(paramsStr)) !== null) {
+                // Only add if not already captured by triple quote pattern
+                if (!(paramMatch[1] in params)) {
+                    params[paramMatch[1]] = unescapeString(paramMatch[2]);
+                }
+            }
+
+            skillCalls.push({ skillName, params, fullMatch });
+        }
+    }
+
+    // Also support the simpler bracket pattern for backwards compatibility
+    const simpleBracketPattern = /\[SKILL:(\w+)\(([^[\]]*)\)\]/g;
     let match;
-    while ((match = bracketPattern.exec(response)) !== null) {
+    while ((match = simpleBracketPattern.exec(response)) !== null) {
+        // Skip if already captured by the more complex parser above
+        const alreadyCaptured = skillCalls.some(sc => sc.fullMatch === match[0]);
+        if (alreadyCaptured) continue;
+
         const skillName = match[1];
         const paramsStr = match[2];
         const params = {};
 
         // Parse key="value" pairs with support for escaped quotes
-        // Matches: key="value with \"escaped\" quotes"
         const paramPattern = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
         let paramMatch;
         while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
-            // Unescape string values to convert \n to actual newlines, etc.
             params[paramMatch[1]] = unescapeString(paramMatch[2]);
         }
 
@@ -1587,40 +1670,44 @@ function parseSkillCalls(response) {
 function detectMalformedSkillCalls(response) {
     const issues = [];
 
-    // Check for incomplete bracket format: [SKILL:name( without closing )]
-    const incompletePattern = /\[SKILL:(\w+)\([^[\]]*(?!\)\])/g;
+    // First, get all successfully parsed skill calls
+    const parsedCalls = parseSkillCalls(response);
+    const parsedMatches = parsedCalls.map(sc => sc.fullMatch);
+
+    // Find all [SKILL: starts in the response
+    const skillStartPattern = /\[SKILL:(\w+)\(/g;
     let match;
-    while ((match = incompletePattern.exec(response)) !== null) {
-        // Make sure this isn't a complete skill call
-        const fullMatch = match[0];
-        if (!fullMatch.includes(')]')) {
-            issues.push({
-                type: 'incomplete_bracket',
-                skillName: match[1],
-                context: fullMatch.substring(0, 50) + '...'
-            });
-        }
-    }
+    while ((match = skillStartPattern.exec(response)) !== null) {
+        const skillName = match[1];
+        const startIndex = match.index;
 
-    // Check for [SKILL: that's missing the closing bracket entirely
-    const openBracketPattern = /\[SKILL:\w+\([^\]]*$/g;
-    if (openBracketPattern.test(response)) {
-        issues.push({
-            type: 'missing_close_bracket',
-            context: 'Skill call started but not completed'
+        // Check if this skill start was successfully parsed
+        const wasParsed = parsedMatches.some(fullMatch => {
+            const matchIndex = response.indexOf(fullMatch);
+            return matchIndex === startIndex;
         });
-    }
 
-    // Check for skill calls with malformed parameters (missing quotes)
-    const malformedParamPattern = /\[SKILL:\w+\([^"]*=[^"]*\)\]/g;
-    while ((match = malformedParamPattern.exec(response)) !== null) {
-        // This might catch valid calls, so we need to verify
-        const paramsStr = match[0];
-        if (!paramsStr.includes('="')) {
-            issues.push({
-                type: 'malformed_params',
-                context: paramsStr
-            });
+        if (!wasParsed) {
+            // This skill call wasn't successfully parsed - it's likely incomplete
+            // Extract some context for the error message
+            const contextEnd = Math.min(startIndex + 100, response.length);
+            const context = response.substring(startIndex, contextEnd);
+
+            // Check if it looks like it might just be missing the closing bracket
+            if (!response.substring(startIndex).includes(')]')) {
+                issues.push({
+                    type: 'incomplete_bracket',
+                    skillName: skillName,
+                    context: context.substring(0, 50) + '...'
+                });
+            } else {
+                // It has )] somewhere but still didn't parse - likely malformed params
+                issues.push({
+                    type: 'malformed_params',
+                    skillName: skillName,
+                    context: context.substring(0, 50) + '...'
+                });
+            }
         }
     }
 
