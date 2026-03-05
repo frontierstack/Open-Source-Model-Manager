@@ -6081,46 +6081,52 @@ You are a helpful coding assistant. When writing code, always include comments e
                                     <AccordionDetails>
                                         <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 1, border: '1px solid rgba(34, 197, 94, 0.3)' }}>
                                             <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'success.main' }}>
-                                                External Web Search
+                                                External Web Search (Auto-Configured)
                                             </Typography>
                                             <Typography variant="body2">
-                                                Configure Open WebUI to use ModelServer's web search API with DuckDuckGo and Playwright content fetching - more reliable than the built-in search engines.
+                                                Open WebUI is automatically configured to use ModelServer's web search API with DuckDuckGo and Playwright content fetching. Includes dynamic date/time context and intelligent query generation.
                                             </Typography>
                                         </Box>
 
                                         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            Setup
+                                            Setup (API Key Only)
                                         </Typography>
                                         <Box sx={{ pl: 2, mb: 3 }}>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>1.</strong> Open <a href={openWebUIUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#22d3ee' }}>Open WebUI</a> and log in as admin
+                                                <strong>1.</strong> Create an API key in the <strong>API Keys</strong> tab with <code>query</code> permission
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>2.</strong> Go to <strong>Admin Panel</strong> → <strong>Settings</strong> → <strong>Web Search</strong>
+                                                <strong>2.</strong> Copy the <strong>Secret</strong> (Bearer token)
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>3.</strong> Enable Web Search and select <strong>external</strong> from the dropdown
+                                                <strong>3.</strong> Open <a href={openWebUIUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#22d3ee' }}>Open WebUI</a> → <strong>Admin Panel</strong> → <strong>Settings</strong> → <strong>Web Search</strong>
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>4.</strong> Set the <strong>External Search URL</strong>:
+                                                <strong>4.</strong> Paste the secret into <strong>External Web Search API Key</strong> and click <strong>Save</strong>
                                             </Typography>
-                                            <Box sx={{ ml: 2, mb: 1, p: 1.5, bgcolor: 'rgba(0,0,0,0.3)', borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                                                http://host.docker.internal:3080/api/openwebui/search
-                                            </Box>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>5.</strong> Set the <strong>External Search API Key</strong> to a Bearer token from the API Keys tab
+                                        </Box>
+
+                                        <Box sx={{ p: 2, mb: 2, bgcolor: 'rgba(167, 139, 250, 0.1)', borderRadius: 1 }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
+                                                Auto-Provisioned Settings
                                             </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>6.</strong> Click <strong>Save</strong>
+                                            <Typography variant="body2" component="div" sx={{ fontSize: '0.8rem' }}>
+                                                <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
+                                                    <li><strong>Search URL:</strong> <code>http://host.docker.internal:3080/api/openwebui/search</code></li>
+                                                    <li><strong>Engine:</strong> external</li>
+                                                    <li><strong>Smart RAG Template:</strong> Teaches model when to use search vs own knowledge</li>
+                                                    <li><strong>Aggressive Query Generation:</strong> Always searches for date/time, news, current events</li>
+                                                    <li><strong>Dynamic Date/Time:</strong> Every search includes current timestamp</li>
+                                                </ul>
                                             </Typography>
                                         </Box>
 
                                         <Box sx={{ p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
                                                 Usage
                                             </Typography>
                                             <Typography variant="body2">
-                                                Toggle web search using the globe icon in the chat input. When enabled, the model will search the web for relevant information before responding.
+                                                Toggle web search using the globe icon in the chat input. When enabled, the model searches the web and receives real-time date/time context. Try asking "What is the date today?" or "Latest news".
                                             </Typography>
                                         </Box>
                                     </AccordionDetails>

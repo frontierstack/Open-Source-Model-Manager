@@ -80,6 +80,12 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     sleep 2
 done
 
+# Provision Open WebUI with external search configuration
+echo ""
+if [ -f "$SCRIPT_DIR/provision-openwebui-search.sh" ]; then
+    "$SCRIPT_DIR/provision-openwebui-search.sh"
+fi
+
 echo ""
 echo "=========================================="
 echo "  Model Server Started!"
