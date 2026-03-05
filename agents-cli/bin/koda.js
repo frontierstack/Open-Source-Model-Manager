@@ -6069,10 +6069,13 @@ async function startShell() {
             return availableCommands[0].substring(1); // Return without the "/"
         }
 
-        // For "/mode ", suggest mode options
-        if (trimmed === '/mode ' || trimmed === '/mode') {
-            if (trimmed === '/mode') return ' standalone';
-            return 'standalone';
+        // For "/mode " or "/mode", suggest mode options
+        if (trimmed === '/mode') {
+            // Check original line to see if there's a trailing space
+            if (line.endsWith(' ')) {
+                return 'standalone';  // User typed "/mode ", suggest "standalone"
+            }
+            return ' standalone';  // User typed "/mode", suggest " standalone"
         }
 
         // For partial mode options
