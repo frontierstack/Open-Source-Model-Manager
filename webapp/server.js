@@ -7383,7 +7383,7 @@ app.get('/api/cli/files/koda.js', (req, res) => {
 
 // Serve Open WebUI web search function
 app.get('/api/openwebui/functions/web-search', (req, res) => {
-    const functionPath = path.join(__dirname, '../openwebui/functions/web_search.py');
+    const functionPath = path.join(__dirname, 'openwebui-functions/web_search.py');
     fs.readFile(functionPath, 'utf8')
         .then(content => {
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
