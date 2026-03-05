@@ -1751,7 +1751,7 @@ function detectFalseCompletionClaim(response, userMessage) {
 }
 
 // Build system prompt with skill instructions
-function buildSkillSystemPrompt(skills, mode = 'standalone') {
+function buildSkillSystemPrompt(skills, mode = 'standalone', websearchEnabled = false) {
     if (!skills || skills.length === 0) {
         return '';
     }
@@ -1762,7 +1762,7 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
     }
 
     // Only include the most useful skills to avoid overwhelming the context
-    const prioritySkills = [
+    let prioritySkills = [
         // File operations
         'create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory', 'append_to_file', 'tail_file', 'head_file',
         // Process management
@@ -1774,6 +1774,13 @@ function buildSkillSystemPrompt(skills, mode = 'standalone') {
         // Environment
         'get_env_var', 'set_env_var', 'which_command'
     ];
+
+    // Add web search skills when websearch mode is enabled
+    if (websearchEnabled) {
+        prioritySkills = prioritySkills.concat([
+            'web_search', 'playwright_fetch', 'fetch_url'
+        ]);
+    }
     const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
     const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
 
@@ -1837,9 +1844,22 @@ ENVIRONMENT:
 [SKILL:get_env_var(name="PATH")]
 [SKILL:set_env_var(name="MY_VAR", value="my_value")]
 [SKILL:which_command(command="node")]
+${websearchEnabled ? `
+WEB SEARCH & CONTENT FETCHING:
+[SKILL:web_search(query="your search query here")]
+[SKILL:playwright_fetch(url="https://example.com/article")]
+[SKILL:fetch_url(url="https://example.com/page")]
+- web_search: Search the web and return results with snippets. Use for finding articles, news, documentation.
+- playwright_fetch: Fetch and extract content from a URL (handles JavaScript-rendered pages). Use for reading article content.
+- fetch_url: Simple HTTP fetch for basic web pages. Falls back if playwright unavailable.
 
+When asked to find, check, or summarize web content:
+1. Use web_search to find relevant URLs
+2. Use playwright_fetch or fetch_url to get the actual article content
+3. Summarize and present the content to the user
+` : ''}
 CRITICAL EXECUTION RULES:
-1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command, run_python, run_bash, create_pdf, html_to_pdf, markdown_to_html.
+1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command, run_python, run_bash, create_pdf, html_to_pdf, markdown_to_html${websearchEnabled ? ', web_search, playwright_fetch, fetch_url' : ''}.
 2. DISCOVERY FIRST for fuzzy/broad requests: When the user gives an imprecise request like "delete the security folder", "remove that old file", "find the config", etc., ALWAYS use list_directory FIRST to see what actually exists, then match to their intent, then act. Example: User says "remove the cyber security directory" → first list_directory to find "cybersecurity_news/" → then delete_directory on the match.
 3. When working with files, EXECUTE skills directly - don't just suggest or describe changes
 4. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
@@ -1874,8 +1894,10 @@ ADDITIONAL CAPABILITIES:
 You have access to advanced development tools that you should use proactively when appropriate:
 
 1. WEB SEARCH & DOCUMENTATION:
-   - When you need current information, API docs, or external knowledge, suggest using web search
-   - Example: "Let me search for the latest React 19 documentation" or "I can look up current best practices"
+${websearchEnabled ? `   - Web search is ENABLED - execute web_search, playwright_fetch, and fetch_url skills directly
+   - When asked about current events, news, or web content: search first, then fetch the full article content
+   - DO NOT say "I don't have access to browse the web" - you DO have access via the web search skills above` : `   - When you need current information, API docs, or external knowledge, suggest using web search
+   - Example: "Let me search for the latest React 19 documentation" or "I can look up current best practices"`}
 
 2. CODE ANALYSIS:
    - When analyzing code quality, you can provide insights on complexity, maintainability, and patterns
@@ -5731,7 +5753,7 @@ async function handleCollabChat(api, message, selectedAgents) {
     const tasksResult = await api.getTasks();
     const skillsResult = await api.getSkills();
     const skills = skillsResult.success ? skillsResult.data : [];
-    const skillPrompt = buildSkillSystemPrompt(skills, 'collab');
+    const skillPrompt = buildSkillSystemPrompt(skills, 'collab', websearchMode);
 
     let contextInfo = webSearchContext;
 
@@ -5760,7 +5782,7 @@ async function handleCollabChat(api, message, selectedAgents) {
         if (agent.skills && agent.skills.length > 0) {
             const agentSkills = skills.filter(s => agent.skills.includes(s.id));
             if (agentSkills.length > 0) {
-                agentSkillPrompt = buildSkillSystemPrompt(agentSkills, 'collab');
+                agentSkillPrompt = buildSkillSystemPrompt(agentSkills, 'collab', websearchMode);
             }
         }
 
@@ -5872,7 +5894,7 @@ async function handleChat(api, message) {
     // Fetch skills for skill execution capability
     const skillsResult = await api.getSkills();
     const skills = skillsResult.success ? skillsResult.data : [];
-    const skillPrompt = buildSkillSystemPrompt(skills, currentMode);
+    const skillPrompt = buildSkillSystemPrompt(skills, currentMode, websearchMode);
 
     // Build context-aware message for the API
     let userMessage = message;
