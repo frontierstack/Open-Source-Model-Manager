@@ -1131,11 +1131,15 @@ function detectImports(content, filePath) {
 function displayChatHistory() {
     console.clear();
 
-    // Modern minimalist header
+    // Koda ASCII art banner
     log('');
-    log(colorize('  ╭─────────────────────────────────────╮', 'cyan'));
-    log(colorize('  │', 'cyan') + colorize('  KODA ', 'bright') + colorize('─ AI Project Assistant     ', 'dim') + colorize('│', 'cyan'));
-    log(colorize('  ╰─────────────────────────────────────╯', 'cyan'));
+    log(colorize('  ██╗  ██╗ ██████╗ ██████╗  █████╗ ', 'cyan'));
+    log(colorize('  ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗', 'cyan'));
+    log(colorize('  █████╔╝ ██║   ██║██║  ██║███████║', 'cyan'));
+    log(colorize('  ██╔═██╗ ██║   ██║██║  ██║██╔══██║', 'cyan'));
+    log(colorize('  ██║  ██╗╚██████╔╝██████╔╝██║  ██║', 'cyan'));
+    log(colorize('  ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝', 'cyan'));
+    log(colorize('  Your AI project assistant', 'dim'));
     log('');
 
     // Display chat messages with improved formatting
@@ -1239,16 +1243,12 @@ function displayStatusBar() {
         rightParts.push(colorize(`${lastTokensPerSecond.toFixed(1)} tok/s`, 'dim'));
     }
 
-    // API key usage (right side with progress indicator)
+    // API key usage (right side - clean percentage display)
     if (apiKeyUsage.rateLimitTokens) {
         const percentUsed = parseFloat(apiKeyUsage.tokenUsagePercentage || 0);
         const percentLeft = 100 - percentUsed;
-        const barLen = 8;
-        const filled = Math.round((percentLeft / 100) * barLen);
-        const barColor = percentLeft < 20 ? 'red' : percentLeft < 40 ? 'yellow' : 'green';
-
-        const bar = colorize('█'.repeat(filled), barColor) + colorize('░'.repeat(barLen - filled), 'dim');
-        rightParts.push(bar + colorize(` ${percentLeft.toFixed(0)}%`, barColor));
+        const usageColor = percentLeft < 20 ? 'red' : percentLeft < 40 ? 'yellow' : 'dim';
+        rightParts.push(colorize(`${percentLeft.toFixed(0)}% remaining`, usageColor));
     }
 
     // Session tokens
@@ -1299,6 +1299,12 @@ function cleanSkillSyntax(text) {
 
     // Step 3: Remove truncated skill markers: [S, [SK, [SKI, [SKIL, [SKILL (without colon)
     result = result.replace(/\[S(?:K(?:I(?:L(?:L)?)?)?)?$/g, '');
+
+    // Step 3b: Remove stray lone brackets that are remnants of skill parsing
+    // These appear as lone '[' characters on their own line or at line endings
+    result = result.replace(/^\[\s*$/gm, '');          // Lines that are just '['
+    result = result.replace(/\n\[\s*\n/g, '\n');       // '[' between newlines
+    result = result.replace(/\[\s*$/g, '');            // '[' at end of text
 
     // Step 4: Remove variant formats with hyphen: [SKILL - ...] or [SKILL- ...]
     result = result.replace(/\[SKILL\s*-[^\]]*\]/g, '');
@@ -6364,12 +6370,21 @@ async function handleChat(api, message) {
                     systemPrefix += '\n';
                 });
                 systemPrefix += '=== END OF SEARCH RESULTS ===\n\n';
-                systemPrefix += `IMPORTANT INSTRUCTIONS:
-1. The search results above contain ACTUAL PAGE CONTENT - use it to answer the question
-2. Extract specific facts, quotes, and data from the content provided
-3. Cite which source (by number or title) information came from
-4. If asked to create a file with summaries, use the content above to write real summaries
-5. Do NOT say you cannot access web content - the content IS provided above\n\n`;
+                systemPrefix += `CRITICAL - WEB SEARCH CONTENT ALREADY FETCHED:
+The search results above contain ACTUAL PAGE CONTENT that has already been fetched for you.
+
+YOU MUST:
+1. Use the content above IMMEDIATELY to answer the question - do NOT fetch again
+2. If asked to summarize an article, write the summary NOW using the content provided
+3. If asked to save to PDF/TXT, create the files NOW using create_pdf and create_file skills
+4. Extract specific facts, quotes, and data from the content provided
+5. Do NOT say "I need you to provide a link" or "I can fetch the article" - the content IS ALREADY HERE
+
+YOU MUST NOT:
+- Ask the user for a URL (you already have URLs and content above)
+- Say "I found results" and then ask what to do (just DO IT)
+- Use playwright_fetch or fetch_url (content is already fetched)
+- Loop asking for clarification (pick the first relevant article and proceed)\n\n`;
 
                 // Show compact results flash
                 showCompletionFlash(`Found ${searchResults.length} results (${contentCount} with content)`, true);
