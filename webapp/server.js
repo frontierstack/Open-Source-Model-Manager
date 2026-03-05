@@ -7378,60 +7378,10 @@ app.get('/api/cli/files/koda.js', (req, res) => {
 });
 
 // ============================================================================
-// OPEN WEBUI FUNCTION AUTO-PROVISIONING
+// OPEN WEBUI FUNCTIONS
 // ============================================================================
-
-// Auto-provision web search function to Open WebUI on startup
-async function provisionOpenWebUIFunctions() {
-    try {
-        const functionPath = path.join(__dirname, 'openwebui-functions/web_search.py');
-        const functionContent = await fs.readFile(functionPath, 'utf8');
-
-        // Open WebUI database path (inside open-webui container)
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execPromise = util.promisify(exec);
-
-        const functionId = 'modelserver_web_search';
-        const functionMeta = JSON.stringify({
-            description: 'Search the web using DuckDuckGo with Playwright content fetching via ModelServer API'
-        });
-        const now = Math.floor(Date.now() / 1000);
-
-        // Escape the content for SQL
-        const escapedContent = functionContent.replace(/'/g, "''");
-
-        // Check if function exists, update or insert
-        const sql = `
-            INSERT OR REPLACE INTO function (id, user_id, name, type, content, meta, created_at, updated_at, valves, is_active, is_global)
-            VALUES ('${functionId}', '', 'Web Search', 'tool', '${escapedContent}', '${functionMeta}', ${now}, ${now}, NULL, 1, 1);
-        `;
-
-        // Write SQL to temp file and execute via docker
-        const tempSqlFile = '/tmp/openwebui_function.sql';
-        await fs.writeFile(tempSqlFile, sql);
-
-        // Copy SQL file to container and execute
-        await execPromise(`docker cp ${tempSqlFile} modelserver-open-webui-1:/tmp/function.sql`);
-        await execPromise(`docker exec modelserver-open-webui-1 python3 -c "
-import sqlite3
-conn = sqlite3.connect('/app/backend/data/webui.db')
-with open('/tmp/function.sql', 'r') as f:
-    conn.executescript(f.read())
-conn.commit()
-conn.close()
-print('Function provisioned successfully')
-"`);
-
-        console.log('Open WebUI web search function provisioned successfully');
-    } catch (error) {
-        console.log('Note: Could not auto-provision Open WebUI function:', error.message);
-        console.log('Open WebUI may not be running yet - function will be provisioned on next restart');
-    }
-}
-
-// Provision functions after a delay to allow Open WebUI to start
-setTimeout(provisionOpenWebUIFunctions, 10000);
+// Custom functions for Open WebUI are stored in webapp/openwebui-functions/
+// To provision them to Open WebUI, run: ./scripts/provision-openwebui-functions.sh
 
 // ============================================================================
 // OPENAI-COMPATIBLE API PROXY (Requires auth, forwards to vLLM instances)
