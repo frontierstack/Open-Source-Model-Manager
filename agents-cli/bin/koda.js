@@ -1627,6 +1627,42 @@ function detectMalformedSkillCalls(response) {
     return issues;
 }
 
+// Detect when AI claims to have performed file operations without actually executing skills
+// Returns true if the AI likely hallucinated completion without skill execution
+function detectFalseCompletionClaim(response, userMessage) {
+    if (!response || !userMessage) return false;
+
+    const responseLower = response.toLowerCase();
+    const messageLower = userMessage.toLowerCase();
+
+    // Patterns indicating user requested a file operation
+    const fileOperationRequests = [
+        /\b(delete|remove|rm|erase|clear|wipe)\b.*\b(file|folder|directory|dir|everything|all)\b/i,
+        /\b(file|folder|directory|dir|everything|all)\b.*\b(delete|remove|rm|erase|clear|wipe)d?\b/i,
+        /\bcreate\b.*\b(file|folder|directory)\b/i,
+        /\bmove\b.*\b(file|folder|directory)\b/i,
+        /\brename\b.*\b(file|folder|directory)\b/i,
+        /\bcopy\b.*\b(file|folder|directory)\b/i
+    ];
+
+    const userRequestedFileOp = fileOperationRequests.some(pattern => pattern.test(messageLower));
+    if (!userRequestedFileOp) return false;
+
+    // Patterns indicating AI claims to have completed the operation
+    const completionClaims = [
+        /\b(have been|has been|were|was)\s+(deleted|removed|erased|cleared|wiped|created|moved|renamed|copied)\b/i,
+        /\bsuccessfully\s+(deleted|removed|erased|cleared|created|moved|renamed|copied)\b/i,
+        /\b(deleted|removed|erased|cleared|created|moved|renamed|copied)\s+successfully\b/i,
+        /\ball\s+(files|folders|directories|items)\b.*\b(deleted|removed|cleared)\b/i,
+        /\b(done|completed|finished)\b.*\b(delet|remov|eras|clear|creat|mov|renam|cop)/i,
+        /\bI('ve|\s+have)\s+(deleted|removed|created|moved|renamed|copied)\b/i
+    ];
+
+    const aiClaimsCompletion = completionClaims.some(pattern => pattern.test(responseLower));
+
+    return aiClaimsCompletion;
+}
+
 // Build system prompt with skill instructions
 function buildSkillSystemPrompt(skills, mode = 'standalone') {
     if (!skills || skills.length === 0) {
@@ -5737,6 +5773,9 @@ async function handleCollabChat(api, message, selectedAgents) {
 
 // Handle natural language chat with session awareness and skill execution (with streaming)
 async function handleChat(api, message) {
+    // Preserve original message for false completion detection
+    const originalMessage = message;
+
     // Add user message to history
     addToHistory('user', message);
 
@@ -6022,6 +6061,35 @@ async function handleChat(api, message) {
 
                 // Continue the conversation with error feedback
                 currentMessage = contextMessage + '\n\nPrevious response: ' + response + errorFeedback;
+                continue;
+            }
+
+            // Check if AI claims to have performed file operations without actually executing skills
+            // This catches cases where the AI hallucinates "I deleted the files" without calling skills
+            const claimsFileOperation = detectFalseCompletionClaim(response, originalMessage);
+
+            if (claimsFileOperation && iteration === 0) {
+                // AI claimed to do file operations but didn't execute any skills
+                // Remove the false claim from display
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    chatHistory.pop();
+                }
+
+                // Force the AI to actually execute skills
+                let correctionFeedback = '\n\n[EXECUTION REQUIRED]\n';
+                correctionFeedback += 'You claimed to have performed a file operation but did not execute any skills.\n';
+                correctionFeedback += 'You MUST use skills to perform actual operations. Do not claim completion without execution.\n\n';
+                correctionFeedback += 'Required steps:\n';
+                correctionFeedback += '1. Use list_directory to see what exists in the target location\n';
+                correctionFeedback += '2. Execute the appropriate skill(s) for each item\n';
+                correctionFeedback += '3. Only confirm completion after skills execute successfully\n\n';
+                correctionFeedback += 'Example format: [SKILL:list_directory(dirPath="' + userWorkingDirectory + '")]\n';
+
+                addToHistory('system', 'No skills executed - asking AI to actually perform the operation...');
+                displayChatHistory();
+
+                currentMessage = contextMessage + '\n\nPrevious response: ' + response + correctionFeedback;
                 continue;
             }
 
