@@ -4233,7 +4233,17 @@ function buildSkillResultsMessage(results) {
                 '• PDF/Reports: create_pdf, html_to_pdf, markdown_to_html, read_pdf, pdf_page_count, pdf_to_images\n' +
                 '• Web: playwright_fetch, playwright_interact, web_search';
         } else {
-            message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
+            // Check for path-not-found errors and suggest list_directory
+            const pathNotFound = failureMessages.some(m =>
+                m.toLowerCase().includes('no such file') ||
+                m.toLowerCase().includes('enoent') ||
+                m.toLowerCase().includes('does not exist')
+            );
+            if (pathNotFound) {
+                message += '\nThe path was not found. IMPORTANT: Use list_directory to find the correct file/folder name before retrying. The user may have specified an approximate name.';
+            } else {
+                message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
+            }
         }
     }
 
@@ -6020,19 +6030,15 @@ async function handleChat(api, message) {
             break;
         }
 
-        // Clean up the displayed response by removing raw skill call syntax
-        // The skill execution messages will be shown separately
-        let cleanedResponse = cleanSkillSyntax(response);
-
-        // Update the displayed assistant message with cleaned response
+        // When skills are about to execute, DON'T show the AI's preliminary response.
+        // The AI often claims success/failure before skills actually run (e.g., "folder deleted successfully").
+        // This causes confusion when the skill then fails or succeeds differently.
+        // Instead: remove the message, show skill animations, and let the AI respond after seeing actual results.
         const lastMsg = chatHistory[chatHistory.length - 1];
         if (lastMsg && lastMsg.role === 'assistant') {
-            if (cleanedResponse && cleanedResponse.length > 0) {
-                lastMsg.content = cleanedResponse;
-            } else {
-                // If the response only contained skill calls, remove the message entirely
-                chatHistory.pop();
-            }
+            // Remove the preliminary message - skills will show their own status via animations
+            chatHistory.pop();
+            // Clear the streamed output from screen
             displayChatHistory();
         }
 
