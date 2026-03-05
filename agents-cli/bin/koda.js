@@ -1717,14 +1717,15 @@ ENVIRONMENT:
 
 CRITICAL EXECUTION RULES:
 1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command, run_python, run_bash, create_pdf, html_to_pdf, markdown_to_html.
-2. When working with files, EXECUTE skills directly - don't just suggest or describe changes
-3. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
-4. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
-5. Intelligently choose project directory names based on what the user is building
-6. When the user switches topics (e.g., from coding to summarizing an article), recognize this as a NEW request and respond to it - don't continue with the previous task
-7. For non-file operations (math, coding help, explanations, general chat), respond conversationally
-8. STOP LOOPING: After skills execute successfully, respond with a brief natural language confirmation - do NOT execute more skills to "verify" or "confirm" (no read_file to check, no list_directory to verify)
-9. Only continue with more skills if a previous skill FAILED and you need to fix it
+2. DISCOVERY FIRST for fuzzy/broad requests: When the user gives an imprecise request like "delete the security folder", "remove that old file", "find the config", etc., ALWAYS use list_directory FIRST to see what actually exists, then match to their intent, then act. Example: User says "remove the cyber security directory" → first list_directory to find "cybersecurity_news/" → then delete_directory on the match.
+3. When working with files, EXECUTE skills directly - don't just suggest or describe changes
+4. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
+5. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
+6. Intelligently choose project directory names based on what the user is building
+7. When the user switches topics (e.g., from coding to summarizing an article), recognize this as a NEW request and respond to it - don't continue with the previous task
+8. For non-file operations (math, coding help, explanations, general chat), respond conversationally
+9. STOP LOOPING: After skills execute successfully, respond with a brief natural language confirmation - do NOT execute more skills to "verify" or "confirm" (no read_file to check, no list_directory to verify)
+10. Only continue with more skills if a previous skill FAILED and you need to fix it
 
 SKILL SYNTAX RULES - FOLLOW EXACTLY:
 - Each skill call MUST be complete on a single line
