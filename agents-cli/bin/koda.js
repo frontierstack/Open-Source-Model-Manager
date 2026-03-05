@@ -610,7 +610,7 @@ function showCompletionFlash(message, success = true, details = null) {
 }
 
 // Show a subtle info message
-function showInfoFlash(message, icon = 'ℹ') {
+function showInfoFlash(message, icon = '[i]') {
     process.stdout.write(`\r\x1b[K${colorize(icon, 'cyan')} ${colorize(message, 'dim')}\n`);
 }
 
@@ -849,15 +849,15 @@ function drawProgressBar(current, total, width = 30, options = {}) {
     return bar;
 }
 
-// Status indicator icons
+// Status indicator icons (ASCII-safe for terminal compatibility)
 const statusIcons = {
-    success: colorize('✓', 'green'),
-    error: colorize('✗', 'red'),
-    warning: colorize('⚠', 'yellow'),
-    info: colorize('ℹ', 'cyan'),
-    pending: colorize('○', 'dim'),
-    running: colorize('●', 'cyan'),
-    complete: colorize('●', 'green')
+    success: colorize('[ok]', 'green'),
+    error: colorize('[x]', 'red'),
+    warning: colorize('[!]', 'yellow'),
+    info: colorize('[i]', 'cyan'),
+    pending: colorize('[ ]', 'dim'),
+    running: colorize('[*]', 'cyan'),
+    complete: colorize('[+]', 'green')
 };
 
 // Draw a status line with icon
@@ -1150,8 +1150,14 @@ function displayChatHistory() {
         log(colorize('  └─────────────────────────────────────────┘', 'dim'));
         log('');
     } else {
+        let lastWasSystem = false;
         for (const msg of chatHistory) {
             if (msg.role === 'user') {
+                // Add blank line when transitioning from system messages to user message
+                if (lastWasSystem) {
+                    log('');
+                    lastWasSystem = false;
+                }
                 // User messages with modern styling
                 const lines = msg.content.split('\n');
                 if (lines.length > 1) {
@@ -1176,6 +1182,11 @@ function displayChatHistory() {
                     log(colorize('▶ You: ', 'green') + msg.content);
                 }
             } else if (msg.role === 'assistant' || msg.role === 'assistant-streaming') {
+                // Add blank line when transitioning from system messages to assistant message
+                if (lastWasSystem) {
+                    log('');
+                    lastWasSystem = false;
+                }
                 // Clean any skill syntax before displaying
                 const cleanedContent = cleanSkillSyntax(msg.content);
                 if (cleanedContent) {
@@ -1183,8 +1194,9 @@ function displayChatHistory() {
                     log(colorize('◆ Koda: ', 'cyan') + formattedContent);
                 }
             } else if (msg.role === 'system') {
-                // System messages with subtle styling
-                log(colorize('  ℹ ', 'dim') + colorize(msg.content, 'dim'));
+                // System messages with subtle styling (ASCII-safe icon)
+                log(colorize('  [i] ', 'dim') + colorize(msg.content, 'dim'));
+                lastWasSystem = true;
             }
         }
         log('');
@@ -1226,9 +1238,9 @@ function displayStatusBar() {
                        currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
     leftParts.push(colorize('●', 'cyan') + colorize(` ${displayMode}`, 'dim'));
 
-    // Web search indicator
+    // Web search indicator (ASCII-safe)
     if (websearchMode) {
-        leftParts.push(colorize('🔍', 'green'));
+        leftParts.push(colorize('[web]', 'green'));
     }
 
     // Context window (compact)
@@ -4029,6 +4041,14 @@ async function executePdfSkill(skillName, params) {
                 const dir = path.dirname(outputPath);
                 await fs.mkdir(dir, { recursive: true });
 
+                // Track temp files for cleanup
+                const tempFiles = [];
+                const cleanupTempFiles = async () => {
+                    for (const tempFile of tempFiles) {
+                        await fs.unlink(tempFile).catch(() => {});
+                    }
+                };
+
                 // Try multiple PDF generation methods
                 const escapedContent = content.replace(/'/g, "'\\''").replace(/\n/g, '\\n');
                 const escapedTitle = title.replace(/'/g, "'\\''");
@@ -4058,37 +4078,42 @@ except ImportError:
                 try {
                     const { stdout } = await execPromise(`python3 -c "${pythonScript.replace(/"/g, '\\"')}"`, { timeout: 30000 });
                     if (stdout.includes('OK')) {
+                        await cleanupTempFiles();
                         return { success: true, outputPath, message: `PDF created: ${outputPath}` };
                     }
                 } catch (e) { /* Try next method */ }
 
                 // Method 2: Use wkhtmltopdf with HTML wrapper
+                const tempHtml = outputPath.replace('.pdf', '.tmp.html');
                 try {
                     const htmlContent = `<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;margin:40px;}</style></head><body><h1>${title}</h1><pre style="white-space:pre-wrap;">${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></body></html>`;
-                    const tempHtml = outputPath.replace('.pdf', '.tmp.html');
+                    tempFiles.push(tempHtml);
                     await fs.writeFile(tempHtml, htmlContent, 'utf8');
                     await execPromise(`wkhtmltopdf --quiet "${tempHtml}" "${outputPath}"`, { timeout: 60000 });
-                    await fs.unlink(tempHtml).catch(() => {});
+                    await cleanupTempFiles();
                     return { success: true, outputPath, message: `PDF created: ${outputPath}` };
                 } catch (e) { /* Try next method */ }
 
                 // Method 3: Use enscript + ps2pdf for plain text
+                const tempTxt = outputPath.replace('.pdf', '.tmp.txt');
                 try {
-                    const tempTxt = outputPath.replace('.pdf', '.tmp.txt');
+                    tempFiles.push(tempTxt);
                     await fs.writeFile(tempTxt, `${title}\n${'='.repeat(title.length)}\n\n${content}`, 'utf8');
                     await execPromise(`enscript -B -p - "${tempTxt}" | ps2pdf - "${outputPath}"`, { timeout: 30000 });
-                    await fs.unlink(tempTxt).catch(() => {});
+                    await cleanupTempFiles();
                     return { success: true, outputPath, message: `PDF created: ${outputPath}` };
                 } catch (e) { /* Try next method */ }
 
-                // Method 4: Fallback - create HTML file instead
+                // Method 4: Fallback - create HTML file instead (PDF converters not installed)
+                // Clean up any temp files before creating fallback
+                await cleanupTempFiles();
                 const htmlPath = outputPath.replace('.pdf', '.html');
                 const htmlContent = `<!DOCTYPE html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;margin:40px;line-height:1.6;}h1{color:#333;}ul{margin:20px 0;}li{margin:10px 0;}</style></head><body><h1>${title}</h1><div>${content.replace(/\n/g, '<br>')}</div><p style="margin-top:40px;color:#666;font-size:12px;">Generated by Koda</p></body></html>`;
                 await fs.writeFile(htmlPath, htmlContent, 'utf8');
                 return {
                     success: true,
                     outputPath: htmlPath,
-                    message: `PDF tools not available. Created HTML report instead: ${htmlPath}`,
+                    message: `Created HTML report (PDF converters not installed on system): ${htmlPath}`,
                     fallback: true
                 };
             }
@@ -4737,7 +4762,7 @@ function buildSkillResultsMessage(results) {
                 const path = result.outputPath || result.data?.outputPath || 'document.pdf';
                 const fallback = result.fallback || result.data?.fallback;
                 if (fallback) {
-                    message += `✓ PDF tools unavailable, created HTML report instead: ${path}\n`;
+                    message += `✓ Created HTML report (PDF converters not installed on system): ${path}\n`;
                 } else {
                     message += `✓ PDF created: ${path}\n`;
                 }
@@ -7042,11 +7067,11 @@ async function startShell() {
                         // Toggle websearch mode
                         websearchMode = !websearchMode;
                         const webStatus = websearchMode ? 'enabled' : 'disabled';
-                        const webIcon = websearchMode ? '🔍' : '○';
+                        const webIcon = websearchMode ? '[web]' : '[ ]';
                         const webColor = websearchMode ? 'green' : 'yellow';
                         addToHistory('system', `${webIcon} Web search ${colorize(webStatus, webColor)}`);
                         if (websearchMode) {
-                            addToHistory('system', colorize('  Queries will include live web results', 'dim'));
+                            addToHistory('system', colorize('Queries will include live web results', 'dim'));
                         }
                         displayChatHistory();
                         break;
