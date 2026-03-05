@@ -659,6 +659,28 @@ function formatSkillAction(skillName) {
     return actionMap[skillName] || `Using ${skillName.replace(/_/g, ' ')}`;
 }
 
+// Detect if user request is a simple file save/write that should skip web search
+function isFileSaveRequest(message) {
+    const lowerMsg = message.toLowerCase();
+
+    // Patterns that indicate saving previously generated content
+    const savePatterns = [
+        /\b(save|put|write|store|export)\b.*(that|this|it)\b.*(to|in|into)\b.*(a\s+)?(file|txt|text|document|report)/i,
+        /\b(go\s+ahead|please|can\s+you)\b.*(save|put|write|create)\b.*(file|txt|document)/i,
+        /\b(save|write)\b.*(that|it|this)\b/i,
+        /\b(create|make)\b.*(a\s+)?(file|txt|report)\b.*(with|from|using)\b.*(that|this|it|the\s+above)/i,
+        /\bput\s+(that|this|it)\s+in\s+a\s+file\b/i
+    ];
+
+    for (const pattern of savePatterns) {
+        if (pattern.test(message)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // Add message to chat history
 function addToHistory(role, content) {
     chatHistory.push({ role, content });
@@ -926,8 +948,12 @@ function displayChatHistory() {
                     log(`${colorize('You:', 'green')} ${msg.content}`);
                 }
             } else if (msg.role === 'assistant' || msg.role === 'assistant-streaming') {
-                const formattedContent = formatCodeBlocks(msg.content);
-                log(`${colorize('Koda:', 'cyan')} ${formattedContent}`);
+                // Clean any skill syntax before displaying
+                const cleanedContent = cleanSkillSyntax(msg.content);
+                if (cleanedContent) {
+                    const formattedContent = formatCodeBlocks(cleanedContent);
+                    log(`${colorize('Koda:', 'cyan')} ${formattedContent}`);
+                }
             } else if (msg.role === 'system') {
                 logDim(msg.content);
             }
@@ -1027,6 +1053,10 @@ function cleanSkillSyntax(text) {
         .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')
         // Remove partial/incomplete skill calls during streaming: [SKILL:... (no closing bracket)
         .replace(/\[SKILL:[^\]]*$/g, '')
+        // Remove variant formats with hyphen: [SKILL - ...] or [SKILL- ...]
+        .replace(/\[SKILL\s*-[^\]]*\]/g, '')
+        // Remove partial variant formats during streaming: [SKILL - ... (no closing bracket)
+        .replace(/\[SKILL\s*-[^\]]*$/g, '')
         // Remove JSON skill format: ```json { "skill": ... } ```
         .replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '')
         // Remove partial JSON skill blocks during streaming
@@ -5429,8 +5459,10 @@ async function handleCollabChat(api, message, selectedAgents) {
     displayChatHistory();
 
     // If websearch mode is enabled, perform search with content fetching
+    // Skip search for simple file save requests (use existing conversation context instead)
     let webSearchContext = '';
-    if (websearchMode) {
+    const skipSearch = isFileSaveRequest(message);
+    if (websearchMode && !skipSearch) {
         try {
             // Show animated web search indicator
             startAnimation('Searching the web', 'dots');
@@ -5660,8 +5692,10 @@ async function handleChat(api, message) {
     }
 
     // If websearch mode is enabled, perform search with content fetching
+    // Skip search for simple file save requests (use existing conversation context instead)
     let searchResults = null;
-    if (websearchMode) {
+    const skipSearchForFileSave = isFileSaveRequest(message);
+    if (websearchMode && !skipSearchForFileSave) {
         try {
             // Display chat history first to show user's message, then start animation
             displayChatHistory();
@@ -5785,10 +5819,13 @@ async function handleChat(api, message) {
     while (iteration < MAX_SKILL_ITERATIONS) {
         iteration++;
 
-        // Show animated thinking indicator for first iteration
+        // Show animated indicator for each iteration
+        displayChatHistory();
         if (iteration === 1) {
-            displayChatHistory();
             startAnimation(getRandomThinkingMessage(), 'dots');
+        } else {
+            // Show processing animation for retry iterations
+            startAnimation('Retrying with corrected syntax', 'dots');
         }
 
         // Use streaming API
@@ -5811,7 +5848,7 @@ async function handleChat(api, message) {
                 tokenCount++;
 
                 // Stop animation on first token and clear the line
-                if (!hasStoppedAnimation && iteration === 1) {
+                if (!hasStoppedAnimation) {
                     stopAnimation(true);
                     hasStoppedAnimation = true;
                 }
