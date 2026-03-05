@@ -5,7 +5,7 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 ENV PATH=/usr/local/bin:$PATH
 
-# Install system dependencies for Playwright Chromium
+# Install system dependencies for Playwright Chromium and Koda skills
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip jq \
     # Playwright Chromium dependencies
@@ -28,9 +28,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     fonts-liberation \
     fonts-noto-color-emoji \
+    # PDF generation tools (create_pdf, html_to_pdf, read_pdf skills)
+    wkhtmltopdf \
+    poppler-utils \
+    ghostscript \
+    enscript \
+    pandoc \
+    # Image processing tools (ocr_image, convert_image skills)
+    tesseract-ocr \
+    imagemagick \
+    # Database tools (sqlite_query, sqlite_list_tables skills)
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --break-system-packages --no-cache-dir huggingface-hub psutil
+# Install Python libraries for skills
+RUN pip3 install --break-system-packages --no-cache-dir \
+    huggingface-hub \
+    psutil \
+    # PDF generation (create_pdf skill)
+    reportlab \
+    # PDF reading (read_pdf skill)
+    PyPDF2 \
+    # HTML to PDF conversion (html_to_pdf skill)
+    weasyprint
 
 RUN npm install
 
