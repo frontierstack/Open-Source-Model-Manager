@@ -28,6 +28,15 @@ Starts all services in detached mode:
 - Webapp (port 3001)
 - Open WebUI (port 3002)
 - Base model containers (llamacpp, vllm)
+- **Auto-provisions Open WebUI** with external web search configuration
+
+**Auto-Provisioned Settings:**
+- External search URL pointing to webapp's search endpoint
+- RAG template with web search awareness
+- Query generation template for aggressive time-sensitive searches
+- Dynamic date/time injection in search results
+
+**Note:** Only the API key needs to be set manually in Open WebUI (Admin > Settings > Web Search).
 
 ### Stop Services
 
@@ -97,6 +106,32 @@ Quick rebuild of webapp only (faster than full rebuild):
 ```
 
 Rebuilds and restarts only the webapp service without affecting running models.
+
+### Open WebUI Search Provisioning
+
+The search provisioning script configures Open WebUI to use the webapp's external search endpoint:
+
+```bash
+# Run manually (normally runs automatically on start)
+./scripts/provision-openwebui-search.sh
+```
+
+**What it configures:**
+- External search engine URL: `http://host.docker.internal:3080/api/openwebui/search`
+- RAG template with knowledge priority guidance (web search vs training knowledge)
+- Query generation template that aggressively searches for time-sensitive queries
+- Result count: 5 results per search
+
+**Features:**
+- **Dynamic Date/Time**: Every search includes current date/time in results
+- **Smart Query Generation**: Automatically searches for date, time, news, current events
+- **Knowledge Priority**: Model knows when to use search vs built-in knowledge
+- **No Disclaimers**: Model won't claim it "can't search the web"
+
+**Manual API Key Setup:**
+After provisioning, set the API key in Open WebUI:
+1. Admin > Settings > Web Search
+2. Enter your API key (from webapp's API Keys tab)
 
 ---
 
