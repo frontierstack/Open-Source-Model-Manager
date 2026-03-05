@@ -967,8 +967,12 @@ function displayStatusBar() {
     // Mode indicator (display "agent collab" instead of "collab")
     const displayMode = currentMode === 'collab' ? 'agent collab' :
                        currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
-    const modeStr = websearchMode ? `${displayMode},websearch` : displayMode;
-    statusParts.push(colorize(`Mode: ${modeStr}`, 'cyan'));
+    statusParts.push(colorize(`Mode: ${displayMode}`, 'cyan'));
+
+    // Web search indicator - show prominently when enabled
+    if (websearchMode) {
+        statusParts.push(colorize('🔍 Web', 'green'));
+    }
 
     // Last usage with tokens/sec
     if (lastTokenUsage.total > 0) {
@@ -4360,31 +4364,24 @@ async function handleHelp() {
     addToHistory('system', '━━━ Available Commands ━━━');
     addToHistory('system', '');
     addToHistory('system', colorize('Setup & Configuration:', 'yellow'));
-    addToHistory('system', '/auth - Authenticate with API credentials');
-    addToHistory('system', '/init - Analyze project and create koda.md context file');
-    addToHistory('system', '/project <name> - Create a project directory structure');
-    addToHistory('system', '/cwd - Show current working directory');
+    addToHistory('system', '  /auth              Authenticate with API credentials');
+    addToHistory('system', '  /init              Analyze project and create koda.md context');
+    addToHistory('system', '  /project <name>    Create a project directory structure');
+    addToHistory('system', '  /cwd               Show current working directory');
     addToHistory('system', '');
-    addToHistory('system', colorize('Modes:', 'yellow'));
-    addToHistory('system', '/mode <standalone|agent|agent collab>[,websearch] - Switch between modes');
-    addToHistory('system', '  • standalone - General chat with autonomous tool execution');
-    addToHistory('system', '  • agent - Task-aware with autonomous skills');
-    addToHistory('system', '  • agent collab - Multi-agent collaboration with skill execution');
-    addToHistory('system', '  • websearch - Enable automatic web search (can be combined with any mode)');
-    addToHistory('system', '');
-    addToHistory('system', '  Examples:');
-    addToHistory('system', '    /mode standalone          - Chat mode with tools');
-    addToHistory('system', '    /mode standalone,websearch - Chat mode with web search');
-    addToHistory('system', '    /mode agent,websearch     - Agent mode with web search');
+    addToHistory('system', colorize('Mode & Search:', 'yellow'));
+    addToHistory('system', '  /mode <mode>       Switch mode (standalone, agent, agent collab)');
+    addToHistory('system', '  /web               Toggle web search on/off ' + (websearchMode ? colorize('(ON)', 'green') : colorize('(off)', 'dim')));
     addToHistory('system', '');
     addToHistory('system', colorize('Session Management:', 'yellow'));
-    addToHistory('system', '/clear - Clear chat history');
-    addToHistory('system', '/clearsession - Clear session context (keeps history visible)');
-    addToHistory('system', '/quit - Exit koda');
+    addToHistory('system', '  /clear             Clear chat history');
+    addToHistory('system', '  /clearsession      Clear session context (keeps history visible)');
+    addToHistory('system', '  /quit              Exit koda');
     addToHistory('system', '');
-    addToHistory('system', colorize('Note:', 'dim'));
-    addToHistory('system', colorize('Koda has automatic access to file operations, code analysis, refactoring,', 'dim'));
-    addToHistory('system', colorize('web search, and documentation tools. Just ask naturally!', 'dim'));
+    addToHistory('system', colorize('Tips:', 'cyan'));
+    addToHistory('system', colorize('  • Type / and press Tab to cycle through commands', 'dim'));
+    addToHistory('system', colorize('  • Commands show grayed suggestions as you type', 'dim'));
+    addToHistory('system', colorize('  • Koda has tools for files, code, web search - just ask!', 'dim'));
     displayChatHistory();
 }
 
@@ -6001,13 +5998,24 @@ async function startShell() {
     // Display initial screen
     displayChatHistory();
 
-    // Command autocomplete function
-    const availableCommands = ['/auth', '/init', '/project', '/cwd', '/mode', '/help', '/clear', '/clearsession', '/quit', '/exit'];
+    // Command definitions with descriptions for live suggestions
+    const commandDefs = [
+        { cmd: '/auth', desc: 'authenticate with API' },
+        { cmd: '/web', desc: 'toggle web search' },
+        { cmd: '/mode', desc: 'change mode' },
+        { cmd: '/init', desc: 'analyze project' },
+        { cmd: '/project', desc: 'create project' },
+        { cmd: '/cwd', desc: 'show directory' },
+        { cmd: '/help', desc: 'show commands' },
+        { cmd: '/clear', desc: 'clear history' },
+        { cmd: '/clearsession', desc: 'clear session' },
+        { cmd: '/quit', desc: 'exit koda' },
+        { cmd: '/exit', desc: 'exit koda' }
+    ];
+    const availableCommands = commandDefs.map(c => c.cmd);
     const modeOptions = ['standalone', 'agent', 'agent collab'];
 
     function completer(line) {
-        // Disable default completion display - return empty array
-        // We'll handle TAB manually
         return [[], line];
     }
 
@@ -6018,19 +6026,108 @@ async function startShell() {
         completer: completer
     });
 
-    // Tab cycling state
+    // Live suggestion state
+    let currentSuggestion = '';
+    let suggestionVisible = false;
     let tabCycleIndex = -1;
     let tabCycleOptions = [];
     let lastTabLine = '';
 
-    // Custom TAB key handler for cycling using readline's internal hook
-    const originalCompleter = rl.completer;
+    // Clear the inline suggestion from display
+    function clearSuggestion() {
+        if (suggestionVisible && currentSuggestion) {
+            // Move cursor forward past suggestion, then clear back
+            const len = currentSuggestion.length;
+            process.stdout.write('\x1b[' + len + 'C'); // Move right
+            process.stdout.write('\x1b[' + len + 'D'); // Move back
+            process.stdout.write('\x1b[K'); // Clear to end of line
+            suggestionVisible = false;
+            currentSuggestion = '';
+        }
+    }
 
-    // Override the internal _tabComplete to prevent display
+    // Show inline suggestion (grayed out text after cursor)
+    function showSuggestion(suggestion) {
+        clearSuggestion();
+        if (suggestion) {
+            currentSuggestion = suggestion;
+            suggestionVisible = true;
+            // Write suggestion in gray, then move cursor back
+            process.stdout.write(colors.gray + suggestion + colors.reset);
+            process.stdout.write('\x1b[' + suggestion.length + 'D'); // Move cursor back
+        }
+    }
+
+    // Get best command suggestion for current input
+    function getSuggestion(line) {
+        if (!line.startsWith('/')) return null;
+
+        const trimmed = line.trim();
+
+        // For just "/", show first command
+        if (trimmed === '/') {
+            return availableCommands[0].substring(1); // Return without the "/"
+        }
+
+        // For "/mode ", suggest mode options
+        if (trimmed === '/mode ' || trimmed === '/mode') {
+            if (trimmed === '/mode') return ' standalone';
+            return 'standalone';
+        }
+
+        // For partial mode options
+        if (trimmed.startsWith('/mode ')) {
+            const modeInput = trimmed.substring(6);
+            const match = modeOptions.find(m => m.startsWith(modeInput) && m !== modeInput);
+            if (match) return match.substring(modeInput.length);
+            return null;
+        }
+
+        // For partial commands
+        if (trimmed.length > 1) {
+            const matches = availableCommands.filter(cmd => cmd.startsWith(trimmed));
+            if (matches.length === 1 && matches[0] !== trimmed) {
+                return matches[0].substring(trimmed.length);
+            }
+            if (matches.length > 1) {
+                // Find common prefix
+                const first = matches[0];
+                let commonLen = trimmed.length;
+                for (let i = trimmed.length; i < first.length; i++) {
+                    if (matches.every(m => m[i] === first[i])) {
+                        commonLen++;
+                    } else {
+                        break;
+                    }
+                }
+                if (commonLen > trimmed.length) {
+                    return first.substring(trimmed.length, commonLen);
+                }
+            }
+        }
+        return null;
+    }
+
+    // Custom TAB handler - complete the suggestion or cycle options
     const originalTabComplete = rl._tabComplete.bind(rl);
     rl._tabComplete = function() {
         const currentLine = rl.line || '';
         const trimmed = currentLine.trim();
+
+        // If there's a visible suggestion, complete it
+        if (suggestionVisible && currentSuggestion) {
+            rl.line = currentLine + currentSuggestion;
+            rl.cursor = rl.line.length;
+            clearSuggestion();
+            rl._refreshLine();
+
+            // Show next suggestion if available
+            const nextSuggestion = getSuggestion(rl.line);
+            if (nextSuggestion) {
+                showSuggestion(nextSuggestion);
+            }
+            return;
+        }
 
         // Handle "/" - cycle through all commands
         if (trimmed === '/') {
@@ -6038,35 +6135,34 @@ async function startShell() {
                 tabCycleIndex = -1;
                 tabCycleOptions = availableCommands;
             }
-
             tabCycleIndex = (tabCycleIndex + 1) % tabCycleOptions.length;
-            const selected = tabCycleOptions[tabCycleIndex];
-
-            rl.line = selected;
-            rl.cursor = selected.length;
-            rl._refreshLine();
-            lastTabLine = selected;
-            return;
-        }
-
-        // Handle "/mode " - cycle through mode options
-        if (trimmed.startsWith('/mode ')) {
-            if (lastTabLine !== currentLine) {
-                tabCycleIndex = -1;
-                tabCycleOptions = modeOptions;
-            }
-
-            tabCycleIndex = (tabCycleIndex + 1) % tabCycleOptions.length;
-            const selected = tabCycleOptions[tabCycleIndex];
-
-            rl.line = `/mode ${selected}`;
+            rl.line = tabCycleOptions[tabCycleIndex];
             rl.cursor = rl.line.length;
             rl._refreshLine();
             lastTabLine = rl.line;
             return;
         }
 
-        // Handle partial commands
+        // Handle "/mode " - cycle through mode options
+        if (trimmed.startsWith('/mode ')) {
+            const modeInput = trimmed.substring(6);
+            const matches = modeOptions.filter(m => m.startsWith(modeInput));
+
+            if (matches.length > 0) {
+                if (lastTabLine !== currentLine) {
+                    tabCycleIndex = -1;
+                    tabCycleOptions = matches;
+                }
+                tabCycleIndex = (tabCycleIndex + 1) % tabCycleOptions.length;
+                rl.line = `/mode ${tabCycleOptions[tabCycleIndex]}`;
+                rl.cursor = rl.line.length;
+                rl._refreshLine();
+                lastTabLine = rl.line;
+            }
+            return;
+        }
+
+        // Handle partial commands - cycle through matches
         if (trimmed.startsWith('/') && trimmed.length > 1) {
             const hits = availableCommands.filter(cmd => cmd.startsWith(trimmed));
             if (hits.length === 1) {
@@ -6078,33 +6174,47 @@ async function startShell() {
                     tabCycleIndex = -1;
                     tabCycleOptions = hits;
                 }
-
                 tabCycleIndex = (tabCycleIndex + 1) % tabCycleOptions.length;
-                const selected = tabCycleOptions[tabCycleIndex];
-
-                rl.line = selected;
-                rl.cursor = selected.length;
+                rl.line = tabCycleOptions[tabCycleIndex];
+                rl.cursor = rl.line.length;
                 rl._refreshLine();
-                lastTabLine = selected;
+                lastTabLine = rl.line;
             }
             return;
         }
 
-        // Reset and use default for non-commands
+        // Reset for non-commands
         lastTabLine = '';
         tabCycleIndex = -1;
         tabCycleOptions = [];
     };
 
-    // Hook to reset cycle on regular input
+    // Hook into _ttyWrite to show live suggestions as user types
     const originalTtyWrite = rl._ttyWrite.bind(rl);
     rl._ttyWrite = function(s, key) {
+        // Reset tab cycle on non-tab keys
         if (key && key.name !== 'tab') {
             lastTabLine = '';
             tabCycleIndex = -1;
             tabCycleOptions = [];
         }
-        return originalTtyWrite(s, key);
+
+        // Clear existing suggestion before processing input
+        clearSuggestion();
+
+        // Call original handler
+        const result = originalTtyWrite(s, key);
+
+        // After input is processed, check if we should show a suggestion
+        const currentLine = rl.line || '';
+        if (currentLine.startsWith('/') && !key?.name?.match(/^(return|enter|escape|backspace)$/)) {
+            const suggestion = getSuggestion(currentLine);
+            if (suggestion) {
+                showSuggestion(suggestion);
+            }
+        }
+
+        return result;
     };
 
 
@@ -6210,6 +6320,21 @@ async function startShell() {
 
                     case '/mode':
                         await handleMode(api, args);
+                        break;
+
+                    case '/web':
+                    case '/websearch':
+                    case '/ws':
+                        // Toggle websearch mode
+                        websearchMode = !websearchMode;
+                        const webStatus = websearchMode ? 'enabled' : 'disabled';
+                        const webIcon = websearchMode ? '🔍' : '○';
+                        const webColor = websearchMode ? 'green' : 'yellow';
+                        addToHistory('system', `${webIcon} Web search ${colorize(webStatus, webColor)}`);
+                        if (websearchMode) {
+                            addToHistory('system', colorize('  Queries will include live web results', 'dim'));
+                        }
+                        displayChatHistory();
                         break;
 
                     case '/help':
