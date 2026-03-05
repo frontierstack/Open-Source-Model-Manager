@@ -472,6 +472,193 @@ function logInfo(message) {
     console.log(colorize('→ ', 'cyan') + message);
 }
 
+// ============================================================================
+// MODERN ANIMATION SYSTEM
+// ============================================================================
+
+// Spinner frames for different animation styles
+const spinnerFrames = {
+    dots: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+    pulse: ['◐', '◓', '◑', '◒'],
+    bounce: ['⠁', '⠂', '⠄', '⠂'],
+    arc: ['◜', '◠', '◝', '◞', '◡', '◟'],
+    box: ['▖', '▘', '▝', '▗'],
+    arrows: ['←', '↖', '↑', '↗', '→', '↘', '↓', '↙'],
+    line: ['|', '/', '-', '\\'],
+    circle: ['◴', '◷', '◶', '◵'],
+    brain: ['🧠', '💭', '💡', '✨']
+};
+
+// Thinking message variations for variety
+const thinkingMessages = [
+    'Thinking',
+    'Processing',
+    'Analyzing',
+    'Computing',
+    'Reasoning'
+];
+
+// Current animation state
+let activeAnimation = null;
+let animationInterval = null;
+let animationFrameIndex = 0;
+let animationStartTime = 0;
+
+// Start an animated spinner with a message
+function startAnimation(message, style = 'dots') {
+    stopAnimation(); // Stop any existing animation
+
+    const frames = spinnerFrames[style] || spinnerFrames.dots;
+    animationFrameIndex = 0;
+    animationStartTime = Date.now();
+
+    // Store the initial cursor position by saving the message line
+    activeAnimation = {
+        message,
+        frames,
+        style,
+        line: ''
+    };
+
+    // Write initial frame
+    const frame = frames[0];
+    activeAnimation.line = `${colorize(frame, 'cyan')} ${colorize(message, 'dim')}`;
+    process.stdout.write(activeAnimation.line);
+
+    // Start the animation interval
+    animationInterval = setInterval(() => {
+        if (!activeAnimation) return;
+
+        animationFrameIndex = (animationFrameIndex + 1) % frames.length;
+        const frame = frames[animationFrameIndex];
+        const elapsed = ((Date.now() - animationStartTime) / 1000).toFixed(1);
+
+        // Clear the current line and rewrite
+        process.stdout.write('\r\x1b[K'); // Clear line
+        activeAnimation.line = `${colorize(frame, 'cyan')} ${colorize(message, 'dim')} ${colorize(`(${elapsed}s)`, 'gray')}`;
+        process.stdout.write(activeAnimation.line);
+    }, 80);
+
+    return activeAnimation;
+}
+
+// Stop the current animation and clear the line
+function stopAnimation(clearLine = true) {
+    if (animationInterval) {
+        clearInterval(animationInterval);
+        animationInterval = null;
+    }
+    if (activeAnimation && clearLine) {
+        process.stdout.write('\r\x1b[K'); // Clear the animation line
+    }
+    activeAnimation = null;
+}
+
+// Update the animation message (for skill execution progress)
+function updateAnimationMessage(newMessage) {
+    if (!activeAnimation) return;
+
+    activeAnimation.message = newMessage;
+    const frame = activeAnimation.frames[animationFrameIndex];
+    const elapsed = ((Date.now() - animationStartTime) / 1000).toFixed(1);
+
+    process.stdout.write('\r\x1b[K');
+    activeAnimation.line = `${colorize(frame, 'cyan')} ${colorize(newMessage, 'dim')} ${colorize(`(${elapsed}s)`, 'gray')}`;
+    process.stdout.write(activeAnimation.line);
+}
+
+// Show a brief completion indicator
+function showCompletionFlash(message, success = true) {
+    const icon = success ? colorize('✓', 'green') : colorize('✗', 'red');
+    const color = success ? 'green' : 'red';
+    process.stdout.write(`\r\x1b[K${icon} ${colorize(message, 'dim')}\n`);
+}
+
+// Get a random thinking message for variety
+function getRandomThinkingMessage() {
+    return thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
+}
+
+// Format a skill name for display (e.g., create_file -> "Creating file")
+function formatSkillAction(skillName) {
+    const actionMap = {
+        'create_file': 'Creating file',
+        'read_file': 'Reading file',
+        'update_file': 'Updating file',
+        'delete_file': 'Deleting file',
+        'list_directory': 'Listing directory',
+        'create_directory': 'Creating directory',
+        'delete_directory': 'Deleting directory',
+        'move_file': 'Moving file',
+        'copy_file': 'Copying file',
+        'append_to_file': 'Appending to file',
+        'search_files': 'Searching files',
+        'tail_file': 'Reading file tail',
+        'head_file': 'Reading file head',
+        'diff_files': 'Comparing files',
+        'search_replace_file': 'Search & replace',
+        'download_file': 'Downloading file',
+        'get_file_metadata': 'Getting metadata',
+        'git_status': 'Checking git status',
+        'git_diff': 'Getting git diff',
+        'git_log': 'Reading git log',
+        'git_branch': 'Listing branches',
+        'system_info': 'Getting system info',
+        'disk_usage': 'Checking disk usage',
+        'list_processes': 'Listing processes',
+        'kill_process': 'Stopping process',
+        'start_process': 'Starting process',
+        'fetch_url': 'Fetching URL',
+        'http_request': 'HTTP request',
+        'dns_lookup': 'DNS lookup',
+        'check_port': 'Checking port',
+        'ping_host': 'Pinging host',
+        'curl_request': 'Making cURL request',
+        'base64_encode': 'Encoding base64',
+        'base64_decode': 'Decoding base64',
+        'hash_data': 'Computing hash',
+        'parse_json': 'Parsing JSON',
+        'parse_csv': 'Parsing CSV',
+        'compress_data': 'Compressing data',
+        'decompress_data': 'Decompressing data',
+        'zip_files': 'Creating zip archive',
+        'unzip_file': 'Extracting zip',
+        'tar_create': 'Creating tar archive',
+        'tar_extract': 'Extracting tar',
+        'extract_archive': 'Extracting archive',
+        'run_bash': 'Running bash command',
+        'run_python': 'Running Python',
+        'run_powershell': 'Running PowerShell',
+        'run_cmd': 'Running command',
+        'read_pdf': 'Reading PDF',
+        'create_pdf': 'Creating PDF',
+        'html_to_pdf': 'Converting to PDF',
+        'pdf_page_count': 'Counting PDF pages',
+        'sqlite_query': 'Querying database',
+        'sqlite_list_tables': 'Listing tables',
+        'ocr_image': 'Reading image text',
+        'screenshot': 'Taking screenshot',
+        'convert_image': 'Converting image',
+        'clipboard_read': 'Reading clipboard',
+        'clipboard_write': 'Writing clipboard',
+        'web_search': 'Searching the web',
+        'playwright_fetch': 'Fetching page',
+        'playwright_interact': 'Interacting with page',
+        'read_email_file': 'Reading email',
+        'get_env_var': 'Getting env variable',
+        'set_env_var': 'Setting env variable',
+        'which_command': 'Locating command',
+        'get_uptime': 'Getting uptime',
+        'list_ports': 'Listing ports',
+        'list_services': 'Listing services',
+        'generate_uuid': 'Generating UUID',
+        'get_timestamp': 'Getting timestamp',
+        'find_patterns': 'Finding patterns',
+        'analyze_code': 'Analyzing code'
+    };
+    return actionMap[skillName] || `Using ${skillName.replace(/_/g, ' ')}`;
+}
+
 // Add message to chat history
 function addToHistory(role, content) {
     chatHistory.push({ role, content });
@@ -3606,7 +3793,34 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
     const fileModifyingSkills = ['create_file', 'update_file'];
 
+    // Fetch enabled skills from API to verify before execution
+    let enabledSkillNames = new Set();
+    try {
+        const skillsResult = await api.getSkills();
+        if (skillsResult.success && skillsResult.data) {
+            enabledSkillNames = new Set(
+                skillsResult.data
+                    .filter(s => s.enabled)
+                    .map(s => s.name)
+            );
+        }
+    } catch (error) {
+        // If we can't fetch skills, allow execution (fail open for client-side)
+        enabledSkillNames = null;
+    }
+
     for (const call of skillCalls) {
+        // Check if skill is enabled before execution
+        if (enabledSkillNames && !enabledSkillNames.has(call.skillName)) {
+            results.push({
+                skill: call.skillName,
+                success: false,
+                error: `Skill '${call.skillName}' is disabled`
+            });
+            showCompletionFlash(`${call.skillName} is disabled`, false);
+            continue;
+        }
+
         // Check if this is a file-modifying skill that needs diff preview
         const needsDiffPreview = fileModifyingSkills.includes(call.skillName) && call.params.filePath;
 
@@ -3658,8 +3872,9 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             // If 'yes', continue with execution below
         }
 
-        addToHistory('system', `Executing skill: ${call.skillName}...`);
-        displayChatHistory();
+        // Start user-friendly skill animation (compact, not verbose)
+        const skillAction = formatSkillAction(call.skillName);
+        startAnimation(skillAction, 'dots');
 
         let result;
 
@@ -3721,6 +3936,9 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             result = { success: false, error: `Unknown skill: ${call.skillName}. All skills must execute client-side.` };
         }
 
+        // Stop the skill animation
+        stopAnimation(true);
+
         if (result.success) {
             results.push({
                 skill: call.skillName,
@@ -3728,129 +3946,56 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 result: result.data || result
             });
 
-            // Enhanced messages for file operations
+            // Show compact completion flash instead of verbose messages
+            let completionMsg = skillAction;
+
+            // Add brief context for file operations
             if (call.skillName === 'create_file' && (result.data?.filePath || result.filePath)) {
                 const filePath = result.data?.filePath || result.filePath;
                 const relativePath = filePath.replace(userWorkingDirectory, '.');
-                addToHistory('system', `✓ File created: ${colorize(relativePath, 'green')}`);
-
-                // Auto-add to working set
+                completionMsg = `Created ${relativePath}`;
                 addToWorkingSet(filePath, call.params.content);
             } else if (call.skillName === 'read_file') {
-                addToHistory('system', `✓ File read successfully`);
-
-                // Auto-add to working set if not already there
                 const filePath = result.data?.filePath || result.filePath || call.params.filePath;
                 const content = result.data?.content || result.content;
+                const relativePath = (filePath || '').replace(userWorkingDirectory, '.');
+                completionMsg = `Read ${relativePath}`;
                 if (filePath && content) {
                     addToWorkingSet(filePath, content);
                 }
             } else if (call.skillName === 'update_file' && (result.data?.filePath || result.filePath)) {
                 const filePath = result.data?.filePath || result.filePath;
                 const relativePath = filePath.replace(userWorkingDirectory, '.');
-                addToHistory('system', `✓ File updated: ${colorize(relativePath, 'green')}`);
-
-                // Auto-add to working set (refresh content)
+                completionMsg = `Updated ${relativePath}`;
                 addToWorkingSet(filePath);
             } else if (call.skillName === 'delete_file' && (result.data?.filePath || result.filePath)) {
                 const filePath = result.data?.filePath || result.filePath;
                 const relativePath = filePath.replace(userWorkingDirectory, '.');
-                addToHistory('system', `✓ File deleted: ${colorize(relativePath, 'green')}`);
-            } else if (call.skillName === 'delete_directory' && (result.data?.dirPath || result.dirPath)) {
-                const dirPath = result.data?.dirPath || result.dirPath;
-                const relativePath = dirPath.replace(userWorkingDirectory, '.');
-                addToHistory('system', `✓ Directory deleted: ${colorize(relativePath, 'green')}`);
-            } else if (call.skillName === 'list_directory') {
-                addToHistory('system', `✓ Directory listed successfully`);
-            } else if (call.skillName === 'move_file' && (result.data?.newPath || result.newPath)) {
-                const newPath = result.data?.newPath || result.newPath;
-                const relativePath = newPath.replace(userWorkingDirectory, '.');
-                addToHistory('system', `✓ File moved to: ${colorize(relativePath, 'green')}`);
-            } else if (call.skillName === 'list_processes') {
-                const count = result.data?.count || result.count || 0;
-                const platform = result.data?.platform || result.platform || os.platform();
-                addToHistory('system', `✓ Listed ${colorize(count.toString(), 'cyan')} processes on ${platform}`);
-            } else if (call.skillName === 'kill_process') {
-                const killed = result.data?.killed || result.killed || [];
-                if (killed.length > 0) {
-                    const desc = killed.map(k => k.pid ? `PID ${k.pid}` : k.name).join(', ');
-                    addToHistory('system', `✓ Killed process: ${colorize(desc, 'yellow')}`);
-                } else {
-                    addToHistory('system', `✓ kill_process completed`);
-                }
-            } else if (call.skillName === 'start_process') {
-                const pid = result.data?.pid || result.pid;
-                const command = result.data?.command || result.command || '';
-                addToHistory('system', `✓ Started process: ${colorize(command, 'cyan')} (PID: ${pid})`);
-            } else if (call.skillName === 'system_info') {
-                const platform = result.data?.platform || result.platform || os.platform();
-                const memPercent = result.data?.memory?.percent || result.memory?.percent || 0;
-                addToHistory('system', `✓ System info: ${colorize(platform, 'cyan')} - Memory: ${memPercent}% used`);
-            } else if (call.skillName === 'disk_usage') {
-                const path = result.data?.path || result.path || '/';
-                const percent = result.data?.percent || result.percent || 0;
-                addToHistory('system', `✓ Disk usage for ${colorize(path, 'cyan')}: ${percent}% used`);
-            } else if (call.skillName === 'get_uptime') {
-                const formatted = result.data?.uptime_formatted || result.uptime_formatted || '';
-                addToHistory('system', `✓ System uptime: ${colorize(formatted, 'cyan')}`);
-            } else if (call.skillName === 'list_ports') {
-                const count = result.data?.count || result.count || 0;
-                addToHistory('system', `✓ Listed ${colorize(count.toString(), 'cyan')} open ports`);
-            } else if (call.skillName === 'list_services') {
-                const count = result.data?.count || result.count || 0;
-                addToHistory('system', `✓ Listed ${colorize(count.toString(), 'cyan')} services`);
-            } else if (call.skillName === 'git_status') {
-                const branch = result.data?.branch || result.branch || 'unknown';
-                const clean = result.data?.clean || result.clean;
-                const status = clean ? 'clean' : 'has changes';
-                addToHistory('system', `✓ Git status: branch ${colorize(branch, 'cyan')} (${status})`);
-            } else if (call.skillName === 'git_diff') {
-                const hasChanges = result.data?.hasChanges || result.hasChanges;
-                addToHistory('system', `✓ Git diff: ${hasChanges ? 'changes found' : 'no changes'}`);
-            } else if (call.skillName === 'git_log') {
-                const count = result.data?.count || result.count || 0;
-                addToHistory('system', `✓ Git log: ${colorize(count.toString(), 'cyan')} commits`);
-            } else if (call.skillName === 'git_branch') {
-                const current = result.data?.current || result.current || '';
-                const count = result.data?.branches?.length || result.branches?.length || 0;
-                addToHistory('system', `✓ Git branches: ${colorize(current, 'cyan')} (${count} total)`);
-            } else if (call.skillName === 'get_env_var') {
-                const name = result.data?.name || result.name || '';
-                const exists = result.data?.exists || result.exists;
-                addToHistory('system', `✓ Env var ${colorize(name, 'cyan')}: ${exists ? 'found' : 'not set'}`);
-            } else if (call.skillName === 'set_env_var') {
-                const name = result.data?.name || result.name || '';
-                addToHistory('system', `✓ Set env var: ${colorize(name, 'cyan')}`);
-            } else if (call.skillName === 'which_command') {
-                const command = result.data?.command || result.command || '';
-                const found = result.data?.found || result.found;
-                addToHistory('system', `✓ which ${colorize(command, 'cyan')}: ${found ? result.path || result.data?.path : 'not found'}`);
-            } else if (call.skillName === 'playwright_fetch') {
-                const urlCount = call.params.urls ? call.params.urls.length : 1;
-                const engine = result.data?.engine || result.engine || 'playwright';
-                addToHistory('system', `✓ Fetched ${colorize(urlCount.toString(), 'cyan')} URL(s) via ${engine}`);
-            } else if (call.skillName === 'playwright_interact') {
-                const actionCount = call.params.actions ? call.params.actions.length : 0;
-                addToHistory('system', `✓ Interacted with page (${colorize(actionCount.toString(), 'cyan')} actions)`);
+                completionMsg = `Deleted ${relativePath}`;
             } else if (call.skillName === 'web_search') {
-                const query = call.params.query || '';
                 const count = result.data?.count || result.count || 0;
-                const contentCount = result.data?.contentFetchedCount || result.contentFetchedCount || 0;
-                addToHistory('system', `✓ Web search: ${colorize(count.toString(), 'cyan')} results (${contentCount} with content)`);
-            } else {
-                addToHistory('system', `✓ ${call.skillName} completed successfully`);
+                completionMsg = `Found ${count} results`;
+            } else if (call.skillName === 'git_status') {
+                const branch = result.data?.branch || result.branch || '';
+                completionMsg = `Git: ${branch}`;
+            } else if (call.skillName === 'base64_encode' || call.skillName === 'base64_decode') {
+                completionMsg = skillAction;
             }
+
+            // Show compact completion indicator
+            showCompletionFlash(completionMsg, true);
         } else {
             results.push({
                 skill: call.skillName,
                 success: false,
                 error: result.error
             });
-            addToHistory('system', `✗ ${call.skillName} failed: ${result.error}`);
+            // Show error flash
+            showCompletionFlash(`${skillAction}: ${result.error}`, false);
         }
     }
 
-    displayChatHistory();
+    // Only do a full display refresh at the end of all skills
     return results;
 }
 
@@ -5284,20 +5429,20 @@ async function handleCollabChat(api, message, selectedAgents) {
     collabContext.push({ role: 'user', content: message });
 
     // Show "thinking" indicator
-    addToHistory('system', `Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
     displayChatHistory();
 
     // If websearch mode is enabled, perform search with content fetching
     let webSearchContext = '';
     if (websearchMode) {
         try {
-            // Update indicator
-            chatHistory.pop();
-            addToHistory('system', colorize('Searching the web...', 'yellow'));
-            displayChatHistory();
+            // Show animated web search indicator
+            startAnimation('Searching the web', 'dots');
 
             // Search with content fetching enabled (8 results, fetch content from top 5)
             const searchResponse = await api.webSearch(message, 8, true, 5);
+
+            // Stop animation
+            stopAnimation(true);
 
             if (!searchResponse.success) {
                 throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
@@ -5330,20 +5475,20 @@ async function handleCollabChat(api, message, selectedAgents) {
                 webSearchContext += '=== END OF SEARCH RESULTS ===\n';
                 webSearchContext += `IMPORTANT: Use the actual page content above to answer questions. Cite sources by number.\n`;
 
-                // Update indicator
-                chatHistory.pop();
-                addToHistory('system', `${colorize(`Found ${searchResults.length} results (${contentCount} with content)`, 'green')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+                // Show success flash
+                showCompletionFlash(`Found ${searchResults.length} results (${contentCount} with content)`, true);
+                addToHistory('system', `Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}`);
                 displayChatHistory();
             } else {
-                chatHistory.pop();
                 const noResultsMsg = searchResponse.data && searchResponse.data.results
                     ? 'No search results found'
                     : 'Search returned empty response';
-                addToHistory('system', `${colorize(noResultsMsg, 'yellow')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
+                showCompletionFlash(noResultsMsg, false);
+                addToHistory('system', `Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}`);
                 displayChatHistory();
             }
         } catch (error) {
-            chatHistory.pop();
+            stopAnimation(true);
 
             // Handle improved error responses from backend
             let errorMsg = 'Web search failed';
@@ -5387,13 +5532,9 @@ async function handleCollabChat(api, message, selectedAgents) {
         `${msg.role === 'user' ? 'User' : msg.agent || 'Assistant'}: ${msg.content}`
     ).join('\n\n');
 
-    // Remove "thinking" indicator
-    chatHistory.pop();
-
     // Coordinate agents - each agent contributes to the solution with skill execution
     for (const agent of selectedAgents) {
         addToHistory('system', `━━━ ${agent.name} ━━━`);
-        addToHistory('system', 'Thinking...');
         displayChatHistory();
 
         // Get agent-specific skills (filter by agent's assigned skills if any)
@@ -5416,13 +5557,16 @@ async function handleCollabChat(api, message, selectedAgents) {
         while (iteration < MAX_SKILL_ITERATIONS) {
             iteration++;
 
+            // Start animated thinking indicator
+            if (iteration === 1) {
+                startAnimation(`${agent.name} thinking`, 'dots');
+            }
+
             // Use the agent's assigned model
             const result = await api.chat(currentPrompt, agent.modelName);
 
-            // Remove "thinking" indicator on first iteration
-            if (iteration === 1) {
-                chatHistory.pop();
-            }
+            // Stop animation after response
+            stopAnimation(true);
 
             if (!result.success) {
                 addToHistory('system', `Error from ${agent.name}: ${result.error}`);
@@ -5466,9 +5610,8 @@ async function handleCollabChat(api, message, selectedAgents) {
             // Continue the conversation with skill results
             currentPrompt = basePrompt + '\n\nYour previous response: ' + response + feedbackMessage;
 
-            // Show thinking again for next iteration
-            addToHistory('system', `${agent.name} processing results...`);
-            displayChatHistory();
+            // Show animated processing indicator for next iteration
+            startAnimation(`${agent.name} processing`, 'dots');
         }
 
         if (iteration >= MAX_SKILL_ITERATIONS) {
@@ -5523,11 +5666,15 @@ async function handleChat(api, message) {
     let searchResults = null;
     if (websearchMode) {
         try {
-            addToHistory('system', colorize('Searching the web...', 'yellow'));
+            // Display chat history first to show user's message, then start animation
             displayChatHistory();
+            startAnimation('Searching the web', 'dots');
 
             // Search with content fetching enabled (8 results, fetch content from top 5)
             const searchResponse = await api.webSearch(message, 8, true, 5);
+
+            // Stop animation
+            stopAnimation(true);
 
             if (!searchResponse.success) {
                 throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
@@ -5567,17 +5714,18 @@ async function handleChat(api, message) {
 4. If asked to create a file with summaries, use the content above to write real summaries
 5. Do NOT say you cannot access web content - the content IS provided above\n\n`;
 
-                // Show results to user
-                addToHistory('system', colorize(`Found ${searchResults.length} results (${contentCount} with content)`, 'green'));
-                displayChatHistory();
+                // Show compact results flash
+                showCompletionFlash(`Found ${searchResults.length} results (${contentCount} with content)`, true);
             } else {
                 const noResultsMsg = searchResponse.data && searchResponse.data.results
                     ? 'No search results found'
                     : 'Search returned empty response';
-                addToHistory('system', colorize(noResultsMsg, 'yellow'));
-                displayChatHistory();
+                showCompletionFlash(noResultsMsg, false);
             }
         } catch (error) {
+            // Stop animation on error
+            stopAnimation(true);
+
             // Handle improved error responses from backend
             let errorMsg = 'Web search failed';
             if (error.response?.data?.error) {
@@ -5586,14 +5734,12 @@ async function handleChat(api, message) {
                 errorMsg = error.message;
             }
 
-            addToHistory('system', colorize(errorMsg, 'red'));
+            showCompletionFlash(errorMsg, false);
 
             // Show retry suggestion if error is retryable
             if (error.response?.data?.retryable) {
-                addToHistory('system', colorize('Try again in a few seconds', 'yellow'));
+                process.stdout.write(colorize('  Try again in a few seconds\n', 'yellow'));
             }
-
-            displayChatHistory();
         }
     }
 
@@ -5642,16 +5788,16 @@ async function handleChat(api, message) {
     while (iteration < MAX_SKILL_ITERATIONS) {
         iteration++;
 
-        // Show streaming indicator for first iteration
+        // Show animated thinking indicator for first iteration
         if (iteration === 1) {
-            addToHistory('system', 'Koda is thinking...');
             displayChatHistory();
+            startAnimation(getRandomThinkingMessage(), 'dots');
         }
 
         // Use streaming API
         let streamingResponse = '';
         let tokenCount = 0;
-        let hasRemovedThinkingIndicator = false;
+        let hasStoppedAnimation = false;
 
         // Enable streaming mode to prevent flickering
         isStreaming = true;
@@ -5667,11 +5813,10 @@ async function handleChat(api, message) {
                 streamingResponse += token;
                 tokenCount++;
 
-                // Remove thinking indicator on first token
-                if (!hasRemovedThinkingIndicator && iteration === 1 && chatHistory.length > 0 &&
-                    chatHistory[chatHistory.length - 1].role === 'system') {
-                    chatHistory.pop();
-                    hasRemovedThinkingIndicator = true;
+                // Stop animation on first token and clear the line
+                if (!hasStoppedAnimation && iteration === 1) {
+                    stopAnimation(true);
+                    hasStoppedAnimation = true;
                 }
 
                 // Update or add assistant message in history
@@ -5809,9 +5954,7 @@ async function handleChat(api, message) {
         // Continue the conversation with skill results
         currentMessage = contextMessage + '\n\nPrevious response: ' + response + feedbackMessage;
 
-        // Show thinking again for next iteration
-        addToHistory('system', 'Processing skill results...');
-        displayChatHistory();
+        // Show animated processing indicator for next iteration (animation starts before next API call)
     }
 
     if (iteration >= MAX_SKILL_ITERATIONS) {
