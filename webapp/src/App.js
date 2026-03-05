@@ -5917,6 +5917,167 @@ You are a helpful coding assistant. When writing code, always include comments e
                                     </AccordionDetails>
                                 </Accordion>
 
+                                {/* Koda CLI Commands */}
+                                <Accordion>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                            <TerminalIcon color="primary" />
+                                            <Typography variant="h6">Koda CLI Commands</Typography>
+                                        </Box>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                        {/* Installation */}
+                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
+                                                Installation
+                                            </Typography>
+                                            <Typography variant="body2" sx={{ mb: 1 }}>
+                                                The installer automatically handles PATH setup for Linux, macOS, and Windows. If PATH setup fails, you'll receive manual instructions.
+                                            </Typography>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.3)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', mb: 1 }}>
+                                                <strong>Linux/macOS:</strong> curl -sk {baseUrl}/api/cli/install | bash<br/>
+                                                <strong>Windows (PowerShell):</strong> iwr -useb {baseUrl}/api/cli/install.ps1 | iex
+                                            </Box>
+                                        </Box>
+
+                                        {/* Core Commands */}
+                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
+                                            Core Commands
+                                        </Typography>
+                                        <TableContainer sx={{ mb: 3 }}>
+                                            <Table size="small">
+                                                <TableHead>
+                                                    <TableRow>
+                                                        <TableCell><strong>Command</strong></TableCell>
+                                                        <TableCell><strong>Description</strong></TableCell>
+                                                    </TableRow>
+                                                </TableHead>
+                                                <TableBody>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/auth</TableCell>
+                                                        <TableCell>Authenticate with API credentials from the API Keys tab</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/init</TableCell>
+                                                        <TableCell>Analyze project and create koda.md configuration file</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/project &lt;name&gt;</TableCell>
+                                                        <TableCell>Create a new project directory structure</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/cwd</TableCell>
+                                                        <TableCell>Show current working directory</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/clear</TableCell>
+                                                        <TableCell>Clear chat history</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/clearsession</TableCell>
+                                                        <TableCell>Clear context but keep history visible</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/help</TableCell>
+                                                        <TableCell>Show all available commands</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/quit</TableCell>
+                                                        <TableCell>Exit Koda CLI</TableCell>
+                                                    </TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </TableContainer>
+
+                                        {/* Mode Commands */}
+                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
+                                            Mode Selection
+                                        </Typography>
+                                        <TableContainer sx={{ mb: 3 }}>
+                                            <Table size="small">
+                                                <TableHead>
+                                                    <TableRow>
+                                                        <TableCell><strong>Command</strong></TableCell>
+                                                        <TableCell><strong>Description</strong></TableCell>
+                                                    </TableRow>
+                                                </TableHead>
+                                                <TableBody>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode standalone</TableCell>
+                                                        <TableCell>Direct chat with AI (default mode)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode agent</TableCell>
+                                                        <TableCell>Agent-specific context mode for task-aware interactions</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode agent collab</TableCell>
+                                                        <TableCell>Multi-agent collaboration mode</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode standalone,websearch</TableCell>
+                                                        <TableCell>Chat mode with web search enabled</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode agent,websearch</TableCell>
+                                                        <TableCell>Agent mode with web search enabled</TableCell>
+                                                    </TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </TableContainer>
+
+                                        {/* Web Search Toggle */}
+                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(167, 139, 250, 0.1)', borderRadius: 1, border: '1px solid rgba(167, 139, 250, 0.3)' }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
+                                                Web Search Toggle
+                                            </Typography>
+                                            <Typography variant="body2" sx={{ mb: 2 }}>
+                                                The <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/web</code> command toggles web search on or off. Each call switches the state.
+                                            </Typography>
+                                            <TableContainer>
+                                                <Table size="small">
+                                                    <TableHead>
+                                                        <TableRow>
+                                                            <TableCell><strong>Command</strong></TableCell>
+                                                            <TableCell><strong>Effect</strong></TableCell>
+                                                        </TableRow>
+                                                    </TableHead>
+                                                    <TableBody>
+                                                        <TableRow>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/web</TableCell>
+                                                            <TableCell>Toggle web search on/off (switches current state)</TableCell>
+                                                        </TableRow>
+                                                        <TableRow>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/websearch</TableCell>
+                                                            <TableCell>Alias for /web</TableCell>
+                                                        </TableRow>
+                                                        <TableRow>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/ws</TableCell>
+                                                            <TableCell>Short alias for /web</TableCell>
+                                                        </TableRow>
+                                                    </TableBody>
+                                                </Table>
+                                            </TableContainer>
+                                            <Typography variant="body2" sx={{ mt: 2, fontSize: '0.8rem', fontStyle: 'italic' }}>
+                                                <strong>To enable:</strong> Run <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/web</code> when web search is OFF. Status bar will show "Web Search: ON".<br/>
+                                                <strong>To disable:</strong> Run <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/web</code> when web search is ON. Status bar will show "Web Search: OFF".
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Features */}
+                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
+                                            Features
+                                        </Typography>
+                                        <Box sx={{ pl: 2, mb: 2 }}>
+                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Live Command Completion:</strong> Type <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/</code> to see inline suggestions, press Tab to complete</Typography>
+                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Autonomous Skill Execution:</strong> AI executes skills directly (create files, read files, git operations, etc.)</Typography>
+                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Animated UI:</strong> Modern spinners for thinking/waiting states</Typography>
+                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Context Tracking:</strong> Color-coded warnings when approaching context limits</Typography>
+                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Multi-line Paste:</strong> Automatically detects multi-line pastes and displays in a bordered box</Typography>
+                                        </Box>
+                                    </AccordionDetails>
+                                </Accordion>
+
                                 {/* Configuration Flags */}
                                 <Accordion>
                                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -6025,6 +6186,12 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         <TableCell>0.0</TableCell>
                                                         <TableCell>{LLAMACPP_TOOLTIPS.frequencyPenalty}</TableCell>
                                                     </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>disableThinking</TableCell>
+                                                        <TableCell>boolean</TableCell>
+                                                        <TableCell>false</TableCell>
+                                                        <TableCell>{LLAMACPP_TOOLTIPS.disableThinking}</TableCell>
+                                                    </TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -6097,6 +6264,12 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         <TableCell>boolean</TableCell>
                                                         <TableCell>false</TableCell>
                                                         <TableCell>{SETTINGS_TOOLTIPS.enforceEager}</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>disableThinking</TableCell>
+                                                        <TableCell>boolean</TableCell>
+                                                        <TableCell>false</TableCell>
+                                                        <TableCell>{SETTINGS_TOOLTIPS.disableThinking}</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>

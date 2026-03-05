@@ -117,42 +117,75 @@ Write-Host "The CLI has been installed to: $InstallDir" -ForegroundColor Green
 Write-Host ""
 
 # Check if install directory is in PATH and auto-add if needed
-$currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($currentPath -notlike "*$InstallDir*") {
-    Write-Host ">>> Adding $InstallDir to PATH..." -ForegroundColor Yellow
+$PathSetupSuccess = $false
+try {
+    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($currentPath -notlike "*$InstallDir*") {
+        Write-Host ">>> Adding $InstallDir to PATH..." -ForegroundColor Yellow
 
-    try {
-        # Add to user PATH (no admin required)
-        $newPath = $currentPath + ";$InstallDir"
-        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+        try {
+            # Add to user PATH (no admin required)
+            $newPath = $currentPath + ";$InstallDir"
+            [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
 
-        # Update current session PATH
-        $env:Path = $newPath
+            # Update current session PATH
+            $env:Path = $newPath
 
-        Write-Host "✓ Added to PATH successfully" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "Note: You may need to restart PowerShell for the change to take effect." -ForegroundColor Yellow
-        Write-Host ""
-    } catch {
-        Write-Host "Could not automatically add to PATH: $_" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Please manually add $InstallDir to your PATH:" -ForegroundColor Yellow
-        Write-Host "  1. Open System Properties > Environment Variables" -ForegroundColor White
-        Write-Host "  2. Edit the 'Path' variable under User variables" -ForegroundColor White
-        Write-Host "  3. Add: $InstallDir" -ForegroundColor White
+            Write-Host "✓ Added to PATH successfully" -ForegroundColor Green
+            $PathSetupSuccess = $true
+            Write-Host ""
+            Write-Host "Note: You may need to restart PowerShell for the change to take effect." -ForegroundColor Yellow
+            Write-Host ""
+        } catch {
+            Write-Host "⚠️  Could not automatically add to PATH: $_" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "✓ PATH is already configured correctly" -ForegroundColor Green
+        $PathSetupSuccess = $true
         Write-Host ""
     }
-} else {
-    Write-Host "✓ PATH is already configured correctly" -ForegroundColor Green
+} catch {
+    Write-Host "⚠️  Could not check PATH configuration: $_" -ForegroundColor Yellow
+}
+
+# Show manual instructions if PATH setup failed
+if (-not $PathSetupSuccess) {
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Yellow
+    Write-Host "  Manual PATH Setup Required"              -ForegroundColor Yellow
+    Write-Host "==========================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Koda was installed successfully, but PATH could not be configured automatically." -ForegroundColor White
+    Write-Host ""
+    Write-Host "Please add $InstallDir to your PATH manually:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Option 1 - GUI:" -ForegroundColor Cyan
+    Write-Host "    1. Press Win+R, type 'sysdm.cpl' and press Enter" -ForegroundColor White
+    Write-Host "    2. Click 'Advanced' tab > 'Environment Variables'" -ForegroundColor White
+    Write-Host "    3. Under 'User variables', select 'Path' and click 'Edit'" -ForegroundColor White
+    Write-Host "    4. Click 'New' and add: $InstallDir" -ForegroundColor White
+    Write-Host "    5. Click OK on all dialogs" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Option 2 - PowerShell (run as Administrator):" -ForegroundColor Cyan
+    Write-Host "    `$path = [Environment]::GetEnvironmentVariable('Path', 'User')" -ForegroundColor White
+    Write-Host "    [Environment]::SetEnvironmentVariable('Path', `"`$path;$InstallDir`", 'User')" -ForegroundColor White
+    Write-Host ""
+    Write-Host "After adding, restart PowerShell to apply the changes." -ForegroundColor Yellow
     Write-Host ""
 }
 
 Write-Host "To get started:" -ForegroundColor Cyan
-Write-Host "  1. Restart PowerShell (if needed)" -ForegroundColor White
-Write-Host "  2. Run: koda" -ForegroundColor White
-Write-Host "  3. Authenticate: /auth" -ForegroundColor White
-Write-Host "  4. Analyze project: /init" -ForegroundColor White
-Write-Host "  5. Get help: /help" -ForegroundColor White
+if ($PathSetupSuccess) {
+    Write-Host "  1. Restart PowerShell (if needed)" -ForegroundColor White
+    Write-Host "  2. Run: koda" -ForegroundColor White
+} else {
+    Write-Host "  1. Complete PATH setup (see instructions above)" -ForegroundColor White
+    Write-Host "  2. Restart PowerShell" -ForegroundColor White
+    Write-Host "  3. Run: koda" -ForegroundColor White
+}
+Write-Host "  - Authenticate: /auth" -ForegroundColor White
+Write-Host "  - Analyze project: /init" -ForegroundColor White
+Write-Host "  - Get help: /help" -ForegroundColor White
 Write-Host ""
 Write-Host "You'll need API credentials from $ApiBaseUrl (API Keys tab)" -ForegroundColor Yellow
 Write-Host ""
