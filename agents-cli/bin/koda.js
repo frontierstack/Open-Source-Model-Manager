@@ -2159,7 +2159,11 @@ function detectFalseCompletionClaim(response, userMessage) {
         /\bcreate\b.*\b(file|folder|directory)\b/i,
         /\bmove\b.*\b(file|folder|directory)\b/i,
         /\brename\b.*\b(file|folder|directory)\b/i,
-        /\bcopy\b.*\b(file|folder|directory)\b/i
+        /\bcopy\b.*\b(file|folder|directory)\b/i,
+        // PDF-related requests
+        /\b(put|save|write|convert|export)\b.*\b(into|to|as)\b.*\bpdf\b/i,
+        /\b(create|generate|make)\b.*\bpdf\b/i,
+        /\bpdf\b.*\b(report|file|document)\b/i
     ];
 
     const userRequestedFileOp = fileOperationRequests.some(pattern => pattern.test(messageLower));
@@ -2172,7 +2176,12 @@ function detectFalseCompletionClaim(response, userMessage) {
         /\b(deleted|removed|erased|cleared|created|moved|renamed|copied)\s+successfully\b/i,
         /\ball\s+(files|folders|directories|items)\b.*\b(deleted|removed|cleared)\b/i,
         /\b(done|completed|finished)\b.*\b(delet|remov|eras|clear|creat|mov|renam|cop)/i,
-        /\bI('ve|\s+have)\s+(deleted|removed|created|moved|renamed|copied)\b/i
+        /\bI('ve|\s+have)\s+(deleted|removed|created|moved|renamed|copied)\b/i,
+        // PDF-related completion claims
+        /\b(I('ve|\s+have)\s+)?(generated|created|saved|written)\b.*\bpdf\b/i,
+        /\bpdf\b.*\b(generated|created|saved|written)\b/i,
+        /\bsaved\s+(at|to|in)\s+[`'"]?[^\s]*\.pdf/i,
+        /\bpdf\s+(report|file|document)\b.*\b(created|generated|saved)\b/i
     ];
 
     const aiClaimsCompletion = completionClaims.some(pattern => pattern.test(responseLower));
