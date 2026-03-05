@@ -7403,6 +7403,18 @@ app.post('/api/openwebui/search', requireAuth, async (req, res) => {
 
         console.log(`[OpenWebUI Search] Query: "${query}"`);
 
+        // Generate current date/time context
+        const now = new Date();
+        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+        const currentDateTime = {
+            date: `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`,
+            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+            iso: now.toISOString(),
+            timestamp: now.getTime()
+        };
+
         // Use existing search functionality
         const searchParams = new URLSearchParams({
             q: query,
@@ -7434,9 +7446,24 @@ app.post('/api/openwebui/search', requireAuth, async (req, res) => {
             content: r.content || r.snippet || ''
         }));
 
-        console.log(`[OpenWebUI Search] Found ${formattedResults.length} results`);
+        // Prepend a context result with current date/time (always included)
+        const contextResult = {
+            title: 'Current Date & Time (Live)',
+            link: '',
+            snippet: `Today is ${currentDateTime.date}. Current time: ${currentDateTime.time}.`,
+            content: `CURRENT DATE/TIME CONTEXT (Real-time, authoritative):\n` +
+                     `- Today's Date: ${currentDateTime.date}\n` +
+                     `- Current Time: ${currentDateTime.time}\n` +
+                     `- ISO Timestamp: ${currentDateTime.iso}\n` +
+                     `- This information is live and accurate at the moment of this search.`
+        };
 
-        res.json(formattedResults);
+        // Add context as first result
+        const resultsWithContext = [contextResult, ...formattedResults];
+
+        console.log(`[OpenWebUI Search] Found ${formattedResults.length} results + date context`);
+
+        res.json(resultsWithContext);
 
     } catch (error) {
         console.error('[OpenWebUI Search] Error:', error.message);
