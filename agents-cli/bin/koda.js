@@ -1053,6 +1053,8 @@ function cleanSkillSyntax(text) {
         .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')
         // Remove partial/incomplete skill calls during streaming: [SKILL:... (no closing bracket)
         .replace(/\[SKILL:[^\]]*$/g, '')
+        // Remove truncated skill markers during streaming: [S, [SK, [SKI, [SKIL, [SKILL (without colon)
+        .replace(/\[S(?:K(?:I(?:L(?:L)?)?)?)?$/g, '')
         // Remove variant formats with hyphen: [SKILL - ...] or [SKILL- ...]
         .replace(/\[SKILL\s*-[^\]]*\]/g, '')
         // Remove partial variant formats during streaming: [SKILL - ... (no closing bracket)
@@ -1065,6 +1067,13 @@ function cleanSkillSyntax(text) {
         .replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '')
         // Remove partial inline JSON during streaming
         .replace(/\{"skill"\s*:\s*"[^"]*"?\s*,?\s*"?params"?\s*:?\s*\{?[^}]*$/g, '')
+        // Clean up whitespace artifacts from skill removal
+        // Remove lines that are only whitespace
+        .replace(/^\s*$/gm, '')
+        // Collapse multiple consecutive newlines to max 2
+        .replace(/\n{3,}/g, '\n\n')
+        // Remove trailing spaces on lines
+        .replace(/[ \t]+$/gm, '')
         .trim();
 }
 
@@ -1096,12 +1105,27 @@ function updateStreamingMessage(message) {
             process.stdout.write(newContent);
             lastStreamedMessage = message;
             lastCleanedMessage = formattedContent;
+        } else if (formattedContent === lastCleanedMessage) {
+            // Content unchanged after cleaning - no need to write anything
+            lastStreamedMessage = message;
         } else {
-            // If message doesn't start with previous (unusual), rewrite everything
-            // This shouldn't happen in normal streaming but handles edge cases
-            process.stdout.write('\n');
-            process.stdout.write(colorize('Koda:', 'cyan') + ' ');
-            process.stdout.write(formattedContent);
+            // Content changed unexpectedly - append new content without duplicate prefix
+            // This can happen when skill syntax is stripped mid-stream
+            // Use carriage return to go back to start of line and rewrite
+            const lines = lastCleanedMessage.split('\n');
+            const lastLine = lines[lines.length - 1];
+            // Move cursor back to start of last line and clear it
+            process.stdout.write('\r\x1b[K');
+            // Rewrite just the last line portion of the new content
+            const newLines = formattedContent.split('\n');
+            if (newLines.length === lines.length) {
+                // Same number of lines - just rewrite last line
+                const prefix = lines.length === 1 ? colorize('Koda:', 'cyan') + ' ' : '';
+                process.stdout.write(prefix + newLines[newLines.length - 1]);
+            } else {
+                // Different structure - write full content on new line
+                process.stdout.write('\n' + formattedContent);
+            }
             lastStreamedMessage = message;
             lastCleanedMessage = formattedContent;
         }
@@ -5931,8 +5955,8 @@ async function handleChat(api, message) {
                         conversationContext.reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0) : 0;
                 }
 
-                // Final full refresh with updated stats
-                displayChatHistory();
+                // Don't call displayChatHistory() here - let the skill processing flow handle it
+                // This prevents duplicate display when skills need to be executed
             }
         );
 
@@ -5991,6 +6015,8 @@ async function handleChat(api, message) {
             }
 
             // No skill calls and no malformed attempts - we're done
+            // Display final response now that streaming is complete
+            displayChatHistory();
             break;
         }
 
