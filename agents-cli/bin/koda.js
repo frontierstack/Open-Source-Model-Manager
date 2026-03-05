@@ -4062,10 +4062,17 @@ function buildSkillResultsMessage(results) {
                 const path = result.dirPath || result.data?.dirPath || 'directory deleted';
                 message += `✓ Directory deleted: ${path}\n`;
             } else if (skillName === 'read_file') {
-                message += `✓ File read successfully\n`;
+                const filePath = result.filePath || result.data?.filePath || 'file';
+                const content = result.content || result.data?.content || '';
+                // Include actual content so AI knows what's in the file
+                const truncatedContent = content.length > 4000 ? content.substring(0, 4000) + '\n... (truncated)' : content;
+                message += `✓ File read: ${filePath}\nContent:\n${truncatedContent}\n`;
             } else if (skillName === 'list_directory') {
-                const count = result.files?.length || result.data?.files?.length || 0;
-                message += `✓ Directory listed: ${count} items\n`;
+                const dirPath = result.dirPath || result.data?.dirPath || 'directory';
+                const files = result.files || result.data?.files || [];
+                // Include actual file names so AI knows what's in the directory
+                const fileNames = files.map(f => f.isDirectory ? `${f.name}/` : f.name).join(', ');
+                message += `✓ Directory listed: ${dirPath}\nFiles: ${fileNames || '(empty)'}\n`;
             } else if (skillName === 'move_file') {
                 const newPath = result.newPath || result.data?.newPath || 'moved';
                 message += `✓ File moved to: ${newPath}\n`;
@@ -4074,8 +4081,12 @@ function buildSkillResultsMessage(results) {
                 const bytes = result.bytesAdded || result.data?.bytesAdded || 0;
                 message += `✓ Appended ${bytes} bytes to: ${path}\n`;
             } else if (skillName === 'tail_file' || skillName === 'head_file') {
+                const filePath = result.filePath || result.data?.filePath || 'file';
+                const content = result.content || result.data?.content || '';
                 const lines = result.linesReturned || result.data?.linesReturned || 0;
-                message += `✓ ${skillName}: ${lines} lines read\n`;
+                // Include actual content so AI knows what's in the file
+                const truncatedContent = content.length > 2000 ? content.substring(0, 2000) + '\n... (truncated)' : content;
+                message += `✓ ${skillName}: ${filePath} (${lines} lines)\nContent:\n${truncatedContent}\n`;
             } else if (skillName === 'list_processes') {
                 const count = result.count || result.data?.count || 0;
                 const platform = result.platform || result.data?.platform || 'system';
@@ -4111,10 +4122,15 @@ function buildSkillResultsMessage(results) {
                 message += `✓ Git status: ${branch} (${clean ? 'clean' : 'has changes'})\n`;
             } else if (skillName === 'git_diff') {
                 const hasChanges = result.hasChanges || result.data?.hasChanges;
-                message += `✓ Git diff: ${hasChanges ? 'changes found' : 'no changes'}\n`;
+                const diff = result.diff || result.data?.diff || '';
+                // Include actual diff so AI knows what changed
+                const truncatedDiff = diff.length > 3000 ? diff.substring(0, 3000) + '\n... (truncated)' : diff;
+                message += `✓ Git diff: ${hasChanges ? 'changes found' : 'no changes'}\n${truncatedDiff}\n`;
             } else if (skillName === 'git_log') {
-                const count = result.count || result.data?.count || 0;
-                message += `✓ Git log: ${count} commits\n`;
+                const commits = result.commits || result.data?.commits || [];
+                // Include actual commit info
+                const commitList = commits.slice(0, 20).map(c => `${c.hash} ${c.message}`).join('\n');
+                message += `✓ Git log: ${commits.length} commits\n${commitList}\n`;
             } else if (skillName === 'git_branch') {
                 const current = result.current || result.data?.current || '';
                 message += `✓ Git branch: ${current}\n`;
@@ -4144,13 +4160,28 @@ function buildSkillResultsMessage(results) {
                 const path = result.outputPath || result.data?.outputPath || 'output.html';
                 message += `✓ Markdown converted to HTML: ${path}\n`;
             } else if (skillName === 'read_pdf') {
-                message += `✓ PDF text extracted successfully\n`;
+                const text = result.text || result.data?.text || '';
+                // Include actual PDF text content
+                const truncatedText = text.length > 3000 ? text.substring(0, 3000) + '\n... (truncated)' : text;
+                message += `✓ PDF text extracted:\n${truncatedText}\n`;
             } else if (skillName === 'pdf_page_count') {
                 const count = result.pageCount || result.data?.pageCount || 0;
                 message += `✓ PDF has ${count} pages\n`;
             } else if (skillName === 'pdf_to_images') {
                 const count = result.count || result.data?.count || 0;
                 message += `✓ PDF converted to ${count} images\n`;
+            } else if (skillName === 'search_files') {
+                const pattern = result.pattern || result.data?.pattern || '';
+                const files = result.files || result.data?.files || [];
+                // Include actual file list so AI knows what was found
+                const fileList = files.slice(0, 50).join('\n');
+                const truncated = files.length > 50 ? `\n... and ${files.length - 50} more` : '';
+                message += `✓ Search files (${pattern}): ${files.length} found\nFiles:\n${fileList}${truncated}\n`;
+            } else if (skillName === 'diff_files') {
+                const diff = result.diff || result.data?.diff || '';
+                // Include actual diff content
+                const truncatedDiff = diff.length > 2000 ? diff.substring(0, 2000) + '\n... (truncated)' : diff;
+                message += `✓ File diff:\n${truncatedDiff}\n`;
             } else {
                 message += `✓ ${skillName} completed\n`;
             }

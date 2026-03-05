@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 # modelserver
 
-**Version:** 0.5.13
+**Version:** 0.5.14
 
 ## Overview
 
@@ -649,7 +649,17 @@ All settings in **My Models** > **Launch Settings** have hover tooltips.
 
 ## Recent Updates
 
-### Version 0.5.13 (Current)
+### Version 0.5.14 (Current)
+- **Skill Results Data Fix**: Fixed critical issue where skill execution results (file listings, file content, git diff, etc.) were not being sent back to the AI, causing it to make up information
+  - `list_directory` now includes actual file names instead of just count
+  - `read_file`, `tail_file`, `head_file` now include actual file content
+  - `git_diff` now includes actual diff content
+  - `git_log` now includes actual commit messages
+  - `search_files` now includes actual file paths found
+  - `read_pdf` now includes extracted text content
+  - `diff_files` now includes actual diff output
+
+### Version 0.5.13
 - **Skill Display Fix**: Fixed `[SKILL -` verbose syntax showing in chat by adding regex patterns for variant formats
 - **Retry Animation**: Show animation for all skill retry iterations, not just the first one
 - **File Save Optimization**: Skip redundant web search when user asks to save previously generated content to file
