@@ -3122,12 +3122,13 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
 
     // HuggingFace handlers
     const handleSearch = () => {
-        if (!searchQuery.trim()) return;
         setSearching(true);
 
         // Build query params
         const params = new URLSearchParams();
-        params.append('query', searchQuery);
+        if (searchQuery.trim()) {
+            params.append('query', searchQuery);
+        }
         params.append('sortBy', searchSortBy);
 
         // Add size filter if not 'all'
@@ -3855,10 +3856,14 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                         label="Sort By"
                                                     >
                                                         <MenuItem value="downloads">Most Downloads</MenuItem>
+                                                        <MenuItem value="downloads_asc">Fewest Downloads</MenuItem>
                                                         <MenuItem value="likes">Most Likes</MenuItem>
+                                                        <MenuItem value="likes_asc">Fewest Likes</MenuItem>
                                                         <MenuItem value="params">Largest First</MenuItem>
+                                                        <MenuItem value="params_asc">Smallest First</MenuItem>
                                                         <MenuItem value="trending">Trending</MenuItem>
                                                         <MenuItem value="newest">Newest</MenuItem>
+                                                        <MenuItem value="oldest">Oldest</MenuItem>
                                                     </Select>
                                                 </FormControl>
                                                 <FormControl size="small" sx={{ minWidth: 120 }}>

@@ -1918,13 +1918,21 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
     try {
         // Determine HuggingFace API sort parameter
         let hfSort = 'downloads';
-        let hfDirection = -1;
-        if (sortBy === 'likes') {
+        let hfDirection = -1;  // -1 = descending, 1 = ascending
+        if (sortBy === 'likes' || sortBy === 'likes_asc') {
             hfSort = 'likes';
+            if (sortBy === 'likes_asc') hfDirection = 1;
+        } else if (sortBy === 'downloads_asc') {
+            hfSort = 'downloads';
+            hfDirection = 1;
         } else if (sortBy === 'trending') {
             hfSort = 'trending';
         } else if (sortBy === 'newest') {
             hfSort = 'createdAt';
+            hfDirection = -1;
+        } else if (sortBy === 'oldest') {
+            hfSort = 'createdAt';
+            hfDirection = 1;
         }
 
         const response = await axios.get('https://huggingface.co/api/models', {
@@ -1962,14 +1970,22 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
             });
         }
 
-        // Sort by parameter size if requested (largest first)
+        // Sort by parameter size if requested
         if (sortBy === 'params' || sortBy === 'size') {
+            // Largest first
             models.sort((a, b) => {
-                // Put models with known size first, sorted by size descending
                 if (a.paramSize === null && b.paramSize === null) return 0;
                 if (a.paramSize === null) return 1;
                 if (b.paramSize === null) return -1;
                 return b.paramSize - a.paramSize;
+            });
+        } else if (sortBy === 'params_asc' || sortBy === 'size_asc') {
+            // Smallest first
+            models.sort((a, b) => {
+                if (a.paramSize === null && b.paramSize === null) return 0;
+                if (a.paramSize === null) return 1;
+                if (b.paramSize === null) return -1;
+                return a.paramSize - b.paramSize;
             });
         }
 
