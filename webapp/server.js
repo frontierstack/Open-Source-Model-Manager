@@ -7378,6 +7378,48 @@ app.get('/api/cli/files/koda.js', (req, res) => {
 });
 
 // ============================================================================
+// OPEN WEBUI FUNCTIONS
+// ============================================================================
+
+// Serve Open WebUI web search function
+app.get('/api/openwebui/functions/web-search', (req, res) => {
+    const functionPath = path.join(__dirname, '../openwebui/functions/web_search.py');
+    fs.readFile(functionPath, 'utf8')
+        .then(content => {
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.send(content);
+        })
+        .catch(error => {
+            console.error('Error reading web_search.py:', error);
+            res.status(500).json({ error: 'Failed to load web search function' });
+        });
+});
+
+// List available Open WebUI functions
+app.get('/api/openwebui/functions', (req, res) => {
+    res.json({
+        functions: [
+            {
+                id: 'web-search',
+                name: 'Web Search',
+                description: 'Search the web using DuckDuckGo with Playwright content fetching',
+                type: 'tool',
+                endpoint: '/api/openwebui/functions/web-search'
+            }
+        ],
+        instructions: {
+            step1: 'Open the Open WebUI Admin Panel (click your profile icon > Admin Panel)',
+            step2: 'Navigate to Functions in the left sidebar',
+            step3: 'Click the + button to create a new function',
+            step4: 'Copy and paste the function code from the endpoint above',
+            step5: 'Save the function and enable it',
+            step6: 'Configure the Valves (settings) with your API credentials from the API Keys tab',
+            note: 'The function will appear as a tool that models can use during chat'
+        }
+    });
+});
+
+// ============================================================================
 // OPENAI-COMPATIBLE API PROXY (Requires auth, forwards to vLLM instances)
 // ============================================================================
 
