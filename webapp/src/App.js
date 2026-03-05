@@ -6325,6 +6325,64 @@ You are a helpful coding assistant. When writing code, always include comments e
                                     </AccordionDetails>
                                 </Accordion>
 
+                                {/* API Key Permissions */}
+                                <Accordion>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                            <VpnKeyIcon color="primary" />
+                                            <Typography variant="h6">API Key Permissions</Typography>
+                                        </Box>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                        <Typography variant="body2" sx={{ mb: 2 }}>
+                                            API keys can be assigned one or more permission categories that control access to different API endpoints. Select the minimum permissions needed for your use case.
+                                        </Typography>
+                                        <TableContainer>
+                                            <Table size="small">
+                                                <TableHead>
+                                                    <TableRow>
+                                                        <TableCell><strong>Permission</strong></TableCell>
+                                                        <TableCell><strong>Access Granted</strong></TableCell>
+                                                        <TableCell><strong>Use Case</strong></TableCell>
+                                                    </TableRow>
+                                                </TableHead>
+                                                <TableBody>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'primary.main', fontWeight: 600 }}>query</TableCell>
+                                                        <TableCell>Chat completions, text completions, web search, Playwright fetch, documentation lookup</TableCell>
+                                                        <TableCell>Chatbots, AI assistants, search tools, web scraping</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main', fontWeight: 600 }}>models</TableCell>
+                                                        <TableCell>List models, download from HuggingFace, load/unload instances, system prompts, model configs, hardware info</TableCell>
+                                                        <TableCell>Model management scripts, deployment automation</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', fontWeight: 600 }}>instances</TableCell>
+                                                        <TableCell>List running instances, stop instances, view slot status, clear KV cache</TableCell>
+                                                        <TableCell>Instance monitoring, resource management</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'info.main', fontWeight: 600 }}>agents</TableCell>
+                                                        <TableCell>Create/manage AI agents, skills, tasks, file operations for agents</TableCell>
+                                                        <TableCell>Agent automation, Koda CLI, AI workflows</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'error.main', fontWeight: 600 }}>admin</TableCell>
+                                                        <TableCell>Create/revoke API keys, switch backends, reset system, manage apps (Open WebUI)</TableCell>
+                                                        <TableCell>System administration, full control</TableCell>
+                                                    </TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </TableContainer>
+                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(251, 191, 36, 0.1)', borderRadius: 1 }}>
+                                            <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+                                                <strong>Security Note:</strong> Authentication endpoints (login, register, logout) require session auth only and do not use API key permissions. The <code>/api/cli/install</code> endpoint is public (no auth required).
+                                            </Typography>
+                                        </Box>
+                                    </AccordionDetails>
+                                </Accordion>
+
                                 {/* API Endpoints */}
                                 <Accordion>
                                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -6369,6 +6427,11 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/search</TableCell>
                                                         <TableCell>GET</TableCell>
                                                         <TableCell>Search the web with Playwright content fetching (fetchContent=true for actual page content)</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/openwebui/search</TableCell>
+                                                        <TableCell>POST</TableCell>
+                                                        <TableCell>External web search endpoint for Open WebUI integration (accepts query, returns formatted results)</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/playwright/fetch</TableCell>
@@ -6759,23 +6822,6 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent/file/move</TableCell>
                                                         <TableCell>POST</TableCell>
                                                         <TableCell>Move/rename file (for agent file operations)</TableCell>
-                                                    </TableRow>
-
-                                                    {/* Instance Slots */}
-                                                    <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(34, 197, 94, 0.15)', fontWeight: 600 }}>
-                                                            KV Cache Slot Management (instances permission)
-                                                        </TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name/slots</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get KV cache slot status for a model instance</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name/slots/clear</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Clear KV cache slots for a model instance</TableCell>
                                                     </TableRow>
 
                                                     {/* Public Endpoints */}

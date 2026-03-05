@@ -4904,6 +4904,10 @@ app.post('/api/playwright/interact', requireAuth, async (req, res) => {
 
 // Playwright status endpoint
 app.get('/api/playwright/status', requireAuth, (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'query permission required' });
+    }
+
     if (playwrightEnabled && playwrightService) {
         const poolStatus = playwrightService.getPoolStatus();
         res.json({
