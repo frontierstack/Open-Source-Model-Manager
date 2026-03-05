@@ -7378,46 +7378,60 @@ app.get('/api/cli/files/koda.js', (req, res) => {
 });
 
 // ============================================================================
-// OPEN WEBUI FUNCTIONS
+// OPEN WEBUI FUNCTION AUTO-PROVISIONING
 // ============================================================================
 
-// Serve Open WebUI web search function
-app.get('/api/openwebui/functions/web-search', (req, res) => {
-    const functionPath = path.join(__dirname, 'openwebui-functions/web_search.py');
-    fs.readFile(functionPath, 'utf8')
-        .then(content => {
-            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-            res.send(content);
-        })
-        .catch(error => {
-            console.error('Error reading web_search.py:', error);
-            res.status(500).json({ error: 'Failed to load web search function' });
-        });
-});
+// Auto-provision web search function to Open WebUI on startup
+async function provisionOpenWebUIFunctions() {
+    try {
+        const functionPath = path.join(__dirname, 'openwebui-functions/web_search.py');
+        const functionContent = await fs.readFile(functionPath, 'utf8');
 
-// List available Open WebUI functions
-app.get('/api/openwebui/functions', (req, res) => {
-    res.json({
-        functions: [
-            {
-                id: 'web-search',
-                name: 'Web Search',
-                description: 'Search the web using DuckDuckGo with Playwright content fetching',
-                type: 'tool',
-                endpoint: '/api/openwebui/functions/web-search'
-            }
-        ],
-        instructions: {
-            step1: 'Open the Open WebUI Admin Panel (click your profile icon > Admin Panel)',
-            step2: 'Navigate to Functions in the left sidebar',
-            step3: 'Click the + button to create a new function',
-            step4: 'Copy and paste the function code from the endpoint above',
-            step5: 'Save the function and enable it',
-            step6: 'Configure the Valves (settings) with your API credentials from the API Keys tab',
-            note: 'The function will appear as a tool that models can use during chat'
-        }
-    });
-});
+        // Open WebUI database path (inside open-webui container)
+        const { exec } = require('child_process');
+        const util = require('util');
+        const execPromise = util.promisify(exec);
+
+        const functionId = 'modelserver_web_search';
+        const functionMeta = JSON.stringify({
+            description: 'Search the web using DuckDuckGo with Playwright content fetching via ModelServer API'
+        });
+        const now = Math.floor(Date.now() / 1000);
+
+        // Escape the content for SQL
+        const escapedContent = functionContent.replace(/'/g, "''");
+
+        // Check if function exists, update or insert
+        const sql = `
+            INSERT OR REPLACE INTO function (id, user_id, name, type, content, meta, created_at, updated_at, valves, is_active, is_global)
+            VALUES ('${functionId}', '', 'Web Search', 'tool', '${escapedContent}', '${functionMeta}', ${now}, ${now}, NULL, 1, 1);
+        `;
+
+        // Write SQL to temp file and execute via docker
+        const tempSqlFile = '/tmp/openwebui_function.sql';
+        await fs.writeFile(tempSqlFile, sql);
+
+        // Copy SQL file to container and execute
+        await execPromise(`docker cp ${tempSqlFile} modelserver-open-webui-1:/tmp/function.sql`);
+        await execPromise(`docker exec modelserver-open-webui-1 python3 -c "
+import sqlite3
+conn = sqlite3.connect('/app/backend/data/webui.db')
+with open('/tmp/function.sql', 'r') as f:
+    conn.executescript(f.read())
+conn.commit()
+conn.close()
+print('Function provisioned successfully')
+"`);
+
+        console.log('Open WebUI web search function provisioned successfully');
+    } catch (error) {
+        console.log('Note: Could not auto-provision Open WebUI function:', error.message);
+        console.log('Open WebUI may not be running yet - function will be provisioned on next restart');
+    }
+}
+
+// Provision functions after a delay to allow Open WebUI to start
+setTimeout(provisionOpenWebUIFunctions, 10000);
 
 // ============================================================================
 // OPENAI-COMPATIBLE API PROXY (Requires auth, forwards to vLLM instances)

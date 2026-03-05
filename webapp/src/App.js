@@ -6079,42 +6079,33 @@ You are a helpful coding assistant. When writing code, always include comments e
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(167, 139, 250, 0.1)', borderRadius: 1, border: '1px solid rgba(167, 139, 250, 0.3)' }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
-                                                Custom Web Search Function
+                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 1, border: '1px solid rgba(34, 197, 94, 0.3)' }}>
+                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'success.main' }}>
+                                                Auto-Provisioned Web Search
                                             </Typography>
-                                            <Typography variant="body2" sx={{ mb: 2 }}>
-                                                Open WebUI's built-in web search engines may not work reliably. Install this custom function to enable web search using the ModelServer API with DuckDuckGo and Playwright content fetching.
+                                            <Typography variant="body2">
+                                                A custom web search function is automatically installed in Open WebUI. It uses DuckDuckGo with Playwright content fetching via the ModelServer API - more reliable than the built-in search engines.
                                             </Typography>
                                         </Box>
 
                                         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            Installation Steps
+                                            Setup (One-Time)
                                         </Typography>
                                         <Box sx={{ pl: 2, mb: 3 }}>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
                                                 <strong>1.</strong> Open <a href={openWebUIUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#22d3ee' }}>Open WebUI</a> and log in as admin
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>2.</strong> Click your profile icon (bottom left) → <strong>Admin Panel</strong>
+                                                <strong>2.</strong> Go to <strong>Admin Panel</strong> → <strong>Functions</strong>
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>3.</strong> Navigate to <strong>Functions</strong> in the left sidebar
+                                                <strong>3.</strong> Find "Web Search" and click the <strong>gear icon</strong>
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>4.</strong> Click the <strong>+</strong> button to create a new function
+                                                <strong>4.</strong> Enter your <strong>API_KEY</strong> and <strong>API_SECRET</strong> from the API Keys tab
                                             </Typography>
                                             <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>5.</strong> Copy the function code from: <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{baseUrl}/api/openwebui/functions/web-search</code>
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>6.</strong> Paste the code and click <strong>Save</strong>
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>7.</strong> Click the <strong>gear icon</strong> on the function to configure Valves (settings)
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>8.</strong> Enter your <strong>API Key</strong> and <strong>API Secret</strong> from the API Keys tab
+                                                <strong>5.</strong> Click <strong>Save</strong>
                                             </Typography>
                                         </Box>
 
@@ -6132,34 +6123,24 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                 </TableHead>
                                                 <TableBody>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>API_BASE_URL</TableCell>
-                                                        <TableCell>http://host.docker.internal:3080</TableCell>
-                                                        <TableCell>ModelServer API URL (internal Docker URL)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>API_KEY</TableCell>
-                                                        <TableCell>(empty)</TableCell>
+                                                        <TableCell>(required)</TableCell>
                                                         <TableCell>Your API Key from the API Keys tab</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>API_SECRET</TableCell>
-                                                        <TableCell>(empty)</TableCell>
+                                                        <TableCell>(required)</TableCell>
                                                         <TableCell>Your API Secret from the API Keys tab</TableCell>
                                                     </TableRow>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>DEFAULT_LIMIT</TableCell>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>RESULT_COUNT</TableCell>
                                                         <TableCell>5</TableCell>
-                                                        <TableCell>Number of search results to return</TableCell>
+                                                        <TableCell>Number of search results (1-10)</TableCell>
                                                     </TableRow>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>FETCH_CONTENT</TableCell>
+                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>FETCH_PAGE_CONTENT</TableCell>
                                                         <TableCell>true</TableCell>
-                                                        <TableCell>Fetch actual page content from results</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>CONTENT_LIMIT</TableCell>
-                                                        <TableCell>3</TableCell>
-                                                        <TableCell>Number of pages to fetch full content from</TableCell>
+                                                        <TableCell>Fetch actual page content from top results</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>
@@ -6170,7 +6151,7 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                 Usage
                                             </Typography>
                                             <Typography variant="body2">
-                                                Once installed, the model will automatically use the web search tool when needed. You can also explicitly ask it to search, e.g., "Search the web for latest React documentation" or "What are the current headlines about AI?"
+                                                The model will automatically use web search when needed. You can also ask directly: "Search the web for...", "What are the latest news about...", or "Find documentation for..."
                                             </Typography>
                                         </Box>
                                     </AccordionDetails>
