@@ -93,17 +93,6 @@ echo ""
 echo "HTTP requests are automatically redirected to HTTPS."
 echo ""
 
-# Provision Open WebUI functions
-if docker ps | grep -q "modelserver-open-webui-1"; then
-    echo ">>> Provisioning Open WebUI functions..."
-    if [ -f "$SCRIPT_DIR/provision-openwebui-functions.sh" ]; then
-        "$SCRIPT_DIR/provision-openwebui-functions.sh" 2>/dev/null || true
-        echo ">>> Restarting Open WebUI to load functions..."
-        docker compose restart open-webui >/dev/null 2>&1 || true
-    fi
-fi
-
-echo ""
 echo "Note: Your browser will show a security warning for the"
 echo "self-signed certificate - this is expected for local development."
 echo ""

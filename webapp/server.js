@@ -7378,10 +7378,67 @@ app.get('/api/cli/files/koda.js', (req, res) => {
 });
 
 // ============================================================================
-// OPEN WEBUI FUNCTIONS
+// OPEN WEBUI EXTERNAL WEB SEARCH
 // ============================================================================
-// Custom functions for Open WebUI are stored in webapp/openwebui-functions/
-// To provision them to Open WebUI, run: ./scripts/provision-openwebui-functions.sh
+// Endpoint for Open WebUI's external web search feature
+// Configure in Open WebUI: Admin > Settings > Web Search > External
+// URL: http://host.docker.internal:3080/api/openwebui/search
+// API Key: Your bearer token from API Keys tab
+
+app.post('/api/openwebui/search', requireAuth, async (req, res) => {
+    try {
+        // Check permission
+        if (!checkPermission(req.apiKeyData, 'query')) {
+            return res.status(403).json({ error: 'Query permission required' });
+        }
+
+        const { query } = req.body;
+        if (!query) {
+            return res.status(400).json({ error: 'Query is required' });
+        }
+
+        console.log(`[OpenWebUI Search] Query: "${query}"`);
+
+        // Use existing search functionality
+        const searchParams = new URLSearchParams({
+            q: query,
+            limit: '5',
+            fetchContent: 'true',
+            contentLimit: '3'
+        });
+
+        // Make internal request to our search endpoint
+        const searchUrl = `http://localhost:3080/api/search?${searchParams}`;
+        const axios = require('axios');
+
+        const response = await axios.get(searchUrl, {
+            headers: {
+                'X-API-Key': req.apiKeyData?.key || '',
+                'X-API-Secret': req.apiKeyData?.secret || '',
+                'Authorization': req.headers.authorization || ''
+            },
+            timeout: 30000
+        });
+
+        const searchResults = response.data.results || [];
+
+        // Format for Open WebUI's expected structure
+        const formattedResults = searchResults.map(r => ({
+            title: r.title || 'Untitled',
+            link: r.url || '',
+            snippet: r.snippet || '',
+            content: r.content || r.snippet || ''
+        }));
+
+        console.log(`[OpenWebUI Search] Found ${formattedResults.length} results`);
+
+        res.json(formattedResults);
+
+    } catch (error) {
+        console.error('[OpenWebUI Search] Error:', error.message);
+        res.status(500).json({ error: 'Search failed: ' + error.message });
+    }
+});
 
 // ============================================================================
 // OPENAI-COMPATIBLE API PROXY (Requires auth, forwards to vLLM instances)
