@@ -1898,25 +1898,80 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Models permission required' });
     }
 
-    const { query } = req.query;
+    const { query, sortBy = 'downloads', minSize, maxSize } = req.query;
+
+    // Helper to extract parameter size in billions from model name
+    const extractParamSize = (name) => {
+        // Match patterns like 7B, 7.5B, 70B, 0.5B, etc.
+        const match = name.match(/(\d+\.?\d*)\s*[Bb]/);
+        if (match) {
+            return parseFloat(match[1]);
+        }
+        // Also check for M (millions) - convert to B
+        const millionMatch = name.match(/(\d+\.?\d*)\s*[Mm]/);
+        if (millionMatch) {
+            return parseFloat(millionMatch[1]) / 1000;
+        }
+        return null;
+    };
 
     try {
+        // Determine HuggingFace API sort parameter
+        let hfSort = 'downloads';
+        let hfDirection = -1;
+        if (sortBy === 'likes') {
+            hfSort = 'likes';
+        } else if (sortBy === 'trending') {
+            hfSort = 'trending';
+        } else if (sortBy === 'newest') {
+            hfSort = 'createdAt';
+        }
+
         const response = await axios.get('https://huggingface.co/api/models', {
             params: {
                 search: query || '',
                 filter: 'gguf',
-                sort: 'downloads',
-                direction: -1,
-                limit: 50
+                sort: hfSort,
+                direction: hfDirection,
+                limit: 100  // Get more results for filtering
             }
         });
 
-        const models = response.data.map(model => ({
-            id: model.id,
-            downloads: model.downloads,
-            likes: model.likes,
-            tags: model.tags
-        }));
+        let models = response.data.map(model => {
+            const paramSize = extractParamSize(model.id);
+            return {
+                id: model.id,
+                downloads: model.downloads,
+                likes: model.likes,
+                tags: model.tags,
+                paramSize: paramSize,  // Size in billions (null if unknown)
+                createdAt: model.createdAt
+            };
+        });
+
+        // Filter by parameter size if specified
+        const minSizeNum = minSize ? parseFloat(minSize) : null;
+        const maxSizeNum = maxSize ? parseFloat(maxSize) : null;
+
+        if (minSizeNum !== null || maxSizeNum !== null) {
+            models = models.filter(model => {
+                if (model.paramSize === null) return false;  // Exclude if size unknown when filtering
+                if (minSizeNum !== null && model.paramSize < minSizeNum) return false;
+                if (maxSizeNum !== null && model.paramSize > maxSizeNum) return false;
+                return true;
+            });
+        }
+
+        // Sort by parameter size if requested (largest first)
+        if (sortBy === 'params' || sortBy === 'size') {
+            models.sort((a, b) => {
+                // Put models with known size first, sorted by size descending
+                if (a.paramSize === null && b.paramSize === null) return 0;
+                if (a.paramSize === null) return 1;
+                if (b.paramSize === null) return -1;
+                return b.paramSize - a.paramSize;
+            });
+        }
 
         res.json(models);
     } catch (error) {

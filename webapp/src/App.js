@@ -50,6 +50,7 @@ import CancelIcon from '@mui/icons-material/Cancel';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import CodeIcon from '@mui/icons-material/Code';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
+import FavoriteIcon from '@mui/icons-material/Favorite';
 import Paper from '@mui/material/Paper';
 import Box from '@mui/material/Box';
 import Grid from '@mui/material/Grid';
@@ -434,6 +435,8 @@ const App = () => {
     const [ggufRepo, setGgufRepo] = useState('');
     const [ggufFile, setGgufFile] = useState('');
     const [fileFilter, setFileFilter] = useState('all'); // 'all', 'single', 'split'
+    const [searchSortBy, setSearchSortBy] = useState('downloads'); // 'downloads', 'likes', 'params', 'trending', 'newest'
+    const [searchSizeFilter, setSearchSizeFilter] = useState('all'); // 'all', 'small', 'medium', 'large', 'xlarge'
 
     // System prompt state
     const [systemPrompts, setSystemPrompts] = useState({});
@@ -3108,11 +3111,35 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
         { id: 6, icon: <AppsIcon sx={{ fontSize: 18 }} />, label: 'Apps' }
     ];
 
+    // Size filter ranges (in billions)
+    const SIZE_FILTERS = {
+        all: { min: null, max: null, label: 'All Sizes' },
+        small: { min: 0, max: 3.5, label: '≤3B' },
+        medium: { min: 3.5, max: 14, label: '7B-13B' },
+        large: { min: 14, max: 40, label: '14B-40B' },
+        xlarge: { min: 40, max: null, label: '40B+' }
+    };
+
     // HuggingFace handlers
     const handleSearch = () => {
         if (!searchQuery.trim()) return;
         setSearching(true);
-        fetch(`/api/huggingface/search?query=${encodeURIComponent(searchQuery)}`, {
+
+        // Build query params
+        const params = new URLSearchParams();
+        params.append('query', searchQuery);
+        params.append('sortBy', searchSortBy);
+
+        // Add size filter if not 'all'
+        const sizeFilter = SIZE_FILTERS[searchSizeFilter];
+        if (sizeFilter.min !== null) {
+            params.append('minSize', sizeFilter.min);
+        }
+        if (sizeFilter.max !== null) {
+            params.append('maxSize', sizeFilter.max);
+        }
+
+        fetch(`/api/huggingface/search?${params.toString()}`, {
         })
             .then(res => res.json())
             .then(data => {
@@ -3814,15 +3841,61 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                 </Button>
                                             </Box>
 
+                                            {/* Search Filters */}
+                                            <Box sx={{ display: 'flex', gap: 2, mt: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                    <FilterListIcon sx={{ color: 'text.secondary', fontSize: 18 }} />
+                                                    <Typography variant="body2" sx={{ color: 'text.secondary' }}>Filters:</Typography>
+                                                </Box>
+                                                <FormControl size="small" sx={{ minWidth: 140 }}>
+                                                    <InputLabel>Sort By</InputLabel>
+                                                    <Select
+                                                        value={searchSortBy}
+                                                        onChange={(e) => setSearchSortBy(e.target.value)}
+                                                        label="Sort By"
+                                                    >
+                                                        <MenuItem value="downloads">Most Downloads</MenuItem>
+                                                        <MenuItem value="likes">Most Likes</MenuItem>
+                                                        <MenuItem value="params">Largest First</MenuItem>
+                                                        <MenuItem value="trending">Trending</MenuItem>
+                                                        <MenuItem value="newest">Newest</MenuItem>
+                                                    </Select>
+                                                </FormControl>
+                                                <FormControl size="small" sx={{ minWidth: 120 }}>
+                                                    <InputLabel>Size</InputLabel>
+                                                    <Select
+                                                        value={searchSizeFilter}
+                                                        onChange={(e) => setSearchSizeFilter(e.target.value)}
+                                                        label="Size"
+                                                    >
+                                                        <MenuItem value="all">All Sizes</MenuItem>
+                                                        <MenuItem value="small">≤3B (Small)</MenuItem>
+                                                        <MenuItem value="medium">7B-13B (Medium)</MenuItem>
+                                                        <MenuItem value="large">14B-40B (Large)</MenuItem>
+                                                        <MenuItem value="xlarge">40B+ (XL)</MenuItem>
+                                                    </Select>
+                                                </FormControl>
+                                            </Box>
+
                                             {/* Search Results */}
                                             {searchResults.length > 0 && (
                                                 <Box sx={{ mt: 3 }}>
                                                     <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
                                                         Found {searchResults.length} models
+                                                        {searchSortBy === 'params' && ' (sorted by size)'}
+                                                        {searchSizeFilter !== 'all' && ` • Filtered: ${SIZE_FILTERS[searchSizeFilter].label}`}
                                                     </Typography>
                                                     <Grid container spacing={2}>
-                                                        {searchResults.slice(0, 12).map(model => {
-                                                            const paramSize = extractParameterSize(model.id);
+                                                        {searchResults.slice(0, 24).map(model => {
+                                                            // Use paramSize from API if available, otherwise extract from name
+                                                            const paramSize = model.paramSize
+                                                                ? (model.paramSize >= 1 ? `${model.paramSize}B` : `${(model.paramSize * 1000).toFixed(0)}M`)
+                                                                : extractParameterSize(model.id);
+                                                            const formatNumber = (num) => {
+                                                                if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+                                                                if (num >= 1000) return `${(num / 1000).toFixed(0)}k`;
+                                                                return num;
+                                                            };
                                                             return (
                                                                 <Grid item xs={12} sm={6} md={4} key={model.id}>
                                                                     <Card
@@ -3849,16 +3922,30 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                                                                                 {model.id.split('/')[0]}
                                                                             </Typography>
-                                                                            <Box sx={{ display: 'flex', gap: 1, mt: 1.5, flexWrap: 'wrap' }}>
+                                                                            <Box sx={{ display: 'flex', gap: 1, mt: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
                                                                                 {paramSize && (
                                                                                     <Chip label={paramSize} size="small" color="secondary" />
                                                                                 )}
-                                                                                <Chip
-                                                                                    label={`${(model.downloads / 1000).toFixed(0)}k`}
-                                                                                    size="small"
-                                                                                    variant="outlined"
-                                                                                    sx={{ fontSize: '0.7rem' }}
-                                                                                />
+                                                                                <Tooltip title="Downloads" arrow>
+                                                                                    <Chip
+                                                                                        icon={<CloudDownloadIcon sx={{ fontSize: 14 }} />}
+                                                                                        label={formatNumber(model.downloads)}
+                                                                                        size="small"
+                                                                                        variant="outlined"
+                                                                                        sx={{ fontSize: '0.7rem' }}
+                                                                                    />
+                                                                                </Tooltip>
+                                                                                {model.likes > 0 && (
+                                                                                    <Tooltip title="Likes" arrow>
+                                                                                        <Chip
+                                                                                            icon={<FavoriteIcon sx={{ fontSize: 14 }} />}
+                                                                                            label={formatNumber(model.likes)}
+                                                                                            size="small"
+                                                                                            variant="outlined"
+                                                                                            sx={{ fontSize: '0.7rem' }}
+                                                                                        />
+                                                                                    </Tooltip>
+                                                                                )}
                                                                             </Box>
                                                                         </CardContent>
                                                                     </Card>
