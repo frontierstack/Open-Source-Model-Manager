@@ -6014,14 +6014,6 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode agent collab</TableCell>
                                                         <TableCell>Multi-agent collaboration mode</TableCell>
                                                     </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode standalone,websearch</TableCell>
-                                                        <TableCell>Chat mode with web search enabled</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode agent,websearch</TableCell>
-                                                        <TableCell>Agent mode with web search enabled</TableCell>
-                                                    </TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
