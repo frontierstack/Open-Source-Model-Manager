@@ -84,7 +84,8 @@ const BACKEND_DEFAULTS = {
         maxNumSeqs: 256,
         kvCacheDtype: 'auto',
         trustRemoteCode: true,
-        enforceEager: false
+        enforceEager: false,
+        disableThinking: false
     },
     llamacpp: {
         nGpuLayers: -1,
@@ -99,7 +100,8 @@ const BACKEND_DEFAULTS = {
         repeatPenalty: 1.1,
         repeatLastN: 64,
         presencePenalty: 0.0,
-        frequencyPenalty: 0.0
+        frequencyPenalty: 0.0,
+        disableThinking: false
     }
 };
 
@@ -1307,7 +1309,8 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 trustRemoteCode: req.body.trustRemoteCode ?? true,
                 enforceEager: req.body.enforceEager ?? false,
                 contextShift: req.body.contextShift ?? true,
-                contextSize: req.body.maxModelLen || 4096  // Alias for API compatibility
+                contextSize: req.body.maxModelLen || 4096,  // Alias for API compatibility
+                disableThinking: req.body.disableThinking ?? false
             };
 
             broadcast({ type: 'log', message: `Creating vLLM instance for ${modelName}...` });
@@ -1327,7 +1330,8 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 repeatPenalty: req.body.repeatPenalty ?? 1.1,
                 repeatLastN: req.body.repeatLastN || 64,
                 presencePenalty: req.body.presencePenalty ?? 0.0,
-                frequencyPenalty: req.body.frequencyPenalty ?? 0.0
+                frequencyPenalty: req.body.frequencyPenalty ?? 0.0,
+                disableThinking: req.body.disableThinking ?? false
             };
 
             broadcast({ type: 'log', message: `Creating llama.cpp instance for ${modelName}...` });
@@ -5012,6 +5016,13 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         // Get context size configuration
         const contextSize = targetInstance.config?.contextSize || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
+        const disableThinking = targetInstance.config?.disableThinking || false;
+
+        // Apply thinking mode control - prepend /no_think for models that support it (e.g., Qwen3)
+        let userContent = message;
+        if (disableThinking) {
+            userContent = `/no_think\n${message}`;
+        }
 
         // Load system prompt for this model
         const systemPrompts = await loadSystemPrompts();
@@ -5021,7 +5032,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         const estimateTokens = (text) => Math.ceil(text.length / 4);
 
         let systemTokens = systemPrompt ? estimateTokens(systemPrompt) : 0;
-        let messageTokens = estimateTokens(message);
+        let messageTokens = estimateTokens(userContent);
         let totalInputTokens = systemTokens + messageTokens;
 
         // Reserve space for response (default 20% of context or maxTokens if specified)
@@ -5034,13 +5045,13 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             if (contextShift) {
                 // Calculate how much we need to truncate
                 const excessTokens = totalInputTokens - availableContextForInput;
-                const targetMessageLength = message.length - (excessTokens * 4);
+                const targetMessageLength = userContent.length - (excessTokens * 4);
 
                 if (targetMessageLength > 0) {
                     // Truncate message and add indicator
-                    const truncatedMessage = message.substring(0, targetMessageLength) +
+                    const truncatedMessage = userContent.substring(0, targetMessageLength) +
                         '\n\n[...input truncated due to context limit...]';
-                    console.log(`Input truncated: ${message.length} -> ${truncatedMessage.length} chars`);
+                    console.log(`Input truncated: ${userContent.length} -> ${truncatedMessage.length} chars`);
 
                     // Use truncated message
                     messageTokens = estimateTokens(truncatedMessage);
@@ -5075,7 +5086,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                         tokens: response.data.usage,
                         reasoning: messageData.reasoning_content ? true : false,
                         truncated: true,
-                        originalLength: message.length,
+                        originalLength: userContent.length,
                         truncatedLength: truncatedMessage.length
                     });
                 } else {
@@ -5101,8 +5112,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             messages.push({ role: 'system', content: systemPrompt });
         }
 
-        // Add user message
-        messages.push({ role: 'user', content: message });
+        // Add user message (with /no_think prepended if disableThinking is enabled)
+        messages.push({ role: 'user', content: userContent });
 
         const requestBody = {
             messages: messages,
@@ -5225,6 +5236,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Get context size configuration
         const contextSize = targetInstance.config?.contextSize || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
+        const disableThinking = targetInstance.config?.disableThinking || false;
+
+        // Apply thinking mode control - prepend /no_think for models that support it (e.g., Qwen3)
+        let userContent = message;
+        if (disableThinking) {
+            userContent = `/no_think\n${message}`;
+        }
 
         // Load system prompt for this model
         const systemPrompts = await loadSystemPrompts();
@@ -5234,7 +5252,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const estimateTokens = (text) => Math.ceil(text.length / 4);
 
         let systemTokens = systemPrompt ? estimateTokens(systemPrompt) : 0;
-        let messageTokens = estimateTokens(message);
+        let messageTokens = estimateTokens(userContent);
         let totalInputTokens = systemTokens + messageTokens;
 
         // Reserve space for response (default 20% of context or maxTokens if specified)
@@ -5251,7 +5269,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
             // If context shift enabled, truncate message
             const excessTokens = totalInputTokens - availableContextForInput;
-            const targetMessageLength = message.length - (excessTokens * 4);
+            const targetMessageLength = userContent.length - (excessTokens * 4);
 
             if (targetMessageLength <= 0) {
                 return res.status(400).json({
@@ -5267,12 +5285,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
-        // Build messages array
+        // Build messages array (with /no_think prepended if disableThinking is enabled)
         const messages = [];
         if (systemPrompt) {
             messages.push({ role: 'system', content: systemPrompt });
         }
-        messages.push({ role: 'user', content: message });
+        messages.push({ role: 'user', content: userContent });
 
         const requestBody = {
             messages: messages,
