@@ -486,7 +486,10 @@ const spinnerFrames = {
     arrows: ['←', '↖', '↑', '↗', '→', '↘', '↓', '↙'],
     line: ['|', '/', '-', '\\'],
     circle: ['◴', '◷', '◶', '◵'],
-    brain: ['🧠', '💭', '💡', '✨']
+    brain: ['🧠', '💭', '💡', '✨'],
+    wave: ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'],
+    glow: ['◯', '◉', '●', '◉'],
+    blocks: ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█', '▉', '▊', '▋', '▌', '▍', '▎']
 };
 
 // Thinking message variations for variety
@@ -495,8 +498,26 @@ const thinkingMessages = [
     'Processing',
     'Analyzing',
     'Computing',
-    'Reasoning'
+    'Reasoning',
+    'Working',
+    'Generating'
 ];
+
+// Skill-specific messages for better context
+const skillThinkingMessages = {
+    'create_file': ['Writing file', 'Creating content', 'Generating file'],
+    'read_file': ['Reading file', 'Loading content', 'Parsing file'],
+    'update_file': ['Updating file', 'Modifying content', 'Applying changes'],
+    'delete_file': ['Removing file', 'Deleting content'],
+    'list_directory': ['Scanning directory', 'Listing files'],
+    'web_search': ['Searching web', 'Finding results', 'Querying search'],
+    'fetch_url': ['Fetching page', 'Loading content', 'Downloading'],
+    'git_status': ['Checking repo', 'Getting status'],
+    'git_diff': ['Computing diff', 'Comparing changes'],
+    'create_pdf': ['Generating PDF', 'Creating document'],
+    'run_python': ['Executing script', 'Running Python'],
+    'run_bash': ['Executing command', 'Running shell']
+};
 
 // Current animation state
 let activeAnimation = null;
@@ -505,10 +526,12 @@ let animationFrameIndex = 0;
 let animationStartTime = 0;
 
 // Start an animated spinner with a message
-function startAnimation(message, style = 'dots') {
+function startAnimation(message, style = 'dots', options = {}) {
     stopAnimation(); // Stop any existing animation
 
     const frames = spinnerFrames[style] || spinnerFrames.dots;
+    const { color = 'cyan', showElapsed = true, prefix = '' } = options;
+
     animationFrameIndex = 0;
     animationStartTime = Date.now();
 
@@ -517,12 +540,15 @@ function startAnimation(message, style = 'dots') {
         message,
         frames,
         style,
+        color,
+        showElapsed,
+        prefix,
         line: ''
     };
 
     // Write initial frame
     const frame = frames[0];
-    activeAnimation.line = `${colorize(frame, 'cyan')} ${colorize(message, 'dim')}`;
+    activeAnimation.line = `${prefix}${colorize(frame, color)} ${colorize(message, 'white')}`;
     process.stdout.write(activeAnimation.line);
 
     // Start the animation interval
@@ -535,7 +561,9 @@ function startAnimation(message, style = 'dots') {
 
         // Clear the current line and rewrite
         process.stdout.write('\r\x1b[K'); // Clear line
-        activeAnimation.line = `${colorize(frame, 'cyan')} ${colorize(message, 'dim')} ${colorize(`(${elapsed}s)`, 'gray')}`;
+
+        const timeDisplay = showElapsed ? ` ${colorize(`${elapsed}s`, 'dim')}` : '';
+        activeAnimation.line = `${prefix}${colorize(frame, color)} ${colorize(activeAnimation.message, 'white')}${timeDisplay}`;
         process.stdout.write(activeAnimation.line);
     }, 80);
 
@@ -555,28 +583,49 @@ function stopAnimation(clearLine = true) {
 }
 
 // Update the animation message (for skill execution progress)
-function updateAnimationMessage(newMessage) {
+function updateAnimationMessage(newMessage, newColor = null) {
     if (!activeAnimation) return;
 
     activeAnimation.message = newMessage;
+    if (newColor) activeAnimation.color = newColor;
+
     const frame = activeAnimation.frames[animationFrameIndex];
     const elapsed = ((Date.now() - animationStartTime) / 1000).toFixed(1);
+    const timeDisplay = activeAnimation.showElapsed ? ` ${colorize(`${elapsed}s`, 'dim')}` : '';
 
     process.stdout.write('\r\x1b[K');
-    activeAnimation.line = `${colorize(frame, 'cyan')} ${colorize(newMessage, 'dim')} ${colorize(`(${elapsed}s)`, 'gray')}`;
+    activeAnimation.line = `${activeAnimation.prefix}${colorize(frame, activeAnimation.color)} ${colorize(newMessage, 'white')}${timeDisplay}`;
     process.stdout.write(activeAnimation.line);
 }
 
-// Show a brief completion indicator
-function showCompletionFlash(message, success = true) {
+// Show a brief completion indicator with modern styling
+function showCompletionFlash(message, success = true, details = null) {
     const icon = success ? colorize('✓', 'green') : colorize('✗', 'red');
-    const color = success ? 'green' : 'red';
-    process.stdout.write(`\r\x1b[K${icon} ${colorize(message, 'dim')}\n`);
+    const msgColor = success ? 'green' : 'red';
+    let output = `\r\x1b[K${icon} ${colorize(message, msgColor)}`;
+    if (details) {
+        output += colorize(` → ${details}`, 'dim');
+    }
+    process.stdout.write(output + '\n');
+}
+
+// Show a subtle info message
+function showInfoFlash(message, icon = 'ℹ') {
+    process.stdout.write(`\r\x1b[K${colorize(icon, 'cyan')} ${colorize(message, 'dim')}\n`);
 }
 
 // Get a random thinking message for variety
 function getRandomThinkingMessage() {
     return thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
+}
+
+// Get a skill-specific thinking message
+function getSkillThinkingMessage(skillName) {
+    const messages = skillThinkingMessages[skillName];
+    if (messages && messages.length > 0) {
+        return messages[Math.floor(Math.random() * messages.length)];
+    }
+    return formatSkillAction(skillName);
 }
 
 // Format a skill name for display (e.g., create_file -> "Creating file")
@@ -689,6 +738,180 @@ function addToHistory(role, content) {
     }
 }
 
+// ============================================================================
+// MODERN UI COMPONENTS
+// ============================================================================
+
+// Box drawing characters for modern terminal UI
+const boxChars = {
+    topLeft: '╭',
+    topRight: '╮',
+    bottomLeft: '╰',
+    bottomRight: '╯',
+    horizontal: '─',
+    vertical: '│',
+    leftT: '├',
+    rightT: '┤',
+    topT: '┬',
+    bottomT: '┴',
+    cross: '┼'
+};
+
+// Get terminal width safely
+function getTerminalWidth() {
+    return process.stdout.columns || 80;
+}
+
+// Draw a modern panel/card with title and content
+function drawPanel(title, content, options = {}) {
+    const {
+        color = 'cyan',
+        width = Math.min(getTerminalWidth() - 4, 80),
+        padding = 1
+    } = options;
+
+    const lines = [];
+    const innerWidth = width - 2 - (padding * 2);
+
+    // Top border with title
+    const titleStr = title ? ` ${title} ` : '';
+    const titleLen = title ? titleStr.length : 0;
+    const leftPad = Math.floor((width - 2 - titleLen) / 2);
+    const rightPad = width - 2 - titleLen - leftPad;
+
+    lines.push(
+        colorize(boxChars.topLeft, color) +
+        colorize(boxChars.horizontal.repeat(leftPad), 'dim') +
+        (title ? colorize(titleStr, color) : '') +
+        colorize(boxChars.horizontal.repeat(rightPad), 'dim') +
+        colorize(boxChars.topRight, color)
+    );
+
+    // Content lines with word wrapping
+    const contentLines = wrapText(content, innerWidth);
+    for (const line of contentLines) {
+        const paddedLine = ' '.repeat(padding) + line.padEnd(innerWidth) + ' '.repeat(padding);
+        lines.push(
+            colorize(boxChars.vertical, 'dim') +
+            paddedLine +
+            colorize(boxChars.vertical, 'dim')
+        );
+    }
+
+    // Bottom border
+    lines.push(
+        colorize(boxChars.bottomLeft, color) +
+        colorize(boxChars.horizontal.repeat(width - 2), 'dim') +
+        colorize(boxChars.bottomRight, color)
+    );
+
+    return lines.join('\n');
+}
+
+// Word wrap text to fit width
+function wrapText(text, maxWidth) {
+    const words = text.split(' ');
+    const lines = [];
+    let currentLine = '';
+
+    for (const word of words) {
+        if (currentLine.length + word.length + 1 <= maxWidth) {
+            currentLine += (currentLine ? ' ' : '') + word;
+        } else {
+            if (currentLine) lines.push(currentLine);
+            currentLine = word;
+        }
+    }
+    if (currentLine) lines.push(currentLine);
+
+    return lines.length > 0 ? lines : [''];
+}
+
+// Draw a progress bar
+function drawProgressBar(current, total, width = 30, options = {}) {
+    const {
+        filledChar = '█',
+        emptyChar = '░',
+        showPercent = true,
+        color = 'cyan'
+    } = options;
+
+    const percent = Math.min(100, Math.round((current / total) * 100));
+    const filled = Math.round((percent / 100) * width);
+    const empty = width - filled;
+
+    let bar = colorize(filledChar.repeat(filled), color) + colorize(emptyChar.repeat(empty), 'dim');
+
+    if (showPercent) {
+        bar += ` ${colorize(percent + '%', 'white')}`;
+    }
+
+    return bar;
+}
+
+// Status indicator icons
+const statusIcons = {
+    success: colorize('✓', 'green'),
+    error: colorize('✗', 'red'),
+    warning: colorize('⚠', 'yellow'),
+    info: colorize('ℹ', 'cyan'),
+    pending: colorize('○', 'dim'),
+    running: colorize('●', 'cyan'),
+    complete: colorize('●', 'green')
+};
+
+// Draw a status line with icon
+function drawStatus(status, message, details = null) {
+    const icon = statusIcons[status] || statusIcons.info;
+    let line = `${icon} ${message}`;
+    if (details) {
+        line += colorize(` (${details})`, 'dim');
+    }
+    return line;
+}
+
+// Draw a horizontal separator
+function drawSeparator(width = null, char = '─', color = 'dim') {
+    const w = width || getTerminalWidth() - 2;
+    return colorize(char.repeat(w), color);
+}
+
+// Draw a section header
+function drawHeader(text, options = {}) {
+    const {
+        width = getTerminalWidth() - 2,
+        color = 'cyan',
+        style = 'line' // 'line', 'box', 'minimal'
+    } = options;
+
+    if (style === 'box') {
+        return drawPanel(text, '', { color, width: Math.min(width, text.length + 10) });
+    } else if (style === 'minimal') {
+        return colorize(`▸ ${text}`, color);
+    } else {
+        // Line style (default)
+        const textLen = text.length + 2;
+        const sideLen = Math.floor((width - textLen) / 2);
+        return (
+            colorize('─'.repeat(sideLen), 'dim') +
+            colorize(` ${text} `, color) +
+            colorize('─'.repeat(width - textLen - sideLen), 'dim')
+        );
+    }
+}
+
+// Format skill execution result for display
+function formatSkillResult(skillName, result, elapsed = null) {
+    const action = formatSkillAction(skillName);
+    const timeStr = elapsed ? colorize(` (${elapsed}ms)`, 'dim') : '';
+
+    if (result.success) {
+        return `${statusIcons.success} ${colorize(action, 'green')}${timeStr}`;
+    } else {
+        return `${statusIcons.error} ${colorize(action, 'red')}${timeStr}`;
+    }
+}
+
 // Format code blocks cleanly without borders for easy copying
 function formatCodeBlocks(content) {
     // Match code blocks with ```language or just ```
@@ -698,16 +921,16 @@ function formatCodeBlocks(content) {
         const lang = language || 'code';
         const lines = code.trimEnd().split('\n');
 
-        // Clean header with language label
-        let formatted = '\n' + colorize('━━━ ', 'dim') + colorize(`${lang.toUpperCase()}`, 'yellow') + colorize(' ━━━', 'dim') + '\n';
+        // Modern header with language badge
+        let formatted = '\n' + colorize('╭─', 'dim') + colorize(` ${lang.toUpperCase()} `, 'yellow') + colorize('─'.repeat(Math.max(1, 50 - lang.length)), 'dim') + colorize('╮', 'dim') + '\n';
 
-        // Code lines - plain text for easy copying
+        // Code lines with subtle left border
         for (const line of lines) {
-            formatted += line + '\n';
+            formatted += colorize('│ ', 'dim') + line + '\n';
         }
 
-        // Footer separator
-        formatted += colorize('━'.repeat(Math.min(60, lang.length + 10)), 'dim') + '\n';
+        // Footer
+        formatted += colorize('╰' + '─'.repeat(Math.min(54, lang.length + 6)) + '╯', 'dim') + '\n';
         return formatted;
     });
 }
@@ -904,33 +1127,34 @@ function detectImports(content, filePath) {
     return imports;
 }
 
-// Display chat history
+// Display chat history with modern styling
 function displayChatHistory() {
     console.clear();
 
-    // Header
-    log('  ██╗  ██╗ ██████╗ ██████╗  █████╗ ', 'cyan');
-    log('  ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗', 'cyan');
-    log('  █████╔╝ ██║   ██║██║  ██║███████║', 'cyan');
-    log('  ██╔═██╗ ██║   ██║██║  ██║██╔══██║', 'cyan');
-    log('  ██║  ██╗╚██████╔╝██████╔╝██║  ██║', 'cyan');
-    log('  ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝', 'cyan');
-    logDim('  Your AI project assistant');
-    logDim('  Type /help for commands | /exit to quit\n');
+    // Modern minimalist header
+    log('');
+    log(colorize('  ╭─────────────────────────────────────╮', 'cyan'));
+    log(colorize('  │', 'cyan') + colorize('  KODA ', 'bright') + colorize('─ AI Project Assistant     ', 'dim') + colorize('│', 'cyan'));
+    log(colorize('  ╰─────────────────────────────────────╯', 'cyan'));
+    log('');
 
-    // Display chat messages
+    // Display chat messages with improved formatting
     if (chatHistory.length === 0) {
-        logDim('Start chatting! Type a message or use /help for commands.\n');
+        log(colorize('  ┌─ Getting Started ─────────────────────┐', 'dim'));
+        log(colorize('  │', 'dim') + ' Type a message to start chatting     ' + colorize('│', 'dim'));
+        log(colorize('  │', 'dim') + colorize(' /help', 'cyan') + ' for commands  ' + colorize('/exit', 'yellow') + ' to quit  ' + colorize('│', 'dim'));
+        log(colorize('  └─────────────────────────────────────────┘', 'dim'));
+        log('');
     } else {
         for (const msg of chatHistory) {
             if (msg.role === 'user') {
-                // Format multi-line user messages in a clean, contained box
+                // User messages with modern styling
                 const lines = msg.content.split('\n');
                 if (lines.length > 1) {
                     // Multi-line message - show in a contained format
-                    log(`${colorize('You:', 'green')}`);
-                    const boxWidth = Math.min(process.stdout.columns - 4 || 76, 120);
-                    log(colorize('┌' + '─'.repeat(boxWidth - 2) + '┐', 'dim'));
+                    log(colorize('▶ You:', 'green'));
+                    const boxWidth = Math.min(getTerminalWidth() - 4, 100);
+                    log(colorize('╭' + '─'.repeat(boxWidth - 2) + '╮', 'dim'));
                     for (const line of lines) {
                         // Wrap long lines
                         if (line.length > boxWidth - 4) {
@@ -942,26 +1166,27 @@ function displayChatHistory() {
                             log(colorize('│ ', 'dim') + line.padEnd(boxWidth - 4) + colorize(' │', 'dim'));
                         }
                     }
-                    log(colorize('└' + '─'.repeat(boxWidth - 2) + '┘', 'dim'));
+                    log(colorize('╰' + '─'.repeat(boxWidth - 2) + '╯', 'dim'));
                 } else {
-                    // Single line message - show inline
-                    log(`${colorize('You:', 'green')} ${msg.content}`);
+                    // Single line message - cleaner inline format
+                    log(colorize('▶ You: ', 'green') + msg.content);
                 }
             } else if (msg.role === 'assistant' || msg.role === 'assistant-streaming') {
                 // Clean any skill syntax before displaying
                 const cleanedContent = cleanSkillSyntax(msg.content);
                 if (cleanedContent) {
                     const formattedContent = formatCodeBlocks(cleanedContent);
-                    log(`${colorize('Koda:', 'cyan')} ${formattedContent}`);
+                    log(colorize('◆ Koda: ', 'cyan') + formattedContent);
                 }
             } else if (msg.role === 'system') {
-                logDim(msg.content);
+                // System messages with subtle styling
+                log(colorize('  ℹ ', 'dim') + colorize(msg.content, 'dim'));
             }
         }
-        console.log('');
+        log('');
     }
 
-    // Bottom status bar
+    // Modern status bar
     displayStatusBar();
 }
 
@@ -986,57 +1211,67 @@ async function updateApiKeyUsage(api) {
     }
 }
 
-// Display status bar with token and context stats
+// Display status bar with token and context stats - modern compact design
 function displayStatusBar() {
-    const statusParts = [];
+    const termWidth = getTerminalWidth();
+    const leftParts = [];
+    const rightParts = [];
 
-    // Mode indicator (display "agent collab" instead of "collab")
+    // Mode indicator (left side)
     const displayMode = currentMode === 'collab' ? 'agent collab' :
                        currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
-    statusParts.push(colorize(`Mode: ${displayMode}`, 'cyan'));
+    leftParts.push(colorize('●', 'cyan') + colorize(` ${displayMode}`, 'dim'));
 
-    // Web search indicator - show prominently when enabled
+    // Web search indicator
     if (websearchMode) {
-        statusParts.push(colorize('🔍 Web', 'green'));
+        leftParts.push(colorize('🔍', 'green'));
     }
 
-    // Last usage with tokens/sec
-    if (lastTokenUsage.total > 0) {
-        let tokensInfo = `Last: ${lastTokenUsage.total} tokens`;
-        if (lastTokensPerSecond > 0) {
-            tokensInfo += ` (${lastTokensPerSecond.toFixed(1)} tok/s)`;
-        }
-        statusParts.push(colorize(tokensInfo, 'white'));
-    }
-
-    // Context window info
+    // Context window (compact)
     if (contextWindowLimit > 0) {
-        statusParts.push(colorize(`Context: ${contextWindowUsed}/${contextWindowLimit}`, 'white'));
+        const contextPercent = Math.round((contextWindowUsed / contextWindowLimit) * 100);
+        const contextColor = contextPercent > 80 ? 'red' : contextPercent > 60 ? 'yellow' : 'dim';
+        leftParts.push(colorize(`ctx ${contextPercent}%`, contextColor));
     }
 
-    // API key daily token usage (if available)
+    // Tokens info (right side)
+    if (lastTokenUsage.total > 0 && lastTokensPerSecond > 0) {
+        rightParts.push(colorize(`${lastTokensPerSecond.toFixed(1)} tok/s`, 'dim'));
+    }
+
+    // API key usage (right side with progress indicator)
     if (apiKeyUsage.rateLimitTokens) {
-        const tokensLeft = apiKeyUsage.rateLimitTokens - apiKeyUsage.dailyTokens;
         const percentUsed = parseFloat(apiKeyUsage.tokenUsagePercentage || 0);
-        const percentLeft = (100 - percentUsed).toFixed(1);
-        const tokensLeftColor = percentLeft < 20 ? 'red' : percentLeft < 40 ? 'yellow' : 'green';
+        const percentLeft = 100 - percentUsed;
+        const barLen = 8;
+        const filled = Math.round((percentLeft / 100) * barLen);
+        const barColor = percentLeft < 20 ? 'red' : percentLeft < 40 ? 'yellow' : 'green';
 
-        statusParts.push(colorize(
-            `Daily: ${apiKeyUsage.dailyTokens.toLocaleString()}/${apiKeyUsage.rateLimitTokens.toLocaleString()}`,
-            'white'
-        ));
-        statusParts.push(colorize(`Remaining: ${percentLeft}%`, tokensLeftColor));
+        const bar = colorize('█'.repeat(filled), barColor) + colorize('░'.repeat(barLen - filled), 'dim');
+        rightParts.push(bar + colorize(` ${percentLeft.toFixed(0)}%`, barColor));
     }
 
-    // Total tokens used in session
+    // Session tokens
     if (totalTokensUsed > 0) {
-        statusParts.push(colorize(`Session: ${totalTokensUsed} tokens`, 'white'));
+        rightParts.push(colorize(`${totalTokensUsed.toLocaleString()} tokens`, 'dim'));
     }
 
-    if (statusParts.length > 0) {
-        const separator = colorize(' │ ', 'dim');
-        log(colorize('─'.repeat(80), 'dim'));
-        log(statusParts.join(separator));
+    // Build status line
+    const left = leftParts.join(colorize(' · ', 'dim'));
+    const right = rightParts.join(colorize(' · ', 'dim'));
+
+    // Calculate visible length (without ANSI codes) for proper alignment
+    const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*m/g, '');
+    const leftLen = stripAnsi(left).length;
+    const rightLen = stripAnsi(right).length;
+    const padding = Math.max(1, termWidth - leftLen - rightLen - 4);
+
+    // Print compact status bar
+    log(colorize('─'.repeat(Math.min(termWidth - 2, 100)), 'dim'));
+    if (rightParts.length > 0) {
+        log(left + ' '.repeat(padding) + right);
+    } else {
+        log(left);
     }
     console.log('');
 }
@@ -1047,35 +1282,193 @@ let lastStreamedMessage = '';
 let lastCleanedMessage = ''; // Track the cleaned version for comparison
 
 // Helper function to clean skill syntax from response text
+// Handles complex multi-line skill calls with triple-quoted strings
 function cleanSkillSyntax(text) {
-    return text
-        // Remove complete skill calls: [SKILL:name(params)]
-        .replace(/\[SKILL:\w+\([^\]]*\)\]/g, '')
-        // Remove partial/incomplete skill calls during streaming: [SKILL:... (no closing bracket)
-        .replace(/\[SKILL:[^\]]*$/g, '')
-        // Remove truncated skill markers during streaming: [S, [SK, [SKI, [SKIL, [SKILL (without colon)
-        .replace(/\[S(?:K(?:I(?:L(?:L)?)?)?)?$/g, '')
-        // Remove variant formats with hyphen: [SKILL - ...] or [SKILL- ...]
-        .replace(/\[SKILL\s*-[^\]]*\]/g, '')
-        // Remove partial variant formats during streaming: [SKILL - ... (no closing bracket)
-        .replace(/\[SKILL\s*-[^\]]*$/g, '')
-        // Remove JSON skill format: ```json { "skill": ... } ```
-        .replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '')
-        // Remove partial JSON skill blocks during streaming
-        .replace(/```json\s*\n?\s*\{[^`]*$/g, '')
-        // Remove inline JSON: {"skill": "...", "params": {...}}
-        .replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '')
-        // Remove partial inline JSON during streaming
-        .replace(/\{"skill"\s*:\s*"[^"]*"?\s*,?\s*"?params"?\s*:?\s*\{?[^}]*$/g, '')
-        // Clean up whitespace artifacts from skill removal
-        // Remove lines that are only whitespace
-        .replace(/^\s*$/gm, '')
-        // Collapse multiple consecutive newlines to max 2
-        .replace(/\n{3,}/g, '\n\n')
-        // Remove trailing spaces on lines
-        .replace(/[ \t]+$/gm, '')
+    if (!text) return '';
+
+    let result = text;
+
+    // Step 1: Remove complete multi-line skill calls with triple-quoted strings
+    // Pattern: [SKILL:name(param="""...multiline...""")]
+    // Use a function-based replacement to handle nested content
+    result = removeCompleteSkillCalls(result);
+
+    // Step 2: Remove partial/incomplete skill calls during streaming
+    // Pattern: [SKILL:name(... without closing )]
+    result = removePartialSkillCalls(result);
+
+    // Step 3: Remove truncated skill markers: [S, [SK, [SKI, [SKIL, [SKILL (without colon)
+    result = result.replace(/\[S(?:K(?:I(?:L(?:L)?)?)?)?$/g, '');
+
+    // Step 4: Remove variant formats with hyphen: [SKILL - ...] or [SKILL- ...]
+    result = result.replace(/\[SKILL\s*-[^\]]*\]/g, '');
+    result = result.replace(/\[SKILL\s*-[^\]]*$/g, '');
+
+    // Step 5: Remove JSON skill formats
+    result = result.replace(/```json\s*\n?\s*\{[\s\S]*?"skill"[\s\S]*?\}\s*\n?```/g, '');
+    result = result.replace(/```json\s*\n?\s*\{[^`]*$/g, '');
+    result = result.replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '');
+    result = result.replace(/\{"skill"\s*:\s*"[^"]*"?\s*,?\s*"?params"?\s*:?\s*\{?[^}]*$/g, '');
+
+    // Step 6: Clean up whitespace artifacts
+    result = result
+        .replace(/^\s*$/gm, '')           // Remove lines that are only whitespace
+        .replace(/\n{3,}/g, '\n\n')       // Collapse multiple newlines to max 2
+        .replace(/[ \t]+$/gm, '')         // Remove trailing spaces
         .trim();
+
+    return result;
 }
+
+// Remove complete skill calls including multi-line ones with triple-quoted strings
+function removeCompleteSkillCalls(text) {
+    let result = text;
+    let changed = true;
+    let iterations = 0;
+    const maxIterations = 50; // Prevent infinite loops
+
+    while (changed && iterations < maxIterations) {
+        changed = false;
+        iterations++;
+
+        // Find [SKILL: pattern
+        const skillStartIdx = result.indexOf('[SKILL:');
+        if (skillStartIdx === -1) break;
+
+        // Find the skill name
+        const colonIdx = skillStartIdx + 7;
+        let parenIdx = result.indexOf('(', colonIdx);
+        if (parenIdx === -1) break;
+
+        // Now find the matching )] by tracking quotes and parentheses
+        let i = parenIdx + 1;
+        let depth = 1;
+        let inSingleQuote = false;
+        let inTripleQuote = false;
+        let escapeNext = false;
+
+        while (i < result.length && depth > 0) {
+            if (escapeNext) {
+                escapeNext = false;
+                i++;
+                continue;
+            }
+
+            const char = result[i];
+            const nextThree = result.substring(i, i + 3);
+
+            if (char === '\\' && !inTripleQuote) {
+                escapeNext = true;
+                i++;
+                continue;
+            }
+
+            // Handle triple quotes
+            if (nextThree === '"""') {
+                inTripleQuote = !inTripleQuote;
+                i += 3;
+                continue;
+            }
+
+            // Handle single quotes (only if not in triple quote)
+            if (char === '"' && !inTripleQuote) {
+                inSingleQuote = !inSingleQuote;
+                i++;
+                continue;
+            }
+
+            // Track parentheses (only if not in any quote)
+            if (!inSingleQuote && !inTripleQuote) {
+                if (char === '(') depth++;
+                if (char === ')') depth--;
+            }
+
+            i++;
+        }
+
+        // If we found matching )], remove the skill call
+        if (depth === 0 && i < result.length && result[i] === ']') {
+            result = result.substring(0, skillStartIdx) + result.substring(i + 1);
+            changed = true;
+        } else {
+            // Couldn't find complete skill call, might be partial - stop here
+            break;
+        }
+    }
+
+    return result;
+}
+
+// Remove partial/incomplete skill calls (during streaming)
+function removePartialSkillCalls(text) {
+    // Look for [SKILL: that doesn't have a complete )]
+    const skillStartIdx = text.indexOf('[SKILL:');
+    if (skillStartIdx === -1) return text;
+
+    // Check if there's a complete skill call by scanning for matching )]
+    let i = skillStartIdx + 7;
+    let depth = 0;
+    let inSingleQuote = false;
+    let inTripleQuote = false;
+    let escapeNext = false;
+    let foundOpenParen = false;
+
+    while (i < text.length) {
+        if (escapeNext) {
+            escapeNext = false;
+            i++;
+            continue;
+        }
+
+        const char = text[i];
+        const nextThree = text.substring(i, i + 3);
+
+        if (char === '\\' && !inTripleQuote) {
+            escapeNext = true;
+            i++;
+            continue;
+        }
+
+        // Handle triple quotes
+        if (nextThree === '"""') {
+            inTripleQuote = !inTripleQuote;
+            i += 3;
+            continue;
+        }
+
+        // Handle single quotes (only if not in triple quote)
+        if (char === '"' && !inTripleQuote) {
+            inSingleQuote = !inSingleQuote;
+            i++;
+            continue;
+        }
+
+        // Track parentheses (only if not in any quote)
+        if (!inSingleQuote && !inTripleQuote) {
+            if (char === '(') {
+                depth++;
+                foundOpenParen = true;
+            }
+            if (char === ')') depth--;
+
+            // Found complete )]
+            if (foundOpenParen && depth === 0 && char === ')' && i + 1 < text.length && text[i + 1] === ']') {
+                // This is a complete skill call, recurse to find more
+                const before = text.substring(0, skillStartIdx);
+                const after = text.substring(i + 2);
+                return removePartialSkillCalls(before + after);
+            }
+        }
+
+        i++;
+    }
+
+    // If we get here, we have an incomplete skill call - remove from [SKILL: to end
+    return text.substring(0, skillStartIdx).trim();
+}
+
+// Track the raw cleaned content (without formatting) for accurate comparison
+let lastRawCleanedContent = '';
 
 // Update streaming message without full screen refresh (reduces flicker)
 function updateStreamingMessage(message) {
@@ -1089,47 +1482,66 @@ function updateStreamingMessage(message) {
         return;
     }
 
-    const formattedContent = formatCodeBlocks(cleanedMessage);
-
     // On first message, write the prefix and content
-    if (lastCleanedMessage === '') {
-        process.stdout.write(colorize('Koda:', 'cyan') + ' ');
+    if (lastRawCleanedContent === '') {
+        const formattedContent = formatCodeBlocks(cleanedMessage);
+        process.stdout.write(colorize('◆ Koda: ', 'cyan'));
         process.stdout.write(formattedContent);
         lastStreamedMessage = message;
+        lastRawCleanedContent = cleanedMessage;
         lastCleanedMessage = formattedContent;
     } else {
-        // Only write the new content that was added since last update
-        // This prevents duplication by only appending new tokens
-        if (formattedContent.startsWith(lastCleanedMessage)) {
-            const newContent = formattedContent.substring(lastCleanedMessage.length);
-            process.stdout.write(newContent);
-            lastStreamedMessage = message;
-            lastCleanedMessage = formattedContent;
-        } else if (formattedContent === lastCleanedMessage) {
-            // Content unchanged after cleaning - no need to write anything
-            lastStreamedMessage = message;
-        } else {
-            // Content changed unexpectedly - append new content without duplicate prefix
-            // This can happen when skill syntax is stripped mid-stream
-            // Use carriage return to go back to start of line and rewrite
-            const lines = lastCleanedMessage.split('\n');
-            const lastLine = lines[lines.length - 1];
-            // Move cursor back to start of last line and clear it
-            process.stdout.write('\r\x1b[K');
-            // Rewrite just the last line portion of the new content
-            const newLines = formattedContent.split('\n');
-            if (newLines.length === lines.length) {
-                // Same number of lines - just rewrite last line
-                const prefix = lines.length === 1 ? colorize('Koda:', 'cyan') + ' ' : '';
-                process.stdout.write(prefix + newLines[newLines.length - 1]);
-            } else {
-                // Different structure - write full content on new line
-                process.stdout.write('\n' + formattedContent);
+        // Compare raw content to determine what's new
+        // This avoids issues with formatting differences
+        if (cleanedMessage.startsWith(lastRawCleanedContent)) {
+            // New content added - only write the new part
+            const newRawContent = cleanedMessage.substring(lastRawCleanedContent.length);
+            if (newRawContent) {
+                const formattedNewContent = formatCodeBlocks(newRawContent);
+                process.stdout.write(formattedNewContent);
+                lastStreamedMessage = message;
+                lastRawCleanedContent = cleanedMessage;
+                lastCleanedMessage = formatCodeBlocks(cleanedMessage);
             }
+        } else if (cleanedMessage === lastRawCleanedContent) {
+            // Content unchanged - no action needed
             lastStreamedMessage = message;
-            lastCleanedMessage = formattedContent;
+        } else if (cleanedMessage.length < lastRawCleanedContent.length) {
+            // Content got shorter (skill syntax stripped) - just update tracking
+            // Don't rewrite the screen, the next content will append correctly
+            lastStreamedMessage = message;
+            lastRawCleanedContent = cleanedMessage;
+            lastCleanedMessage = formatCodeBlocks(cleanedMessage);
+        } else {
+            // Content diverged - find common prefix and append from there
+            let commonLen = 0;
+            const minLen = Math.min(cleanedMessage.length, lastRawCleanedContent.length);
+            while (commonLen < minLen && cleanedMessage[commonLen] === lastRawCleanedContent[commonLen]) {
+                commonLen++;
+            }
+
+            if (commonLen > 0 && commonLen === lastRawCleanedContent.length) {
+                // Old content is prefix of new - just append the new part
+                const newPart = cleanedMessage.substring(commonLen);
+                process.stdout.write(formatCodeBlocks(newPart));
+            } else {
+                // Content completely diverged - append on new line to avoid confusion
+                process.stdout.write('\n' + formatCodeBlocks(cleanedMessage));
+            }
+
+            lastStreamedMessage = message;
+            lastRawCleanedContent = cleanedMessage;
+            lastCleanedMessage = formatCodeBlocks(cleanedMessage);
         }
     }
+}
+
+// Reset streaming state (call before starting new stream)
+function resetStreamingState() {
+    isStreaming = false;
+    lastStreamedMessage = '';
+    lastCleanedMessage = '';
+    lastRawCleanedContent = '';
 }
 
 // Encryption utilities
@@ -6038,8 +6450,15 @@ async function handleChat(api, message) {
         if (iteration === 1) {
             startAnimation(getRandomThinkingMessage(), 'dots');
         } else {
-            // Show processing animation for retry iterations
-            startAnimation('Retrying with corrected syntax', 'dots');
+            // Show more informative retry animation based on context
+            const retryMessages = [
+                'Refining response',
+                'Adjusting approach',
+                'Processing results',
+                'Continuing task'
+            ];
+            const retryMsg = retryMessages[Math.min(iteration - 2, retryMessages.length - 1)];
+            startAnimation(retryMsg, 'arc');
         }
 
         // Use streaming API
@@ -6047,10 +6466,9 @@ async function handleChat(api, message) {
         let tokenCount = 0;
         let hasStoppedAnimation = false;
 
-        // Enable streaming mode to prevent flickering
+        // Reset and enable streaming mode
+        resetStreamingState();
         isStreaming = true;
-        lastStreamedMessage = '';
-        lastCleanedMessage = '';
 
         const result = await api.chatStream(
             currentMessage,
