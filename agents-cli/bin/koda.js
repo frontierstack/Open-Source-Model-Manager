@@ -4893,10 +4893,11 @@ async function executeThreatIntelSkill(api, params) {
                                 // Fallback to simple X/Y anywhere
                                 const simpleRatioMatch = content.match(/(\d+)\/(\d+)/);
                                 const maliciousMatch = ratioMatch || simpleRatioMatch;
-                                // Look for country code after ASN info (e.g., "Ltd. ) CN")
-                                const countryCodeMatch = content.match(/\)\s*([A-Z]{2})\s/);
+                                // Look for country code after ASN info (e.g., ") CN Last")
+                                const countryCodeMatch = content.match(/\)\s*([A-Z]{2})\s+(?:Last|First)/i);
                                 const countryMatch = countryCodeMatch || content.match(/country[:\s]+([A-Za-z\s]+)/i);
-                                const asnMatch = content.match(/AS\s*(\d+)/i) ||
+                                // Match ASN with at least 4 digits to avoid partial matches
+                                const asnMatch = content.match(/AS\s*(\d{4,})/i) ||
                                                 content.match(/as(?:n|number)?[:\s]+(\d+)/i);
 
                                 results.sources.virustotal = {
