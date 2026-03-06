@@ -2153,6 +2153,24 @@ function detectFalseCompletionClaim(response, userMessage) {
     const responseLower = response.toLowerCase();
     const messageLower = userMessage.toLowerCase();
 
+    // FIRST: Check if this is FUTURE INTENT, not a completion claim
+    // Phrases like "I'll save", "I can save", "Let me save" are NOT false completion claims
+    const futureIntentPatterns = [
+        /\b(i'll|i will|let me|i can|i'm going to|going to|will now|can now|need to|should)\s+(save|write|create|generate)/i,
+        /\b(now\s+)?(save|write|create|generate)\s+(this|the|it|a)\s+(to|as|into)/i,
+        /\bproceed\s+to\s+(save|write|create)/i,
+        /\b(about to|ready to)\s+(save|write|create)/i,
+        // "I'll now create/save" patterns
+        /\bi('ll| will)\s+now\s+(save|write|create)/i,
+        // "Let me create/save the file" patterns
+        /\blet\s+me\s+(now\s+)?(save|write|create|generate)/i
+    ];
+
+    const isFutureIntent = futureIntentPatterns.some(pattern => pattern.test(responseLower));
+    if (isFutureIntent) {
+        return false; // This is intent to save, not a false completion claim
+    }
+
     // Patterns indicating user requested a file operation
     const fileOperationRequests = [
         /\b(delete|remove|rm|erase|clear|wipe)\b.*\b(file|folder|directory|dir|everything|all)\b/i,
@@ -2175,7 +2193,8 @@ function detectFalseCompletionClaim(response, userMessage) {
     const userRequestedFileOp = fileOperationRequests.some(pattern => pattern.test(messageLower));
     if (!userRequestedFileOp) return false;
 
-    // Patterns indicating AI claims to have completed the operation
+    // Patterns indicating AI claims to have ALREADY completed the operation (past tense only)
+    // These should NOT match future intent - only actual completion claims
     const completionClaims = [
         /\b(have been|has been|were|was)\s+(deleted|removed|erased|cleared|wiped|created|moved|renamed|copied|saved|written)\b/i,
         /\bsuccessfully\s+(deleted|removed|erased|cleared|created|moved|renamed|copied|saved|written)\b/i,
@@ -2184,24 +2203,18 @@ function detectFalseCompletionClaim(response, userMessage) {
         /\b(done|completed|finished)\b.*\b(delet|remov|eras|clear|creat|mov|renam|cop|sav|writ)/i,
         /\bI('ve|\s+have)\s+(deleted|removed|created|moved|renamed|copied|saved|written)\b/i,
         // PDF-related completion claims
-        /\b(I('ve|\s+have)\s+)?(generated|created|saved|written)\b.*\bpdf\b/i,
-        /\bpdf\b.*\b(generated|created|saved|written)\b/i,
-        /\bsaved\s+(at|to|in)\s+[`'"]?[^\s]*\.pdf/i,
+        /\bI('ve|\s+have)\s+(generated|created|saved|written)\b.*\bpdf\b/i,
+        /\bpdf\b.*\b(has been\s+)?(generated|created|saved|written)\b/i,
+        /\bsaved\s+(it\s+)?(at|to|in)\s+[`'"]?[^\s]*\.pdf/i,
         /\bpdf\s+(report|file|document)\b.*\b(created|generated|saved)\b/i,
-        // TXT/file save completion claims - MORE FLEXIBLE PATTERNS
-        /\b(I('ve|\s+have)\s+)?(saved|written|created)\b.*\b(to|as|in)\b.*\b(a\s+)?(file|txt|text)\b/i,
-        /\bsaved\s+(this|the|it)\s+(result|data|info|summary|output)\s+to\b/i,
-        /\bsaved\s+(at|to|in)\s+[`'"]?[^\s]*\.(txt|md|json|csv)/i,
-        /\bfile\s+(named|called)\s+[`'"]?[^\s]+\.(txt|md|json|csv|pdf)/i,
-        // NEW: Catch "saved [any words] to [path]" patterns
-        /\bsaved\b[^.]*\bto\s+[`'"]?[^\s`'"]+\.(txt|md|json|csv|pdf)/i,
-        /\bsaved\b[^.]*\b(summary|report|results?|data|info|content|output)\b[^.]*\bto\b/i,
-        // NEW: Catch paths with extensions mentioned anywhere after "to"
-        /\bto\s+[`'"]?\/[^\s`'"]+\.(txt|md|json|csv|pdf)/i,
-        // NEW: Catch "written to" and "created at" with paths (allow words between)
-        /\b(written|created)\b[^.]*\b(to|at|in)\s+[`'"]?[^\s`'"]+\.(txt|md|json|csv|pdf)/i,
-        // NEW: Catch "the report/summary is saved/written"
-        /\b(the|a)\s+(report|summary|file|data)\b.*\b(is|has been)\s+(saved|written|created)\b/i
+        // TXT/file save completion claims - require past tense indicators
+        /\bI('ve|\s+have)\s+(saved|written|created)\b.*\b(to|as|in)\b.*\b(a\s+)?(file|txt|text)\b/i,
+        /\bsaved\s+(it\s+)?(at|to|in)\s+[`'"]?[^\s]*\.(txt|md|json|csv)/i,
+        /\bfile\s+(has been\s+)?(named|called)\s+[`'"]?[^\s]+\.(txt|md|json|csv|pdf)/i,
+        // "the report/summary has been saved/written" (past tense)
+        /\b(the|a)\s+(report|summary|file|data)\b.*\b(is|has been)\s+(saved|written|created)\b/i,
+        // "saved and written to" (clear past tense action)
+        /\bI('ve|\s+have)\s+saved\b[^.]*\bto\s+[`'"]?[^\s`'"]+\.(txt|md|json|csv|pdf)/i
     ];
 
     const aiClaimsCompletion = completionClaims.some(pattern => pattern.test(responseLower));
@@ -5419,6 +5432,11 @@ function buildSkillResultsMessage(results) {
                 const sources = result.sources || result.data?.sources || {};
                 const summary = result.summary || result.data?.summary || '';
 
+                // Check if any source returned meaningful data
+                const vtFound = sources.virustotal?.found;
+                const fofaFound = sources.fofa?.found;
+                const hasMeaningfulData = vtFound || fofaFound;
+
                 message += `✓ Threat Intelligence Report for ${indicator} (${indicatorType}):\n`;
 
                 // VirusTotal results
@@ -5451,6 +5469,12 @@ function buildSkillResultsMessage(results) {
 
                 if (summary) {
                     message += `  Summary: ${summary}\n`;
+                }
+
+                // Explicit guidance when no meaningful data was found
+                if (!hasMeaningfulData) {
+                    message += `  [NOTE: No threat intelligence data was found for this indicator. `;
+                    message += `If the user requested a file/report, inform them that no data is available to save.]\n`;
                 }
             } else if (skillName === 'search_files') {
                 const pattern = result.pattern || result.data?.pattern || '';
@@ -7545,18 +7569,31 @@ YOU MUST NOT:
 
         // Check if the AI claimed to save/create a file but didn't execute a file-creating skill
         // This catches: AI calls threat_intel + says "saved to file.txt" without calling create_file
-        // NOTE: Skip this check for delete operations - they don't need file-creating skills
+        // NOTE: Skip this check for:
+        // 1. Delete operations - they don't need file-creating skills
+        // 2. Data-gathering skills (threat_intel, web_search, etc.) - these are multi-step operations
+        //    where the AI gathers data first, then saves it in the next iteration
         const fileCreatingSkills = ['create_file', 'update_file', 'write_file'];
+        const dataGatheringSkills = ['threat_intel', 'web_search', 'fetch_url', 'playwright_fetch', 'read_file'];
         const executedFileSkills = skillResults.filter(r => fileCreatingSkills.includes(r.skill) && r.success);
         const executedDeleteSkills = skillResults.filter(r =>
             (r.skill === 'delete_file' || r.skill === 'delete_directory') && r.success);
+        const executedDataGatheringSkills = skillResults.filter(r =>
+            dataGatheringSkills.includes(r.skill) && r.success);
         const claimsFileSave = detectFalseCompletionClaim(response, originalMessage);
         const isDeleteOnlyOperation = /\b(delete|remove|rm|erase|clear|wipe)\b/i.test(originalMessage) &&
                                        !/\b(create|save|write|export)\b.*\b(file|pdf|txt)\b/i.test(originalMessage);
 
-        if (claimsFileSave && executedFileSkills.length === 0 && !isDeleteOnlyOperation && executedDeleteSkills.length === 0) {
+        // Skip false completion check if:
+        // 1. Delete skills ran successfully
+        // 2. Data-gathering skills ran (AI is in multi-step operation, will save in next iteration)
+        const skipFileSaveReminder = isDeleteOnlyOperation ||
+                                     executedDeleteSkills.length > 0 ||
+                                     executedDataGatheringSkills.length > 0;
+
+        if (claimsFileSave && executedFileSkills.length === 0 && !skipFileSaveReminder) {
             // AI claimed to save a file but no file-creating skill was executed
-            // (and this isn't a delete-only operation where delete skills ran)
+            // (and this isn't a delete-only operation or data-gathering operation)
             // Add reminder to the feedback so AI knows to actually call create_file
             feedbackMessage += '\n\n[IMPORTANT: FILE NOT SAVED]\n';
             feedbackMessage += 'The user asked to save content to a file, but you did not execute create_file.\n';
