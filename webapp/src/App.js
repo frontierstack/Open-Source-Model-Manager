@@ -401,6 +401,79 @@ const CollapsibleSection = ({ title, icon, children, defaultExpanded = true }) =
     );
 };
 
+// Modern Doc Icon Component - sleek pill-shaped icon container
+const DocIcon = ({ icon, color = 'primary' }) => {
+    const colorMap = {
+        primary: { bg: 'rgba(167, 139, 250, 0.15)', border: 'rgba(167, 139, 250, 0.3)', icon: '#a78bfa' },
+        secondary: { bg: 'rgba(34, 211, 238, 0.15)', border: 'rgba(34, 211, 238, 0.3)', icon: '#22d3ee' },
+        success: { bg: 'rgba(34, 197, 94, 0.15)', border: 'rgba(34, 197, 94, 0.3)', icon: '#22c55e' },
+        warning: { bg: 'rgba(251, 191, 36, 0.15)', border: 'rgba(251, 191, 36, 0.3)', icon: '#fbbf24' },
+    };
+    const colors = colorMap[color] || colorMap.primary;
+    return (
+        <Box sx={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 32,
+            height: 32,
+            borderRadius: '10px',
+            background: `linear-gradient(135deg, ${colors.bg} 0%, transparent 100%)`,
+            border: `1px solid ${colors.border}`,
+            flexShrink: 0,
+        }}>
+            {React.cloneElement(icon, { sx: { fontSize: 16, color: colors.icon } })}
+        </Box>
+    );
+};
+
+// Modern styled accordion for docs
+const docAccordionSx = {
+    bgcolor: 'transparent',
+    boxShadow: 'none',
+    border: '1px solid rgba(255,255,255,0.06)',
+    borderRadius: '12px !important',
+    mb: 1.5,
+    '&:before': { display: 'none' },
+    '&.Mui-expanded': {
+        margin: '0 0 12px 0 !important',
+        border: '1px solid rgba(167, 139, 250, 0.2)',
+    },
+    '& .MuiAccordionSummary-root': {
+        minHeight: 56,
+        borderRadius: '12px',
+        '&:hover': { bgcolor: 'rgba(255,255,255,0.02)' },
+        '&.Mui-expanded': { minHeight: 56 },
+    },
+    '& .MuiAccordionSummary-content': {
+        margin: '12px 0',
+        '&.Mui-expanded': { margin: '12px 0' },
+    },
+    '& .MuiAccordionDetails-root': {
+        pt: 0,
+        pb: 2,
+        px: 2,
+    },
+};
+
+// Compact table styling for docs
+const compactTableSx = {
+    '& .MuiTableCell-root': {
+        py: 1,
+        px: 1.5,
+        fontSize: '0.8rem',
+        borderBottom: '1px solid rgba(255,255,255,0.04)',
+    },
+    '& .MuiTableCell-head': {
+        fontWeight: 600,
+        color: 'text.secondary',
+        fontSize: '0.7rem',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px',
+        bgcolor: 'rgba(255,255,255,0.02)',
+    },
+};
+
 const App = () => {
     // Core state
     const [models, setModels] = useState([]);
@@ -5705,122 +5778,101 @@ You are a helpful coding assistant. When writing code, always include comments e
 
                                 
                                 {/* Quick Start Guide */}
-                                <Accordion sx={{ mt: 2 }}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <InfoIcon color="primary" />
-                                            <Typography variant="h6">Quick Start Guide</Typography>
+                                <Accordion sx={{ ...docAccordionSx, mt: 2 }} defaultExpanded>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<PlayArrowIcon />} color="success" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Quick Start</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Get up and running in 3 steps</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        {/* Step 1: Load a Model */}
-                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                                1. Load a Model
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>Discover</strong> tab → Search & download models → <strong>My Models</strong> tab → Click "Load"
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ fontSize: '0.8rem', fontStyle: 'italic' }}>
-                                                Configure launch settings (backend, GPU layers, context size) before starting.
-                                            </Typography>
-                                        </Box>
+                                        {/* Condensed 3-step flow */}
+                                        <Grid container spacing={2}>
+                                            <Grid item xs={12} md={4}>
+                                                <Box sx={{ p: 2, bgcolor: 'rgba(167, 139, 250, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(167, 139, 250, 0.15)' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                                                        <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'primary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700 }}>1</Box>
+                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Load Model</Typography>
+                                                    </Box>
+                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
+                                                        <strong style={{ color: '#fafafa' }}>Discover</strong> → Download → <strong style={{ color: '#fafafa' }}>My Models</strong> → Load
+                                                    </Typography>
+                                                </Box>
+                                            </Grid>
+                                            <Grid item xs={12} md={4}>
+                                                <Box sx={{ p: 2, bgcolor: 'rgba(34, 211, 238, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(34, 211, 238, 0.15)' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                                                        <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'secondary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, color: '#09090b' }}>2</Box>
+                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
+                                                    </Box>
+                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
+                                                        <strong style={{ color: '#fafafa' }}>Koda CLI</strong> for terminal • <strong style={{ color: '#fafafa' }}>Open WebUI</strong> for chat • <strong style={{ color: '#fafafa' }}>API</strong> for code
+                                                    </Typography>
+                                                </Box>
+                                            </Grid>
+                                            <Grid item xs={12} md={4}>
+                                                <Box sx={{ p: 2, bgcolor: 'rgba(34, 197, 94, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(34, 197, 94, 0.15)' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                                                        <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'success.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, color: '#09090b' }}>3</Box>
+                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Create API Key</Typography>
+                                                    </Box>
+                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
+                                                        <strong style={{ color: '#fafafa' }}>API Keys</strong> tab → Create → Copy credentials
+                                                    </Typography>
+                                                </Box>
+                                            </Grid>
+                                        </Grid>
 
-                                        {/* Step 2: Choose Your Interface */}
-                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(167, 139, 250, 0.05)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 2, color: 'secondary.main' }}>
-                                                2. Choose Your Interface
-                                            </Typography>
-
+                                        {/* Interface quick reference */}
+                                        <Box sx={{ mt: 2.5, p: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
                                             <TableContainer>
-                                                <Table size="small">
+                                                <Table size="small" sx={compactTableSx}>
                                                     <TableHead>
                                                         <TableRow>
-                                                            <TableCell><strong>Interface</strong></TableCell>
-                                                            <TableCell><strong>URL / Setup</strong></TableCell>
-                                                            <TableCell><strong>Best For</strong></TableCell>
+                                                            <TableCell sx={{ width: 100 }}>Interface</TableCell>
+                                                            <TableCell>Setup / URL</TableCell>
+                                                            <TableCell sx={{ width: 180 }}>Best For</TableCell>
                                                         </TableRow>
                                                     </TableHead>
                                                     <TableBody>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600 }}>Koda CLI</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                                curl -sk {baseUrl}/api/cli/install | bash
-                                                            </TableCell>
-                                                            <TableCell>Terminal users, AI agents, file operations, automation</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'primary.main' }}>Koda CLI</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -sk {baseUrl}/api/cli/install | bash</TableCell>
+                                                            <TableCell sx={{ color: 'text.secondary' }}>Terminal, automation</TableCell>
                                                         </TableRow>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600 }}>Open WebUI</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                                {openWebUIUrl}
-                                                            </TableCell>
-                                                            <TableCell>Chat interface, conversations, visual users</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'secondary.main' }}>Open WebUI</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{openWebUIUrl}</TableCell>
+                                                            <TableCell sx={{ color: 'text.secondary' }}>Chat interface</TableCell>
                                                         </TableRow>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600 }}>Direct API</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                                {baseUrl}/api/chat
-                                                            </TableCell>
-                                                            <TableCell>Custom integrations, scripts, programmatic access</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'success.main' }}>Direct API</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{baseUrl}/api/chat</TableCell>
+                                                            <TableCell sx={{ color: 'text.secondary' }}>Integrations</TableCell>
                                                         </TableRow>
                                                     </TableBody>
                                                 </Table>
                                             </TableContainer>
                                         </Box>
-
-                                        {/* Interface Details */}
-                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 211, 238, 0.03)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
-                                                Koda CLI Setup
-                                            </Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.3)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', mb: 1 }}>
-                                                curl -sk {baseUrl}/api/cli/install | bash && koda
-                                            </Box>
-                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                                                Run <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/auth</code> to authenticate, <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/help</code> for commands. Koda connects to: <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{baseUrl}</code>
-                                            </Typography>
-
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, mt: 2, color: 'primary.main' }}>
-                                                Open WebUI Connection
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                                                Start via <strong>Apps</strong> tab. Access at <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{openWebUIUrl}</code>. Uses internal connector to query models automatically.
-                                            </Typography>
-
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, mt: 2, color: 'primary.main' }}>
-                                                Direct API Access
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                                                Base URL: <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{baseUrl}</code> — Use the API Builder below for code examples.
-                                            </Typography>
-                                        </Box>
-
-                                        {/* Step 3: API Keys */}
-                                        <Box sx={{ p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                                3. Create API Key (Required for External Access)
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                                                <strong>API Keys</strong> tab → Create key → Copy credentials. Required for Koda CLI, Open WebUI, and external API calls. Set permissions (query, models, instances, admin) as needed.
-                                            </Typography>
-                                        </Box>
                                     </AccordionDetails>
                                 </Accordion>
 
                                 {/* API Builder */}
-                                <Accordion>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <VpnKeyIcon color="secondary" />
-                                            <Typography variant="h6">API Builder</Typography>
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<CodeIcon />} color="secondary" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Code Builder</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Generate code snippets for any endpoint</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        {/* API Builder */}
-                                        <Box sx={{ mb: 4, p: 3, bgcolor: 'rgba(167, 139, 250, 0.05)', borderRadius: 2, border: '1px solid rgba(167, 139, 250, 0.2)' }}>
-                                            <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: 'primary.main' }}>
-                                                API Code Builder
-                                            </Typography>
+                                        <Box sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
                                             <Grid container spacing={2}>
                                                 <Grid item xs={12} md={6}>
                                                     <FormControl fullWidth size="small">
@@ -5913,989 +5965,370 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                 </pre>
                                             </Box>
                                         </Box>
-
                                     </AccordionDetails>
                                 </Accordion>
 
                                 {/* Koda CLI Commands */}
-                                <Accordion>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <TerminalIcon color="primary" />
-                                            <Typography variant="h6">Koda CLI Commands</Typography>
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<TerminalIcon />} color="primary" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Koda CLI</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Terminal commands and installation</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        {/* Installation */}
-                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                                Installation
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                The installer automatically handles PATH setup for Linux, macOS, and Windows. If PATH setup fails, you'll receive manual instructions.
-                                            </Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.3)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', mb: 1 }}>
-                                                <strong>Linux/macOS:</strong> curl -sk {baseUrl}/api/cli/install | bash<br/>
-                                                <strong>Windows (PowerShell):</strong> iwr -useb {baseUrl}/api/cli/install.ps1 | iex
+                                        {/* Installation - condensed */}
+                                        <Box sx={{ mb: 2, p: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                                <CloudDownloadIcon sx={{ fontSize: 14, color: 'secondary.main' }} />
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.8rem', color: 'secondary.main' }}>Install</Typography>
+                                            </Box>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                    <Chip label="Linux/macOS" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(167,139,250,0.2)' }} />
+                                                    <span>curl -sk {baseUrl}/api/cli/install | bash</span>
+                                                </Box>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+                                                    <Chip label="Windows" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(34,211,238,0.2)' }} />
+                                                    <span>iwr -useb {baseUrl}/api/cli/install.ps1 | iex</span>
+                                                </Box>
                                             </Box>
                                         </Box>
 
-                                        {/* Core Commands */}
-                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            Core Commands
-                                        </Typography>
-                                        <TableContainer sx={{ mb: 3 }}>
-                                            <Table size="small">
-                                                <TableHead>
-                                                    <TableRow>
-                                                        <TableCell><strong>Command</strong></TableCell>
-                                                        <TableCell><strong>Description</strong></TableCell>
-                                                    </TableRow>
-                                                </TableHead>
-                                                <TableBody>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/auth</TableCell>
-                                                        <TableCell>Authenticate with API credentials from the API Keys tab</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/init</TableCell>
-                                                        <TableCell>Analyze project and create koda.md configuration file</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/project &lt;name&gt;</TableCell>
-                                                        <TableCell>Create a new project directory structure</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/cwd</TableCell>
-                                                        <TableCell>Show current working directory</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/clear</TableCell>
-                                                        <TableCell>Clear chat history</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/clearsession</TableCell>
-                                                        <TableCell>Clear context but keep history visible</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/help</TableCell>
-                                                        <TableCell>Show all available commands</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/quit</TableCell>
-                                                        <TableCell>Exit Koda CLI</TableCell>
-                                                    </TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </TableContainer>
+                                        {/* Commands - compact two-column layout */}
+                                        <Grid container spacing={2}>
+                                            <Grid item xs={12} md={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Commands</Typography>
+                                                    <Table size="small" sx={compactTableSx}>
+                                                        <TableBody>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/auth</TableCell><TableCell sx={{ color: 'text.secondary' }}>Authenticate</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/init</TableCell><TableCell sx={{ color: 'text.secondary' }}>Create koda.md</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/project</TableCell><TableCell sx={{ color: 'text.secondary' }}>New project</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/clear</TableCell><TableCell sx={{ color: 'text.secondary' }}>Clear history</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/help</TableCell><TableCell sx={{ color: 'text.secondary' }}>Show commands</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/quit</TableCell><TableCell sx={{ color: 'text.secondary' }}>Exit CLI</TableCell></TableRow>
+                                                        </TableBody>
+                                                    </Table>
+                                                </Box>
+                                            </Grid>
+                                            <Grid item xs={12} md={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Modes & Search</Typography>
+                                                    <Table size="small" sx={compactTableSx}>
+                                                        <TableBody>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/mode standalone</TableCell><TableCell sx={{ color: 'text.secondary' }}>Direct chat (default)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/mode agent</TableCell><TableCell sx={{ color: 'text.secondary' }}>Task-aware mode</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/mode agent collab</TableCell><TableCell sx={{ color: 'text.secondary' }}>Multi-agent</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/web</TableCell><TableCell sx={{ color: 'text.secondary' }}>Toggle web search</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/websearch, /ws</TableCell><TableCell sx={{ color: 'text.secondary' }}>Aliases for /web</TableCell></TableRow>
+                                                        </TableBody>
+                                                    </Table>
+                                                </Box>
+                                            </Grid>
+                                        </Grid>
 
-                                        {/* Mode Commands */}
-                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            Mode Selection
-                                        </Typography>
-                                        <TableContainer sx={{ mb: 3 }}>
-                                            <Table size="small">
-                                                <TableHead>
-                                                    <TableRow>
-                                                        <TableCell><strong>Command</strong></TableCell>
-                                                        <TableCell><strong>Description</strong></TableCell>
-                                                    </TableRow>
-                                                </TableHead>
-                                                <TableBody>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode standalone</TableCell>
-                                                        <TableCell>Direct chat with AI (default mode)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode agent</TableCell>
-                                                        <TableCell>Agent-specific context mode for task-aware interactions</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/mode agent collab</TableCell>
-                                                        <TableCell>Multi-agent collaboration mode</TableCell>
-                                                    </TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </TableContainer>
-
-                                        {/* Web Search Toggle */}
-                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(167, 139, 250, 0.1)', borderRadius: 1, border: '1px solid rgba(167, 139, 250, 0.3)' }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
-                                                Web Search Toggle
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 2 }}>
-                                                The <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/web</code> command toggles web search on or off. Each call switches the state.
-                                            </Typography>
-                                            <TableContainer>
-                                                <Table size="small">
-                                                    <TableHead>
-                                                        <TableRow>
-                                                            <TableCell><strong>Command</strong></TableCell>
-                                                            <TableCell><strong>Effect</strong></TableCell>
-                                                        </TableRow>
-                                                    </TableHead>
-                                                    <TableBody>
-                                                        <TableRow>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/web</TableCell>
-                                                            <TableCell>Toggle web search on/off (switches current state)</TableCell>
-                                                        </TableRow>
-                                                        <TableRow>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/websearch</TableCell>
-                                                            <TableCell>Alias for /web</TableCell>
-                                                        </TableRow>
-                                                        <TableRow>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/ws</TableCell>
-                                                            <TableCell>Short alias for /web</TableCell>
-                                                        </TableRow>
-                                                    </TableBody>
-                                                </Table>
-                                            </TableContainer>
-                                            <Typography variant="body2" sx={{ mt: 2, fontSize: '0.8rem', fontStyle: 'italic' }}>
-                                                <strong>To enable:</strong> Run <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/web</code> when web search is OFF. Status bar will show "Web Search: ON".<br/>
-                                                <strong>To disable:</strong> Run <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/web</code> when web search is ON. Status bar will show "Web Search: OFF".
-                                            </Typography>
-                                        </Box>
-
-                                        {/* Features */}
-                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            Features
-                                        </Typography>
-                                        <Box sx={{ pl: 2, mb: 2 }}>
-                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Live Command Completion:</strong> Type <code style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>/</code> to see inline suggestions, press Tab to complete</Typography>
-                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Autonomous Skill Execution:</strong> AI executes skills directly (create files, read files, git operations, etc.)</Typography>
-                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Animated UI:</strong> Modern spinners for thinking/waiting states</Typography>
-                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Context Tracking:</strong> Color-coded warnings when approaching context limits</Typography>
-                                            <Typography variant="body2" sx={{ mb: 0.5 }}>• <strong>Multi-line Paste:</strong> Automatically detects multi-line pastes and displays in a bordered box</Typography>
+                                        {/* Features - compact chips */}
+                                        <Box sx={{ mt: 2, display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                            <Chip label="Tab completion" size="small" sx={{ bgcolor: 'rgba(167,139,250,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Autonomous skills" size="small" sx={{ bgcolor: 'rgba(34,211,238,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Animated UI" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Context tracking" size="small" sx={{ bgcolor: 'rgba(251,191,36,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Multi-line paste" size="small" sx={{ bgcolor: 'rgba(167,139,250,0.15)', fontSize: '0.7rem' }} />
                                         </Box>
                                     </AccordionDetails>
                                 </Accordion>
 
                                 {/* Open WebUI Web Search */}
-                                <Accordion>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <SearchIcon color="secondary" />
-                                            <Typography variant="h6">Open WebUI Web Search</Typography>
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<SearchIcon />} color="secondary" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Open WebUI Search</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Auto-configured web search integration</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        <Box sx={{ mb: 3, p: 2, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 1, border: '1px solid rgba(34, 197, 94, 0.3)' }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'success.main' }}>
-                                                External Web Search (Auto-Configured)
-                                            </Typography>
-                                            <Typography variant="body2">
-                                                Open WebUI is automatically configured to use ModelServer's web search API with DuckDuckGo and Playwright content fetching. Includes dynamic date/time context and intelligent query generation.
-                                            </Typography>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
+                                            <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
+                                            <Typography sx={{ fontSize: '0.85rem' }}>Auto-configured with DuckDuckGo + Playwright content fetching</Typography>
                                         </Box>
 
-                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            Setup (API Key Only)
-                                        </Typography>
-                                        <Box sx={{ pl: 2, mb: 3 }}>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>1.</strong> Create an API key in the <strong>API Keys</strong> tab with <code>query</code> permission
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>2.</strong> Copy the <strong>Secret</strong> (Bearer token)
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>3.</strong> Open <a href={openWebUIUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#22d3ee' }}>Open WebUI</a> → <strong>Admin Panel</strong> → <strong>Settings</strong> → <strong>Web Search</strong>
-                                            </Typography>
-                                            <Typography variant="body2" sx={{ mb: 1 }}>
-                                                <strong>4.</strong> Paste the secret into <strong>External Web Search API Key</strong> and click <strong>Save</strong>
-                                            </Typography>
-                                        </Box>
-
-                                        <Box sx={{ p: 2, mb: 2, bgcolor: 'rgba(167, 139, 250, 0.1)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'primary.main' }}>
-                                                Auto-Provisioned Settings
-                                            </Typography>
-                                            <Typography variant="body2" component="div" sx={{ fontSize: '0.8rem' }}>
-                                                <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
-                                                    <li><strong>Search URL:</strong> <code>http://host.docker.internal:3080/api/openwebui/search</code></li>
-                                                    <li><strong>Engine:</strong> external</li>
-                                                    <li><strong>Smart RAG Template:</strong> Teaches model when to use search vs own knowledge</li>
-                                                    <li><strong>Aggressive Query Generation:</strong> Always searches for date/time, news, current events</li>
-                                                    <li><strong>Dynamic Date/Time:</strong> Every search includes current timestamp</li>
-                                                </ul>
-                                            </Typography>
-                                        </Box>
-
-                                        <Box sx={{ p: 2, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 1 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                                Usage
-                                            </Typography>
-                                            <Typography variant="body2">
-                                                Toggle web search using the globe icon in the chat input. When enabled, the model searches the web and receives real-time date/time context. Try asking "What is the date today?" or "Latest news".
-                                            </Typography>
-                                        </Box>
+                                        <Grid container spacing={2}>
+                                            <Grid item xs={12} md={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Setup (API Key Only)</Typography>
+                                                    <Box sx={{ fontSize: '0.8rem' }}>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Create API key with <code style={{ fontSize: '0.7rem', bgcolor: 'rgba(0,0,0,0.3)', p: '2px 4px', borderRadius: 2 }}>query</code> permission</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Copy the Bearer token</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Open WebUI → Admin → Settings → Web Search</Typography>
+                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>4.</strong> Paste token and save</Typography>
+                                                    </Box>
+                                                </Box>
+                                            </Grid>
+                                            <Grid item xs={12} md={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Auto-Provisioned</Typography>
+                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                                        <Chip label="External search engine" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(167,139,250,0.15)' }} />
+                                                        <Chip label="Smart RAG template" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,211,238,0.15)' }} />
+                                                        <Chip label="Dynamic date/time" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="Auto query gen" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
+                                                    </Box>
+                                                </Box>
+                                            </Grid>
+                                        </Grid>
                                     </AccordionDetails>
                                 </Accordion>
 
                                 {/* Configuration Flags */}
-                                <Accordion>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <SettingsIcon color="primary" />
-                                            <Typography variant="h6">Configuration Flags Reference</Typography>
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<TuneIcon />} color="warning" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Configuration Flags</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>llama.cpp and vLLM backend settings</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        {/* llama.cpp Settings */}
-                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            llama.cpp Backend (GPU: Maxwell 5.2+)
-                                        </Typography>
-                                        <TableContainer sx={{ mb: 3 }}>
-                                            <Table size="small">
-                                                <TableHead>
-                                                    <TableRow>
-                                                        <TableCell><strong>Flag</strong></TableCell>
-                                                        <TableCell><strong>Type</strong></TableCell>
-                                                        <TableCell><strong>Default</strong></TableCell>
-                                                        <TableCell><strong>Description</strong></TableCell>
-                                                    </TableRow>
-                                                </TableHead>
-                                                <TableBody>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>nGpuLayers</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>-1</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.nGpuLayers}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>contextSize</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>4096</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.contextSize}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>contextShift</TableCell>
-                                                        <TableCell>boolean</TableCell>
-                                                        <TableCell>true</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.contextShift}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>flashAttention</TableCell>
-                                                        <TableCell>boolean</TableCell>
-                                                        <TableCell>false</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.flashAttention}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>cacheTypeK</TableCell>
-                                                        <TableCell>string</TableCell>
-                                                        <TableCell>f16</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.cacheTypeK} (Options: f16, q8_0, q4_0)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>cacheTypeV</TableCell>
-                                                        <TableCell>string</TableCell>
-                                                        <TableCell>f16</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.cacheTypeV} (Options: f16, q8_0, q4_0)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>threads</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>0</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.threads}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>parallelSlots</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>1</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.parallelSlots}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>batchSize</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>512</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.batchSize}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>ubatchSize</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>512</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.ubatchSize}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>repeatPenalty</TableCell>
-                                                        <TableCell>float</TableCell>
-                                                        <TableCell>1.0</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.repeatPenalty}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>repeatLastN</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>64</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.repeatLastN}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>presencePenalty</TableCell>
-                                                        <TableCell>float</TableCell>
-                                                        <TableCell>0.0</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.presencePenalty}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>frequencyPenalty</TableCell>
-                                                        <TableCell>float</TableCell>
-                                                        <TableCell>0.0</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.frequencyPenalty}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>disableThinking</TableCell>
-                                                        <TableCell>boolean</TableCell>
-                                                        <TableCell>false</TableCell>
-                                                        <TableCell>{LLAMACPP_TOOLTIPS.disableThinking}</TableCell>
-                                                    </TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </TableContainer>
+                                        <Grid container spacing={2}>
+                                            {/* llama.cpp Settings */}
+                                            <Grid item xs={12} lg={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(167, 139, 250, 0.05)', borderRadius: 2, border: '1px solid rgba(167, 139, 250, 0.1)' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                                        <Chip label="llama.cpp" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'primary.main', color: '#09090b', fontWeight: 600 }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Maxwell 5.2+</Typography>
+                                                    </Box>
+                                                    <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
+                                                        <TableBody>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main', width: 110 }}>nGpuLayers</TableCell><TableCell sx={{ color: 'text.secondary' }}>-1</TableCell><TableCell sx={{ color: 'text.secondary' }}>GPU layers (-1=all)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>contextSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>4096</TableCell><TableCell sx={{ color: 'text.secondary' }}>Context window size</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>flashAttention</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Flash attention (faster)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>cacheTypeK/V</TableCell><TableCell sx={{ color: 'text.secondary' }}>f16</TableCell><TableCell sx={{ color: 'text.secondary' }}>KV cache (f16/q8_0/q4_0)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>threads</TableCell><TableCell sx={{ color: 'text.secondary' }}>0</TableCell><TableCell sx={{ color: 'text.secondary' }}>CPU threads (0=auto)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>parallelSlots</TableCell><TableCell sx={{ color: 'text.secondary' }}>1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Concurrent requests</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>batchSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>512</TableCell><TableCell sx={{ color: 'text.secondary' }}>Prompt batch size</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>repeatPenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>1.0</TableCell><TableCell sx={{ color: 'text.secondary' }}>Repetition penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>disableThinking</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip reasoning mode</TableCell></TableRow>
+                                                        </TableBody>
+                                                    </Table>
+                                                </Box>
+                                            </Grid>
 
-                                        {/* vLLM Settings */}
-                                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: 'secondary.main' }}>
-                                            vLLM Backend (GPU: Pascal 6.0+)
-                                        </Typography>
-                                        <TableContainer>
-                                            <Table size="small">
-                                                <TableHead>
-                                                    <TableRow>
-                                                        <TableCell><strong>Flag</strong></TableCell>
-                                                        <TableCell><strong>Type</strong></TableCell>
-                                                        <TableCell><strong>Default</strong></TableCell>
-                                                        <TableCell><strong>Description</strong></TableCell>
-                                                    </TableRow>
-                                                </TableHead>
-                                                <TableBody>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>maxModelLen</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>4096</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.maxModelLen}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>contextShift</TableCell>
-                                                        <TableCell>boolean</TableCell>
-                                                        <TableCell>true</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.contextShift}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>cpuOffloadGb</TableCell>
-                                                        <TableCell>float</TableCell>
-                                                        <TableCell>0</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.cpuOffloadGb}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>gpuMemoryUtilization</TableCell>
-                                                        <TableCell>float</TableCell>
-                                                        <TableCell>0.9</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.gpuMemoryUtilization}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>tensorParallelSize</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>1</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.tensorParallelSize}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>maxNumSeqs</TableCell>
-                                                        <TableCell>integer</TableCell>
-                                                        <TableCell>256</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.maxNumSeqs}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>kvCacheDtype</TableCell>
-                                                        <TableCell>string</TableCell>
-                                                        <TableCell>auto</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.kvCacheDtype} (Options: auto, fp8)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>trustRemoteCode</TableCell>
-                                                        <TableCell>boolean</TableCell>
-                                                        <TableCell>true</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.trustRemoteCode}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>enforceEager</TableCell>
-                                                        <TableCell>boolean</TableCell>
-                                                        <TableCell>false</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.enforceEager}</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>disableThinking</TableCell>
-                                                        <TableCell>boolean</TableCell>
-                                                        <TableCell>false</TableCell>
-                                                        <TableCell>{SETTINGS_TOOLTIPS.disableThinking}</TableCell>
-                                                    </TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </TableContainer>
+                                            {/* vLLM Settings */}
+                                            <Grid item xs={12} lg={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 2, border: '1px solid rgba(34, 211, 238, 0.1)' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                                        <Chip label="vLLM" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'secondary.main', color: '#09090b', fontWeight: 600 }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Pascal 6.0+</Typography>
+                                                    </Box>
+                                                    <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
+                                                        <TableBody>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main', width: 130 }}>maxModelLen</TableCell><TableCell sx={{ color: 'text.secondary' }}>4096</TableCell><TableCell sx={{ color: 'text.secondary' }}>Max context length</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>cpuOffloadGb</TableCell><TableCell sx={{ color: 'text.secondary' }}>0</TableCell><TableCell sx={{ color: 'text.secondary' }}>CPU offload (GB)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>gpuMemoryUtil</TableCell><TableCell sx={{ color: 'text.secondary' }}>0.9</TableCell><TableCell sx={{ color: 'text.secondary' }}>GPU memory fraction</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>tensorParallelSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Multi-GPU parallelism</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>maxNumSeqs</TableCell><TableCell sx={{ color: 'text.secondary' }}>256</TableCell><TableCell sx={{ color: 'text.secondary' }}>Max concurrent seqs</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'text.secondary' }}>auto</TableCell><TableCell sx={{ color: 'text.secondary' }}>Cache dtype (auto/fp8)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'text.secondary' }}>true</TableCell><TableCell sx={{ color: 'text.secondary' }}>Trust HF code</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>enforceEager</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Disable CUDA graphs</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>disableThinking</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip reasoning mode</TableCell></TableRow>
+                                                        </TableBody>
+                                                    </Table>
+                                                </Box>
+                                            </Grid>
+                                        </Grid>
                                     </AccordionDetails>
                                 </Accordion>
 
                                 {/* API Key Permissions */}
-                                <Accordion>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <VpnKeyIcon color="primary" />
-                                            <Typography variant="h6">API Key Permissions</Typography>
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<VpnKeyIcon />} color="primary" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Permissions</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Permission scopes for API keys</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        <Typography variant="body2" sx={{ mb: 2 }}>
-                                            API keys can be assigned one or more permission categories that control access to different API endpoints. Select the minimum permissions needed for your use case.
-                                        </Typography>
-                                        <TableContainer>
-                                            <Table size="small">
-                                                <TableHead>
-                                                    <TableRow>
-                                                        <TableCell><strong>Permission</strong></TableCell>
-                                                        <TableCell><strong>Access Granted</strong></TableCell>
-                                                        <TableCell><strong>Use Case</strong></TableCell>
-                                                    </TableRow>
-                                                </TableHead>
-                                                <TableBody>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'primary.main', fontWeight: 600 }}>query</TableCell>
-                                                        <TableCell>Chat completions, text completions, web search, Playwright fetch, documentation lookup</TableCell>
-                                                        <TableCell>Chatbots, AI assistants, search tools, web scraping</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main', fontWeight: 600 }}>models</TableCell>
-                                                        <TableCell>List models, download from HuggingFace, load/unload instances, system prompts, model configs, hardware info</TableCell>
-                                                        <TableCell>Model management scripts, deployment automation</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', fontWeight: 600 }}>instances</TableCell>
-                                                        <TableCell>List running instances, stop instances, view slot status, clear KV cache</TableCell>
-                                                        <TableCell>Instance monitoring, resource management</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'info.main', fontWeight: 600 }}>agents</TableCell>
-                                                        <TableCell>Create/manage AI agents, skills, tasks, file operations for agents</TableCell>
-                                                        <TableCell>Agent automation, Koda CLI, AI workflows</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'error.main', fontWeight: 600 }}>admin</TableCell>
-                                                        <TableCell>Create/revoke API keys, switch backends, reset system, manage apps (Open WebUI)</TableCell>
-                                                        <TableCell>System administration, full control</TableCell>
-                                                    </TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </TableContainer>
-                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(251, 191, 36, 0.1)', borderRadius: 1 }}>
-                                            <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                                                <strong>Security Note:</strong> Authentication endpoints (login, register, logout) require session auth only and do not use API key permissions. The <code>/api/cli/install</code> endpoint is public (no auth required).
-                                            </Typography>
+                                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(167, 139, 250, 0.08)', borderRadius: 2, border: '1px solid rgba(167, 139, 250, 0.15)' }}>
+                                                <Chip label="query" size="small" sx={{ mb: 1, bgcolor: 'primary.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Chat, completions, web search, Playwright</Typography>
+                                            </Box>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(34, 211, 238, 0.08)', borderRadius: 2, border: '1px solid rgba(34, 211, 238, 0.15)' }}>
+                                                <Chip label="models" size="small" sx={{ mb: 1, bgcolor: 'secondary.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>List, download, load/unload, configs</Typography>
+                                            </Box>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.08)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.15)' }}>
+                                                <Chip label="instances" size="small" sx={{ mb: 1, bgcolor: 'success.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>List, stop, slots, clear KV cache</Typography>
+                                            </Box>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(59, 130, 246, 0.08)', borderRadius: 2, border: '1px solid rgba(59, 130, 246, 0.15)' }}>
+                                                <Chip label="agents" size="small" sx={{ mb: 1, bgcolor: 'info.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Agents, skills, tasks, file ops</Typography>
+                                            </Box>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.15)' }}>
+                                                <Chip label="admin" size="small" sx={{ mb: 1, bgcolor: 'error.main', color: '#fafafa', fontWeight: 600, fontSize: '0.7rem' }} />
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>API keys, backend, system, apps</Typography>
+                                            </Box>
+                                        </Box>
+                                        <Box sx={{ mt: 2, p: 1, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                            <WarningIcon sx={{ fontSize: 14, color: 'warning.main' }} />
+                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Auth endpoints use session auth only. <code style={{ fontSize: '0.65rem' }}>/api/cli/install</code> is public.</Typography>
                                         </Box>
                                     </AccordionDetails>
                                 </Accordion>
 
                                 {/* API Endpoints */}
-                                <Accordion>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <StorageIcon color="secondary" />
-                                            <Typography variant="h6">API Endpoints</Typography>
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<StorageIcon />} color="secondary" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Endpoints</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Complete endpoint reference by category</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
+                                        <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, overflow: 'hidden' }}>
                                         <TableContainer>
-                                            <Table size="small">
-                                                <TableHead>
-                                                    <TableRow>
-                                                        <TableCell><strong>Endpoint</strong></TableCell>
-                                                        <TableCell><strong>Method</strong></TableCell>
-                                                        <TableCell><strong>Description</strong></TableCell>
-                                                    </TableRow>
-                                                </TableHead>
+                                            <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.75, px: 1.5, fontSize: '0.75rem' } }}>
                                                 <TableBody>
                                                     {/* Query Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(167, 139, 250, 0.1)', fontWeight: 600 }}>
-                                                            Query Endpoints (query permission)
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(167, 139, 250, 0.1)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="query" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'primary.main', color: '#09090b' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Query Endpoints</Typography>
+                                                            </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/chat</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Send chat messages to running models with automatic routing and streaming support</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/complete</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Generate text completions from prompts without chat formatting</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/chat/stream</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Streaming chat endpoint using Server-Sent Events (SSE)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/search</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Search the web with Playwright content fetching (fetchContent=true for actual page content)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/openwebui/search</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>External web search endpoint for Open WebUI integration (accepts query, returns formatted results)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/playwright/fetch</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Fetch URL(s) with Playwright stealth mode - bypasses bot detection, handles JS-rendered pages</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/playwright/interact</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Interact with pages (click, type, scroll, wait) before extracting content</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/playwright/status</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Check Playwright availability and browser pool status</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/docs</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Fetch library documentation from DevDocs.io</TableCell>
-                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat</TableCell><TableCell sx={{ color: 'text.secondary', width: 50 }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Chat with streaming support</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/complete</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Text completion</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/stream</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>SSE streaming chat</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Web search with content fetch</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stealth browser fetch</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Page interaction</TableCell></TableRow>
 
                                                     {/* Models Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(34, 211, 238, 0.1)', fontWeight: 600 }}>
-                                                            Model Management Endpoints (models permission)
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(34, 211, 238, 0.1)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="models" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'secondary.main', color: '#09090b' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Model Management</Typography>
+                                                            </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/models</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List all downloaded models with status, port info, and configuration details</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/models/pull</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Download GGUF models from HuggingFace repositories with progress tracking</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/models/:name/load</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Start a vLLM instance for a model with custom GPU, context, and performance settings</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/models/:name</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Stop running instance and permanently delete model files from disk</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/downloads</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List active model downloads with progress information</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/downloads/:downloadId</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Cancel an active model download</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/huggingface/search</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Search HuggingFace for GGUF models with filtering and ranking</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/huggingface/files/:owner/:repo</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List available GGUF files in a HuggingFace repository</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system-prompts</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List all system prompts for all models</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system-prompts/:modelName</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get system prompt for a specific model</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system-prompts/:modelName</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Update system prompt for a specific model</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system-prompts/:modelName</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Delete system prompt for a specific model</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/model-configs</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List all model configurations</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/model-configs/:modelName</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get configuration for a specific model</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/model-configs/:modelName</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Update configuration for a specific model</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system/resources</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get hardware information (CPU cores, RAM, GPU VRAM)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system/optimal-settings</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Calculate optimal launch settings based on model size and hardware</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/backend/active</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get current active backend (llama.cpp or vLLM) and instance counts</TableCell>
-                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List all models</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/pull</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Download from HuggingFace</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start model instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Search GGUF models</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/system/resources</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Hardware info</TableCell></TableRow>
 
                                                     {/* Instances Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(34, 197, 94, 0.1)', fontWeight: 600 }}>
-                                                            Instance Management Endpoints (instances permission)
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(34, 197, 94, 0.1)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="instances" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'success.main', color: '#09090b' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Instance Management</Typography>
+                                                            </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List all running model instances (llama.cpp and vLLM) with port assignments</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Stop and remove a model instance (works for both llama.cpp and vLLM)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name/slots</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get slot usage information for a running llama.cpp instance</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/vllm/instances/:name/slots/clear</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Clear all slots for a running llama.cpp instance</TableCell>
-                                                    </TableRow>
-
-                                                    {/* Authentication */}
-                                                    <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(251, 191, 36, 0.1)', fontWeight: 600 }}>
-                                                            Authentication Endpoints (no permission required)
-                                                        </TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/register</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Create a new user account (username, password)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/login</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Login with username/password, creates session</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/logout</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Logout and destroy current session</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/me</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get current authenticated user info</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/auth/password</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Change password (requires authentication)</TableCell>
-                                                    </TableRow>
-
-                                                    {/* Admin Permission */}
-                                                    <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(239, 68, 68, 0.1)', fontWeight: 600 }}>
-                                                            Admin Endpoints (admin permission)
-                                                        </TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List API keys (without secrets) with usage statistics</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Create new API key with specified permissions and rate limits</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys/:id</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Update an existing API key's settings</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys/:id/revoke</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Revoke (deactivate) an API key</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys/:id</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Permanently delete an API key</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys/:id/stats</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get usage statistics for a specific API key</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/api-keys/:id/clear-usage</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Clear usage statistics for a specific API key</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/backend/active</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Set active backend (llama.cpp or vLLM) and optionally stop old instances</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/system/reset</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Reset system - delete all models and data</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/apps</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List managed applications (Open WebUI)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/apps/:name/start</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Start an application service</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/apps/:name/stop</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Stop an application service</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/apps/:name/restart</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Restart an application service</TableCell>
-                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/vllm/instances</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List running instances</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/vllm/instances/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/vllm/instances/:name/slots</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage slots</TableCell></TableRow>
 
                                                     {/* Agents Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(139, 92, 246, 0.1)', fontWeight: 600 }}>
-                                                            Agent Management Endpoints (agents permission)
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(59, 130, 246, 0.1)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="agents" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'info.main', color: '#09090b' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Agent System</Typography>
+                                                            </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List all AI agents</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/:id</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get a single agent by ID</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Create new AI agent</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/:id</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Update agent configuration</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/:id</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Delete an agent</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/:id/regenerate-key</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Regenerate agent API key</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List all agent skills</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills/:id</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get a single skill by ID</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Create new skill</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills/:id</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Update skill definition</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills/:id</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Delete a skill</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/skills/:skillName/execute</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Execute a skill with provided parameters</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/skills/available</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get available skills (filtered by enabled status)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/skills/discover</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Discover skills by search query or category</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agents/skills/recommend</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Get skill recommendations based on task description</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/tasks</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List all agent tasks</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/tasks/:id</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get a single task by ID</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/tasks</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Create new task for an agent</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/tasks/:id</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Update task status or details</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/tasks/:id</TableCell>
-                                                        <TableCell>DELETE</TableCell>
-                                                        <TableCell>Delete a task</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent-permissions</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get global agent permissions</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent-permissions</TableCell>
-                                                        <TableCell>PUT</TableCell>
-                                                        <TableCell>Update global agent permissions</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent/file/read</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Read file (for agent file operations)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent/file/write</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Write file (for agent file operations)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent/file/delete</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Delete file (for agent file operations)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent/file/list</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>List directory contents (for agent file operations)</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/agent/file/move</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>Move/rename file (for agent file operations)</TableCell>
-                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/Create agents</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/skills</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/Create skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tasks</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/Create tasks</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agent/file/*</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>File operations</TableCell></TableRow>
 
-                                                    {/* Public Endpoints */}
+                                                    {/* Admin Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(156, 163, 175, 0.1)', fontWeight: 600 }}>
-                                                            Public Endpoints (no authentication required)
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(239, 68, 68, 0.1)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="admin" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'error.main', color: '#fafafa' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Administration</Typography>
+                                                            </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/api/cli/install</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Get koda CLI installation script</TableCell>
-                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage API keys</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/backend/active</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Set backend</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/*</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Control apps</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/system/reset</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Reset system</TableCell></TableRow>
 
-                                                    {/* vLLM Instance APIs */}
+                                                    {/* OpenAI Compatible */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(251, 191, 36, 0.1)', fontWeight: 600 }}>
-                                                            vLLM Instance APIs (OpenAI-compatible on ports 8001+)
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(251, 191, 36, 0.1)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="OpenAI" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.3)' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Instance Ports (8001+)</Typography>
+                                                            </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/v1/chat/completions</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>OpenAI-compatible chat completions on vLLM instance ports</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/v1/completions</TableCell>
-                                                        <TableCell>POST</TableCell>
-                                                        <TableCell>OpenAI-compatible text completions on vLLM instance ports</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/v1/models</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>List models available on vLLM instance</TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>/health</TableCell>
-                                                        <TableCell>GET</TableCell>
-                                                        <TableCell>Health check endpoint for vLLM instance</TableCell>
-                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible chat</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible text</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
+                                        </Box>
                                     </AccordionDetails>
                                 </Accordion>
 
                                 {/* System Reset */}
-                                <Accordion>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <WarningIcon color="error" />
-                                            <Typography variant="h6">System Reset</Typography>
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <Box sx={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                width: 32,
+                                                height: 32,
+                                                borderRadius: '10px',
+                                                background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, transparent 100%)',
+                                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                            }}>
+                                                <WarningIcon sx={{ fontSize: 16, color: '#ef4444' }} />
+                                            </Box>
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>System Reset</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Delete models and clean up resources</Typography>
+                                            </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        <Alert severity="warning" sx={{ mb: 2 }}>
-                                            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
-                                                Danger Zone
+                                        <Box sx={{ p: 2, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.2)', mb: 2 }}>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
+                                                Stops all instances, deletes all models, and cleans up Docker resources. API keys and configuration are preserved.
                                             </Typography>
-                                            <Typography variant="body2">
-                                                This will stop all instances, delete all models, and clean up Docker resources. API keys and configuration will be preserved.
-                                            </Typography>
-                                        </Alert>
+                                        </Box>
                                         <Button
                                             variant="outlined"
                                             color="error"
                                             onClick={() => setResetDialogOpen(true)}
                                             fullWidth
+                                            size="small"
                                         >
                                             Reset System
                                         </Button>
