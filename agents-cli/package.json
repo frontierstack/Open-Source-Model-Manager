@@ -1,6 +1,6 @@
 {
   "name": "koda-cli",
-  "version": "0.5.41",
+  "version": "0.5.43",
   "description": "koda - Your AI project assistant CLI",
   "main": "bin/koda.js",
   "bin": {

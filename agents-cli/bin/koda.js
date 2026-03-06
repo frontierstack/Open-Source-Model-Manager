@@ -2189,8 +2189,93 @@ function detectFalseCompletionClaim(response, userMessage) {
     return aiClaimsCompletion;
 }
 
-// Build system prompt with skill instructions
-function buildSkillSystemPrompt(skills, mode = 'standalone', websearchEnabled = false) {
+// Skill categories for smart routing - ALL skills organized by function
+const SKILL_CATEGORIES = {
+    FILE_OPS: ['create_file', 'read_file', 'update_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file', 'copy_file', 'create_directory', 'append_to_file', 'tail_file', 'head_file', 'search_files', 'get_file_metadata', 'diff_files', 'search_replace_file'],
+    ARCHIVE: ['unzip_file', 'zip_files', 'tar_extract', 'tar_create', 'extract_archive'],
+    NETWORK: ['fetch_url', 'dns_lookup', 'check_port', 'ping_host', 'http_request', 'download_file', 'curl_request'],
+    WEB: ['playwright_fetch', 'playwright_interact', 'web_search'],
+    SECURITY: ['threat_intel'],
+    PROCESS: ['list_processes', 'kill_process', 'start_process'],
+    SYSTEM: ['system_info', 'disk_usage', 'get_uptime', 'list_ports', 'list_services', 'screenshot'],
+    GIT: ['git_status', 'git_diff', 'git_log', 'git_branch'],
+    ENV: ['get_env_var', 'set_env_var', 'which_command'],
+    SHELL: ['run_bash', 'run_python', 'run_powershell', 'run_cmd'],
+    WINDOWS: ['get_windows_services', 'get_registry_value', 'set_registry_value'],
+    DATA: ['parse_json', 'parse_csv', 'base64_encode', 'base64_decode', 'hash_data', 'compress_data', 'decompress_data'],
+    CODE: ['find_patterns', 'analyze_code'],
+    PDF: ['create_pdf', 'html_to_pdf', 'markdown_to_html', 'read_pdf', 'pdf_page_count', 'pdf_to_images'],
+    IMAGE: ['ocr_image', 'convert_image'],
+    EMAIL: ['read_email_file'],
+    MEDIA: ['analyze_video'],
+    UTILITY: ['generate_uuid', 'get_timestamp', 'count_words'],
+    DATABASE: ['sqlite_query', 'sqlite_list_tables'],
+    CLIPBOARD: ['clipboard_read', 'clipboard_write']
+};
+
+// Map intent keywords to categories for smart detection
+const INTENT_KEYWORDS = {
+    FILE_OPS: ['file', 'create', 'read', 'write', 'delete', 'remove', 'list', 'directory', 'folder', 'move', 'copy', 'rename', 'append', 'tail', 'head', 'search file', 'find file', 'metadata', 'diff', 'replace in file'],
+    ARCHIVE: ['zip', 'unzip', 'tar', 'archive', 'compress', 'extract', 'decompress', '.gz', '.tar', '.zip'],
+    NETWORK: ['dns', 'ping', 'port', 'network', 'download', 'http request', 'curl', 'fetch url'],
+    WEB: ['web', 'scrape', 'browse', 'website', 'webpage', 'search online', 'look up online', 'playwright'],
+    SECURITY: ['threat', 'security', 'malware', 'virus', 'reputation', 'ioc', 'indicator', 'virustotal', 'abuse', 'malicious', 'threat report', 'threat intel', 'ip reputation', 'hash check', 'domain check'],
+    PROCESS: ['process', 'kill', 'running', 'pid', 'spawn', 'execute process'],
+    SYSTEM: ['system info', 'memory', 'cpu', 'disk usage', 'uptime', 'screenshot', 'services', 'open ports'],
+    GIT: ['git', 'commit', 'branch', 'repository', 'repo', 'staged', 'unstaged'],
+    ENV: ['environment', 'variable', 'env var', 'path variable', 'which command'],
+    SHELL: ['bash', 'shell', 'script', 'python script', 'powershell', 'terminal', 'command line', 'run command'],
+    WINDOWS: ['windows', 'registry', 'windows service'],
+    DATA: ['json', 'csv', 'parse', 'encode', 'decode', 'base64', 'hash', 'md5', 'sha', 'checksum'],
+    CODE: ['analyze code', 'code quality', 'pattern', 'complexity', 'refactor'],
+    PDF: ['pdf', 'document', 'report', 'html to pdf', 'markdown to', 'generate report'],
+    IMAGE: ['image', 'ocr', 'convert image', 'picture', 'photo', 'screenshot'],
+    EMAIL: ['email', 'mail', '.eml'],
+    MEDIA: ['video', 'media', 'analyze video', 'extract frames'],
+    UTILITY: ['uuid', 'timestamp', 'current time', 'count words', 'word count'],
+    DATABASE: ['sqlite', 'database', 'sql', 'query', 'table'],
+    CLIPBOARD: ['clipboard', 'copy to clipboard', 'paste']
+};
+
+// Detect which skill categories are relevant based on user message
+function detectIntentCategories(userMessage, websearchEnabled) {
+    // Core categories always available
+    const coreCategories = ['FILE_OPS', 'PROCESS', 'SYSTEM', 'GIT', 'ENV'];
+
+    if (!userMessage) {
+        return websearchEnabled ? [...coreCategories, 'WEB', 'SECURITY'] : coreCategories;
+    }
+
+    const messageLower = userMessage.toLowerCase();
+    const detectedCategories = new Set(coreCategories);
+
+    // Check each category's keywords
+    for (const [category, keywords] of Object.entries(INTENT_KEYWORDS)) {
+        for (const keyword of keywords) {
+            if (messageLower.includes(keyword)) {
+                detectedCategories.add(category);
+                break;
+            }
+        }
+    }
+
+    // If websearch is enabled, always include WEB and SECURITY categories
+    if (websearchEnabled) {
+        detectedCategories.add('WEB');
+        detectedCategories.add('SECURITY');
+        detectedCategories.add('NETWORK');
+    }
+
+    return Array.from(detectedCategories);
+}
+
+// Get all skills in a category
+function getSkillsInCategory(category) {
+    return SKILL_CATEGORIES[category] || [];
+}
+
+// Build system prompt with skill instructions - SMART ROUTING VERSION
+function buildSkillSystemPrompt(skills, mode = 'standalone', websearchEnabled = false, userMessage = '') {
     if (!skills || skills.length === 0) {
         return '';
     }
@@ -2200,158 +2285,273 @@ function buildSkillSystemPrompt(skills, mode = 'standalone', websearchEnabled = 
         return '';
     }
 
-    // Only include the most useful skills to avoid overwhelming the context
-    let prioritySkills = [
-        // File operations
-        'create_file', 'read_file', 'update_file', 'delete_file', 'create_directory', 'delete_directory', 'list_directory', 'append_to_file', 'tail_file', 'head_file',
-        // Process management
-        'list_processes', 'kill_process', 'start_process',
-        // System info
-        'system_info', 'disk_usage', 'get_uptime', 'list_ports', 'list_services',
-        // Git operations
-        'git_status', 'git_diff', 'git_log', 'git_branch',
-        // Environment
-        'get_env_var', 'set_env_var', 'which_command'
-    ];
+    // Detect relevant categories based on user message
+    const relevantCategories = detectIntentCategories(userMessage, websearchEnabled);
 
-    // Add web search skills when websearch mode is enabled
-    if (websearchEnabled) {
-        prioritySkills = prioritySkills.concat([
-            'web_search', 'playwright_fetch', 'fetch_url'
-        ]);
+    // Get skills that should have expanded details (in relevant categories)
+    const expandedSkillNames = new Set();
+    for (const category of relevantCategories) {
+        for (const skillName of getSkillsInCategory(category)) {
+            expandedSkillNames.add(skillName);
+        }
     }
-    const filteredSkills = enabledSkills.filter(s => prioritySkills.includes(s.name));
-    const skillsToShow = filteredSkills.length > 0 ? filteredSkills : enabledSkills.slice(0, 5);
+
+    // Build compact skill catalog - ALL enabled skills visible
+    const skillsByCategory = {};
+    const allSkillNames = [];
+
+    // Organize skills by category
+    for (const skill of enabledSkills) {
+        allSkillNames.push(skill.name);
+        let foundCategory = null;
+        for (const [category, skillList] of Object.entries(SKILL_CATEGORIES)) {
+            if (skillList.includes(skill.name)) {
+                foundCategory = category;
+                break;
+            }
+        }
+        const cat = foundCategory || 'OTHER';
+        if (!skillsByCategory[cat]) skillsByCategory[cat] = [];
+        skillsByCategory[cat].push(skill);
+    }
 
     let prompt = `You are Koda, a helpful AI assistant. You can have normal conversations, answer questions, help with coding, math, explanations, and any other topics.
 
-You have the ability to execute file, process, system, git, and environment operations directly when needed. When the user asks about system info, processes, git status, or file operations, use the skill format below instead of suggesting commands.
+You have access to ${enabledSkills.length} skills across multiple categories. Execute skills directly when the user's request matches a skill's purpose.
 
 IMPORTANT FILE PLACEMENT RULES:
 - User's current working directory: ${userWorkingDirectory}
 - When creating project files, ALWAYS organize them in a descriptive subdirectory based on the project type
-- Create directory names from the user's request (e.g., "web_app", "api_server", "data_analysis")
 - Use absolute paths starting with ${userWorkingDirectory}/
-- Structure: ${userWorkingDirectory}/<project_name>/<files>
 - NEVER use container-internal paths like /usr/src/app/ or /var/lib/
-- Examples:
-  * Web app request → ${userWorkingDirectory}/web_app/index.html
-  * API project → ${userWorkingDirectory}/api_server/app.py
-  * Data analysis → ${userWorkingDirectory}/data_analysis/analysis.ipynb
 
-Available skills:
+=== COMPLETE SKILL CATALOG ===
 `;
 
-    for (const skill of skillsToShow) {
-        const params = skill.parameters || {};
-        const paramList = Object.entries(params)
-            .map(([name, type]) => `${name}: ${type}`)
-            .join(', ');
-        prompt += `- ${skill.name}(${paramList}): ${skill.description || ''}\n`;
+    // Category display names
+    const categoryNames = {
+        FILE_OPS: '📁 File Operations',
+        ARCHIVE: '📦 Archives',
+        NETWORK: '🌐 Network',
+        WEB: '🔍 Web Search & Scraping',
+        SECURITY: '🛡️ Security & Threat Intel',
+        PROCESS: '⚙️ Process Management',
+        SYSTEM: '💻 System Info',
+        GIT: '📝 Git Operations',
+        ENV: '🔧 Environment',
+        SHELL: '🖥️ Shell/Script Execution',
+        WINDOWS: '🪟 Windows',
+        DATA: '📊 Data Processing',
+        CODE: '🔬 Code Analysis',
+        PDF: '📄 PDF & Documents',
+        IMAGE: '🖼️ Image Processing',
+        EMAIL: '📧 Email',
+        MEDIA: '🎬 Media',
+        UTILITY: '🔢 Utilities',
+        DATABASE: '🗄️ Database',
+        CLIPBOARD: '📋 Clipboard',
+        OTHER: '📌 Other'
+    };
+
+    // Display order
+    const categoryOrder = ['FILE_OPS', 'WEB', 'SECURITY', 'NETWORK', 'PROCESS', 'SYSTEM', 'GIT', 'ENV', 'PDF', 'ARCHIVE', 'DATA', 'CODE', 'SHELL', 'IMAGE', 'MEDIA', 'DATABASE', 'EMAIL', 'CLIPBOARD', 'UTILITY', 'WINDOWS', 'OTHER'];
+
+    // Show ALL skills organized by category
+    for (const category of categoryOrder) {
+        const skills = skillsByCategory[category];
+        if (!skills || skills.length === 0) continue;
+
+        const isExpanded = relevantCategories.includes(category);
+        const categoryName = categoryNames[category] || category;
+
+        prompt += `\n${categoryName}${isExpanded ? ' [ACTIVE]' : ''}:\n`;
+
+        for (const skill of skills) {
+            const params = skill.parameters || {};
+            const paramList = Object.entries(params)
+                .map(([name, type]) => `${name}`)
+                .join(', ');
+
+            if (isExpanded && skill.systemPrompt) {
+                // Expanded: show full details for relevant categories
+                prompt += `  • ${skill.name}(${paramList}) - ${skill.description || ''}\n`;
+                prompt += `    Usage: ${skill.systemPrompt.substring(0, 200)}${skill.systemPrompt.length > 200 ? '...' : ''}\n`;
+            } else {
+                // Compact: just name, params, description
+                prompt += `  • ${skill.name}(${paramList}) - ${skill.description || ''}\n`;
+            }
+        }
     }
 
+    // Dynamic examples based on detected categories
     prompt += `
-Skill execution format:
+=== SKILL EXECUTION FORMAT ===
+[SKILL:skill_name(param1="value1", param2="value2")]
+`;
 
-FILE OPERATIONS:
-[SKILL:create_file(filePath="${userWorkingDirectory}/<project_dir>/<filename>", content="file content here")]
-[SKILL:read_file(filePath="${userWorkingDirectory}/<path_to_file>")]
-[SKILL:update_file(filePath="${userWorkingDirectory}/<path_to_file>", content="updated file content here")]
-[SKILL:delete_file(filePath="${userWorkingDirectory}/<path_to_file>")]
-[SKILL:create_directory(dirPath="${userWorkingDirectory}/<directory>")]
-[SKILL:list_directory(dirPath="${userWorkingDirectory}/<directory>")]
-
-PROCESS MANAGEMENT:
+    // Category-specific examples (only show for relevant categories)
+    const categoryExamples = {
+        FILE_OPS: `
+📁 FILE OPERATIONS EXAMPLES:
+[SKILL:create_file(filePath="${userWorkingDirectory}/project/file.txt", content="content here")]
+[SKILL:read_file(filePath="${userWorkingDirectory}/path/to/file")]
+[SKILL:update_file(filePath="${userWorkingDirectory}/path/to/file", content="new content")]
+[SKILL:delete_file(filePath="${userWorkingDirectory}/path/to/file")]
+[SKILL:list_directory(dirPath="${userWorkingDirectory}")]
+[SKILL:search_files(dirPath="${userWorkingDirectory}", pattern="*.js")]
+[SKILL:diff_files(filePath1="/path/to/file1", filePath2="/path/to/file2")]
+[SKILL:search_replace_file(filePath="/path/to/file", search="old", replace="new")]
+`,
+        PROCESS: `
+⚙️ PROCESS MANAGEMENT EXAMPLES:
 [SKILL:list_processes(sort_by="cpu", limit="20")]
 [SKILL:kill_process(pid="1234")]
 [SKILL:start_process(command="python", args="['script.py']")]
-
-SYSTEM INFO:
+`,
+        SYSTEM: `
+💻 SYSTEM INFO EXAMPLES:
 [SKILL:system_info()]
 [SKILL:disk_usage(path="/")]
 [SKILL:get_uptime()]
 [SKILL:list_ports()]
 [SKILL:list_services()]
-
-GIT OPERATIONS:
+[SKILL:screenshot(outputPath="${userWorkingDirectory}/screenshot.png")]
+`,
+        GIT: `
+📝 GIT EXAMPLES:
 [SKILL:git_status()]
 [SKILL:git_diff(staged="false")]
 [SKILL:git_log(limit="10")]
 [SKILL:git_branch()]
-
-ENVIRONMENT:
+`,
+        ENV: `
+🔧 ENVIRONMENT EXAMPLES:
 [SKILL:get_env_var(name="PATH")]
 [SKILL:set_env_var(name="MY_VAR", value="my_value")]
 [SKILL:which_command(command="node")]
-${websearchEnabled ? `
-WEB SEARCH & CONTENT FETCHING:
-[SKILL:web_search(query="your search query here")]
+`,
+        WEB: `
+🔍 WEB SEARCH & SCRAPING EXAMPLES:
+[SKILL:web_search(query="latest security vulnerabilities 2024")]
 [SKILL:playwright_fetch(url="https://example.com/article")]
-[SKILL:fetch_url(url="https://example.com/page")]
-- web_search: Search the web and return results with snippets. Use for finding articles, news, documentation.
-- playwright_fetch: Fetch and extract content from a URL (handles JavaScript-rendered pages). Use for reading article content.
-- fetch_url: Simple HTTP fetch for basic web pages. Falls back if playwright unavailable.
+[SKILL:playwright_interact(url="https://example.com", actions="[{\\"type\\":\\"click\\",\\"selector\\":\\"#button\\"}]")]
+[SKILL:fetch_url(url="https://api.example.com/data")]
 
-When asked to find, check, or summarize web content:
+When asked to find or summarize web content:
 1. Use web_search to find relevant URLs
-2. Use playwright_fetch or fetch_url to get the actual article content
-3. Summarize and present the content to the user
-` : ''}
-CRITICAL EXECUTION RULES:
-1. ONLY use the skills listed above - do not invent non-existent skills. Available skills: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, list_processes, kill_process, start_process, system_info, disk_usage, get_uptime, list_ports, list_services, git_status, git_diff, git_log, git_branch, get_env_var, set_env_var, which_command, run_python, run_bash, create_pdf, html_to_pdf, markdown_to_html${websearchEnabled ? ', web_search, playwright_fetch, fetch_url' : ''}.
-2. DISCOVERY FIRST for fuzzy/broad requests: When the user gives an imprecise request like "delete the security folder", "remove that old file", "find the config", etc., ALWAYS use list_directory FIRST to see what actually exists, then match to their intent, then act. Example: User says "remove the cyber security directory" → first list_directory to find "cybersecurity_news/" → then delete_directory on the match.
-3. When working with files, EXECUTE skills directly - don't just suggest or describe changes
-4. When you identify bugs or improvements in code you created, use update_file to fix them - don't just show corrected code
-5. If you say "let me fix that" or "here's the corrected version", you MUST execute update_file, not just display the code
-6. Intelligently choose project directory names based on what the user is building
-7. When the user switches topics (e.g., from coding to summarizing an article), recognize this as a NEW request and respond to it - don't continue with the previous task
-8. For non-file operations (math, coding help, explanations, general chat), respond conversationally
-9. STOP LOOPING: After skills execute successfully, respond with a brief natural language confirmation - do NOT execute more skills to "verify" or "confirm" (no read_file to check, no list_directory to verify)
-10. Only continue with more skills if a previous skill FAILED and you need to fix it
+2. Use playwright_fetch to get full page content (handles JS-rendered pages)
+3. Summarize and present the content
+`,
+        SECURITY: `
+🛡️ THREAT INTELLIGENCE EXAMPLES:
+[SKILL:threat_intel(indicator="115.191.18.57")]
+[SKILL:threat_intel(indicator="d41d8cd98f00b204e9800998ecf8427e", indicator_type="hash")]
+[SKILL:threat_intel(indicator="malicious-domain.com", indicator_type="domain")]
 
-SKILL SYNTAX RULES - FOLLOW EXACTLY:
-- Each skill call MUST be complete on a single line
-- ALWAYS close brackets: [SKILL:name()] - note the )] at the end
-- String parameters MUST use double quotes: param="value"
-- Escape newlines in content as \\n (e.g., content="line1\\nline2")
-- Escape quotes in content as \\" (e.g., content="he said \\"hello\\"")
-- BAD: [SKILL:which_command(command="pip   (incomplete - missing closing ")]")
-- GOOD: [SKILL:which_command(command="pip")]
-- BAD: [SKILL:create_file(filePath=/path, content=text)]  (missing quotes)
-- GOOD: [SKILL:create_file(filePath="/path", content="text")]
+threat_intel queries VirusTotal & FOFA for:
+- IP addresses: reputation, detections, ASN, country, open ports
+- File hashes (MD5/SHA1/SHA256): malware detections, threat names
+- Domains: reputation, registrar info, malicious flags
+- URLs: scan results and threat analysis
 
-PDF/REPORT GENERATION:
-[SKILL:create_pdf(outputPath="/path/to/report.pdf", title="Report Title", content="Report content here")]
+IMPORTANT: For threat reports/IOC analysis, use threat_intel directly - NOT web_search!
+`,
+        NETWORK: `
+🌐 NETWORK EXAMPLES:
+[SKILL:dns_lookup(domain="example.com")]
+[SKILL:check_port(host="localhost", port="8080", timeout="5")]
+[SKILL:ping_host(host="google.com", count="4")]
+[SKILL:http_request(url="https://api.example.com", method="POST", body="{\\"key\\":\\"value\\"}")]
+[SKILL:download_file(url="https://example.com/file.zip", outputPath="${userWorkingDirectory}/file.zip")]
+`,
+        PDF: `
+📄 PDF & DOCUMENT EXAMPLES:
+[SKILL:create_pdf(outputPath="${userWorkingDirectory}/report.pdf", title="Report", content="Report content")]
 [SKILL:html_to_pdf(htmlPath="/path/to/file.html", outputPath="/path/to/output.pdf")]
-[SKILL:markdown_to_html(mdPath="/path/to/file.md", outputPath="/path/to/output.html", title="Title")]
-- create_pdf: Creates PDF directly from text content (tries reportlab, wkhtmltopdf, enscript; falls back to HTML)
-- html_to_pdf: Converts existing HTML file to PDF (tries wkhtmltopdf, weasyprint, chromium)
-- markdown_to_html: Converts Markdown file to styled HTML (tries pandoc, then built-in converter)
-- For complex reports: create HTML first with create_file, then convert with html_to_pdf
+[SKILL:markdown_to_html(mdPath="/path/to/file.md", outputPath="/path/to/output.html")]
+[SKILL:read_pdf(filePath="/path/to/document.pdf")]
+[SKILL:pdf_page_count(filePath="/path/to/document.pdf")]
+`,
+        ARCHIVE: `
+📦 ARCHIVE EXAMPLES:
+[SKILL:zip_files(files="['/path/file1.txt', '/path/file2.txt']", outputPath="/path/archive.zip")]
+[SKILL:unzip_file(zipPath="/path/archive.zip", outputDir="/path/extracted/")]
+[SKILL:tar_create(sourcePath="/path/to/dir", outputPath="/path/archive.tar.gz")]
+[SKILL:tar_extract(tarPath="/path/archive.tar.gz", outputDir="/path/extracted/")]
+`,
+        DATA: `
+📊 DATA PROCESSING EXAMPLES:
+[SKILL:parse_json(content="{\\"key\\": \\"value\\"}")]
+[SKILL:parse_csv(filePath="/path/to/data.csv")]
+[SKILL:base64_encode(data="text to encode")]
+[SKILL:base64_decode(data="dGV4dCB0byBkZWNvZGU=")]
+[SKILL:hash_data(data="text to hash", algorithm="sha256")]
+`,
+        SHELL: `
+🖥️ SHELL EXECUTION EXAMPLES:
+[SKILL:run_bash(command="ls -la")]
+[SKILL:run_python(code="print('Hello World')")]
+`,
+        IMAGE: `
+🖼️ IMAGE EXAMPLES:
+[SKILL:ocr_image(imagePath="/path/to/image.png")]
+[SKILL:convert_image(inputPath="/path/image.png", outputPath="/path/image.jpg", format="jpeg")]
+`,
+        MEDIA: `
+🎬 MEDIA EXAMPLES:
+[SKILL:analyze_video(videoPath="/path/to/video.mp4", extractFrames="true", frameInterval="30")]
+`,
+        DATABASE: `
+🗄️ DATABASE EXAMPLES:
+[SKILL:sqlite_query(dbPath="/path/to/db.sqlite", query="SELECT * FROM users LIMIT 10")]
+[SKILL:sqlite_list_tables(dbPath="/path/to/db.sqlite")]
+`,
+        CODE: `
+🔬 CODE ANALYSIS EXAMPLES:
+[SKILL:analyze_code(filePath="/path/to/code.js")]
+[SKILL:find_patterns(dirPath="${userWorkingDirectory}", pattern="TODO|FIXME", filePattern="*.js")]
+`
+    };
 
-ADDITIONAL CAPABILITIES:
-You have access to advanced development tools that you should use proactively when appropriate:
+    // Add examples only for relevant categories
+    for (const category of relevantCategories) {
+        if (categoryExamples[category]) {
+            prompt += categoryExamples[category];
+        }
+    }
 
-1. WEB SEARCH & DOCUMENTATION:
-${websearchEnabled ? `   - Web search is ENABLED - execute web_search, playwright_fetch, and fetch_url skills directly
-   - When asked about current events, news, or web content: search first, then fetch the full article content
-   - DO NOT say "I don't have access to browse the web" - you DO have access via the web search skills above` : `   - When you need current information, API docs, or external knowledge, suggest using web search
-   - Example: "Let me search for the latest React 19 documentation" or "I can look up current best practices"`}
+    // Build dynamic available skills list
+    const availableSkillsList = allSkillNames.join(', ');
 
-2. CODE ANALYSIS:
-   - When analyzing code quality, you can provide insights on complexity, maintainability, and patterns
-   - Consider file size, function complexity, code duplication, and best practices
+    prompt += `
+=== CRITICAL EXECUTION RULES ===
+1. Use ONLY skills from the catalog above. Available: ${availableSkillsList}
+2. DISCOVERY FIRST: For fuzzy requests ("delete that folder", "find the config"), use list_directory FIRST to see what exists, then act.
+3. EXECUTE skills directly - don't just describe what you would do
+4. When fixing code, use update_file immediately - don't just show the fix
+5. STOP LOOPING: After success, confirm briefly. Don't verify with extra skills.
+6. For non-skill tasks (math, explanations, chat), respond conversationally.
 
-3. FILE CONTEXT MANAGEMENT:
-   - Track which files are relevant to the current conversation
-   - When working across multiple files, maintain awareness of dependencies and imports
-   - Suggest analyzing related files when making changes
+=== SKILL SYNTAX ===
+- Complete each skill on ONE line: [SKILL:name(param="value")]
+- String params need quotes: param="value"
+- Escape newlines: \\n | Escape quotes: \\"
+- BAD: [SKILL:read_file(filePath=/path)]  ← missing quotes
+- GOOD: [SKILL:read_file(filePath="/path")]
+`;
 
-4. REFACTORING SUGGESTIONS:
-   - When you see opportunities to extract functions, rename symbols, or reorganize code, suggest improvements
-   - Explain the benefits of proposed refactorings
+    // Add web search capability note
+    if (websearchEnabled) {
+        prompt += `
+=== WEB CAPABILITIES ENABLED ===
+- You CAN search the web and fetch content - use web_search, playwright_fetch, threat_intel
+- DO NOT say "I can't browse the web" - you have full web access via skills
+- For threat intel (IPs, hashes, domains): use threat_intel, NOT web_search
+`;
+    }
 
-Use these capabilities naturally as part of helping the user. You don't need explicit commands - just incorporate these tools into your responses when they would be helpful.
+    prompt += `
+Use skills naturally based on user requests. The catalog shows all ${enabledSkills.length} available skills organized by category.
 `;
 
     return prompt;
@@ -6205,7 +6405,7 @@ async function handleCollabChat(api, message, selectedAgents) {
     const tasksResult = await api.getTasks();
     const skillsResult = await api.getSkills();
     const skills = skillsResult.success ? skillsResult.data : [];
-    const skillPrompt = buildSkillSystemPrompt(skills, 'collab', websearchMode);
+    const skillPrompt = buildSkillSystemPrompt(skills, 'collab', websearchMode, message);
 
     let contextInfo = webSearchContext;
 
@@ -6234,7 +6434,7 @@ async function handleCollabChat(api, message, selectedAgents) {
         if (agent.skills && agent.skills.length > 0) {
             const agentSkills = skills.filter(s => agent.skills.includes(s.id));
             if (agentSkills.length > 0) {
-                agentSkillPrompt = buildSkillSystemPrompt(agentSkills, 'collab', websearchMode);
+                agentSkillPrompt = buildSkillSystemPrompt(agentSkills, 'collab', websearchMode, message);
             }
         }
 
@@ -6346,7 +6546,7 @@ async function handleChat(api, message) {
     // Fetch skills for skill execution capability
     const skillsResult = await api.getSkills();
     const skills = skillsResult.success ? skillsResult.data : [];
-    const skillPrompt = buildSkillSystemPrompt(skills, currentMode, websearchMode);
+    const skillPrompt = buildSkillSystemPrompt(skills, currentMode, websearchMode, message);
 
     // Build context-aware message for the API
     let userMessage = message;
