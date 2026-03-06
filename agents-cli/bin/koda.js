@@ -2163,7 +2163,12 @@ function detectFalseCompletionClaim(response, userMessage) {
         // PDF-related requests
         /\b(put|save|write|convert|export)\b.*\b(into|to|as)\b.*\bpdf\b/i,
         /\b(create|generate|make)\b.*\bpdf\b/i,
-        /\bpdf\b.*\b(report|file|document)\b/i
+        /\bpdf\b.*\b(report|file|document)\b/i,
+        // TXT/file save requests
+        /\b(put|save|write|export)\b.*\b(into|to|as)\b.*\b(txt|text|file)\b/i,
+        /\b(put|save|write|export)\b.*\b(into|to)\b.*\.(txt|md|json|csv)\b/i,
+        /\b(create|generate|make)\b.*\.(txt|md|json|csv)\b/i,
+        /\bcalled\b.*\.(txt|md|json|csv|pdf)\b/i
     ];
 
     const userRequestedFileOp = fileOperationRequests.some(pattern => pattern.test(messageLower));
@@ -2171,17 +2176,22 @@ function detectFalseCompletionClaim(response, userMessage) {
 
     // Patterns indicating AI claims to have completed the operation
     const completionClaims = [
-        /\b(have been|has been|were|was)\s+(deleted|removed|erased|cleared|wiped|created|moved|renamed|copied)\b/i,
-        /\bsuccessfully\s+(deleted|removed|erased|cleared|created|moved|renamed|copied)\b/i,
-        /\b(deleted|removed|erased|cleared|created|moved|renamed|copied)\s+successfully\b/i,
+        /\b(have been|has been|were|was)\s+(deleted|removed|erased|cleared|wiped|created|moved|renamed|copied|saved|written)\b/i,
+        /\bsuccessfully\s+(deleted|removed|erased|cleared|created|moved|renamed|copied|saved|written)\b/i,
+        /\b(deleted|removed|erased|cleared|created|moved|renamed|copied|saved|written)\s+successfully\b/i,
         /\ball\s+(files|folders|directories|items)\b.*\b(deleted|removed|cleared)\b/i,
-        /\b(done|completed|finished)\b.*\b(delet|remov|eras|clear|creat|mov|renam|cop)/i,
-        /\bI('ve|\s+have)\s+(deleted|removed|created|moved|renamed|copied)\b/i,
+        /\b(done|completed|finished)\b.*\b(delet|remov|eras|clear|creat|mov|renam|cop|sav|writ)/i,
+        /\bI('ve|\s+have)\s+(deleted|removed|created|moved|renamed|copied|saved|written)\b/i,
         // PDF-related completion claims
         /\b(I('ve|\s+have)\s+)?(generated|created|saved|written)\b.*\bpdf\b/i,
         /\bpdf\b.*\b(generated|created|saved|written)\b/i,
         /\bsaved\s+(at|to|in)\s+[`'"]?[^\s]*\.pdf/i,
-        /\bpdf\s+(report|file|document)\b.*\b(created|generated|saved)\b/i
+        /\bpdf\s+(report|file|document)\b.*\b(created|generated|saved)\b/i,
+        // TXT/file save completion claims
+        /\b(I('ve|\s+have)\s+)?(saved|written|created)\b.*\b(to|as|in)\b.*\b(a\s+)?(file|txt|text)\b/i,
+        /\bsaved\s+(this|the|it)\s+(result|data|info|summary|output)\s+to\b/i,
+        /\bsaved\s+(at|to|in)\s+[`'"]?[^\s]*\.(txt|md|json|csv)/i,
+        /\bfile\s+(named|called)\s+[`'"]?[^\s]+\.(txt|md|json|csv|pdf)/i
     ];
 
     const aiClaimsCompletion = completionClaims.some(pattern => pattern.test(responseLower));
@@ -2268,13 +2278,17 @@ function detectIntentCategories(userMessage, websearchEnabled) {
     // Negative lookahead after dot excludes common file extensions followed by word boundary
     const domainPattern = /\b[a-zA-Z0-9][-a-zA-Z0-9]*\.(?!(?:txt|md|js|ts|py|json|html|css|tsx|jsx|log|cfg|ini|yaml|yml|xml|sh|bat|ps1|rb|go|rs|java|c|cpp|h|hpp)\b)[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?\b/;
 
-    // Check for IOC patterns - if found, enable SECURITY category for threat_intel
-    if (ipv4Pattern.test(userMessage) || hashPattern.test(userMessage) || domainPattern.test(userMessage)) {
-        detectedCategories.add('SECURITY');
-        detectedCategories.add('NETWORK');
+    // Check for IOC patterns - enable categories based on websearch mode
+    const hasIOC = ipv4Pattern.test(userMessage) || hashPattern.test(userMessage) || domainPattern.test(userMessage);
+    if (hasIOC) {
+        detectedCategories.add('NETWORK');  // Network tools like dns_lookup, ping_host are always available
+        // Only add SECURITY (threat_intel) if websearch is enabled, since it requires web access
+        if (websearchEnabled) {
+            detectedCategories.add('SECURITY');
+        }
     }
 
-    // If websearch is enabled, always include WEB and SECURITY categories
+    // If websearch is enabled, include all web-dependent categories
     if (websearchEnabled) {
         detectedCategories.add('WEB');
         detectedCategories.add('SECURITY');
@@ -4829,11 +4843,98 @@ async function executeThreatIntelSkill(api, params) {
         }
 
         // Create summary
-        const sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
+        let sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
+
+        // If no results from web search, try direct Playwright scraping as fallback
+        if (sourcesFound.length === 0) {
+            try {
+                // Build direct URLs for threat intel sources
+                const directUrls = [];
+
+                if (indicatorType === 'ip') {
+                    directUrls.push({
+                        source: 'virustotal',
+                        url: `https://www.virustotal.com/gui/ip-address/${indicator}/detection`
+                    });
+                    directUrls.push({
+                        source: 'fofa',
+                        url: `https://en.fofa.info/result?qbase64=${Buffer.from(indicator).toString('base64')}`
+                    });
+                } else if (indicatorType === 'domain') {
+                    directUrls.push({
+                        source: 'virustotal',
+                        url: `https://www.virustotal.com/gui/domain/${indicator}`
+                    });
+                } else if (indicatorType === 'hash') {
+                    directUrls.push({
+                        source: 'virustotal',
+                        url: `https://www.virustotal.com/gui/file/${indicator}/detection`
+                    });
+                }
+
+                // Fetch from direct URLs using Playwright
+                for (const urlInfo of directUrls) {
+                    try {
+                        const pwResult = await api.request('POST', '/api/playwright/fetch', {
+                            url: urlInfo.url,
+                            timeout: 20000,
+                            waitForJS: true,
+                            rawHtml: true,
+                            maxLength: 15000
+                        });
+
+                        if (pwResult && pwResult.success && pwResult.content) {
+                            const content = pwResult.content;
+
+                            if (urlInfo.source === 'virustotal') {
+                                // Parse VirusTotal content
+                                const maliciousMatch = content.match(/(\d+)\s*(?:security vendors?|engines?)\s*(?:flagged|detected|marked)/i) ||
+                                                       content.match(/(\d+)\/(\d+)/);
+                                const countryMatch = content.match(/country[:\s]+([A-Za-z\s]+)/i);
+                                const asnMatch = content.match(/as(?:n|number)?[:\s]+(\d+)/i) ||
+                                                content.match(/AS(\d+)/);
+
+                                results.sources.virustotal = {
+                                    found: true,
+                                    method: 'playwright',
+                                    url: urlInfo.url,
+                                    malicious: maliciousMatch ? parseInt(maliciousMatch[1]) : 0,
+                                    total_engines: maliciousMatch && maliciousMatch[2] ? parseInt(maliciousMatch[2]) : null,
+                                    country: countryMatch ? countryMatch[1].trim() : null,
+                                    asn: asnMatch ? `AS${asnMatch[1]}` : null,
+                                    content_preview: content.substring(0, 500)
+                                };
+                            } else if (urlInfo.source === 'fofa') {
+                                // Parse FOFA content
+                                const resultMatch = content.match(/(\d+)\s*(?:results?|records?)/i);
+                                const portsMatch = content.match(/port[:\s]*(\d+(?:\s*,\s*\d+)*)/gi);
+
+                                results.sources.fofa = {
+                                    found: true,
+                                    method: 'playwright',
+                                    url: urlInfo.url,
+                                    result_count: resultMatch ? parseInt(resultMatch[1]) : null,
+                                    ports: portsMatch ? [...new Set(portsMatch.join(',').match(/\d+/g))] : [],
+                                    content_preview: content.substring(0, 500)
+                                };
+                            }
+                        }
+                    } catch (fetchErr) {
+                        // Silently continue - Playwright may not be available
+                    }
+                }
+
+                // Recalculate sources found after Playwright fallback
+                sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
+            } catch (pwError) {
+                // Playwright fallback failed - continue with no results
+            }
+        }
+
         if (sourcesFound.length > 0) {
             results.summary = `Found information from ${sourcesFound.length} sources: ${sourcesFound.join(', ')}`;
         } else {
-            results.summary = 'No threat intelligence found for this indicator';
+            results.summary = 'No threat intelligence found for this indicator. The IP may be too new, private, or not indexed by threat intelligence services.';
         }
 
         return results;
@@ -4923,6 +5024,9 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         enabledSkillNames = null;
     }
 
+    // Web-dependent skills that require websearchMode to be enabled
+    const webDependentSkills = ['threat_intel', 'playwright_fetch', 'playwright_interact', 'web_search'];
+
     for (const call of skillCalls) {
         // Check if skill is enabled before execution
         if (enabledSkillNames && !enabledSkillNames.has(call.skillName)) {
@@ -4932,6 +5036,17 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 error: `Skill '${call.skillName}' is disabled`
             });
             showCompletionFlash(`${call.skillName} is disabled`, false);
+            continue;
+        }
+
+        // Block web-dependent skills when websearch mode is not enabled
+        if (webDependentSkills.includes(call.skillName) && !websearchMode) {
+            results.push({
+                skill: call.skillName,
+                success: false,
+                error: `Skill '${call.skillName}' requires web search mode. Use /web to enable it.`
+            });
+            showCompletionFlash(`${call.skillName} requires /web mode`, false);
             continue;
         }
 
