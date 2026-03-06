@@ -2259,6 +2259,21 @@ function detectIntentCategories(userMessage, websearchEnabled) {
         }
     }
 
+    // IOC Pattern Detection - detect IPs, hashes, domains without requiring keywords
+    // IPv4 address pattern (e.g., 115.191.18.57)
+    const ipv4Pattern = /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/;
+    // Hash patterns: MD5 (32), SHA1 (40), SHA256 (64) - standalone hex strings
+    const hashPattern = /\b[a-fA-F0-9]{32}\b|\b[a-fA-F0-9]{40}\b|\b[a-fA-F0-9]{64}\b/;
+    // Domain pattern (word.word or word.word.word, excluding file extensions after the dot)
+    // Negative lookahead after dot excludes common file extensions followed by word boundary
+    const domainPattern = /\b[a-zA-Z0-9][-a-zA-Z0-9]*\.(?!(?:txt|md|js|ts|py|json|html|css|tsx|jsx|log|cfg|ini|yaml|yml|xml|sh|bat|ps1|rb|go|rs|java|c|cpp|h|hpp)\b)[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?\b/;
+
+    // Check for IOC patterns - if found, enable SECURITY category for threat_intel
+    if (ipv4Pattern.test(userMessage) || hashPattern.test(userMessage) || domainPattern.test(userMessage)) {
+        detectedCategories.add('SECURITY');
+        detectedCategories.add('NETWORK');
+    }
+
     // If websearch is enabled, always include WEB and SECURITY categories
     if (websearchEnabled) {
         detectedCategories.add('WEB');
@@ -4992,6 +5007,46 @@ function buildSkillResultsMessage(results) {
             } else if (skillName === 'pdf_to_images') {
                 const count = result.count || result.data?.count || 0;
                 message += `✓ PDF converted to ${count} images\n`;
+            } else if (skillName === 'threat_intel') {
+                // Include full threat intelligence results
+                const indicator = result.indicator || result.data?.indicator || 'unknown';
+                const indicatorType = result.indicator_type || result.data?.indicator_type || 'unknown';
+                const sources = result.sources || result.data?.sources || {};
+                const summary = result.summary || result.data?.summary || '';
+
+                message += `✓ Threat Intelligence Report for ${indicator} (${indicatorType}):\n`;
+
+                // VirusTotal results
+                if (sources.virustotal) {
+                    const vt = sources.virustotal;
+                    if (vt.found) {
+                        message += `  VirusTotal: ${vt.malicious || 0}/${vt.total_engines || 0} detections`;
+                        if (vt.country) message += `, Country: ${vt.country}`;
+                        if (vt.asn) message += `, ASN: ${vt.asn}`;
+                        message += ` (via ${vt.method || 'direct'})\n`;
+                    } else {
+                        message += `  VirusTotal: ${vt.error || 'not found'}\n`;
+                    }
+                }
+
+                // FOFA results
+                if (sources.fofa) {
+                    const fofa = sources.fofa;
+                    if (fofa.found) {
+                        message += `  FOFA: ${fofa.result_count || 0} results`;
+                        if (fofa.ports && fofa.ports.length > 0) message += `, Ports: ${fofa.ports.join(', ')}`;
+                        if (fofa.services && fofa.services.length > 0) message += `, Services: ${fofa.services.join(', ')}`;
+                        if (fofa.region) message += `, Region: ${fofa.region}`;
+                        if (fofa.organization) message += `, Org: ${fofa.organization}`;
+                        message += ` (via ${fofa.method || 'direct'})\n`;
+                    } else {
+                        message += `  FOFA: ${fofa.error || 'not found'}\n`;
+                    }
+                }
+
+                if (summary) {
+                    message += `  Summary: ${summary}\n`;
+                }
             } else if (skillName === 'search_files') {
                 const pattern = result.pattern || result.data?.pattern || '';
                 const files = result.files || result.data?.files || [];
@@ -5046,6 +5101,128 @@ function buildSkillResultsMessage(results) {
     }
 
     return message;
+}
+
+// Build user-visible skill results (shown in chat history)
+function buildUserVisibleSkillResults(results) {
+    if (!results || results.length === 0) return '';
+
+    // Filter for skills that have meaningful data to show
+    const meaningfulResults = results.filter(r => {
+        if (!r.success) return true; // Show failures
+        const skillName = r.skill;
+        // Skills that produce meaningful output worth showing to user
+        return ['threat_intel', 'read_file', 'list_directory', 'git_diff', 'git_log',
+                'search_files', 'diff_files', 'read_pdf', 'web_search', 'dns_lookup',
+                'system_info', 'list_processes', 'list_ports', 'list_services',
+                'tail_file', 'head_file', 'git_status', 'git_branch'].includes(skillName);
+    });
+
+    if (meaningfulResults.length === 0) return '';
+
+    let output = '';
+
+    for (const r of meaningfulResults) {
+        if (!r.success) {
+            output += `Error: ${r.skill} - ${r.error}\n`;
+            continue;
+        }
+
+        const skillName = r.skill;
+        const result = r.result;
+
+        if (skillName === 'threat_intel') {
+            const indicator = result.indicator || result.data?.indicator || 'unknown';
+            const sources = result.sources || result.data?.sources || {};
+            output += `\n📊 Threat Intelligence: ${indicator}\n`;
+            output += '─'.repeat(40) + '\n';
+
+            if (sources.virustotal) {
+                const vt = sources.virustotal;
+                if (vt.found) {
+                    output += `VirusTotal: ${vt.malicious || 0}/${vt.total_engines || 0} detections\n`;
+                    if (vt.country) output += `  Country: ${vt.country}\n`;
+                    if (vt.asn) output += `  ASN: ${vt.asn}\n`;
+                    if (vt.url) output += `  Link: ${vt.url}\n`;
+                } else {
+                    output += `VirusTotal: ${vt.error || 'No data'}\n`;
+                }
+            }
+
+            if (sources.fofa) {
+                const fofa = sources.fofa;
+                if (fofa.found) {
+                    output += `FOFA: ${fofa.result_count || 0} results\n`;
+                    if (fofa.ports?.length > 0) output += `  Ports: ${fofa.ports.join(', ')}\n`;
+                    if (fofa.services?.length > 0) output += `  Services: ${fofa.services.join(', ')}\n`;
+                    if (fofa.region) output += `  Region: ${fofa.region}\n`;
+                    if (fofa.organization) output += `  Organization: ${fofa.organization}\n`;
+                    if (fofa.url) output += `  Link: ${fofa.url}\n`;
+                } else {
+                    output += `FOFA: ${fofa.error || 'No data'}\n`;
+                }
+            }
+        } else if (skillName === 'read_file') {
+            const filePath = result.filePath || result.data?.filePath || 'file';
+            const content = result.content || result.data?.content || '';
+            output += `\n📄 File: ${filePath}\n`;
+            output += '─'.repeat(40) + '\n';
+            // Show first 2000 chars
+            output += content.length > 2000 ? content.substring(0, 2000) + '\n... (truncated)' : content;
+            output += '\n';
+        } else if (skillName === 'list_directory') {
+            const dirPath = result.dirPath || result.data?.dirPath || 'directory';
+            const files = result.files || result.data?.files || [];
+            output += `\n📁 Directory: ${dirPath} (${files.length} items)\n`;
+            output += '─'.repeat(40) + '\n';
+            const fileList = files.slice(0, 30).map(f => f.isDirectory ? `${f.name}/` : f.name).join('\n');
+            output += fileList || '(empty)';
+            if (files.length > 30) output += `\n... and ${files.length - 30} more`;
+            output += '\n';
+        } else if (skillName === 'git_diff') {
+            const diff = result.diff || result.data?.diff || '';
+            if (diff) {
+                output += '\n📝 Git Diff:\n';
+                output += '─'.repeat(40) + '\n';
+                output += diff.length > 2000 ? diff.substring(0, 2000) + '\n... (truncated)' : diff;
+                output += '\n';
+            }
+        } else if (skillName === 'git_log') {
+            const commits = result.commits || result.data?.commits || [];
+            output += `\n📜 Git Log (${commits.length} commits):\n`;
+            output += '─'.repeat(40) + '\n';
+            const commitList = commits.slice(0, 10).map(c => `${c.hash?.substring(0, 7) || ''} ${c.message || ''}`).join('\n');
+            output += commitList || '(no commits)';
+            output += '\n';
+        } else if (skillName === 'search_files') {
+            const pattern = result.pattern || result.data?.pattern || '';
+            const files = result.files || result.data?.files || [];
+            output += `\n🔍 Search: "${pattern}" (${files.length} results)\n`;
+            output += '─'.repeat(40) + '\n';
+            const fileList = files.slice(0, 20).join('\n');
+            output += fileList || '(no matches)';
+            if (files.length > 20) output += `\n... and ${files.length - 20} more`;
+            output += '\n';
+        } else if (skillName === 'dns_lookup') {
+            const domain = result.domain || result.data?.domain || '';
+            const addresses = result.addresses || result.data?.addresses || [];
+            output += `\n🌐 DNS Lookup: ${domain}\n`;
+            output += '─'.repeat(40) + '\n';
+            output += `Addresses: ${addresses.join(', ') || 'none'}\n`;
+        } else if (skillName === 'web_search') {
+            const query = result.query || result.data?.query || '';
+            const searchResults = result.results || result.data?.results || [];
+            output += `\n🔎 Web Search: "${query}" (${searchResults.length} results)\n`;
+            output += '─'.repeat(40) + '\n';
+            for (const sr of searchResults.slice(0, 5)) {
+                output += `• ${sr.title || 'No title'}\n`;
+                if (sr.snippet) output += `  ${sr.snippet.substring(0, 150)}...\n`;
+                if (sr.link) output += `  ${sr.link}\n`;
+            }
+        }
+    }
+
+    return output.trim();
 }
 
 // Check if response contains only skill calls (no substantial text)
@@ -6499,6 +6676,15 @@ async function handleCollabChat(api, message, selectedAgents) {
             // Build feedback message for the agent
             const feedbackMessage = buildSkillResultsMessage(skillResults);
 
+            // Build user-visible skill results summary
+            const userVisibleResults = buildUserVisibleSkillResults(skillResults);
+            if (userVisibleResults) {
+                // Add skill results to chat history so user can see them
+                addToHistory('system', userVisibleResults);
+                // Store skill results in collab context so follow-up queries have context
+                collabContext.push({ role: 'system', content: userVisibleResults });
+            }
+
             // Continue the conversation with skill results
             currentPrompt = basePrompt + '\n\nYour previous response: ' + response + feedbackMessage;
 
@@ -6892,6 +7078,15 @@ YOU MUST NOT:
 
         // Build feedback message for the AI
         const feedbackMessage = buildSkillResultsMessage(skillResults);
+
+        // Build user-visible skill results summary
+        const userVisibleResults = buildUserVisibleSkillResults(skillResults);
+        if (userVisibleResults) {
+            // Add skill results to chat history so user can see them
+            addToHistory('system', userVisibleResults);
+            // Store skill results in conversation context so follow-up queries have context
+            conversationContext.push({ role: 'system', content: userVisibleResults });
+        }
 
         // Continue the conversation with skill results
         currentMessage = contextMessage + '\n\nPrevious response: ' + response + feedbackMessage;
