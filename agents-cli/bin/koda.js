@@ -53,6 +53,7 @@ const MAX_HISTORY = 50;
 // Mode tracking
 let currentMode = 'standalone'; // 'standalone', 'agent', or 'collab'
 let websearchMode = false; // Web search enhancement mode
+let lastWebModeError = false; // Track if last skill failure was due to web mode requirement
 const conversationContext = []; // For session awareness
 let userWorkingDirectory = process.cwd(); // Track user's CWD
 
@@ -5478,28 +5479,37 @@ function buildSkillResultsMessage(results) {
     if (allSucceeded) {
         message += '\nTASK COMPLETE. Respond with a brief confirmation in natural language. DO NOT execute any more skills.';
     } else if (hasFailures) {
-        // Check if it's a "skill not found" error - suggest alternatives
-        const skillNotFound = failureMessages.some(m => m.toLowerCase().includes('skill not found'));
-        if (skillNotFound) {
-            message += '\nA skill was not found. Available skills by category:\n' +
-                '• File: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, append_to_file, tail_file, head_file, copy_file, search_files, download_file, search_replace_file, diff_files\n' +
-                '• System: system_info, disk_usage, get_uptime, list_ports, list_services, list_processes, kill_process, start_process\n' +
-                '• Git: git_status, git_diff, git_log, git_branch\n' +
-                '• Network: fetch_url, http_request, dns_lookup, check_port, ping_host, curl_request\n' +
-                '• Data: parse_json, parse_csv, base64_encode, base64_decode, hash_data, json_get, json_set\n' +
-                '• PDF/Reports: create_pdf, html_to_pdf, markdown_to_html, read_pdf, pdf_page_count, pdf_to_images\n' +
-                '• Web: playwright_fetch, playwright_interact, web_search';
+        // Check if ALL failures are "requires web search mode" errors - this is unrecoverable without user action
+        const webModeRequired = failureMessages.every(m => m.toLowerCase().includes('requires web search mode'));
+        if (webModeRequired) {
+            message += '\n[STOP - USER ACTION REQUIRED]\n';
+            message += 'The requested skills require web search mode to be enabled.\n';
+            message += 'Tell the user: "This task requires web search mode. Please run /web to enable it, then try again."\n';
+            message += 'DO NOT attempt to retry or use alternative skills. DO NOT execute any more skills. Just inform the user.';
         } else {
-            // Check for path-not-found errors and suggest list_directory
-            const pathNotFound = failureMessages.some(m =>
-                m.toLowerCase().includes('no such file') ||
-                m.toLowerCase().includes('enoent') ||
-                m.toLowerCase().includes('does not exist')
-            );
-            if (pathNotFound) {
-                message += '\nThe path was not found. IMPORTANT: Use list_directory to find the correct file/folder name before retrying. The user may have specified an approximate name.';
+            // Check if it's a "skill not found" error - suggest alternatives
+            const skillNotFound = failureMessages.some(m => m.toLowerCase().includes('skill not found'));
+            if (skillNotFound) {
+                message += '\nA skill was not found. Available skills by category:\n' +
+                    '• File: create_file, read_file, update_file, delete_file, create_directory, delete_directory, list_directory, move_file, append_to_file, tail_file, head_file, copy_file, search_files, download_file, search_replace_file, diff_files\n' +
+                    '• System: system_info, disk_usage, get_uptime, list_ports, list_services, list_processes, kill_process, start_process\n' +
+                    '• Git: git_status, git_diff, git_log, git_branch\n' +
+                    '• Network: fetch_url, http_request, dns_lookup, check_port, ping_host, curl_request\n' +
+                    '• Data: parse_json, parse_csv, base64_encode, base64_decode, hash_data, json_get, json_set\n' +
+                    '• PDF/Reports: create_pdf, html_to_pdf, markdown_to_html, read_pdf, pdf_page_count, pdf_to_images\n' +
+                    '• Web: playwright_fetch, playwright_interact, web_search';
             } else {
-                message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
+                // Check for path-not-found errors and suggest list_directory
+                const pathNotFound = failureMessages.some(m =>
+                    m.toLowerCase().includes('no such file') ||
+                    m.toLowerCase().includes('enoent') ||
+                    m.toLowerCase().includes('does not exist')
+                );
+                if (pathNotFound) {
+                    message += '\nThe path was not found. IMPORTANT: Use list_directory to find the correct file/folder name before retrying. The user may have specified an approximate name.';
+                } else {
+                    message += '\nSome skills failed. You may try to fix the issue, or explain the error to the user.';
+                }
             }
         }
     }
@@ -7481,6 +7491,18 @@ YOU MUST NOT:
         // Execute the skills
         const skillResults = await executeSkillCalls(api, skillCalls);
 
+        // Check if ALL skills failed due to web mode requirement - this is unrecoverable without user action
+        const allFailedDueToWebMode = skillResults.length > 0 &&
+            skillResults.every(r => !r.success && r.error && r.error.toLowerCase().includes('requires web search mode'));
+
+        if (allFailedDueToWebMode) {
+            // Don't loop - inform the user and stop
+            lastWebModeError = true; // Track this for handling "y" input
+            addToHistory('system', 'Web search mode is required for this task. Use /web to enable it.');
+            displayChatHistory();
+            break;
+        }
+
         // Build feedback message for the AI
         let feedbackMessage = buildSkillResultsMessage(skillResults);
 
@@ -7845,6 +7867,19 @@ async function startShell() {
             return;
         }
 
+        // Check for "y"/"yes" input after a web mode error - user might be confused
+        const lowerInput = input.toLowerCase().trim();
+        if (lastWebModeError && (lowerInput === 'y' || lowerInput === 'yes')) {
+            // User typed "y" after web mode error - they probably expected a confirmation
+            addToHistory('system', 'There\'s no pending confirmation. To enable web search mode, type /web');
+            displayChatHistory();
+            rl.prompt();
+            return;
+        }
+
+        // Clear web mode error flag when user sends a real message
+        lastWebModeError = false;
+
         try {
             // Check if it's a command
             if (input.startsWith('/')) {
@@ -7890,6 +7925,7 @@ async function startShell() {
                     case '/ws':
                         // Toggle websearch mode
                         websearchMode = !websearchMode;
+                        lastWebModeError = false; // Clear web mode error flag
                         const webStatus = websearchMode ? 'enabled' : 'disabled';
                         const webIcon = websearchMode ? '[web]' : '[ ]';
                         const webColor = websearchMode ? 'green' : 'yellow';
