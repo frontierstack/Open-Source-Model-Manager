@@ -2161,12 +2161,12 @@ function detectFalseCompletionClaim(response, userMessage) {
         /\brename\b.*\b(file|folder|directory)\b/i,
         /\bcopy\b.*\b(file|folder|directory)\b/i,
         // PDF-related requests
-        /\b(put|save|write|convert|export)\b.*\b(into|to|as)\b.*\bpdf\b/i,
+        /\b(put|save|write|convert|export)\b.*\b(in|into|to|as)\b.*\bpdf\b/i,
         /\b(create|generate|make)\b.*\bpdf\b/i,
         /\bpdf\b.*\b(report|file|document)\b/i,
         // TXT/file save requests
-        /\b(put|save|write|export)\b.*\b(into|to|as)\b.*\b(txt|text|file)\b/i,
-        /\b(put|save|write|export)\b.*\b(into|to)\b.*\.(txt|md|json|csv)\b/i,
+        /\b(put|save|write|export)\b.*\b(in|into|to|as)\b.*\b(txt|text|file)\b/i,
+        /\b(put|save|write|export)\b.*\b(in|into|to)\b.*\.(txt|md|json|csv)\b/i,
         /\b(create|generate|make)\b.*\.(txt|md|json|csv)\b/i,
         /\bcalled\b.*\.(txt|md|json|csv|pdf)\b/i
     ];
@@ -2187,11 +2187,20 @@ function detectFalseCompletionClaim(response, userMessage) {
         /\bpdf\b.*\b(generated|created|saved|written)\b/i,
         /\bsaved\s+(at|to|in)\s+[`'"]?[^\s]*\.pdf/i,
         /\bpdf\s+(report|file|document)\b.*\b(created|generated|saved)\b/i,
-        // TXT/file save completion claims
+        // TXT/file save completion claims - MORE FLEXIBLE PATTERNS
         /\b(I('ve|\s+have)\s+)?(saved|written|created)\b.*\b(to|as|in)\b.*\b(a\s+)?(file|txt|text)\b/i,
         /\bsaved\s+(this|the|it)\s+(result|data|info|summary|output)\s+to\b/i,
         /\bsaved\s+(at|to|in)\s+[`'"]?[^\s]*\.(txt|md|json|csv)/i,
-        /\bfile\s+(named|called)\s+[`'"]?[^\s]+\.(txt|md|json|csv|pdf)/i
+        /\bfile\s+(named|called)\s+[`'"]?[^\s]+\.(txt|md|json|csv|pdf)/i,
+        // NEW: Catch "saved [any words] to [path]" patterns
+        /\bsaved\b[^.]*\bto\s+[`'"]?[^\s`'"]+\.(txt|md|json|csv|pdf)/i,
+        /\bsaved\b[^.]*\b(summary|report|results?|data|info|content|output)\b[^.]*\bto\b/i,
+        // NEW: Catch paths with extensions mentioned anywhere after "to"
+        /\bto\s+[`'"]?\/[^\s`'"]+\.(txt|md|json|csv|pdf)/i,
+        // NEW: Catch "written to" and "created at" with paths (allow words between)
+        /\b(written|created)\b[^.]*\b(to|at|in)\s+[`'"]?[^\s`'"]+\.(txt|md|json|csv|pdf)/i,
+        // NEW: Catch "the report/summary is saved/written"
+        /\b(the|a)\s+(report|summary|file|data)\b.*\b(is|has been)\s+(saved|written|created)\b/i
     ];
 
     const aiClaimsCompletion = completionClaims.some(pattern => pattern.test(responseLower));
@@ -4845,102 +4854,130 @@ async function executeThreatIntelSkill(api, params) {
         // Create summary
         let sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
 
+        // Track errors for debugging
+        const errors = [];
+
         // If no results from web search, try direct Playwright scraping as fallback
         if (sourcesFound.length === 0) {
-            try {
-                // Build direct URLs for threat intel sources
-                const directUrls = [];
+            // Build direct URLs for threat intel sources
+            const directUrls = [];
 
-                if (indicatorType === 'ip') {
-                    directUrls.push({
-                        source: 'virustotal',
-                        url: `https://www.virustotal.com/gui/ip-address/${indicator}/detection`
-                    });
-                    directUrls.push({
-                        source: 'fofa',
-                        url: `https://en.fofa.info/result?qbase64=${Buffer.from(indicator).toString('base64')}`
-                    });
-                } else if (indicatorType === 'domain') {
-                    directUrls.push({
-                        source: 'virustotal',
-                        url: `https://www.virustotal.com/gui/domain/${indicator}`
-                    });
-                } else if (indicatorType === 'hash') {
-                    directUrls.push({
-                        source: 'virustotal',
-                        url: `https://www.virustotal.com/gui/file/${indicator}/detection`
-                    });
-                }
-
-                // Fetch from direct URLs using Playwright
-                for (const urlInfo of directUrls) {
-                    try {
-                        const pwResult = await api.request('POST', '/api/playwright/fetch', {
-                            url: urlInfo.url,
-                            timeout: 20000,
-                            waitForJS: true,
-                            rawHtml: true,
-                            maxLength: 15000
-                        });
-
-                        if (pwResult && pwResult.success && pwResult.content) {
-                            const content = pwResult.content;
-
-                            if (urlInfo.source === 'virustotal') {
-                                // Parse VirusTotal content
-                                // Try X/Y format first (e.g., "12/94 security vendors")
-                                const ratioMatch = content.match(/(\d+)\s*\/\s*(\d+)\s*(?:security vendors?|engines?)/i);
-                                // Fallback to simple X/Y anywhere
-                                const simpleRatioMatch = content.match(/(\d+)\/(\d+)/);
-                                const maliciousMatch = ratioMatch || simpleRatioMatch;
-                                // Look for country code after ASN info (e.g., ") CN Last")
-                                const countryCodeMatch = content.match(/\)\s*([A-Z]{2})\s+(?:Last|First)/i);
-                                const countryMatch = countryCodeMatch || content.match(/country[:\s]+([A-Za-z\s]+)/i);
-                                // Match ASN with at least 4 digits to avoid partial matches
-                                const asnMatch = content.match(/AS\s*(\d{4,})/i) ||
-                                                content.match(/as(?:n|number)?[:\s]+(\d+)/i);
-
-                                results.sources.virustotal = {
-                                    found: true,
-                                    method: 'playwright',
-                                    url: urlInfo.url,
-                                    malicious: maliciousMatch ? parseInt(maliciousMatch[1]) : 0,
-                                    total_engines: maliciousMatch && maliciousMatch[2] ? parseInt(maliciousMatch[2]) : null,
-                                    country: countryMatch ? countryMatch[1].trim() : null,
-                                    asn: asnMatch ? `AS${asnMatch[1]}` : null,
-                                    content_preview: content.substring(0, 500)
-                                };
-                            } else if (urlInfo.source === 'fofa') {
-                                // Parse FOFA content
-                                const resultMatch = content.match(/(\d+)\s*(?:results?|records?)/i);
-                                const portsMatch = content.match(/port[:\s]*(\d+(?:\s*,\s*\d+)*)/gi);
-
-                                results.sources.fofa = {
-                                    found: true,
-                                    method: 'playwright',
-                                    url: urlInfo.url,
-                                    result_count: resultMatch ? parseInt(resultMatch[1]) : null,
-                                    ports: portsMatch ? [...new Set(portsMatch.join(',').match(/\d+/g))] : [],
-                                    content_preview: content.substring(0, 500)
-                                };
-                            }
-                        }
-                    } catch (fetchErr) {
-                        // Silently continue - Playwright may not be available
-                    }
-                }
-
-                // Recalculate sources found after Playwright fallback
-                sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
-            } catch (pwError) {
-                // Playwright fallback failed - continue with no results
+            if (indicatorType === 'ip') {
+                directUrls.push({
+                    source: 'virustotal',
+                    url: `https://www.virustotal.com/gui/ip-address/${indicator}/detection`
+                });
+                directUrls.push({
+                    source: 'fofa',
+                    url: `https://en.fofa.info/result?qbase64=${Buffer.from(indicator).toString('base64')}`
+                });
+            } else if (indicatorType === 'domain') {
+                directUrls.push({
+                    source: 'virustotal',
+                    url: `https://www.virustotal.com/gui/domain/${indicator}`
+                });
+            } else if (indicatorType === 'hash') {
+                directUrls.push({
+                    source: 'virustotal',
+                    url: `https://www.virustotal.com/gui/file/${indicator}/detection`
+                });
             }
+
+            // Fetch from direct URLs using Playwright
+            for (const urlInfo of directUrls) {
+                try {
+                    const pwResult = await api.request('POST', '/api/playwright/fetch', {
+                        url: urlInfo.url,
+                        timeout: 25000,
+                        waitForJS: true,
+                        rawHtml: true,
+                        maxLength: 20000,
+                        waitForSelector: urlInfo.source === 'virustotal' ? '[class*="detection"]' : undefined
+                    });
+
+                    if (pwResult && pwResult.success && pwResult.content) {
+                        const content = pwResult.content;
+                        const contentLen = content.length;
+
+                        if (urlInfo.source === 'virustotal') {
+                            // Parse VirusTotal content - improved patterns
+                            // Try multiple detection ratio formats
+                            const ratioMatch = content.match(/(\d+)\s*\/\s*(\d+)\s*(?:security vendors?|engines?)/i) ||
+                                             content.match(/(\d+)\s*\/\s*(\d+)/);
+
+                            // Country detection - multiple patterns
+                            const countryMatch = content.match(/\bCountry\s*[:\s]+([A-Z]{2})\b/i) ||
+                                               content.match(/\)\s*([A-Z]{2})\s+(?:Last|First)/i) ||
+                                               content.match(/country[:\s]+([A-Za-z\s]{2,20})/i);
+
+                            // ASN detection - require 4+ digits
+                            const asnMatch = content.match(/\bAS(\d{4,})\b/i) ||
+                                           content.match(/ASN[:\s]+(\d{4,})/i) ||
+                                           content.match(/Autonomous System[:\s]+(?:AS)?(\d{4,})/i);
+
+                            // Network owner detection
+                            const networkMatch = content.match(/Network[:\s]+([^\n<]{5,50})/i) ||
+                                               content.match(/Owner[:\s]+([^\n<]{5,50})/i);
+
+                            results.sources.virustotal = {
+                                found: true,
+                                method: 'playwright',
+                                url: urlInfo.url,
+                                malicious: ratioMatch ? parseInt(ratioMatch[1]) : null,
+                                total_engines: ratioMatch && ratioMatch[2] ? parseInt(ratioMatch[2]) : null,
+                                detection_ratio: ratioMatch ? `${ratioMatch[1]}/${ratioMatch[2]}` : null,
+                                country: countryMatch ? countryMatch[1].trim() : null,
+                                asn: asnMatch ? `AS${asnMatch[1]}` : null,
+                                network: networkMatch ? networkMatch[1].trim() : null,
+                                content_length: contentLen
+                            };
+                        } else if (urlInfo.source === 'fofa') {
+                            // Parse FOFA content - improved patterns
+                            const resultMatch = content.match(/(\d+)\s*(?:results?|records?|assets?)/i);
+                            const portsMatch = content.match(/port[:\s]*(\d+)/gi);
+                            const servicesMatch = content.match(/(?:http|https|ssh|ftp|smtp|mysql|redis|mongodb)[^\s<]*/gi);
+
+                            results.sources.fofa = {
+                                found: true,
+                                method: 'playwright',
+                                url: urlInfo.url,
+                                result_count: resultMatch ? parseInt(resultMatch[1]) : null,
+                                ports: portsMatch ? [...new Set(portsMatch.map(p => p.match(/\d+/)?.[0]).filter(Boolean))] : [],
+                                services: servicesMatch ? [...new Set(servicesMatch.slice(0, 10))] : [],
+                                content_length: contentLen
+                            };
+                        }
+                    } else if (pwResult && !pwResult.success) {
+                        errors.push(`${urlInfo.source}: ${pwResult.error || 'Fetch failed'}`);
+                    } else {
+                        errors.push(`${urlInfo.source}: No content returned (response empty or blocked)`);
+                    }
+                } catch (fetchErr) {
+                    errors.push(`${urlInfo.source}: ${fetchErr.message}`);
+                }
+            }
+
+            // Recalculate sources found after Playwright fallback
+            sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
         }
 
+        // Build informative summary
         if (sourcesFound.length > 0) {
             results.summary = `Found information from ${sourcesFound.length} sources: ${sourcesFound.join(', ')}`;
+
+            // Add detection status for VirusTotal
+            if (results.sources.virustotal?.detection_ratio) {
+                results.summary += `. VirusTotal: ${results.sources.virustotal.detection_ratio} detections`;
+            }
         } else {
-            results.summary = 'No threat intelligence found for this indicator. The IP may be too new, private, or not indexed by threat intelligence services.';
+            let summary = 'No threat intelligence data retrieved.';
+            if (errors.length > 0) {
+                summary += ` Errors: ${errors.join('; ')}`;
+            } else {
+                summary += ' The indicator may be too new, private, or not indexed by threat intelligence services.';
+            }
+            results.summary = summary;
+            results.errors = errors;
         }
 
         return results;
@@ -7394,10 +7431,13 @@ YOU MUST NOT:
             }
 
             // Check if AI claims to have performed file operations without actually executing skills
-            // This catches cases where the AI hallucinates "I deleted the files" without calling skills
+            // This catches cases where the AI hallucinates "I saved the file" without calling skills
+            // IMPORTANT: Run this check on ALL iterations, not just iteration 0
+            // Because after running a skill like threat_intel, AI might claim to have saved results
+            // to a file without actually calling create_file
             const claimsFileOperation = detectFalseCompletionClaim(response, originalMessage);
 
-            if (claimsFileOperation && iteration === 0) {
+            if (claimsFileOperation) {
                 // AI claimed to do file operations but didn't execute any skills
                 // Remove the false claim from display
                 const lastMsg = chatHistory[chatHistory.length - 1];
@@ -7407,15 +7447,13 @@ YOU MUST NOT:
 
                 // Force the AI to actually execute skills
                 let correctionFeedback = '\n\n[EXECUTION REQUIRED]\n';
-                correctionFeedback += 'You claimed to have performed a file operation but did not execute any skills.\n';
-                correctionFeedback += 'You MUST use skills to perform actual operations. Do not claim completion without execution.\n\n';
-                correctionFeedback += 'Required steps:\n';
-                correctionFeedback += '1. Use list_directory to see what exists in the target location\n';
-                correctionFeedback += '2. Execute the appropriate skill(s) for each item\n';
-                correctionFeedback += '3. Only confirm completion after skills execute successfully\n\n';
-                correctionFeedback += 'Example format: [SKILL:list_directory(dirPath="' + userWorkingDirectory + '")]\n';
+                correctionFeedback += 'You claimed to have performed a file operation (save/create/write) but did not execute the create_file skill.\n';
+                correctionFeedback += 'You MUST use skills to perform actual file operations. Do not claim completion without execution.\n\n';
+                correctionFeedback += 'To save content to a file, use this format:\n';
+                correctionFeedback += '[SKILL:create_file(filePath="/path/to/file.txt", content="your content here")]\n\n';
+                correctionFeedback += 'IMPORTANT: Execute the create_file skill NOW with the content you want to save.\n';
 
-                addToHistory('system', 'No skills executed - asking AI to actually perform the operation...');
+                addToHistory('system', 'No file operation executed - asking AI to actually save the file...');
                 displayChatHistory();
 
                 currentMessage = contextMessage + '\n\nPrevious response: ' + response + correctionFeedback;
@@ -7444,7 +7482,22 @@ YOU MUST NOT:
         const skillResults = await executeSkillCalls(api, skillCalls);
 
         // Build feedback message for the AI
-        const feedbackMessage = buildSkillResultsMessage(skillResults);
+        let feedbackMessage = buildSkillResultsMessage(skillResults);
+
+        // Check if the AI claimed to save/create a file but didn't execute a file-creating skill
+        // This catches: AI calls threat_intel + says "saved to file.txt" without calling create_file
+        const fileCreatingSkills = ['create_file', 'update_file', 'write_file'];
+        const executedFileSkills = skillResults.filter(r => fileCreatingSkills.includes(r.skill) && r.success);
+        const claimsFileSave = detectFalseCompletionClaim(response, originalMessage);
+
+        if (claimsFileSave && executedFileSkills.length === 0) {
+            // AI claimed to save a file but no file-creating skill was executed
+            // Add reminder to the feedback so AI knows to actually call create_file
+            feedbackMessage += '\n\n[IMPORTANT: FILE NOT SAVED]\n';
+            feedbackMessage += 'The user asked to save content to a file, but you did not execute create_file.\n';
+            feedbackMessage += 'You MUST execute the create_file skill to actually save the file.\n';
+            feedbackMessage += 'Format: [SKILL:create_file(filePath="/path/to/file.txt", content="your content")]\n';
+        }
 
         // Build user-visible skill results summary
         const userVisibleResults = buildUserVisibleSkillResults(skillResults);
