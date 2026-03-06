@@ -4820,7 +4820,7 @@ app.post('/api/playwright/fetch', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Query permission required' });
     }
 
-    const { url, urls, timeout = 15000, waitForJS = true, includeLinks = false, screenshot = false, maxLength = 8000 } = req.body;
+    const { url, urls, timeout = 15000, waitForJS = true, includeLinks = false, screenshot = false, maxLength = 8000, rawHtml = false, waitForSelector } = req.body;
 
     if (!url && !urls) {
         return res.status(400).json({ error: 'URL or URLs array required' });
@@ -4848,14 +4848,16 @@ app.post('/api/playwright/fetch', requireAuth, async (req, res) => {
                 waitForJS,
                 includeLinks,
                 screenshot,
-                maxLength
+                maxLength,
+                rawHtml,
+                waitForSelector
             });
             return res.json({ ...result, engine: 'playwright' });
         } else {
             // Multiple URL fetch
             const results = await playwrightService.fetchMultipleUrls(
                 urls.slice(0, 10),
-                { timeout, waitForJS, includeLinks, maxLength },
+                { timeout, waitForJS, includeLinks, maxLength, rawHtml, waitForSelector },
                 3 // concurrency
             );
             return res.json({ results, engine: 'playwright' });

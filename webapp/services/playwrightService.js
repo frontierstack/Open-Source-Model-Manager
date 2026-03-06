@@ -368,6 +368,8 @@ async function extractContent(page, options = {}) {
  * @param {boolean} options.includeLinks - Include extracted links (default: false)
  * @param {number} options.maxLength - Max content length (default: 8000)
  * @param {boolean} options.screenshot - Take screenshot (default: false)
+ * @param {boolean} options.rawHtml - Return raw HTML instead of processed content (default: false)
+ * @param {string} options.waitForSelector - Wait for specific selector before extracting (default: null)
  * @returns {Object} { success, content, title, url, screenshot?, error? }
  */
 async function fetchUrlContent(url, options = {}) {
@@ -376,7 +378,9 @@ async function fetchUrlContent(url, options = {}) {
         waitForJS = true,
         includeLinks = false,
         maxLength = 8000,
-        screenshot = false
+        screenshot = false,
+        rawHtml = false,
+        waitForSelector = null
     } = options;
 
     let poolEntry = null;
@@ -408,30 +412,79 @@ async function fetchUrlContent(url, options = {}) {
         // Random pre-navigation delay
         await page.waitForTimeout(randomDelay(30, 100));
 
-        // Navigate with stealth
+        // Navigate with stealth - use 'load' instead of 'networkidle' for better reliability
         const response = await page.goto(url, {
             timeout,
-            waitUntil: waitForJS ? 'networkidle' : 'domcontentloaded'
+            waitUntil: waitForJS ? 'load' : 'domcontentloaded'
         });
 
         if (!response || response.status() >= 400) {
             throw new Error(`HTTP ${response?.status() || 'no response'}`);
         }
 
-        // Wait for content to stabilize
+        // Wait for JS to render content
         if (waitForJS) {
-            await page.waitForTimeout(randomDelay(200, 500));
+            // Give JS time to hydrate and render (especially for shadow DOM components)
+            await page.waitForTimeout(randomDelay(2500, 4000));
 
-            // Wait for any lazy-loaded content
+            // Try to wait for networkidle briefly, but don't block
             try {
-                await page.waitForLoadState('networkidle', { timeout: 3000 });
+                await page.waitForLoadState('networkidle', { timeout: 2000 });
             } catch (e) {
                 // Ignore timeout, continue with what we have
             }
         }
 
-        // Extract content
-        const content = await extractContent(page, { includeLinks, maxLength });
+        // Wait for specific selector if requested
+        if (waitForSelector) {
+            try {
+                await page.waitForSelector(waitForSelector, { timeout: 5000 });
+            } catch (e) {
+                // Continue even if selector not found
+            }
+        }
+
+        // Extract content - raw HTML or processed
+        let content;
+        if (rawHtml) {
+            // Get raw HTML content including shadow DOM
+            content = await page.evaluate((maxLen) => {
+                // Recursive function to get all text including shadow DOM
+                function getAllText(element) {
+                    let text = '';
+
+                    // Get text from this element's shadow root
+                    if (element.shadowRoot) {
+                        text += getAllText(element.shadowRoot);
+                    }
+
+                    // Get text from children
+                    for (const child of (element.childNodes || [])) {
+                        if (child.nodeType === Node.TEXT_NODE) {
+                            const trimmed = child.textContent.trim();
+                            if (trimmed) text += trimmed + ' ';
+                        } else if (child.nodeType === Node.ELEMENT_NODE) {
+                            text += getAllText(child);
+                        }
+                    }
+
+                    return text;
+                }
+
+                // Get all text including shadow DOM content
+                const allText = getAllText(document.body);
+
+                // Also get regular innerText and innerHTML as fallback
+                const bodyText = document.body.innerText || '';
+                const bodyHtml = document.body.innerHTML || '';
+
+                // Combine all for best results
+                const combined = allText + '\n\n---INNERTEXT---\n\n' + bodyText + '\n\n---HTML---\n\n' + bodyHtml;
+                return combined.substring(0, maxLen);
+            }, maxLength);
+        } else {
+            content = await extractContent(page, { includeLinks, maxLength });
+        }
         const title = await page.title();
 
         // Take screenshot if requested
@@ -557,7 +610,7 @@ async function interactAndFetch(url, actions = [], options = {}) {
         page = await context.newPage();
         await applyStealthPatches(page);
 
-        await page.goto(url, { timeout, waitUntil: 'networkidle' });
+        await page.goto(url, { timeout, waitUntil: 'load' });
 
         // Execute actions
         for (const action of actions) {
