@@ -8,6 +8,8 @@ ENV PATH=/usr/local/bin:$PATH
 # Install system dependencies for Playwright Chromium and Koda skills
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip jq \
+    # Virtual display for headed mode (bypasses bot detection)
+    xvfb \
     # Playwright Chromium dependencies
     libnss3 \
     libnspr4 \

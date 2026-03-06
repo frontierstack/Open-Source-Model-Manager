@@ -2228,7 +2228,6 @@ const SKILL_CATEGORIES = {
     ARCHIVE: ['unzip_file', 'zip_files', 'tar_extract', 'tar_create', 'extract_archive'],
     NETWORK: ['fetch_url', 'dns_lookup', 'check_port', 'ping_host', 'http_request', 'download_file', 'curl_request'],
     WEB: ['playwright_fetch', 'playwright_interact', 'web_search'],
-    SECURITY: ['threat_intel'],
     PROCESS: ['list_processes', 'kill_process', 'start_process'],
     SYSTEM: ['system_info', 'disk_usage', 'get_uptime', 'list_ports', 'list_services', 'screenshot'],
     GIT: ['git_status', 'git_diff', 'git_log', 'git_branch'],
@@ -2252,7 +2251,6 @@ const INTENT_KEYWORDS = {
     ARCHIVE: ['zip', 'unzip', 'tar', 'archive', 'compress', 'extract', 'decompress', '.gz', '.tar', '.zip'],
     NETWORK: ['dns', 'ping', 'port', 'network', 'download', 'http request', 'curl', 'fetch url'],
     WEB: ['web', 'scrape', 'browse', 'website', 'webpage', 'search online', 'look up online', 'playwright'],
-    SECURITY: ['threat', 'security', 'malware', 'virus', 'reputation', 'ioc', 'indicator', 'virustotal', 'abuse', 'malicious', 'threat report', 'threat intel', 'ip reputation', 'hash check', 'domain check'],
     PROCESS: ['process', 'kill', 'running', 'pid', 'spawn', 'execute process'],
     SYSTEM: ['system info', 'memory', 'cpu', 'disk usage', 'uptime', 'screenshot', 'services', 'open ports'],
     GIT: ['git', 'commit', 'branch', 'repository', 'repo', 'staged', 'unstaged'],
@@ -2276,7 +2274,7 @@ function detectIntentCategories(userMessage, websearchEnabled) {
     const coreCategories = ['FILE_OPS', 'PROCESS', 'SYSTEM', 'GIT', 'ENV'];
 
     if (!userMessage) {
-        return websearchEnabled ? [...coreCategories, 'WEB', 'SECURITY'] : coreCategories;
+        return websearchEnabled ? [...coreCategories, 'WEB'] : coreCategories;
     }
 
     const messageLower = userMessage.toLowerCase();
@@ -2298,23 +2296,17 @@ function detectIntentCategories(userMessage, websearchEnabled) {
     // Hash patterns: MD5 (32), SHA1 (40), SHA256 (64) - standalone hex strings
     const hashPattern = /\b[a-fA-F0-9]{32}\b|\b[a-fA-F0-9]{40}\b|\b[a-fA-F0-9]{64}\b/;
     // Domain pattern (word.word or word.word.word, excluding file extensions after the dot)
-    // Negative lookahead after dot excludes common file extensions followed by word boundary
     const domainPattern = /\b[a-zA-Z0-9][-a-zA-Z0-9]*\.(?!(?:txt|md|js|ts|py|json|html|css|tsx|jsx|log|cfg|ini|yaml|yml|xml|sh|bat|ps1|rb|go|rs|java|c|cpp|h|hpp)\b)[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?\b/;
 
-    // Check for IOC patterns - enable categories based on websearch mode
+    // Check for IOC patterns - enable NETWORK category for dns_lookup, ping_host, etc.
     const hasIOC = ipv4Pattern.test(userMessage) || hashPattern.test(userMessage) || domainPattern.test(userMessage);
     if (hasIOC) {
-        detectedCategories.add('NETWORK');  // Network tools like dns_lookup, ping_host are always available
-        // Only add SECURITY (threat_intel) if websearch is enabled, since it requires web access
-        if (websearchEnabled) {
-            detectedCategories.add('SECURITY');
-        }
+        detectedCategories.add('NETWORK');
     }
 
-    // If websearch is enabled, include all web-dependent categories
+    // If websearch is enabled, include web-dependent categories
     if (websearchEnabled) {
         detectedCategories.add('WEB');
-        detectedCategories.add('SECURITY');
         detectedCategories.add('NETWORK');
     }
 
@@ -2386,7 +2378,6 @@ IMPORTANT FILE PLACEMENT RULES:
         ARCHIVE: '📦 Archives',
         NETWORK: '🌐 Network',
         WEB: '🔍 Web Search & Scraping',
-        SECURITY: '🛡️ Security & Threat Intel',
         PROCESS: '⚙️ Process Management',
         SYSTEM: '💻 System Info',
         GIT: '📝 Git Operations',
@@ -2406,7 +2397,7 @@ IMPORTANT FILE PLACEMENT RULES:
     };
 
     // Display order
-    const categoryOrder = ['FILE_OPS', 'WEB', 'SECURITY', 'NETWORK', 'PROCESS', 'SYSTEM', 'GIT', 'ENV', 'PDF', 'ARCHIVE', 'DATA', 'CODE', 'SHELL', 'IMAGE', 'MEDIA', 'DATABASE', 'EMAIL', 'CLIPBOARD', 'UTILITY', 'WINDOWS', 'OTHER'];
+    const categoryOrder = ['FILE_OPS', 'WEB', 'NETWORK', 'PROCESS', 'SYSTEM', 'GIT', 'ENV', 'PDF', 'ARCHIVE', 'DATA', 'CODE', 'SHELL', 'IMAGE', 'MEDIA', 'DATABASE', 'EMAIL', 'CLIPBOARD', 'UTILITY', 'WINDOWS', 'OTHER'];
 
     // Show ALL skills organized by category
     for (const category of categoryOrder) {
@@ -2493,20 +2484,6 @@ When asked to find or summarize web content:
 1. Use web_search to find relevant URLs
 2. Use playwright_fetch to get full page content (handles JS-rendered pages)
 3. Summarize and present the content
-`,
-        SECURITY: `
-🛡️ THREAT INTELLIGENCE EXAMPLES:
-[SKILL:threat_intel(indicator="115.191.18.57")]
-[SKILL:threat_intel(indicator="d41d8cd98f00b204e9800998ecf8427e", indicator_type="hash")]
-[SKILL:threat_intel(indicator="malicious-domain.com", indicator_type="domain")]
-
-threat_intel queries VirusTotal & FOFA for:
-- IP addresses: reputation, detections, ASN, country, open ports
-- File hashes (MD5/SHA1/SHA256): malware detections, threat names
-- Domains: reputation, registrar info, malicious flags
-- URLs: scan results and threat analysis
-
-IMPORTANT: For threat reports/IOC analysis, use threat_intel directly - NOT web_search!
 `,
         NETWORK: `
 🌐 NETWORK EXAMPLES:
@@ -2596,9 +2573,8 @@ IMPORTANT: For threat reports/IOC analysis, use threat_intel directly - NOT web_
     if (websearchEnabled) {
         prompt += `
 === WEB CAPABILITIES ENABLED ===
-- You CAN search the web and fetch content - use web_search, playwright_fetch, threat_intel
+- You CAN search the web and fetch content - use web_search, playwright_fetch
 - DO NOT say "I can't browse the web" - you have full web access via skills
-- For threat intel (IPs, hashes, domains): use threat_intel, NOT web_search
 `;
     }
 
@@ -3503,7 +3479,7 @@ async function executeNetworkSkill(skillName, params) {
     const net = require('net');
 
     // Security message for blocked external connections
-    const EXTERNAL_BLOCKED_MSG = 'Direct connections to external IPs/URLs are blocked for security. Use web_search or threat_intel skill instead to safely gather information about external hosts.';
+    const EXTERNAL_BLOCKED_MSG = 'Direct connections to external IPs/URLs are blocked for security. Use web_search or playwright_fetch skill instead to safely gather information about external hosts.';
 
     try {
         switch (skillName) {
@@ -4710,297 +4686,6 @@ async function executeEmailSkill(skillName, params) {
     }
 }
 
-// Execute threat intelligence skill (uses web_search for safe lookups - NO direct connections)
-async function executeThreatIntelSkill(api, params) {
-    try {
-        const indicator = params.indicator;
-        if (!indicator) {
-            return { success: false, error: 'indicator parameter is required' };
-        }
-
-        let indicatorType = (params.indicator_type || '').toLowerCase();
-
-        // Auto-detect indicator type if not specified
-        if (!indicatorType) {
-            if (/^[a-fA-F0-9]{32}$/.test(indicator)) {
-                indicatorType = 'hash';
-            } else if (/^[a-fA-F0-9]{40}$/.test(indicator)) {
-                indicatorType = 'hash';
-            } else if (/^[a-fA-F0-9]{64}$/.test(indicator)) {
-                indicatorType = 'hash';
-            } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(indicator)) {
-                indicatorType = 'ip';
-            } else if (indicator.startsWith('http://') || indicator.startsWith('https://')) {
-                indicatorType = 'url';
-            } else {
-                indicatorType = 'domain';
-            }
-        }
-
-        const results = {
-            success: true,
-            indicator: indicator,
-            indicator_type: indicatorType,
-            sources: {}
-        };
-
-        // Use web_search to safely gather threat intelligence
-        // This does NOT make direct connections to the target IP/domain
-        const searchQueries = [];
-
-        if (indicatorType === 'ip') {
-            searchQueries.push(`"${indicator}" site:ipinfo.io OR site:abuseipdb.com`);
-            searchQueries.push(`"${indicator}" site:virustotal.com OR site:shodan.io`);
-            searchQueries.push(`"${indicator}" malware threat intelligence`);
-        } else if (indicatorType === 'domain') {
-            searchQueries.push(`"${indicator}" site:virustotal.com OR site:urlscan.io`);
-            searchQueries.push(`"${indicator}" malware phishing threat`);
-        } else if (indicatorType === 'hash') {
-            searchQueries.push(`"${indicator}" site:virustotal.com OR site:hybrid-analysis.com`);
-            searchQueries.push(`"${indicator}" malware analysis`);
-        } else if (indicatorType === 'url') {
-            searchQueries.push(`"${indicator}" site:urlscan.io OR site:virustotal.com`);
-            searchQueries.push(`"${indicator}" phishing malware`);
-        }
-
-        // Execute web searches
-        const allSearchResults = [];
-        for (const query of searchQueries) {
-            try {
-                const url = `/api/search?q=${encodeURIComponent(query)}&limit=5&fetchContent=true&contentLimit=3`;
-                const searchResult = await api.request('GET', url);
-                if (searchResult && searchResult.results) {
-                    allSearchResults.push(...searchResult.results);
-                }
-            } catch (err) {
-                // Continue with other searches
-            }
-        }
-
-        // Parse and organize results by source
-        const vtResults = allSearchResults.filter(r => r.link && r.link.includes('virustotal.com'));
-        const ipinfoResults = allSearchResults.filter(r => r.link && r.link.includes('ipinfo.io'));
-        const abuseipdbResults = allSearchResults.filter(r => r.link && r.link.includes('abuseipdb.com'));
-        const shodanResults = allSearchResults.filter(r => r.link && r.link.includes('shodan.io'));
-        const urlscanResults = allSearchResults.filter(r => r.link && r.link.includes('urlscan.io'));
-        const otherResults = allSearchResults.filter(r =>
-            r.link &&
-            !r.link.includes('virustotal.com') &&
-            !r.link.includes('ipinfo.io') &&
-            !r.link.includes('abuseipdb.com') &&
-            !r.link.includes('shodan.io') &&
-            !r.link.includes('urlscan.io')
-        );
-
-        // Extract meaningful info from search results
-        if (vtResults.length > 0) {
-            results.sources.virustotal = {
-                found: true,
-                results_count: vtResults.length,
-                snippets: vtResults.slice(0, 3).map(r => ({
-                    title: r.title,
-                    link: r.link,
-                    snippet: r.snippet || r.content?.substring(0, 300)
-                }))
-            };
-        }
-
-        if (ipinfoResults.length > 0) {
-            results.sources.ipinfo = {
-                found: true,
-                results_count: ipinfoResults.length,
-                snippets: ipinfoResults.slice(0, 2).map(r => ({
-                    title: r.title,
-                    link: r.link,
-                    snippet: r.snippet || r.content?.substring(0, 300)
-                }))
-            };
-        }
-
-        if (abuseipdbResults.length > 0) {
-            results.sources.abuseipdb = {
-                found: true,
-                results_count: abuseipdbResults.length,
-                snippets: abuseipdbResults.slice(0, 2).map(r => ({
-                    title: r.title,
-                    link: r.link,
-                    snippet: r.snippet || r.content?.substring(0, 300)
-                }))
-            };
-        }
-
-        if (shodanResults.length > 0) {
-            results.sources.shodan = {
-                found: true,
-                results_count: shodanResults.length,
-                snippets: shodanResults.slice(0, 2).map(r => ({
-                    title: r.title,
-                    link: r.link,
-                    snippet: r.snippet || r.content?.substring(0, 300)
-                }))
-            };
-        }
-
-        if (urlscanResults.length > 0) {
-            results.sources.urlscan = {
-                found: true,
-                results_count: urlscanResults.length,
-                snippets: urlscanResults.slice(0, 2).map(r => ({
-                    title: r.title,
-                    link: r.link,
-                    snippet: r.snippet || r.content?.substring(0, 300)
-                }))
-            };
-        }
-
-        if (otherResults.length > 0) {
-            results.sources.other = {
-                found: true,
-                results_count: otherResults.length,
-                snippets: otherResults.slice(0, 3).map(r => ({
-                    title: r.title,
-                    link: r.link,
-                    snippet: r.snippet || r.content?.substring(0, 300)
-                }))
-            };
-        }
-
-        // Create summary
-        let sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
-
-        // Track errors for debugging
-        const errors = [];
-
-        // If no results from web search, try direct Playwright scraping as fallback
-        if (sourcesFound.length === 0) {
-            // Build direct URLs for threat intel sources
-            const directUrls = [];
-
-            if (indicatorType === 'ip') {
-                directUrls.push({
-                    source: 'virustotal',
-                    url: `https://www.virustotal.com/gui/ip-address/${indicator}/detection`
-                });
-                directUrls.push({
-                    source: 'fofa',
-                    url: `https://en.fofa.info/result?qbase64=${Buffer.from(indicator).toString('base64')}`
-                });
-            } else if (indicatorType === 'domain') {
-                directUrls.push({
-                    source: 'virustotal',
-                    url: `https://www.virustotal.com/gui/domain/${indicator}`
-                });
-            } else if (indicatorType === 'hash') {
-                directUrls.push({
-                    source: 'virustotal',
-                    url: `https://www.virustotal.com/gui/file/${indicator}/detection`
-                });
-            }
-
-            // Fetch from direct URLs using Playwright
-            for (const urlInfo of directUrls) {
-                try {
-                    const pwResult = await api.request('POST', '/api/playwright/fetch', {
-                        url: urlInfo.url,
-                        timeout: 25000,
-                        waitForJS: true,
-                        rawHtml: true,
-                        maxLength: 20000,
-                        waitForSelector: urlInfo.source === 'virustotal' ? '[class*="detection"]' : undefined
-                    });
-
-                    if (pwResult && pwResult.success && pwResult.content) {
-                        const content = pwResult.content;
-                        const contentLen = content.length;
-
-                        if (urlInfo.source === 'virustotal') {
-                            // Parse VirusTotal content - improved patterns
-                            // Try multiple detection ratio formats
-                            const ratioMatch = content.match(/(\d+)\s*\/\s*(\d+)\s*(?:security vendors?|engines?)/i) ||
-                                             content.match(/(\d+)\s*\/\s*(\d+)/);
-
-                            // Country detection - multiple patterns
-                            const countryMatch = content.match(/\bCountry\s*[:\s]+([A-Z]{2})\b/i) ||
-                                               content.match(/\)\s*([A-Z]{2})\s+(?:Last|First)/i) ||
-                                               content.match(/country[:\s]+([A-Za-z\s]{2,20})/i);
-
-                            // ASN detection - require 4+ digits
-                            const asnMatch = content.match(/\bAS(\d{4,})\b/i) ||
-                                           content.match(/ASN[:\s]+(\d{4,})/i) ||
-                                           content.match(/Autonomous System[:\s]+(?:AS)?(\d{4,})/i);
-
-                            // Network owner detection
-                            const networkMatch = content.match(/Network[:\s]+([^\n<]{5,50})/i) ||
-                                               content.match(/Owner[:\s]+([^\n<]{5,50})/i);
-
-                            results.sources.virustotal = {
-                                found: true,
-                                method: 'playwright',
-                                url: urlInfo.url,
-                                malicious: ratioMatch ? parseInt(ratioMatch[1]) : null,
-                                total_engines: ratioMatch && ratioMatch[2] ? parseInt(ratioMatch[2]) : null,
-                                detection_ratio: ratioMatch ? `${ratioMatch[1]}/${ratioMatch[2]}` : null,
-                                country: countryMatch ? countryMatch[1].trim() : null,
-                                asn: asnMatch ? `AS${asnMatch[1]}` : null,
-                                network: networkMatch ? networkMatch[1].trim() : null,
-                                content_length: contentLen
-                            };
-                        } else if (urlInfo.source === 'fofa') {
-                            // Parse FOFA content - improved patterns
-                            const resultMatch = content.match(/(\d+)\s*(?:results?|records?|assets?)/i);
-                            const portsMatch = content.match(/port[:\s]*(\d+)/gi);
-                            const servicesMatch = content.match(/(?:http|https|ssh|ftp|smtp|mysql|redis|mongodb)[^\s<]*/gi);
-
-                            results.sources.fofa = {
-                                found: true,
-                                method: 'playwright',
-                                url: urlInfo.url,
-                                result_count: resultMatch ? parseInt(resultMatch[1]) : null,
-                                ports: portsMatch ? [...new Set(portsMatch.map(p => p.match(/\d+/)?.[0]).filter(Boolean))] : [],
-                                services: servicesMatch ? [...new Set(servicesMatch.slice(0, 10))] : [],
-                                content_length: contentLen
-                            };
-                        }
-                    } else if (pwResult && !pwResult.success) {
-                        errors.push(`${urlInfo.source}: ${pwResult.error || 'Fetch failed'}`);
-                    } else {
-                        errors.push(`${urlInfo.source}: No content returned (response empty or blocked)`);
-                    }
-                } catch (fetchErr) {
-                    errors.push(`${urlInfo.source}: ${fetchErr.message}`);
-                }
-            }
-
-            // Recalculate sources found after Playwright fallback
-            sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
-        }
-
-        // Build informative summary
-        if (sourcesFound.length > 0) {
-            results.summary = `Found information from ${sourcesFound.length} sources: ${sourcesFound.join(', ')}`;
-
-            // Add detection status for VirusTotal
-            if (results.sources.virustotal?.detection_ratio) {
-                results.summary += `. VirusTotal: ${results.sources.virustotal.detection_ratio} detections`;
-            }
-        } else {
-            let summary = 'No threat intelligence data retrieved.';
-            if (errors.length > 0) {
-                summary += ` Errors: ${errors.join('; ')}`;
-            } else {
-                summary += ' The indicator may be too new, private, or not indexed by threat intelligence services.';
-            }
-            results.summary = summary;
-            results.errors = errors;
-        }
-
-        return results;
-
-    } catch (error) {
-        return { success: false, error: error.message };
-    }
-}
-
 // Execute Playwright-based skills (via API for browser automation)
 async function executePlaywrightSkill(api, skillName, params) {
     try {
@@ -5082,7 +4767,7 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
     }
 
     // Web-dependent skills that require websearchMode to be enabled
-    const webDependentSkills = ['threat_intel', 'playwright_fetch', 'playwright_interact', 'web_search'];
+    const webDependentSkills = ['playwright_fetch', 'playwright_interact', 'web_search'];
 
     for (const call of skillCalls) {
         // Check if skill is enabled before execution
@@ -5181,7 +4866,6 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         const imageSkills = ['ocr_image', 'screenshot', 'convert_image'];
         const windowsSkills = ['get_windows_services', 'get_registry_value', 'set_registry_value'];
         const emailSkills = ['read_email_file'];
-        const threatIntelSkills = ['threat_intel'];
         const playwrightSkills = ['playwright_fetch', 'playwright_interact', 'web_search'];
 
         if (fileOperationSkills.includes(call.skillName)) {
@@ -5216,8 +4900,6 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             result = await executeWindowsSkill(call.skillName, call.params);
         } else if (emailSkills.includes(call.skillName)) {
             result = await executeEmailSkill(call.skillName, call.params);
-        } else if (threatIntelSkills.includes(call.skillName)) {
-            result = await executeThreatIntelSkill(api, call.params);
         } else if (playwrightSkills.includes(call.skillName)) {
             result = await executePlaywrightSkill(api, call.skillName, call.params);
         } else {
@@ -5425,57 +5107,6 @@ function buildSkillResultsMessage(results) {
             } else if (skillName === 'pdf_to_images') {
                 const count = result.count || result.data?.count || 0;
                 message += `✓ PDF converted to ${count} images\n`;
-            } else if (skillName === 'threat_intel') {
-                // Include full threat intelligence results
-                const indicator = result.indicator || result.data?.indicator || 'unknown';
-                const indicatorType = result.indicator_type || result.data?.indicator_type || 'unknown';
-                const sources = result.sources || result.data?.sources || {};
-                const summary = result.summary || result.data?.summary || '';
-
-                // Check if any source returned meaningful data
-                const vtFound = sources.virustotal?.found;
-                const fofaFound = sources.fofa?.found;
-                const hasMeaningfulData = vtFound || fofaFound;
-
-                message += `✓ Threat Intelligence Report for ${indicator} (${indicatorType}):\n`;
-
-                // VirusTotal results
-                if (sources.virustotal) {
-                    const vt = sources.virustotal;
-                    if (vt.found) {
-                        message += `  VirusTotal: ${vt.malicious || 0}/${vt.total_engines || 0} detections`;
-                        if (vt.country) message += `, Country: ${vt.country}`;
-                        if (vt.asn) message += `, ASN: ${vt.asn}`;
-                        message += ` (via ${vt.method || 'direct'})\n`;
-                    } else {
-                        message += `  VirusTotal: ${vt.error || 'not found'}\n`;
-                    }
-                }
-
-                // FOFA results
-                if (sources.fofa) {
-                    const fofa = sources.fofa;
-                    if (fofa.found) {
-                        message += `  FOFA: ${fofa.result_count || 0} results`;
-                        if (fofa.ports && fofa.ports.length > 0) message += `, Ports: ${fofa.ports.join(', ')}`;
-                        if (fofa.services && fofa.services.length > 0) message += `, Services: ${fofa.services.join(', ')}`;
-                        if (fofa.region) message += `, Region: ${fofa.region}`;
-                        if (fofa.organization) message += `, Org: ${fofa.organization}`;
-                        message += ` (via ${fofa.method || 'direct'})\n`;
-                    } else {
-                        message += `  FOFA: ${fofa.error || 'not found'}\n`;
-                    }
-                }
-
-                if (summary) {
-                    message += `  Summary: ${summary}\n`;
-                }
-
-                // Explicit guidance when no meaningful data was found
-                if (!hasMeaningfulData) {
-                    message += `  [NOTE: No threat intelligence data was found for this indicator. `;
-                    message += `If the user requested a file/report, inform them that no data is available to save.]\n`;
-                }
             } else if (skillName === 'search_files') {
                 const pattern = result.pattern || result.data?.pattern || '';
                 const files = result.files || result.data?.files || [];
@@ -5550,7 +5181,7 @@ function buildUserVisibleSkillResults(results) {
         if (!r.success) return true; // Show failures
         const skillName = r.skill;
         // Skills that produce meaningful output worth showing to user
-        return ['threat_intel', 'read_file', 'list_directory', 'git_diff', 'git_log',
+        return ['read_file', 'list_directory', 'git_diff', 'git_log',
                 'search_files', 'diff_files', 'read_pdf', 'web_search', 'dns_lookup',
                 'system_info', 'list_processes', 'list_ports', 'list_services',
                 'tail_file', 'head_file', 'git_status', 'git_branch'].includes(skillName);
@@ -5569,38 +5200,7 @@ function buildUserVisibleSkillResults(results) {
         const skillName = r.skill;
         const result = r.result;
 
-        if (skillName === 'threat_intel') {
-            const indicator = result.indicator || result.data?.indicator || 'unknown';
-            const sources = result.sources || result.data?.sources || {};
-            output += `\n📊 Threat Intelligence: ${indicator}\n`;
-            output += '─'.repeat(40) + '\n';
-
-            if (sources.virustotal) {
-                const vt = sources.virustotal;
-                if (vt.found) {
-                    output += `VirusTotal: ${vt.malicious || 0}/${vt.total_engines || 0} detections\n`;
-                    if (vt.country) output += `  Country: ${vt.country}\n`;
-                    if (vt.asn) output += `  ASN: ${vt.asn}\n`;
-                    if (vt.url) output += `  Link: ${vt.url}\n`;
-                } else {
-                    output += `VirusTotal: ${vt.error || 'No data'}\n`;
-                }
-            }
-
-            if (sources.fofa) {
-                const fofa = sources.fofa;
-                if (fofa.found) {
-                    output += `FOFA: ${fofa.result_count || 0} results\n`;
-                    if (fofa.ports?.length > 0) output += `  Ports: ${fofa.ports.join(', ')}\n`;
-                    if (fofa.services?.length > 0) output += `  Services: ${fofa.services.join(', ')}\n`;
-                    if (fofa.region) output += `  Region: ${fofa.region}\n`;
-                    if (fofa.organization) output += `  Organization: ${fofa.organization}\n`;
-                    if (fofa.url) output += `  Link: ${fofa.url}\n`;
-                } else {
-                    output += `FOFA: ${fofa.error || 'No data'}\n`;
-                }
-            }
-        } else if (skillName === 'read_file') {
+        if (skillName === 'read_file') {
             const filePath = result.filePath || result.data?.filePath || 'file';
             const content = result.content || result.data?.content || '';
             output += `\n📄 File: ${filePath}\n`;
@@ -7471,7 +7071,7 @@ YOU MUST NOT:
             // Check if AI claims to have performed file operations without actually executing skills
             // This catches cases where the AI hallucinates "I saved the file" without calling skills
             // IMPORTANT: Run this check on ALL iterations, not just iteration 0
-            // Because after running a skill like threat_intel, AI might claim to have saved results
+            // Because after running a skill like web_search, AI might claim to have saved results
             // to a file without actually calling create_file
             //
             // HOWEVER: Skip this check if relevant file operation skills already executed successfully
@@ -7568,13 +7168,13 @@ YOU MUST NOT:
         let feedbackMessage = buildSkillResultsMessage(skillResults);
 
         // Check if the AI claimed to save/create a file but didn't execute a file-creating skill
-        // This catches: AI calls threat_intel + says "saved to file.txt" without calling create_file
+        // This catches: AI calls web_search + says "saved to file.txt" without calling create_file
         // NOTE: Skip this check for:
         // 1. Delete operations - they don't need file-creating skills
-        // 2. Data-gathering skills (threat_intel, web_search, etc.) - these are multi-step operations
+        // 2. Data-gathering skills (web_search, etc.) - these are multi-step operations
         //    where the AI gathers data first, then saves it in the next iteration
         const fileCreatingSkills = ['create_file', 'update_file', 'write_file'];
-        const dataGatheringSkills = ['threat_intel', 'web_search', 'fetch_url', 'playwright_fetch', 'read_file'];
+        const dataGatheringSkills = ['web_search', 'fetch_url', 'playwright_fetch', 'read_file'];
         const executedFileSkills = skillResults.filter(r => fileCreatingSkills.includes(r.skill) && r.success);
         const executedDeleteSkills = skillResults.filter(r =>
             (r.skill === 'delete_file' || r.skill === 'delete_directory') && r.success);

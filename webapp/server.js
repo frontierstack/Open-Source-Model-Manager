@@ -4549,49 +4549,171 @@ app.get('/api/search', requireAuth, async (req, res) => {
     }
 
     try {
-        // DuckDuckGo HTML search with date filtering
-        const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(enhancedQuery)}${dateFilter}`;
-        const response = await axios.get(searchUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            timeout: 10000
-        });
-
-        const html = response.data;
         const results = [];
         const seenUrls = new Set(); // Deduplication
+        let searchSource = 'duckduckgo';
 
-        // Parse DuckDuckGo HTML results
-        const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
-        const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
-        const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i;
+        // Try DuckDuckGo first, fall back to Jina if CAPTCHA detected
+        try {
+            const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(enhancedQuery)}${dateFilter}`;
+            const response = await axios.get(searchUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                },
+                timeout: 8000
+            });
 
-        let match;
-        while ((match = resultRegex.exec(html)) !== null && results.length < parseInt(limit)) {
-            const resultHtml = match[1];
+            const html = response.data;
 
-            const titleMatch = titleRegex.exec(resultHtml);
-            const snippetMatch = snippetRegex.exec(resultHtml);
+            // Check for CAPTCHA/bot detection (anomaly-modal indicates CAPTCHA)
+            if (html.includes('anomaly-modal') || html.includes('Please enable JavaScript')) {
+                throw new Error('CAPTCHA_DETECTED');
+            }
 
-            if (titleMatch) {
-                const url = titleMatch[1].replace(/^\/\/duckduckgo\.com\/l\/\?uddg=/, '').split('&')[0];
-                const decodedUrl = decodeURIComponent(url);
-                const title = titleMatch[2].replace(/<[^>]*>/g, '').trim();
-                const snippet = snippetMatch
-                    ? snippetMatch[1].replace(/<[^>]*>/g, '').trim()
-                    : '';
+            // Parse DuckDuckGo HTML results
+            const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
+            const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
+            const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i;
 
-                // Only add if we have a valid URL and haven't seen it before
-                if (decodedUrl && decodedUrl.startsWith('http') && !seenUrls.has(decodedUrl)) {
-                    seenUrls.add(decodedUrl);
-                    results.push({
-                        title: title || 'No title',
-                        url: decodedUrl,
-                        snippet: snippet || 'No description available',
-                        content: null // Will be populated if fetchContent is true
-                    });
+            let match;
+            while ((match = resultRegex.exec(html)) !== null && results.length < parseInt(limit)) {
+                const resultHtml = match[1];
+                const titleMatch = titleRegex.exec(resultHtml);
+                const snippetMatch = snippetRegex.exec(resultHtml);
+
+                if (titleMatch) {
+                    const url = titleMatch[1].replace(/^\/\/duckduckgo\.com\/l\/\?uddg=/, '').split('&')[0];
+                    const decodedUrl = decodeURIComponent(url);
+                    const title = titleMatch[2].replace(/<[^>]*>/g, '').trim();
+                    const snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+
+                    if (decodedUrl && decodedUrl.startsWith('http') && !seenUrls.has(decodedUrl)) {
+                        seenUrls.add(decodedUrl);
+                        results.push({
+                            title: title || 'No title',
+                            url: decodedUrl,
+                            snippet: snippet || 'No description available',
+                            content: null
+                        });
+                    }
                 }
+            }
+
+            // If no results from DDG, fall back to Jina
+            if (results.length === 0) {
+                throw new Error('NO_RESULTS');
+            }
+        } catch (ddgError) {
+            // Fall back to Brave Search (no auth required, less aggressive bot detection)
+            console.log(`DuckDuckGo failed (${ddgError.message}), falling back to Brave Search`);
+            searchSource = 'brave';
+
+            try {
+                const braveUrl = `https://search.brave.com/search?q=${encodeURIComponent(enhancedQuery)}`;
+                const braveResponse = await axios.get(braveUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9'
+                    },
+                    timeout: 10000
+                });
+
+                const braveHtml = braveResponse.data;
+
+                // Updated Brave Search parsing - matches current HTML structure
+                // Brave uses svelte classes like "svelte-14r20fy l1" for result links
+                // Extract all external URLs with their context
+                const linkPattern = /<a\s+href="(https?:\/\/(?!(?:search\.)?brave\.com|cdn\.search\.brave\.com|imgs\.search\.brave\.com|tiles\.search\.brave\.com)[^"]+)"[^>]*target="_self"[^>]*class="[^"]*svelte[^"]*"[^>]*>/gi;
+
+                let match;
+                const urlsFound = [];
+                while ((match = linkPattern.exec(braveHtml)) !== null) {
+                    const url = match[1];
+                    if (url && !url.includes('brave.com') && !seenUrls.has(url)) {
+                        urlsFound.push(url);
+                    }
+                }
+
+                // Extract titles - look for title class spans near result links
+                const titlePattern = /<span[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)<\/span>/gi;
+                const titles = [];
+                while ((match = titlePattern.exec(braveHtml)) !== null) {
+                    titles.push(match[1].trim());
+                }
+
+                // Extract descriptions
+                const descPattern = /<p[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/p>/gi;
+                const descriptions = [];
+                while ((match = descPattern.exec(braveHtml)) !== null) {
+                    descriptions.push(match[1].replace(/<[^>]*>/g, '').trim());
+                }
+
+                // Build results - deduplicate and limit
+                for (let i = 0; i < urlsFound.length && results.length < parseInt(limit); i++) {
+                    const url = urlsFound[i];
+                    if (!seenUrls.has(url)) {
+                        seenUrls.add(url);
+                        // Try to extract domain for title fallback
+                        let title = titles[i] || '';
+                        if (!title) {
+                            try {
+                                title = new URL(url).hostname.replace('www.', '');
+                            } catch (e) {
+                                title = 'Web Result';
+                            }
+                        }
+                        results.push({
+                            title: title,
+                            url: url,
+                            snippet: descriptions[i] || 'Result from Brave Search',
+                            content: null
+                        });
+                    }
+                }
+
+                // If still no results, try Playwright for JS-rendered content
+                if (results.length === 0 && playwrightService) {
+                    console.log('Brave HTML parsing failed, trying Playwright...');
+                    searchSource = 'brave-playwright';
+                    try {
+                        const pwResult = await playwrightService.fetch(braveUrl, {
+                            timeout: 20000,
+                            waitForJS: true,
+                            includeLinks: true,
+                            maxLength: 50000
+                        });
+
+                        if (pwResult.success && pwResult.links) {
+                            // Filter to external links only
+                            const externalLinks = pwResult.links.filter(link =>
+                                link.href &&
+                                link.href.startsWith('http') &&
+                                !link.href.includes('brave.com') &&
+                                !seenUrls.has(link.href)
+                            );
+
+                            for (const link of externalLinks.slice(0, parseInt(limit))) {
+                                if (!seenUrls.has(link.href)) {
+                                    seenUrls.add(link.href);
+                                    results.push({
+                                        title: link.text || link.href,
+                                        url: link.href,
+                                        snippet: 'Result from Brave Search',
+                                        content: null
+                                    });
+                                }
+                            }
+                        }
+                    } catch (pwError) {
+                        console.error('Playwright Brave search failed:', pwError.message);
+                    }
+                }
+            } catch (braveError) {
+                console.error('Brave search also failed:', braveError.message);
+                // Continue with empty results if both fail
             }
         }
 
@@ -4621,7 +4743,8 @@ app.get('/api/search', requireAuth, async (req, res) => {
             enhancedQuery: enhancedQuery !== q ? enhancedQuery : undefined,
             results,
             count: results.length,
-            contentFetchedCount: shouldFetchContent ? contentFetchedCount : undefined
+            contentFetchedCount: shouldFetchContent ? contentFetchedCount : undefined,
+            source: searchSource
         };
 
         // Cache the results

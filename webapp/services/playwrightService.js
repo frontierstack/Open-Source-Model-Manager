@@ -3,13 +3,75 @@
  *
  * Features:
  * - Browser pooling for fast reuse
- * - Stealth mode with fingerprint randomization
+ * - Stealth mode with fingerprint randomization (playwright-extra + stealth plugin)
+ * - Headed mode with Xvfb for maximum anti-detection
  * - Smart content extraction (handles JS-rendered pages)
  * - Configurable timeouts and retry logic
  * - Graceful degradation on failures
  */
 
-const { chromium } = require('playwright');
+const { spawn, execSync } = require('child_process');
+
+// Use playwright-extra with stealth plugin for enhanced bot detection bypass
+const { chromium: playwrightChromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+
+// Apply stealth plugin with all evasions enabled
+playwrightChromium.use(StealthPlugin());
+
+// Export stealth-enabled chromium
+const chromium = playwrightChromium;
+
+// Xvfb virtual display management
+let xvfbProcess = null;
+const DISPLAY_NUM = 99;
+const XVFB_DISPLAY = `:${DISPLAY_NUM}`;
+
+/**
+ * Start Xvfb virtual display for headed browser mode
+ */
+function startXvfb() {
+    if (xvfbProcess) return true;
+
+    try {
+        // Check if Xvfb is available
+        execSync('which Xvfb', { stdio: 'ignore' });
+
+        // Start Xvfb
+        xvfbProcess = spawn('Xvfb', [XVFB_DISPLAY, '-screen', '0', '1920x1080x24'], {
+            detached: true,
+            stdio: 'ignore'
+        });
+
+        xvfbProcess.unref();
+
+        // Set DISPLAY environment variable
+        process.env.DISPLAY = XVFB_DISPLAY;
+
+        console.log(`Xvfb started on display ${XVFB_DISPLAY} for headed browser mode`);
+        return true;
+    } catch (err) {
+        console.log('Xvfb not available, using headless mode');
+        return false;
+    }
+}
+
+/**
+ * Stop Xvfb virtual display
+ */
+function stopXvfb() {
+    if (xvfbProcess) {
+        try {
+            process.kill(-xvfbProcess.pid);
+        } catch (e) {
+            // Process already dead
+        }
+        xvfbProcess = null;
+    }
+}
+
+// Check for Xvfb on startup
+const USE_HEADED_MODE = startXvfb();
 
 // Browser pool management
 let browserPool = [];
@@ -86,27 +148,35 @@ function getStealthContextOptions() {
 }
 
 /**
- * Apply stealth patches to page
+ * Apply stealth patches to page - Enhanced for VirusTotal/FOFA bypass
  */
 async function applyStealthPatches(page) {
     await page.addInitScript(() => {
-        // Override webdriver detection
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        });
-
-        // Override automation detection
+        // Override webdriver detection - comprehensive
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         delete navigator.__proto__.webdriver;
+        delete navigator.__proto__.chromeHeadless;
+        delete navigator.__proto__.phantom;
 
-        // Chrome runtime
+        // Hide process/global objects (Node.js detection)
+        if (typeof globalThis !== 'undefined') {
+            delete globalThis.process;
+            delete globalThis.global;
+        }
+
+        // Chrome runtime - more complete mock
         window.chrome = {
-            runtime: {},
-            loadTimes: function() {},
-            csi: function() {},
-            app: {}
+            runtime: {
+                connect: () => {},
+                sendMessage: () => {},
+                onMessage: { addListener: () => {} }
+            },
+            loadTimes: function() { return { commitLoadTime: Date.now() / 1000 }; },
+            csi: function() { return { startE: Date.now(), onloadT: Date.now() }; },
+            app: { isInstalled: false, InstallState: { DISABLED: 'disabled' } }
         };
 
-        // Permissions API
+        // Permissions API - comprehensive
         const originalQuery = window.navigator.permissions.query;
         window.navigator.permissions.query = (parameters) => (
             parameters.name === 'notifications' ?
@@ -114,26 +184,38 @@ async function applyStealthPatches(page) {
                 originalQuery(parameters)
         );
 
-        // Plugin array
+        // Plugin array with length property
+        const plugins = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+        ];
         Object.defineProperty(navigator, 'plugins', {
-            get: () => [
-                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-                { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
-            ]
+            get: () => {
+                const pluginArray = Object.assign(plugins, { length: plugins.length });
+                pluginArray.item = (i) => plugins[i];
+                pluginArray.namedItem = (name) => plugins.find(p => p.name === name);
+                pluginArray.refresh = () => {};
+                return pluginArray;
+            }
         });
 
         // Languages
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en']
-        });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+        // Platform - consistent with Windows
+        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+        Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
 
         // Hardware concurrency (randomize slightly)
         Object.defineProperty(navigator, 'hardwareConcurrency', {
             get: () => 4 + Math.floor(Math.random() * 5)
         });
 
-        // WebGL vendor/renderer
+        // Device memory
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+        // WebGL vendor/renderer - randomize slightly
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(parameter) {
             if (parameter === 37445) return 'Intel Inc.';
@@ -141,16 +223,61 @@ async function applyStealthPatches(page) {
             return getParameter.apply(this, arguments);
         };
 
-        // Notification permission
-        if (typeof Notification !== 'undefined') {
-            Object.defineProperty(Notification, 'permission', {
-                get: () => 'default'
-            });
+        // WebGL2 support
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            const getParam2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Intel Inc.';
+                if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                return getParam2.apply(this, arguments);
+            };
         }
 
-        // Connection type
+        // Notification permission
+        if (typeof Notification !== 'undefined') {
+            Object.defineProperty(Notification, 'permission', { get: () => 'default' });
+        }
+
+        // Connection type - realistic values
         if (navigator.connection) {
             Object.defineProperty(navigator.connection, 'rtt', { get: () => 50 });
+            Object.defineProperty(navigator.connection, 'downlink', { get: () => 10 });
+            Object.defineProperty(navigator.connection, 'effectiveType', { get: () => '4g' });
+            Object.defineProperty(navigator.connection, 'saveData', { get: () => false });
+        }
+
+        // Canvas fingerprinting protection - add slight noise
+        const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+        CanvasRenderingContext2D.prototype.getImageData = function(...args) {
+            const imageData = origGetImageData.apply(this, args);
+            // Add minimal noise to prevent fingerprinting
+            for (let i = 0; i < imageData.data.length; i += 100) {
+                imageData.data[i] = imageData.data[i] ^ (Math.random() > 0.5 ? 1 : 0);
+            }
+            return imageData;
+        };
+
+        // Hide automation-related function modifications
+        const originalToString = Function.prototype.toString;
+        Function.prototype.toString = function() {
+            if (this === navigator.permissions.query) {
+                return 'function query() { [native code] }';
+            }
+            return originalToString.apply(this, arguments);
+        };
+
+        // Screen properties
+        Object.defineProperty(screen, 'availWidth', { get: () => screen.width });
+        Object.defineProperty(screen, 'availHeight', { get: () => screen.height - 40 });
+
+        // Disable WebRTC IP leak
+        if (typeof RTCPeerConnection !== 'undefined') {
+            const origRTC = RTCPeerConnection;
+            window.RTCPeerConnection = function(...args) {
+                const pc = new origRTC(...args);
+                pc.createDataChannel = () => ({});
+                return pc;
+            };
         }
     });
 }
@@ -169,8 +296,14 @@ async function getBrowser() {
 
     // Create new browser if pool not full
     if (browserPool.length < MAX_POOL_SIZE) {
+        // Use headed mode with Xvfb when available (better anti-detection)
+        const useHeaded = USE_HEADED_MODE;
+        if (useHeaded) {
+            console.log('Launching browser in headed mode with Xvfb');
+        }
+
         const browser = await chromium.launch({
-            headless: true,
+            headless: !useHeaded,
             args: [
                 '--disable-blink-features=AutomationControlled',
                 '--disable-features=IsolateOrigins,site-per-process',
@@ -189,7 +322,28 @@ async function getBrowser() {
                 '--disable-plugins-discovery',
                 '--disable-default-apps',
                 '--no-first-run',
-                '--no-default-browser-check'
+                '--no-default-browser-check',
+                // Additional anti-detection flags
+                '--disable-background-networking',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-breakpad',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-component-update',
+                '--disable-domain-reliability',
+                '--disable-hang-monitor',
+                '--disable-ipc-flooding-protection',
+                '--disable-popup-blocking',
+                '--disable-prompt-on-repost',
+                '--disable-renderer-backgrounding',
+                '--disable-sync',
+                '--enable-features=NetworkService,NetworkServiceInProcess',
+                '--force-color-profile=srgb',
+                '--metrics-recording-only',
+                '--password-store=basic',
+                '--use-mock-keychain',
+                // Extra anti-detection for headed mode
+                ...(useHeaded ? ['--disable-notifications', '--disable-popup-blocking'] : [])
             ]
         });
 
@@ -624,7 +778,12 @@ async function interactAndFetch(url, actions = [], options = {}) {
                     await page.type(action.selector, action.text, { delay: randomDelay(30, 80) });
                     break;
                 case 'wait':
-                    await page.waitForSelector(action.selector, { timeout: action.timeout || 5000 });
+                    // Support both selector-based wait and simple timeout
+                    if (action.selector) {
+                        await page.waitForSelector(action.selector, { timeout: action.timeout || 5000 });
+                    } else {
+                        await page.waitForTimeout(action.timeout || 1000);
+                    }
                     break;
                 case 'scroll':
                     await page.evaluate(() => window.scrollBy(0, window.innerHeight));
@@ -677,6 +836,9 @@ async function cleanup() {
     }
 
     browserPool = [];
+
+    // Stop Xvfb if running
+    stopXvfb();
 }
 
 /**
