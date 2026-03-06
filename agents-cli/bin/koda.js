@@ -7291,6 +7291,10 @@ YOU MUST NOT:
     let currentMessage = contextMessage;
     let finalResponse = '';
 
+    // Track successfully executed file operation skills across iterations
+    // This prevents false completion detection from triggering after delete/move/copy operations complete
+    const executedFileOpSkills = new Set();
+
     while (iteration < MAX_SKILL_ITERATIONS) {
         iteration++;
 
@@ -7445,9 +7449,33 @@ YOU MUST NOT:
             // IMPORTANT: Run this check on ALL iterations, not just iteration 0
             // Because after running a skill like threat_intel, AI might claim to have saved results
             // to a file without actually calling create_file
+            //
+            // HOWEVER: Skip this check if relevant file operation skills already executed successfully
+            // This prevents infinite loops when delete/move/copy operations complete but AI's response
+            // still triggers the false completion patterns (e.g., "files have been deleted" after delete_file ran)
             const claimsFileOperation = detectFalseCompletionClaim(response, originalMessage);
 
-            if (claimsFileOperation) {
+            // Determine if the claimed operation type was already executed
+            const messageContainsDelete = /\b(delete|remove|rm|erase|clear|wipe)\b/i.test(originalMessage);
+            const messageContainsCreate = /\b(create|save|write|export)\b.*\b(file|pdf|txt)\b/i.test(originalMessage);
+            const messageContainsMove = /\b(move|rename)\b/i.test(originalMessage);
+            const messageContainsCopy = /\bcopy\b/i.test(originalMessage);
+
+            const deleteOpsExecuted = executedFileOpSkills.has('delete_file') || executedFileOpSkills.has('delete_directory');
+            const createOpsExecuted = executedFileOpSkills.has('create_file') || executedFileOpSkills.has('create_directory') ||
+                                       executedFileOpSkills.has('update_file') || executedFileOpSkills.has('write_file') ||
+                                       executedFileOpSkills.has('append_to_file');
+            const moveOpsExecuted = executedFileOpSkills.has('move_file');
+            const copyOpsExecuted = executedFileOpSkills.has('copy_file');
+
+            // Skip false completion check if the operation type the user requested was already performed
+            const operationAlreadyCompleted =
+                (messageContainsDelete && deleteOpsExecuted) ||
+                (messageContainsCreate && createOpsExecuted) ||
+                (messageContainsMove && moveOpsExecuted) ||
+                (messageContainsCopy && copyOpsExecuted);
+
+            if (claimsFileOperation && !operationAlreadyCompleted) {
                 // AI claimed to do file operations but didn't execute any skills
                 // Remove the false claim from display
                 const lastMsg = chatHistory[chatHistory.length - 1];
@@ -7503,17 +7531,32 @@ YOU MUST NOT:
             break;
         }
 
+        // Track successfully executed file operation skills to prevent false completion detection loops
+        const fileOpSkillNames = ['delete_file', 'delete_directory', 'create_file', 'create_directory',
+                                   'move_file', 'copy_file', 'update_file', 'write_file', 'append_to_file'];
+        for (const result of skillResults) {
+            if (result.success && fileOpSkillNames.includes(result.skill)) {
+                executedFileOpSkills.add(result.skill);
+            }
+        }
+
         // Build feedback message for the AI
         let feedbackMessage = buildSkillResultsMessage(skillResults);
 
         // Check if the AI claimed to save/create a file but didn't execute a file-creating skill
         // This catches: AI calls threat_intel + says "saved to file.txt" without calling create_file
+        // NOTE: Skip this check for delete operations - they don't need file-creating skills
         const fileCreatingSkills = ['create_file', 'update_file', 'write_file'];
         const executedFileSkills = skillResults.filter(r => fileCreatingSkills.includes(r.skill) && r.success);
+        const executedDeleteSkills = skillResults.filter(r =>
+            (r.skill === 'delete_file' || r.skill === 'delete_directory') && r.success);
         const claimsFileSave = detectFalseCompletionClaim(response, originalMessage);
+        const isDeleteOnlyOperation = /\b(delete|remove|rm|erase|clear|wipe)\b/i.test(originalMessage) &&
+                                       !/\b(create|save|write|export)\b.*\b(file|pdf|txt)\b/i.test(originalMessage);
 
-        if (claimsFileSave && executedFileSkills.length === 0) {
+        if (claimsFileSave && executedFileSkills.length === 0 && !isDeleteOnlyOperation && executedDeleteSkills.length === 0) {
             // AI claimed to save a file but no file-creating skill was executed
+            // (and this isn't a delete-only operation where delete skills ran)
             // Add reminder to the feedback so AI knows to actually call create_file
             feedbackMessage += '\n\n[IMPORTANT: FILE NOT SAVED]\n';
             feedbackMessage += 'The user asked to save content to a file, but you did not execute create_file.\n';
