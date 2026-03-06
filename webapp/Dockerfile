@@ -39,6 +39,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     imagemagick \
     # Database tools (sqlite_query, sqlite_list_tables skills)
     sqlite3 \
+    # Video analysis tools (analyze_video skill)
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python libraries for skills
