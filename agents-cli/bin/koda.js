@@ -4888,11 +4888,16 @@ async function executeThreatIntelSkill(api, params) {
 
                             if (urlInfo.source === 'virustotal') {
                                 // Parse VirusTotal content
-                                const maliciousMatch = content.match(/(\d+)\s*(?:security vendors?|engines?)\s*(?:flagged|detected|marked)/i) ||
-                                                       content.match(/(\d+)\/(\d+)/);
-                                const countryMatch = content.match(/country[:\s]+([A-Za-z\s]+)/i);
-                                const asnMatch = content.match(/as(?:n|number)?[:\s]+(\d+)/i) ||
-                                                content.match(/AS(\d+)/);
+                                // Try X/Y format first (e.g., "12/94 security vendors")
+                                const ratioMatch = content.match(/(\d+)\s*\/\s*(\d+)\s*(?:security vendors?|engines?)/i);
+                                // Fallback to simple X/Y anywhere
+                                const simpleRatioMatch = content.match(/(\d+)\/(\d+)/);
+                                const maliciousMatch = ratioMatch || simpleRatioMatch;
+                                // Look for country code after ASN info (e.g., "Ltd. ) CN")
+                                const countryCodeMatch = content.match(/\)\s*([A-Z]{2})\s/);
+                                const countryMatch = countryCodeMatch || content.match(/country[:\s]+([A-Za-z\s]+)/i);
+                                const asnMatch = content.match(/AS\s*(\d+)/i) ||
+                                                content.match(/as(?:n|number)?[:\s]+(\d+)/i);
 
                                 results.sources.virustotal = {
                                     found: true,
