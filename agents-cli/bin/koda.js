@@ -3418,6 +3418,46 @@ async function executeEnvSkill(skillName, params) {
     }
 }
 
+// Helper function to check if a host is local/safe for direct connections
+function isLocalHost(hostOrUrl) {
+    let host;
+    try {
+        // Handle URLs
+        if (hostOrUrl.startsWith('http://') || hostOrUrl.startsWith('https://')) {
+            const urlObj = new URL(hostOrUrl);
+            host = urlObj.hostname;
+        } else {
+            host = hostOrUrl;
+        }
+    } catch {
+        host = hostOrUrl;
+    }
+
+    // Localhost variants
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+        return true;
+    }
+
+    // IPv4 private ranges
+    const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipv4Match) {
+        const [, a, b] = ipv4Match.map(Number);
+        // 10.0.0.0/8 (private)
+        if (a === 10) return true;
+        // 172.16.0.0/12 (private)
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        // 192.168.0.0/16 (private)
+        if (a === 192 && b === 168) return true;
+    }
+
+    // Local hostname (no dots, not an IP)
+    if (!host.includes('.') && !/^\d+$/.test(host)) {
+        return true;
+    }
+
+    return false;
+}
+
 // Execute network skills client-side
 async function executeNetworkSkill(skillName, params) {
     const https = require('https');
@@ -3425,11 +3465,19 @@ async function executeNetworkSkill(skillName, params) {
     const dns = require('dns').promises;
     const net = require('net');
 
+    // Security message for blocked external connections
+    const EXTERNAL_BLOCKED_MSG = 'Direct connections to external IPs/URLs are blocked for security. Use web_search or threat_intel skill instead to safely gather information about external hosts.';
+
     try {
         switch (skillName) {
             case 'fetch_url': {
                 const url = params.url;
                 if (!url) return { success: false, error: 'url parameter is required' };
+
+                // Block external URLs
+                if (!isLocalHost(url)) {
+                    return { success: false, error: EXTERNAL_BLOCKED_MSG };
+                }
 
                 return new Promise((resolve) => {
                     const client = url.startsWith('https') ? https : http;
@@ -3471,6 +3519,11 @@ async function executeNetworkSkill(skillName, params) {
                 const port = parseInt(params.port);
                 if (!port) return { success: false, error: 'port parameter is required' };
 
+                // Block external hosts
+                if (!isLocalHost(host)) {
+                    return { success: false, error: EXTERNAL_BLOCKED_MSG };
+                }
+
                 return new Promise((resolve) => {
                     const socket = new net.Socket();
                     socket.setTimeout(5000);
@@ -3493,6 +3546,11 @@ async function executeNetworkSkill(skillName, params) {
                 const host = params.host;
                 if (!host) return { success: false, error: 'host parameter is required' };
 
+                // Block external hosts
+                if (!isLocalHost(host)) {
+                    return { success: false, error: EXTERNAL_BLOCKED_MSG };
+                }
+
                 const platform = os.platform();
                 const cmd = platform === 'win32' ? `ping -n 1 ${host}` : `ping -c 1 ${host}`;
 
@@ -3509,6 +3567,11 @@ async function executeNetworkSkill(skillName, params) {
                 const url = params.url;
                 const method = (params.method || 'GET').toUpperCase();
                 if (!url) return { success: false, error: 'url parameter is required' };
+
+                // Block external URLs
+                if (!isLocalHost(url)) {
+                    return { success: false, error: EXTERNAL_BLOCKED_MSG };
+                }
 
                 return new Promise((resolve) => {
                     const urlObj = new URL(url);
@@ -3585,6 +3648,11 @@ async function executeNetworkSkill(skillName, params) {
                 const host = params.host;
                 if (!host) return { success: false, error: 'host parameter is required' };
 
+                // Block external hosts
+                if (!isLocalHost(host)) {
+                    return { success: false, error: EXTERNAL_BLOCKED_MSG };
+                }
+
                 const platform = os.platform();
                 const cmd = platform === 'win32' ? `tracert -d -h 15 ${host}` : `traceroute -n -m 15 ${host}`;
 
@@ -3599,6 +3667,11 @@ async function executeNetworkSkill(skillName, params) {
             case 'curl_request': {
                 const url = params.url;
                 if (!url) return { success: false, error: 'url parameter is required' };
+
+                // Block external URLs
+                if (!isLocalHost(url)) {
+                    return { success: false, error: EXTERNAL_BLOCKED_MSG };
+                }
 
                 let cmd = `curl -s -w "\\n%{http_code}" "${url}"`;
                 if (params.method) cmd = `curl -s -X ${params.method} -w "\\n%{http_code}" "${url}"`;
@@ -4600,6 +4673,176 @@ async function executeEmailSkill(skillName, params) {
     }
 }
 
+// Execute threat intelligence skill (uses web_search for safe lookups - NO direct connections)
+async function executeThreatIntelSkill(api, params) {
+    try {
+        const indicator = params.indicator;
+        if (!indicator) {
+            return { success: false, error: 'indicator parameter is required' };
+        }
+
+        let indicatorType = (params.indicator_type || '').toLowerCase();
+
+        // Auto-detect indicator type if not specified
+        if (!indicatorType) {
+            if (/^[a-fA-F0-9]{32}$/.test(indicator)) {
+                indicatorType = 'hash';
+            } else if (/^[a-fA-F0-9]{40}$/.test(indicator)) {
+                indicatorType = 'hash';
+            } else if (/^[a-fA-F0-9]{64}$/.test(indicator)) {
+                indicatorType = 'hash';
+            } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(indicator)) {
+                indicatorType = 'ip';
+            } else if (indicator.startsWith('http://') || indicator.startsWith('https://')) {
+                indicatorType = 'url';
+            } else {
+                indicatorType = 'domain';
+            }
+        }
+
+        const results = {
+            success: true,
+            indicator: indicator,
+            indicator_type: indicatorType,
+            sources: {}
+        };
+
+        // Use web_search to safely gather threat intelligence
+        // This does NOT make direct connections to the target IP/domain
+        const searchQueries = [];
+
+        if (indicatorType === 'ip') {
+            searchQueries.push(`"${indicator}" site:ipinfo.io OR site:abuseipdb.com`);
+            searchQueries.push(`"${indicator}" site:virustotal.com OR site:shodan.io`);
+            searchQueries.push(`"${indicator}" malware threat intelligence`);
+        } else if (indicatorType === 'domain') {
+            searchQueries.push(`"${indicator}" site:virustotal.com OR site:urlscan.io`);
+            searchQueries.push(`"${indicator}" malware phishing threat`);
+        } else if (indicatorType === 'hash') {
+            searchQueries.push(`"${indicator}" site:virustotal.com OR site:hybrid-analysis.com`);
+            searchQueries.push(`"${indicator}" malware analysis`);
+        } else if (indicatorType === 'url') {
+            searchQueries.push(`"${indicator}" site:urlscan.io OR site:virustotal.com`);
+            searchQueries.push(`"${indicator}" phishing malware`);
+        }
+
+        // Execute web searches
+        const allSearchResults = [];
+        for (const query of searchQueries) {
+            try {
+                const url = `/api/search?q=${encodeURIComponent(query)}&limit=5&fetchContent=true&contentLimit=3`;
+                const searchResult = await api.request('GET', url);
+                if (searchResult && searchResult.results) {
+                    allSearchResults.push(...searchResult.results);
+                }
+            } catch (err) {
+                // Continue with other searches
+            }
+        }
+
+        // Parse and organize results by source
+        const vtResults = allSearchResults.filter(r => r.link && r.link.includes('virustotal.com'));
+        const ipinfoResults = allSearchResults.filter(r => r.link && r.link.includes('ipinfo.io'));
+        const abuseipdbResults = allSearchResults.filter(r => r.link && r.link.includes('abuseipdb.com'));
+        const shodanResults = allSearchResults.filter(r => r.link && r.link.includes('shodan.io'));
+        const urlscanResults = allSearchResults.filter(r => r.link && r.link.includes('urlscan.io'));
+        const otherResults = allSearchResults.filter(r =>
+            r.link &&
+            !r.link.includes('virustotal.com') &&
+            !r.link.includes('ipinfo.io') &&
+            !r.link.includes('abuseipdb.com') &&
+            !r.link.includes('shodan.io') &&
+            !r.link.includes('urlscan.io')
+        );
+
+        // Extract meaningful info from search results
+        if (vtResults.length > 0) {
+            results.sources.virustotal = {
+                found: true,
+                results_count: vtResults.length,
+                snippets: vtResults.slice(0, 3).map(r => ({
+                    title: r.title,
+                    link: r.link,
+                    snippet: r.snippet || r.content?.substring(0, 300)
+                }))
+            };
+        }
+
+        if (ipinfoResults.length > 0) {
+            results.sources.ipinfo = {
+                found: true,
+                results_count: ipinfoResults.length,
+                snippets: ipinfoResults.slice(0, 2).map(r => ({
+                    title: r.title,
+                    link: r.link,
+                    snippet: r.snippet || r.content?.substring(0, 300)
+                }))
+            };
+        }
+
+        if (abuseipdbResults.length > 0) {
+            results.sources.abuseipdb = {
+                found: true,
+                results_count: abuseipdbResults.length,
+                snippets: abuseipdbResults.slice(0, 2).map(r => ({
+                    title: r.title,
+                    link: r.link,
+                    snippet: r.snippet || r.content?.substring(0, 300)
+                }))
+            };
+        }
+
+        if (shodanResults.length > 0) {
+            results.sources.shodan = {
+                found: true,
+                results_count: shodanResults.length,
+                snippets: shodanResults.slice(0, 2).map(r => ({
+                    title: r.title,
+                    link: r.link,
+                    snippet: r.snippet || r.content?.substring(0, 300)
+                }))
+            };
+        }
+
+        if (urlscanResults.length > 0) {
+            results.sources.urlscan = {
+                found: true,
+                results_count: urlscanResults.length,
+                snippets: urlscanResults.slice(0, 2).map(r => ({
+                    title: r.title,
+                    link: r.link,
+                    snippet: r.snippet || r.content?.substring(0, 300)
+                }))
+            };
+        }
+
+        if (otherResults.length > 0) {
+            results.sources.other = {
+                found: true,
+                results_count: otherResults.length,
+                snippets: otherResults.slice(0, 3).map(r => ({
+                    title: r.title,
+                    link: r.link,
+                    snippet: r.snippet || r.content?.substring(0, 300)
+                }))
+            };
+        }
+
+        // Create summary
+        const sourcesFound = Object.keys(results.sources).filter(k => results.sources[k].found);
+        if (sourcesFound.length > 0) {
+            results.summary = `Found information from ${sourcesFound.length} sources: ${sourcesFound.join(', ')}`;
+        } else {
+            results.summary = 'No threat intelligence found for this indicator';
+        }
+
+        return results;
+
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
 // Execute Playwright-based skills (via API for browser automation)
 async function executePlaywrightSkill(api, skillName, params) {
     try {
@@ -4766,6 +5009,7 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         const imageSkills = ['ocr_image', 'screenshot', 'convert_image'];
         const windowsSkills = ['get_windows_services', 'get_registry_value', 'set_registry_value'];
         const emailSkills = ['read_email_file'];
+        const threatIntelSkills = ['threat_intel'];
         const playwrightSkills = ['playwright_fetch', 'playwright_interact', 'web_search'];
 
         if (fileOperationSkills.includes(call.skillName)) {
@@ -4800,6 +5044,8 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             result = await executeWindowsSkill(call.skillName, call.params);
         } else if (emailSkills.includes(call.skillName)) {
             result = await executeEmailSkill(call.skillName, call.params);
+        } else if (threatIntelSkills.includes(call.skillName)) {
+            result = await executeThreatIntelSkill(api, call.params);
         } else if (playwrightSkills.includes(call.skillName)) {
             result = await executePlaywrightSkill(api, call.skillName, call.params);
         } else {
