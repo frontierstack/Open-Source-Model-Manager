@@ -26,14 +26,25 @@ while ! docker ps --format '{{.Names}}' | grep -q "open-webui"; do
     WAITED=$((WAITED + 2))
 done
 
-# Wait for database to be ready
-sleep 5
+echo ">>> Waiting for Open WebUI database to initialize..."
 
-# Check if database exists
-if ! docker exec modelserver-open-webui-1 test -f /app/backend/data/webui.db 2>/dev/null; then
-    echo "Warning: Open WebUI database not found, skipping search provisioning"
-    exit 0
-fi
+# Wait for database to be ready (longer wait on fresh install)
+MAX_DB_WAIT=120
+DB_WAITED=0
+while ! docker exec modelserver-open-webui-1 test -f /app/backend/data/webui.db 2>/dev/null; do
+    if [ $DB_WAITED -ge $MAX_DB_WAIT ]; then
+        echo "Warning: Open WebUI database not found after ${MAX_DB_WAIT}s"
+        echo "This may happen on first run. Try running this script manually after Open WebUI is fully loaded:"
+        echo "  ./scripts/provision-openwebui-search.sh"
+        exit 0
+    fi
+    sleep 3
+    DB_WAITED=$((DB_WAITED + 3))
+    echo "  Waiting for database... (${DB_WAITED}/${MAX_DB_WAIT}s)"
+done
+
+# Give the database a moment to fully initialize after creation
+sleep 3
 
 # Provision the configuration
 docker exec modelserver-open-webui-1 python3 << 'PYTHON_SCRIPT'
@@ -124,8 +135,26 @@ Return { "queries": [] } ONLY if you are 100% certain a search adds no value.
 '''
 
 try:
+    import time
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+
+    # Wait for config table to exist (Open WebUI may still be running migrations)
+    max_table_wait = 30
+    table_waited = 0
+    while table_waited < max_table_wait:
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='config'")
+        if c.fetchone():
+            break
+        print(f"Waiting for config table to be created... ({table_waited}/{max_table_wait}s)")
+        time.sleep(3)
+        table_waited += 3
+
+    if table_waited >= max_table_wait:
+        print("Config table not found - Open WebUI may still be initializing")
+        print("Try running this script again after Open WebUI is fully loaded")
+        sys.exit(1)
 
     # Get current config
     c.execute('SELECT data FROM config WHERE id=1')
