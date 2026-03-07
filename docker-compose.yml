@@ -1,5 +1,3 @@
-version: '3.8'
-
 name: modelserver
 
 services:
@@ -73,6 +71,7 @@ services:
     # No external port - accessed via nginx proxy
     expose:
       - "8080"
+    restart: unless-stopped
     environment:
       - ENABLE_OLLAMA_API=false
       - ENABLE_OPENAI_API=true

@@ -37,8 +37,10 @@ RUN sed -i 's/from langchain_community.document_loaders import (/from langchain_
     sed -i 's/loader = OutlookMessageLoader(file_path)/loader = PatchedOutlookMessageLoader(file_path)/' \
     /app/backend/open_webui/retrieval/loaders/main.py
 
-# Switch back to non-root user
-USER 1000
+# NOTE: Do NOT switch to USER 1000 here.
+# The base Open WebUI image is designed to run as root.
+# Switching users causes permission errors on fresh installs
+# when writing to the data volume and static files.
 
 # Set environment variables (can be overridden in docker-compose)
 ENV ENABLE_OLLAMA_API=false
