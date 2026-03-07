@@ -3,10 +3,14 @@ Patched OutlookMessageLoader that handles emails with no plain text body.
 This fixes the "page_content Input should be a valid string" error.
 Enhanced to properly extract links, attachments, and structured content.
 Supports: attachment content extraction, nested emails, QR code URL extraction.
+
+v0.5.55: Fixed JSON parsing error with HTML entities, improved embedded .eml detection.
 """
 import os
 import re
 import io
+import html
+import json
 import tempfile
 from pathlib import Path
 from typing import Iterator, Union, List, Tuple, Dict, Any, Optional
@@ -76,21 +80,9 @@ def html_to_text(html_content: str) -> str:
     # Remove remaining HTML tags
     text = re.sub(r'<[^>]+>', '', text)
 
-    # Decode HTML entities
-    text = re.sub(r'&nbsp;', ' ', text)
-    text = re.sub(r'&amp;', '&', text)
-    text = re.sub(r'&lt;', '<', text)
-    text = re.sub(r'&gt;', '>', text)
-    text = re.sub(r'&quot;', '"', text)
-    text = re.sub(r'&#39;', "'", text)
-    text = re.sub(r'&rsquo;', "'", text)
-    text = re.sub(r'&lsquo;', "'", text)
-    text = re.sub(r'&rdquo;', '"', text)
-    text = re.sub(r'&ldquo;', '"', text)
-    text = re.sub(r'&ndash;', '-', text)
-    text = re.sub(r'&mdash;', '—', text)
-    text = re.sub(r'&bull;', '•', text)
-    text = re.sub(r'&#\d+;', '', text)  # Remove remaining numeric entities
+    # Decode ALL HTML entities using Python's html.unescape()
+    # This handles &nbsp;, &amp;, &lt;, &gt;, &quot;, &#39;, &#x27;, etc.
+    text = html.unescape(text)
 
     # Clean up whitespace
     text = re.sub(r'[ \t]+', ' ', text)  # Collapse horizontal whitespace
@@ -312,6 +304,36 @@ def parse_nested_email(email_data: bytes, file_ext: str = '.eml') -> Dict[str, A
     return result
 
 
+def is_email_content(data: bytes) -> bool:
+    """Detect if binary data looks like an email (RFC 822 format)."""
+    try:
+        # Check for common email headers at the start
+        text_start = data[:2000].decode('utf-8', errors='replace')
+        # Common email headers that appear at the start
+        email_patterns = [
+            r'^From:',
+            r'^Received:',
+            r'^Return-Path:',
+            r'^MIME-Version:',
+            r'^Date:.*\d{4}',
+            r'^Message-ID:',
+            r'^Subject:',
+            r'^Content-Type:.*multipart',
+        ]
+        for pattern in email_patterns:
+            if re.search(pattern, text_start, re.MULTILINE | re.IGNORECASE):
+                return True
+        return False
+    except:
+        return False
+
+
+def is_msg_content(data: bytes) -> bool:
+    """Detect if binary data is an Outlook .msg file (OLE2 format)."""
+    # OLE2 compound document magic number
+    return data[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+
+
 def extract_attachment_content(att_data: bytes, filename: str, mimetype: str = None) -> Dict[str, Any]:
     """Extract content from an attachment based on its type."""
     result = {
@@ -325,6 +347,18 @@ def extract_attachment_content(att_data: bytes, filename: str, mimetype: str = N
         return result
 
     ext = os.path.splitext(filename.lower())[1] if filename else ''
+
+    # First, check for embedded emails by content signature (more reliable than extension/mimetype)
+    # This catches .eml files embedded in .msg without proper extension
+    if is_msg_content(att_data):
+        result['type'] = 'email'
+        result['nested_email'] = parse_nested_email(att_data, '.msg')
+        return result
+
+    if is_email_content(att_data):
+        result['type'] = 'email'
+        result['nested_email'] = parse_nested_email(att_data, '.eml')
+        return result
 
     # Image files - check for QR codes
     if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'] or (mimetype and mimetype.startswith('image/')):
@@ -356,10 +390,10 @@ def extract_attachment_content(att_data: bytes, filename: str, mimetype: str = N
         except:
             result['text'] = str(att_data)
 
-    # Nested email files
+    # Nested email files (fallback check by extension/mimetype)
     elif ext in ['.eml', '.msg'] or mimetype in ['message/rfc822', 'application/vnd.ms-outlook']:
         result['type'] = 'email'
-        result['nested_email'] = parse_nested_email(att_data, ext)
+        result['nested_email'] = parse_nested_email(att_data, ext if ext else '.eml')
 
     return result
 
@@ -475,6 +509,12 @@ class PatchedOutlookMessageLoader(BaseLoader):
                     att_data = getattr(att, 'data', None)
                     att_mimetype = getattr(att, 'mimetype', None)
 
+                    # Check if this attachment is an embedded message (extract_msg represents these as Message objects)
+                    # The attachment type class name may contain 'Message' or 'SignedAttachment'
+                    att_class_name = type(att).__name__
+                    is_embedded_message = ('Message' in att_class_name and att_class_name != 'Attachment') or \
+                                         hasattr(att, 'subject') or hasattr(att, 'body') or hasattr(att, 'htmlBody')
+
                     # Format attachment info string
                     if att_size:
                         if att_size > 1024 * 1024:
@@ -487,8 +527,38 @@ class PatchedOutlookMessageLoader(BaseLoader):
                     else:
                         attachments_info.append(f"• {att_name}")
 
-                    # Extract content from attachment if enabled
-                    if self.extract_attachments and att_data:
+                    # Handle embedded message attachments (they are Message objects, not raw bytes)
+                    if self.extract_attachments and is_embedded_message:
+                        try:
+                            nested_email_content = {
+                                'subject': getattr(att, 'subject', '') or '',
+                                'from': getattr(att, 'sender', '') or '',
+                                'to': getattr(att, 'to', '') or '',
+                                'body': '',
+                                'attachments': []
+                            }
+                            # Get body content
+                            if hasattr(att, 'body') and att.body:
+                                nested_email_content['body'] = att.body
+                            elif hasattr(att, 'htmlBody') and att.htmlBody:
+                                nested_email_content['body'] = html_to_text(att.htmlBody)
+
+                            # Track nested attachments
+                            if hasattr(att, 'attachments') and att.attachments:
+                                for nested_att in att.attachments:
+                                    nested_att_name = getattr(nested_att, 'longFilename', None) or \
+                                                      getattr(nested_att, 'shortFilename', None) or 'unnamed'
+                                    nested_email_content['attachments'].append(nested_att_name)
+
+                            nested_emails.append({
+                                'filename': att_name,
+                                **nested_email_content
+                            })
+                        except Exception:
+                            pass
+
+                    # Extract content from regular attachment if enabled
+                    elif self.extract_attachments and att_data:
                         extracted = extract_attachment_content(att_data, att_name, att_mimetype)
 
                         if extracted['text']:
