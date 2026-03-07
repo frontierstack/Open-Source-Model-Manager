@@ -6448,6 +6448,121 @@ You are a helpful coding assistant. When writing code, always include comments e
                                     </AccordionDetails>
                                 </Accordion>
 
+                                {/* Utility Scripts */}
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<TerminalIcon sx={{ fontSize: 16 }} />} color="secondary" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Utility Scripts</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Management scripts and custom patches</Typography>
+                                            </Box>
+                                        </Box>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                        {/* Management Scripts */}
+                                        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'primary.main' }}>
+                                            Management Scripts
+                                        </Typography>
+                                        <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', mb: 1.5 }}>
+                                            Shell scripts for service lifecycle management. Run from project root directory.
+                                        </Typography>
+                                        <TableContainer component={Paper} variant="outlined" sx={{ mb: 2.5 }}>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableHead>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontWeight: 600, width: '25%' }}>Script</TableCell>
+                                                        <TableCell sx={{ fontWeight: 600 }}>Description</TableCell>
+                                                    </TableRow>
+                                                </TableHead>
+                                                <TableBody>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>./start.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start all services (webapp, Open WebUI). Auto-provisions web search settings.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./stop.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop all services and cleanup running model instances.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>./build.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Build Docker images with parallel builds, auto-resume, and state tracking.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'text.secondary' }}>Rebuild and restart services without data loss. Options: webapp, openwebui, all</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>./update.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Quick rebuild of webapp only (for code updates).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Full system reset. Removes all data except downloaded models. Options: --keep-openwebui, --rebuild</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset-openwebui.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Reset only Open WebUI data (users, chats, settings).</TableCell></TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </TableContainer>
+
+                                        {/* Internal Scripts */}
+                                        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'primary.main' }}>
+                                            Internal Scripts
+                                        </Typography>
+                                        <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', mb: 1.5 }}>
+                                            Scripts in the <code style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>scripts/</code> folder for specific tasks.
+                                        </Typography>
+                                        <TableContainer component={Paper} variant="outlined" sx={{ mb: 2.5 }}>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableHead>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontWeight: 600, width: '35%' }}>Script</TableCell>
+                                                        <TableCell sx={{ fontWeight: 600 }}>Description</TableCell>
+                                                    </TableRow>
+                                                </TableHead>
+                                                <TableBody>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>scripts/manage-users.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Interactive user account management: list users, create admin, reset passwords, delete accounts.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>scripts/provision-openwebui-search.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Configure Open WebUI external web search. Auto-runs on start.sh but can be run manually for troubleshooting.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Linux/macOS. Creates ~/.local/bin/koda symlink.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.ps1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Windows PowerShell. Creates AppData shortcut.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>scripts/download_model.py</TableCell><TableCell sx={{ color: 'text.secondary' }}>Python script for downloading GGUF models from HuggingFace (used internally by webapp).</TableCell></TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </TableContainer>
+
+                                        {/* Open WebUI Patches */}
+                                        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'primary.main' }}>
+                                            Open WebUI Patches
+                                        </Typography>
+                                        <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', mb: 1.5 }}>
+                                            Custom patches applied to Open WebUI Docker image for enhanced functionality.
+                                        </Typography>
+                                        <TableContainer component={Paper} variant="outlined" sx={{ mb: 2 }}>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableHead>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontWeight: 600, width: '35%' }}>File</TableCell>
+                                                        <TableCell sx={{ fontWeight: 600 }}>Description</TableCell>
+                                                    </TableRow>
+                                                </TableHead>
+                                                <TableBody>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>openwebui/msg_loader_patch.py</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>
+                                                            Enhanced .msg email loader for Open WebUI document retrieval. Features:
+                                                            <Box component="ul" sx={{ m: 0, pl: 2, mt: 0.5, '& li': { fontSize: '0.7rem', mb: 0.25 } }}>
+                                                                <li>Robust HTML-to-text conversion with link preservation</li>
+                                                                <li>Attachment content extraction (PDF, DOCX, XLSX, TXT)</li>
+                                                                <li>Nested email parsing (.eml/.msg attachments)</li>
+                                                                <li>QR code URL detection from image attachments</li>
+                                                            </Box>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>openwebui/Dockerfile</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>
+                                                            Custom Open WebUI image with additional dependencies: extract_msg, pyzbar (QR), PyPDF2, python-docx, openpyxl
+                                                        </TableCell>
+                                                    </TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </TableContainer>
+
+                                        {/* Build Options */}
+                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(34, 211, 238, 0.08)', borderRadius: 1.5, border: '1px solid rgba(34, 211, 238, 0.2)' }}>
+                                            <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, mb: 0.5, color: 'info.main' }}>Build Script Options</Typography>
+                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', fontFamily: 'monospace' }}>
+                                                ./build.sh --no-cache    # Force rebuild without Docker cache<br/>
+                                                ./build.sh --no-parallel # Sequential builds (for low RAM)<br/>
+                                                ./build.sh --no-resume   # Clear build state, start fresh<br/>
+                                                ./build.sh --retry 3     # Set retry attempts (default: 2)
+                                            </Typography>
+                                        </Box>
+                                    </AccordionDetails>
+                                </Accordion>
+
                                 {/* System Reset */}
                                 <Accordion sx={docAccordionSx}>
                                     <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>

@@ -1,10 +1,28 @@
 # Custom Open WebUI image with additional Python packages and patches
 FROM ghcr.io/open-webui/open-webui:main
 
-# Install additional Python packages for enhanced functionality
-# - extract_msg: Parse Outlook .msg email files
-# - olefile: Required by extract_msg for OLE file parsing
-RUN pip install --no-cache-dir extract_msg olefile
+# All modifications as root
+USER root
+
+# Install system dependencies for QR code detection (pyzbar requires libzbar0)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libzbar0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install additional Python packages for enhanced email parsing:
+# - extract_msg, olefile: Parse Outlook .msg email files
+# - pyzbar, Pillow: QR code detection from images
+# - PyPDF2: PDF text extraction
+# - python-docx: DOCX text extraction
+# - openpyxl: XLSX spreadsheet parsing
+RUN pip install --no-cache-dir \
+    extract_msg \
+    olefile \
+    pyzbar \
+    Pillow \
+    PyPDF2 \
+    python-docx \
+    openpyxl
 
 # Copy the patched MSG loader
 COPY msg_loader_patch.py /app/backend/open_webui/retrieval/loaders/msg_loader_patch.py
@@ -18,6 +36,9 @@ RUN sed -i 's/from langchain_community.document_loaders import (/from langchain_
     /app/backend/open_webui/retrieval/loaders/main.py && \
     sed -i 's/loader = OutlookMessageLoader(file_path)/loader = PatchedOutlookMessageLoader(file_path)/' \
     /app/backend/open_webui/retrieval/loaders/main.py
+
+# Switch back to non-root user
+USER 1000
 
 # Set environment variables (can be overridden in docker-compose)
 ENV ENABLE_OLLAMA_API=false

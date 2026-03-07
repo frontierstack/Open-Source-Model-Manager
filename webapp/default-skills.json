@@ -3,7 +3,10 @@
     "name": "create_file",
     "description": "Create a new file with specified content",
     "type": "function",
-    "parameters": {"filePath": "string", "content": "string"},
+    "parameters": {
+      "filePath": "string",
+      "content": "string"
+    },
     "systemPrompt": "Use this skill to create new files. Always use absolute paths starting with the user's working directory. Organize project files in descriptive subdirectories (e.g., web_app/, api_server/). Never overwrite existing files without user confirmation - use read_file first to check if a file exists.",
     "code": "def execute(params):\n    \"\"\"Create a new file with specified content.\"\"\"\n    import os\n\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    content = params.get('content', '')\n    dir_path = os.path.dirname(file_path)\n    if dir_path:\n        os.makedirs(dir_path, exist_ok=True)\n\n    with open(file_path, 'w') as f:\n        f.write(content)\n\n    return {\n        'success': True,\n        'message': f'File created: {file_path}',\n        'filePath': file_path,\n        'size': len(content)\n    }",
     "enabled": true
@@ -12,7 +15,9 @@
     "name": "read_file",
     "description": "Read contents of a file",
     "type": "function",
-    "parameters": {"filePath": "string"},
+    "parameters": {
+      "filePath": "string"
+    },
     "systemPrompt": "Use this skill to read file contents before making modifications or when the user asks about a file's contents. Always read a file before using update_file to ensure you have the current content. For large files, consider using tail_file or head_file instead.",
     "code": "def execute(params):\n    \"\"\"Read contents of a file.\"\"\"\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    try:\n        with open(file_path, 'r') as f:\n            content = f.read()\n        return {\n            'success': True,\n            'content': content,\n            'filePath': file_path,\n            'size': len(content)\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -21,7 +26,10 @@
     "name": "update_file",
     "description": "Update an existing file with new content",
     "type": "function",
-    "parameters": {"filePath": "string", "content": "string"},
+    "parameters": {
+      "filePath": "string",
+      "content": "string"
+    },
     "systemPrompt": "Use this skill to modify existing files. IMPORTANT: Always read the file first with read_file to understand current content before updating. When fixing bugs or making improvements, use this skill directly rather than just showing corrected code. Include the complete new file content, not just the changes.",
     "code": "def execute(params):\n    \"\"\"Update an existing file with new content.\"\"\"\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    content = params.get('content', '')\n\n    with open(file_path, 'w') as f:\n        f.write(content)\n\n    return {\n        'success': True,\n        'message': f'File updated: {file_path}',\n        'filePath': file_path,\n        'size': len(content)\n    }",
     "enabled": true
@@ -30,7 +38,9 @@
     "name": "delete_file",
     "description": "Delete a file from the filesystem",
     "type": "function",
-    "parameters": {"filePath": "string"},
+    "parameters": {
+      "filePath": "string"
+    },
     "systemPrompt": "Use this skill to delete files. For fuzzy requests like 'delete the old config' or 'remove that temp file', ALWAYS use list_directory first to see what files exist, then match to the user's intent before deleting. Never delete files without being confident about which file the user wants removed.",
     "code": "def execute(params):\n    \"\"\"Delete a file from the filesystem.\"\"\"\n    import os\n\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    try:\n        os.remove(file_path)\n        return {\n            'success': True,\n            'message': f'File deleted: {file_path}'\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -39,7 +49,9 @@
     "name": "delete_directory",
     "description": "Delete a directory and all its contents recursively",
     "type": "function",
-    "parameters": {"dirPath": "string"},
+    "parameters": {
+      "dirPath": "string"
+    },
     "systemPrompt": "Use this skill to delete directories. CRITICAL: For fuzzy requests like 'delete the security folder' or 'remove that project directory', ALWAYS use list_directory FIRST to see what directories exist, then match to the user's intent before deleting. This is a destructive operation - be certain about the target.",
     "code": "def execute(params):\n    \"\"\"Delete a directory and all its contents recursively.\"\"\"\n    import shutil\n    import os\n\n    dir_path = params.get('dirPath')\n    if not dir_path:\n        return {'success': False, 'error': 'dirPath parameter is required'}\n\n    try:\n        if os.path.isfile(dir_path):\n            return {'success': False, 'error': f'Path is a file, not a directory. Use delete_file instead: {dir_path}'}\n        \n        if not os.path.exists(dir_path):\n            return {'success': False, 'error': f'Directory not found: {dir_path}'}\n        \n        shutil.rmtree(dir_path)\n        return {\n            'success': True,\n            'message': f'Directory deleted: {dir_path}'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -48,7 +60,10 @@
     "name": "list_directory",
     "description": "List all files and directories in a path",
     "type": "function",
-    "parameters": {"dirPath": "string", "recursive": "boolean"},
+    "parameters": {
+      "dirPath": "string",
+      "recursive": "boolean"
+    },
     "systemPrompt": "Use this skill FIRST when the user gives a fuzzy or imprecise request about files or directories (e.g., 'delete the security folder', 'find the config file', 'what files are here'). This is the discovery skill - use it to understand what exists before taking action. Always list before delete/move operations when the exact path is unclear.",
     "code": "def execute(params):\n    \"\"\"List all files and directories in a path.\"\"\"\n    import os\n\n    dir_path = params.get('dirPath')\n    if not dir_path:\n        return {'success': False, 'error': 'dirPath parameter is required'}\n\n    recursive = params.get('recursive', False)\n\n    try:\n        if recursive:\n            files = []\n            for root, dirs, filenames in os.walk(dir_path):\n                for filename in filenames:\n                    files.append(os.path.join(root, filename))\n        else:\n            files = os.listdir(dir_path)\n\n        return {\n            'success': True,\n            'files': files,\n            'count': len(files)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -57,7 +72,10 @@
     "name": "move_file",
     "description": "Move or rename a file",
     "type": "function",
-    "parameters": {"sourcePath": "string", "destPath": "string"},
+    "parameters": {
+      "sourcePath": "string",
+      "destPath": "string"
+    },
     "systemPrompt": "Use this skill to move or rename files. For fuzzy requests like 'rename that file' or 'move the config somewhere else', use list_directory first to identify the exact source file. Ensure the destination directory exists or will be created.",
     "code": "def execute(params):\n    \"\"\"Move or rename a file.\"\"\"\n    import shutil\n\n    source_path = params.get('sourcePath')\n    dest_path = params.get('destPath')\n\n    if not source_path or not dest_path:\n        return {'success': False, 'error': 'sourcePath and destPath parameters are required'}\n\n    try:\n        shutil.move(source_path, dest_path)\n        return {\n            'success': True,\n            'message': f'File moved: {source_path} -> {dest_path}'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -66,7 +84,10 @@
     "name": "copy_file",
     "description": "Copy a file to a new location",
     "type": "function",
-    "parameters": {"sourcePath": "string", "destPath": "string"},
+    "parameters": {
+      "sourcePath": "string",
+      "destPath": "string"
+    },
     "systemPrompt": "Use this skill to copy files while preserving the original. Useful for creating backups before modifications or duplicating templates. For fuzzy requests, use list_directory first to identify the exact source file.",
     "code": "def execute(params):\n    \"\"\"Copy a file to a new location.\"\"\"\n    import shutil\n\n    source_path = params.get('sourcePath')\n    dest_path = params.get('destPath')\n\n    if not source_path or not dest_path:\n        return {'success': False, 'error': 'sourcePath and destPath parameters are required'}\n\n    try:\n        shutil.copy2(source_path, dest_path)\n        return {\n            'success': True,\n            'message': f'File copied: {source_path} -> {dest_path}'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -75,7 +96,12 @@
     "name": "fetch_url",
     "description": "Fetch content from a URL",
     "type": "tool",
-    "parameters": {"url": "string", "method": "string", "headers": "object", "timeout": "number"},
+    "parameters": {
+      "url": "string",
+      "method": "string",
+      "headers": "object",
+      "timeout": "number"
+    },
     "systemPrompt": "Use this skill for simple HTTP requests. For JavaScript-rendered pages or sites with bot detection, prefer playwright_fetch instead. Good for APIs, RSS feeds, and simple HTML pages. Set appropriate timeout for slow endpoints.",
     "code": "def execute(params):\n    \"\"\"Fetch content from a URL.\"\"\"\n    import urllib.request\n    import urllib.error\n    import json\n\n    url = params.get('url')\n    if not url:\n        return {'success': False, 'error': 'url parameter is required'}\n\n    method = params.get('method', 'GET').upper()\n    headers = params.get('headers', {})\n    timeout = params.get('timeout', 30)\n\n    try:\n        req = urllib.request.Request(url, method=method)\n        for key, value in headers.items():\n            req.add_header(key, value)\n\n        with urllib.request.urlopen(req, timeout=timeout) as response:\n            content = response.read().decode('utf-8')\n            return {\n                'success': True,\n                'status': response.status,\n                'headers': dict(response.headers),\n                'content': content,\n                'url': url\n            }\n    except urllib.error.HTTPError as e:\n        return {\n            'success': False,\n            'error': f'HTTP {e.code}: {e.reason}',\n            'status': e.code\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -84,7 +110,9 @@
     "name": "dns_lookup",
     "description": "Perform DNS lookup for a domain",
     "type": "tool",
-    "parameters": {"domain": "string"},
+    "parameters": {
+      "domain": "string"
+    },
     "systemPrompt": "Use this skill to resolve domain names to IP addresses. Useful for network diagnostics, verifying DNS configuration, or checking if a domain resolves correctly.",
     "code": "def execute(params):\n    \"\"\"Perform DNS lookup for a domain.\"\"\"\n    import socket\n\n    domain = params.get('domain')\n    if not domain:\n        return {'success': False, 'error': 'domain parameter is required'}\n\n    try:\n        ipv4 = socket.gethostbyname(domain)\n        return {\n            'success': True,\n            'domain': domain,\n            'ipv4': ipv4\n        }\n    except socket.gaierror as e:\n        return {'success': False, 'error': f'DNS lookup failed: {str(e)}'}",
     "enabled": true
@@ -93,7 +121,11 @@
     "name": "check_port",
     "description": "Check if a port is open on a host",
     "type": "tool",
-    "parameters": {"host": "string", "port": "number", "timeout": "number"},
+    "parameters": {
+      "host": "string",
+      "port": "number",
+      "timeout": "number"
+    },
     "systemPrompt": "Use this skill to test network connectivity to specific ports. Useful for verifying services are running, checking firewall rules, or diagnosing connection issues. Keep timeout short (2-5 seconds) for responsiveness.",
     "code": "def execute(params):\n    \"\"\"Check if a port is open on a host.\"\"\"\n    import socket\n\n    host = params.get('host')\n    port = params.get('port')\n\n    if not host or not port:\n        return {'success': False, 'error': 'host and port parameters are required'}\n\n    timeout = params.get('timeout', 5)\n\n    try:\n        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n        sock.settimeout(timeout)\n        result = sock.connect_ex((host, int(port)))\n        sock.close()\n\n        return {\n            'success': True,\n            'host': host,\n            'port': port,\n            'open': result == 0\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -102,7 +134,10 @@
     "name": "ping_host",
     "description": "Ping a host to check connectivity",
     "type": "tool",
-    "parameters": {"host": "string", "count": "number"},
+    "parameters": {
+      "host": "string",
+      "count": "number"
+    },
     "systemPrompt": "Use this skill to test basic network connectivity to a host. Useful for diagnosing network issues or verifying a server is reachable. Default count is 4 pings; use fewer for quick checks.",
     "code": "def execute(params):\n    \"\"\"Ping a host to check connectivity.\"\"\"\n    import subprocess\n    import platform\n\n    host = params.get('host')\n    if not host:\n        return {'success': False, 'error': 'host parameter is required'}\n\n    count = params.get('count', 4)\n    system = platform.system().lower()\n\n    try:\n        if system == 'windows':\n            cmd = ['ping', '-n', str(count), host]\n        else:\n            cmd = ['ping', '-c', str(count), host]\n\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': True,\n            'host': host,\n            'count': count,\n            'output': result.stdout,\n            'reachable': result.returncode == 0\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -111,7 +146,12 @@
     "name": "http_request",
     "description": "Make custom HTTP requests (GET, POST, PUT, DELETE)",
     "type": "tool",
-    "parameters": {"url": "string", "method": "string", "headers": "object", "body": "string"},
+    "parameters": {
+      "url": "string",
+      "method": "string",
+      "headers": "object",
+      "body": "string"
+    },
     "systemPrompt": "Use this skill for API calls that need custom methods, headers, or request bodies. For simple GETs, fetch_url may be simpler. Always include Content-Type header when sending JSON body. For JS-rendered pages, use playwright_fetch.",
     "code": "def execute(params):\n    \"\"\"Make custom HTTP requests.\"\"\"\n    import urllib.request\n    import urllib.error\n    import json\n\n    url = params.get('url')\n    if not url:\n        return {'success': False, 'error': 'url parameter is required'}\n\n    method = params.get('method', 'GET').upper()\n    headers = params.get('headers', {})\n    body = params.get('body')\n\n    try:\n        data = body.encode('utf-8') if body else None\n        req = urllib.request.Request(url, data=data, method=method)\n\n        for key, value in headers.items():\n            req.add_header(key, value)\n\n        with urllib.request.urlopen(req, timeout=30) as response:\n            content = response.read().decode('utf-8')\n            return {\n                'success': True,\n                'status': response.status,\n                'headers': dict(response.headers),\n                'data': content\n            }\n    except urllib.error.HTTPError as e:\n        return {\n            'success': False,\n            'error': f'HTTP {e.code}: {e.reason}',\n            'status': e.code\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -120,7 +160,10 @@
     "name": "run_bash",
     "description": "Execute bash commands on Linux/macOS",
     "type": "command",
-    "parameters": {"command": "string", "timeout": "number"},
+    "parameters": {
+      "command": "string",
+      "timeout": "number"
+    },
     "systemPrompt": "Use this skill sparingly for shell commands that cannot be accomplished with other skills. Disabled by default for security. When enabled, avoid commands that could damage the system. Prefer specific skills (git_status, list_processes, etc.) over raw shell commands.",
     "code": "def execute(params):\n    \"\"\"Execute bash commands.\"\"\"\n    import subprocess\n\n    command = params.get('command')\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        result = subprocess.run(\n            command,\n            shell=True,\n            capture_output=True,\n            text=True,\n            timeout=timeout,\n            executable='/bin/bash'\n        )\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'Command timed out after {timeout} seconds'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -129,7 +172,10 @@
     "name": "run_python",
     "description": "Execute Python code",
     "type": "command",
-    "parameters": {"code": "string", "timeout": "number"},
+    "parameters": {
+      "code": "string",
+      "timeout": "number"
+    },
     "systemPrompt": "Use this skill to run Python scripts when no specific skill exists for the task. Disabled by default for security. When enabled, ensure code is safe and doesn't access sensitive data or perform destructive operations.",
     "code": "def execute(params):\n    \"\"\"Execute Python code.\"\"\"\n    import subprocess\n    import tempfile\n    import os\n\n    code = params.get('code')\n    if not code:\n        return {'success': False, 'error': 'code parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:\n            f.write(code)\n            temp_file = f.name\n\n        result = subprocess.run(\n            ['python3', temp_file],\n            capture_output=True,\n            text=True,\n            timeout=timeout\n        )\n\n        os.remove(temp_file)\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        os.remove(temp_file) if 'temp_file' in locals() else None\n        return {'success': False, 'error': f'Code execution timed out after {timeout} seconds'}\n    except Exception as e:\n        os.remove(temp_file) if 'temp_file' in locals() else None\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -147,7 +193,9 @@
     "name": "parse_json",
     "description": "Parse and validate JSON data",
     "type": "function",
-    "parameters": {"jsonString": "string"},
+    "parameters": {
+      "jsonString": "string"
+    },
     "systemPrompt": "Use this skill to parse and validate JSON strings. Useful for verifying JSON syntax, extracting data from JSON responses, or debugging malformed JSON. Returns the parsed data structure and its type.",
     "code": "def execute(params):\n    \"\"\"Parse and validate JSON data.\"\"\"\n    import json\n\n    json_string = params.get('jsonString')\n    if not json_string:\n        return {'success': False, 'error': 'jsonString parameter is required'}\n\n    try:\n        data = json.loads(json_string)\n        return {\n            'success': True,\n            'data': data,\n            'type': type(data).__name__\n        }\n    except json.JSONDecodeError as e:\n        return {\n            'success': False,\n            'error': f'Invalid JSON: {str(e)}'\n        }",
     "enabled": true
@@ -156,7 +204,10 @@
     "name": "parse_csv",
     "description": "Parse CSV data into structured format",
     "type": "function",
-    "parameters": {"csvString": "string", "delimiter": "string"},
+    "parameters": {
+      "csvString": "string",
+      "delimiter": "string"
+    },
     "systemPrompt": "Use this skill to parse CSV data into a list of dictionaries. Assumes first row contains headers. Specify delimiter for non-comma separators (e.g., tab, semicolon). Returns row count and column names.",
     "code": "def execute(params):\n    \"\"\"Parse CSV data into structured format.\"\"\"\n    import csv\n    import io\n\n    csv_string = params.get('csvString')\n    if not csv_string:\n        return {'success': False, 'error': 'csvString parameter is required'}\n\n    delimiter = params.get('delimiter', ',')\n\n    try:\n        reader = csv.DictReader(io.StringIO(csv_string), delimiter=delimiter)\n        data = list(reader)\n\n        return {\n            'success': True,\n            'data': data,\n            'rows': len(data),\n            'columns': list(data[0].keys()) if data else []\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -165,7 +216,9 @@
     "name": "base64_encode",
     "description": "Encode data to Base64",
     "type": "function",
-    "parameters": {"data": "string"},
+    "parameters": {
+      "data": "string"
+    },
     "systemPrompt": "Use this skill to encode text data to Base64 format. Useful for encoding data for URLs, APIs, or embedding binary data in text formats. For decoding, use base64_decode.",
     "code": "def execute(params):\n    \"\"\"Encode data to Base64.\"\"\"\n    import base64\n\n    data = params.get('data')\n    if not data:\n        return {'success': False, 'error': 'data parameter is required'}\n\n    try:\n        encoded = base64.b64encode(data.encode('utf-8')).decode('utf-8')\n        return {\n            'success': True,\n            'encoded': encoded\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -174,7 +227,9 @@
     "name": "base64_decode",
     "description": "Decode Base64 data",
     "type": "function",
-    "parameters": {"encodedData": "string"},
+    "parameters": {
+      "encodedData": "string"
+    },
     "systemPrompt": "Use this skill to decode Base64-encoded data back to plain text. Useful for reading encoded configuration values, API responses, or embedded data.",
     "code": "def execute(params):\n    \"\"\"Decode Base64 data.\"\"\"\n    import base64\n\n    encoded_data = params.get('encodedData')\n    if not encoded_data:\n        return {'success': False, 'error': 'encodedData parameter is required'}\n\n    try:\n        decoded = base64.b64decode(encoded_data).decode('utf-8')\n        return {\n            'success': True,\n            'decoded': decoded\n        }\n    except Exception as e:\n        return {'success': False, 'error': f'Invalid base64 data: {str(e)}'}",
     "enabled": true
@@ -183,7 +238,10 @@
     "name": "hash_data",
     "description": "Generate hash (MD5, SHA1, SHA256) of data",
     "type": "function",
-    "parameters": {"data": "string", "algorithm": "string"},
+    "parameters": {
+      "data": "string",
+      "algorithm": "string"
+    },
     "systemPrompt": "Use this skill to generate cryptographic hashes of data. Supports MD5 (fast, not secure), SHA1 (legacy), SHA256 (recommended), and SHA512. Useful for checksums, data integrity verification, or generating unique identifiers.",
     "code": "def execute(params):\n    \"\"\"Generate hash of data.\"\"\"\n    import hashlib\n\n    data = params.get('data')\n    if not data:\n        return {'success': False, 'error': 'data parameter is required'}\n\n    algorithm = params.get('algorithm', 'sha256').lower()\n\n    try:\n        if algorithm == 'md5':\n            h = hashlib.md5()\n        elif algorithm == 'sha1':\n            h = hashlib.sha1()\n        elif algorithm == 'sha256':\n            h = hashlib.sha256()\n        elif algorithm == 'sha512':\n            h = hashlib.sha512()\n        else:\n            return {'success': False, 'error': f'Unsupported algorithm: {algorithm}'}\n\n        h.update(data.encode('utf-8'))\n\n        return {\n            'success': True,\n            'hash': h.hexdigest(),\n            'algorithm': algorithm\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -201,7 +259,9 @@
     "name": "get_timestamp",
     "description": "Get current timestamp in various formats",
     "type": "function",
-    "parameters": {"format": "string"},
+    "parameters": {
+      "format": "string"
+    },
     "systemPrompt": "Use this skill to get the current date/time. Supports formats: 'iso' (ISO 8601), 'unix' (epoch seconds), 'date' (YYYY-MM-DD), 'time' (HH:MM:SS), 'datetime' (YYYY-MM-DD HH:MM:SS), or custom strftime format.",
     "code": "def execute(params):\n    \"\"\"Get current timestamp.\"\"\"\n    import datetime\n    import time\n\n    fmt = params.get('format', 'iso')\n    now = datetime.datetime.now()\n\n    formats = {\n        'iso': now.isoformat(),\n        'unix': int(time.time()),\n        'date': now.strftime('%Y-%m-%d'),\n        'time': now.strftime('%H:%M:%S'),\n        'datetime': now.strftime('%Y-%m-%d %H:%M:%S')\n    }\n\n    if fmt in formats:\n        return {\n            'success': True,\n            'timestamp': formats[fmt],\n            'format': fmt\n        }\n    else:\n        return {\n            'success': True,\n            'timestamp': now.strftime(fmt),\n            'format': 'custom'\n        }",
     "enabled": true
@@ -210,7 +270,11 @@
     "name": "find_patterns",
     "description": "Search for regex patterns in text",
     "type": "tool",
-    "parameters": {"text": "string", "pattern": "string", "flags": "string"},
+    "parameters": {
+      "text": "string",
+      "pattern": "string",
+      "flags": "string"
+    },
     "systemPrompt": "Use this skill to search for patterns in text using regular expressions. Supports flags: 'i' (case-insensitive), 'm' (multiline), 's' (dotall). Returns all matches with positions. Useful for extracting emails, URLs, phone numbers, or custom patterns.",
     "code": "def execute(params):\n    \"\"\"Search for regex patterns in text.\"\"\"\n    import re\n\n    text = params.get('text')\n    pattern = params.get('pattern')\n\n    if not text or not pattern:\n        return {'success': False, 'error': 'text and pattern parameters are required'}\n\n    flags_str = params.get('flags', '')\n    flags = 0\n    if 'i' in flags_str:\n        flags |= re.IGNORECASE\n    if 'm' in flags_str:\n        flags |= re.MULTILINE\n    if 's' in flags_str:\n        flags |= re.DOTALL\n\n    try:\n        matches = re.finditer(pattern, text, flags)\n        results = []\n        for match in matches:\n            results.append({\n                'match': match.group(),\n                'start': match.start(),\n                'end': match.end(),\n                'groups': match.groups()\n            })\n\n        return {\n            'success': True,\n            'count': len(results),\n            'matches': results\n        }\n    except re.error as e:\n        return {'success': False, 'error': f'Invalid regex pattern: {str(e)}'}",
     "enabled": true
@@ -219,7 +283,10 @@
     "name": "analyze_code",
     "description": "Analyze code for basic metrics",
     "type": "tool",
-    "parameters": {"code": "string", "language": "string"},
+    "parameters": {
+      "code": "string",
+      "language": "string"
+    },
     "systemPrompt": "Use this skill to get basic code metrics: line counts, comment density, average line length. Useful for quick code quality assessment. For deeper analysis, read the code directly and apply your knowledge.",
     "code": "def execute(params):\n    \"\"\"Analyze code for basic metrics.\"\"\"\n    code = params.get('code')\n    if not code:\n        return {'success': False, 'error': 'code parameter is required'}\n\n    language = params.get('language', 'unknown')\n    lines = code.split('\\n')\n    non_empty_lines = [l for l in lines if l.strip()]\n\n    # Detect comment patterns based on language\n    comment_patterns = ['#', '//', '/*', '*', '<!--']\n    comment_lines = [l for l in lines if any(l.strip().startswith(p) for p in comment_patterns)]\n\n    return {\n        'success': True,\n        'language': language,\n        'total_lines': len(lines),\n        'code_lines': len(non_empty_lines),\n        'comment_lines': len(comment_lines),\n        'blank_lines': len(lines) - len(non_empty_lines),\n        'avg_line_length': sum(len(l) for l in lines) / len(lines) if lines else 0\n    }",
     "enabled": true
@@ -228,7 +295,9 @@
     "name": "count_words",
     "description": "Count words in text",
     "type": "function",
-    "parameters": {"text": "string"},
+    "parameters": {
+      "text": "string"
+    },
     "systemPrompt": "Use this skill to count words, unique words, characters, and lines in text. Useful for content analysis, document statistics, or verifying content length requirements.",
     "code": "def execute(params):\n    \"\"\"Count words in text.\"\"\"\n    text = params.get('text')\n    if not text:\n        return {'success': False, 'error': 'text parameter is required'}\n\n    words = text.split()\n    unique_words = set(words)\n\n    return {\n        'success': True,\n        'total_words': len(words),\n        'unique_words': len(unique_words),\n        'characters': len(text),\n        'lines': len(text.split('\\n'))\n    }",
     "enabled": true
@@ -237,7 +306,9 @@
     "name": "compress_data",
     "description": "Compress data using gzip",
     "type": "function",
-    "parameters": {"data": "string"},
+    "parameters": {
+      "data": "string"
+    },
     "systemPrompt": "Use this skill to compress text data using gzip. Returns Base64-encoded compressed data. Useful for reducing data size for storage or transmission. Use decompress_data to restore.",
     "code": "def execute(params):\n    \"\"\"Compress data using gzip.\"\"\"\n    import gzip\n    import base64\n\n    data = params.get('data')\n    if not data:\n        return {'success': False, 'error': 'data parameter is required'}\n\n    try:\n        compressed = gzip.compress(data.encode('utf-8'))\n        encoded = base64.b64encode(compressed).decode('utf-8')\n\n        return {\n            'success': True,\n            'compressed': encoded,\n            'original_size': len(data),\n            'compressed_size': len(compressed),\n            'ratio': f'{len(compressed) / len(data) * 100:.2f}%'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -246,7 +317,9 @@
     "name": "decompress_data",
     "description": "Decompress gzip data",
     "type": "function",
-    "parameters": {"compressedData": "string"},
+    "parameters": {
+      "compressedData": "string"
+    },
     "systemPrompt": "Use this skill to decompress gzip-compressed data that was encoded with compress_data. Input should be Base64-encoded gzip data.",
     "code": "def execute(params):\n    \"\"\"Decompress gzip data.\"\"\"\n    import gzip\n    import base64\n\n    compressed_data = params.get('compressedData')\n    if not compressed_data:\n        return {'success': False, 'error': 'compressedData parameter is required'}\n\n    try:\n        decoded = base64.b64decode(compressed_data)\n        decompressed = gzip.decompress(decoded).decode('utf-8')\n\n        return {\n            'success': True,\n            'decompressed': decompressed,\n            'size': len(decompressed)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -255,7 +328,10 @@
     "name": "run_powershell",
     "description": "Execute PowerShell commands on Windows",
     "type": "command",
-    "parameters": {"command": "string", "timeout": "number"},
+    "parameters": {
+      "command": "string",
+      "timeout": "number"
+    },
     "systemPrompt": "Use this skill for Windows-specific tasks that require PowerShell. Disabled by default for security. Only available on Windows systems. Prefer specific skills over raw PowerShell commands when possible.",
     "code": "def execute(params):\n    \"\"\"Execute PowerShell commands.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'PowerShell is only available on Windows'}\n\n    command = params.get('command')\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        result = subprocess.run(\n            ['powershell', '-Command', command],\n            capture_output=True,\n            text=True,\n            timeout=timeout\n        )\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'Command timed out after {timeout} seconds'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -264,7 +340,10 @@
     "name": "run_cmd",
     "description": "Execute cmd.exe commands on Windows",
     "type": "command",
-    "parameters": {"command": "string", "timeout": "number"},
+    "parameters": {
+      "command": "string",
+      "timeout": "number"
+    },
     "systemPrompt": "Use this skill for Windows cmd.exe commands. Disabled by default for security. For PowerShell-specific features, use run_powershell instead. Only available on Windows systems.",
     "code": "def execute(params):\n    \"\"\"Execute cmd.exe commands.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'cmd.exe is only available on Windows'}\n\n    command = params.get('command')\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    timeout = params.get('timeout', 30)\n\n    try:\n        result = subprocess.run(\n            ['cmd', '/c', command],\n            capture_output=True,\n            text=True,\n            timeout=timeout\n        )\n\n        return {\n            'success': True,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'Command timed out after {timeout} seconds'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -273,7 +352,9 @@
     "name": "get_windows_services",
     "description": "List Windows services and their status",
     "type": "command",
-    "parameters": {"serviceName": "string"},
+    "parameters": {
+      "serviceName": "string"
+    },
     "systemPrompt": "Use this skill to list Windows services or check a specific service status. Disabled by default. Only available on Windows. Useful for system administration and troubleshooting.",
     "code": "def execute(params):\n    \"\"\"List Windows services.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'Windows services are only available on Windows'}\n\n    service_name = params.get('serviceName')\n\n    try:\n        if service_name:\n            cmd = ['sc', 'query', service_name]\n        else:\n            cmd = ['sc', 'query']\n\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': True,\n            'output': result.stdout,\n            'returncode': result.returncode\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -282,7 +363,10 @@
     "name": "get_registry_value",
     "description": "Read Windows registry value",
     "type": "command",
-    "parameters": {"key": "string", "valueName": "string"},
+    "parameters": {
+      "key": "string",
+      "valueName": "string"
+    },
     "systemPrompt": "Use this skill to read Windows registry values. Disabled by default for security. Only available on Windows. Useful for checking system configuration or application settings.",
     "code": "def execute(params):\n    \"\"\"Read Windows registry value.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'Windows registry is only available on Windows'}\n\n    key = params.get('key')\n    value_name = params.get('valueName')\n\n    if not key or not value_name:\n        return {'success': False, 'error': 'key and valueName parameters are required'}\n\n    try:\n        cmd = ['reg', 'query', key, '/v', value_name]\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': result.returncode == 0,\n            'output': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -291,7 +375,12 @@
     "name": "set_registry_value",
     "description": "Write Windows registry value (requires admin)",
     "type": "command",
-    "parameters": {"key": "string", "valueName": "string", "valueType": "string", "data": "string"},
+    "parameters": {
+      "key": "string",
+      "valueName": "string",
+      "valueType": "string",
+      "data": "string"
+    },
     "systemPrompt": "Use this skill to write Windows registry values. Disabled by default - DANGEROUS. Requires administrator privileges. Only use when explicitly requested and you understand the consequences.",
     "code": "def execute(params):\n    \"\"\"Write Windows registry value.\"\"\"\n    import subprocess\n    import platform\n\n    if platform.system() != 'Windows':\n        return {'success': False, 'error': 'Windows registry is only available on Windows'}\n\n    key = params.get('key')\n    value_name = params.get('valueName')\n    value_type = params.get('valueType', 'REG_SZ')\n    data = params.get('data')\n\n    if not key or not value_name or not data:\n        return {'success': False, 'error': 'key, valueName, and data parameters are required'}\n\n    try:\n        cmd = ['reg', 'add', key, '/v', value_name, '/t', value_type, '/d', data, '/f']\n        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)\n\n        return {\n            'success': result.returncode == 0,\n            'output': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -300,7 +389,10 @@
     "name": "ocr_image",
     "description": "Extract text from an image using OCR (requires pytesseract)",
     "type": "tool",
-    "parameters": {"imagePath": "string", "language": "string"},
+    "parameters": {
+      "imagePath": "string",
+      "language": "string"
+    },
     "systemPrompt": "Use this skill to extract text from images (screenshots, scanned documents, photos of text). Requires pytesseract and Tesseract OCR installed. Specify language code for non-English text (e.g., 'deu' for German, 'fra' for French).",
     "code": "def execute(params):\n    \"\"\"Extract text from an image using OCR.\"\"\"\n    image_path = params.get('imagePath')\n    if not image_path:\n        return {'success': False, 'error': 'imagePath parameter is required'}\n\n    language = params.get('language', 'eng')\n\n    try:\n        import pytesseract\n        from PIL import Image\n\n        img = Image.open(image_path)\n        text = pytesseract.image_to_string(img, lang=language)\n\n        return {\n            'success': True,\n            'text': text,\n            'language': language,\n            'imagePath': image_path\n        }\n    except ImportError:\n        return {'success': False, 'error': 'pytesseract and/or PIL not installed. Install with: pip install pytesseract pillow'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -309,7 +401,10 @@
     "name": "unzip_file",
     "description": "Extract a ZIP archive to a directory",
     "type": "function",
-    "parameters": {"zipPath": "string", "extractPath": "string"},
+    "parameters": {
+      "zipPath": "string",
+      "extractPath": "string"
+    },
     "systemPrompt": "Use this skill to extract ZIP archives. If extractPath is not specified, extracts to the same directory as the ZIP file. Returns list of extracted files.",
     "code": "def execute(params):\n    \"\"\"Extract a ZIP archive.\"\"\"\n    import zipfile\n    import os\n\n    zip_path = params.get('zipPath')\n    extract_path = params.get('extractPath')\n\n    if not zip_path:\n        return {'success': False, 'error': 'zipPath parameter is required'}\n\n    if not extract_path:\n        extract_path = os.path.dirname(zip_path)\n\n    try:\n        with zipfile.ZipFile(zip_path, 'r') as zip_ref:\n            zip_ref.extractall(extract_path)\n            file_list = zip_ref.namelist()\n\n        return {\n            'success': True,\n            'message': f'Extracted {len(file_list)} files',\n            'files': file_list,\n            'extractPath': extract_path\n        }\n    except zipfile.BadZipFile:\n        return {'success': False, 'error': 'Invalid or corrupted ZIP file'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -318,25 +413,33 @@
     "name": "zip_files",
     "description": "Create a ZIP archive from files/directories",
     "type": "function",
-    "parameters": {"zipPath": "string", "sourcePaths": "array"},
+    "parameters": {
+      "zipPath": "string",
+      "sourcePaths": "array"
+    },
     "systemPrompt": "Use this skill to create ZIP archives from files or directories. Supports multiple source paths. Directories are added recursively. Uses deflate compression.",
     "code": "def execute(params):\n    \"\"\"Create a ZIP archive.\"\"\"\n    import zipfile\n    import os\n\n    zip_path = params.get('zipPath')\n    source_paths = params.get('sourcePaths', [])\n\n    if not zip_path:\n        return {'success': False, 'error': 'zipPath parameter is required'}\n\n    if not source_paths:\n        return {'success': False, 'error': 'sourcePaths parameter is required'}\n\n    try:\n        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:\n            file_count = 0\n            for source_path in source_paths:\n                if os.path.isfile(source_path):\n                    zip_ref.write(source_path, os.path.basename(source_path))\n                    file_count += 1\n                elif os.path.isdir(source_path):\n                    for root, dirs, files in os.walk(source_path):\n                        for file in files:\n                            file_path = os.path.join(root, file)\n                            arcname = os.path.relpath(file_path, os.path.dirname(source_path))\n                            zip_ref.write(file_path, arcname)\n                            file_count += 1\n\n        return {\n            'success': True,\n            'message': f'Created ZIP with {file_count} files',\n            'zipPath': zip_path,\n            'fileCount': file_count\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
   },
   {
     "name": "read_email_file",
-    "description": "Read and parse a saved email file (.eml or .msg format)",
+    "description": "Read and parse email files (.eml/.msg) with attachment content extraction, nested emails, and QR code URL detection",
     "type": "function",
-    "parameters": {"emailPath": "string"},
-    "systemPrompt": "Use this skill to read saved email files in .eml (standard) or .msg (Outlook) format. Extracts subject, from, to, cc, date, body (text and HTML), and attachment info. For .msg files, requires the extract_msg package.",
-    "code": "def execute(params):\n    \"\"\"Read and parse a saved email file (.eml or .msg format).\"\"\"\n    import email\n    from email.header import decode_header\n    import os\n\n    email_path = params.get('emailPath')\n    if not email_path:\n        return {'success': False, 'error': 'emailPath parameter is required'}\n\n    try:\n        # Check file extension to determine format\n        file_ext = os.path.splitext(email_path)[1].lower()\n        \n        if file_ext == '.msg':\n            # Handle .msg format (Outlook)\n            try:\n                import extract_msg\n            except ImportError:\n                return {'success': False, 'error': 'extract_msg module not installed. Install with: pip install extract_msg'}\n            \n            msg = extract_msg.Message(email_path)\n            \n            subject = msg.subject or ''\n            from_addr = msg.sender or ''\n            to_addr = msg.to or ''\n            cc = msg.cc or ''\n            date = msg.date or ''\n            body = msg.body or ''\n            html_body = msg.htmlBody or ''\n            \n            # Get attachments info\n            attachments = []\n            for att in msg.attachments:\n                attachments.append({\n                    'filename': att.longFilename or att.shortFilename or 'unknown',\n                    'content_type': att.mimetype or 'application/octet-stream',\n                    'size': len(att.data) if att.data else 0\n                })\n            \n            msg.close()\n            \n            return {\n                'success': True,\n                'format': 'msg',\n                'subject': subject,\n                'from': from_addr,\n                'to': to_addr,\n                'cc': cc,\n                'date': str(date) if date else '',\n                'body': body,\n                'html_body': html_body,\n                'attachments': attachments,\n                'emailPath': email_path\n            }\n        else:\n            # Handle .eml format (standard RFC 822)\n            with open(email_path, 'rb') as f:\n                msg = email.message_from_bytes(f.read())\n\n            # Decode subject\n            subject = msg.get('Subject', '')\n            if subject:\n                decoded_parts = decode_header(subject)\n                subject = ''\n                for content, encoding in decoded_parts:\n                    if isinstance(content, bytes):\n                        subject += content.decode(encoding or 'utf-8', errors='replace')\n                    else:\n                        subject += content\n\n            from_addr = msg.get('From', '')\n            to_addr = msg.get('To', '')\n            date = msg.get('Date', '')\n            cc = msg.get('Cc', '')\n\n            # Extract body\n            body = ''\n            html_body = ''\n            if msg.is_multipart():\n                for part in msg.walk():\n                    content_type = part.get_content_type()\n                    if content_type == 'text/plain' and not body:\n                        try:\n                            body = part.get_payload(decode=True).decode('utf-8', errors='replace')\n                        except:\n                            body = str(part.get_payload())\n                    elif content_type == 'text/html' and not html_body:\n                        try:\n                            html_body = part.get_payload(decode=True).decode('utf-8', errors='replace')\n                        except:\n                            html_body = str(part.get_payload())\n            else:\n                try:\n                    body = msg.get_payload(decode=True).decode('utf-8', errors='replace')\n                except:\n                    body = str(msg.get_payload())\n\n            # Get attachments info\n            attachments = []\n            if msg.is_multipart():\n                for part in msg.walk():\n                    if part.get_content_disposition() == 'attachment':\n                        filename = part.get_filename()\n                        if filename:\n                            # Decode filename if needed\n                            if filename:\n                                decoded_parts = decode_header(filename)\n                                filename = ''\n                                for content, encoding in decoded_parts:\n                                    if isinstance(content, bytes):\n                                        filename += content.decode(encoding or 'utf-8', errors='replace')\n                                    else:\n                                        filename += content\n\n                            payload = part.get_payload(decode=True)\n                            attachments.append({\n                                'filename': filename,\n                                'content_type': part.get_content_type(),\n                                'size': len(payload) if payload else 0\n                            })\n\n            return {\n                'success': True,\n                'format': 'eml',\n                'subject': subject,\n                'from': from_addr,\n                'to': to_addr,\n                'cc': cc,\n                'date': date,\n                'body': body,\n                'html_body': html_body,\n                'attachments': attachments,\n                'emailPath': email_path\n            }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'Email file not found: {email_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "parameters": {
+      "emailPath": "string",
+      "extractAttachments": "boolean"
+    },
+    "systemPrompt": "Use this skill to read saved email files. Extracts subject, from, to, cc, date, body, and attachments. Enhanced features: extracts text content from PDF/DOCX/XLSX attachments, parses nested emails (.eml within .msg), and detects URLs in QR codes from image attachments. Set extractAttachments=false to skip attachment content extraction for faster processing.",
+    "code": "def execute(params):\n    \"\"\"Read and parse a saved email file (.eml or .msg format).\n    \n    Enhanced features:\n    - Extract content from PDF, DOCX, XLSX, TXT attachments\n    - Parse nested/attached emails (.eml within .msg)\n    - Extract URLs from QR codes in image attachments\n    - Robust link extraction from HTML email bodies\n    \"\"\"\n    import email\n    from email.header import decode_header\n    import os\n    import re\n    import io\n    import tempfile\n\n    email_path = params.get('emailPath')\n    extract_attachments = params.get('extractAttachments', True)\n    \n    if not email_path:\n        return {'success': False, 'error': 'emailPath parameter is required'}\n\n    def html_to_text(html_content):\n        \"\"\"Convert HTML to readable text.\"\"\"\n        if not html_content:\n            return \"\"\n        text = html_content\n        if isinstance(text, bytes):\n            text = text.decode('utf-8', errors='replace')\n        # Remove style and script blocks\n        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.IGNORECASE | re.DOTALL)\n        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.IGNORECASE | re.DOTALL)\n        # Convert block elements\n        text = re.sub(r'<br\\s*/?>', '\\n', text, flags=re.IGNORECASE)\n        text = re.sub(r'</p>', '\\n\\n', text, flags=re.IGNORECASE)\n        text = re.sub(r'</div>', '\\n', text, flags=re.IGNORECASE)\n        text = re.sub(r'<li[^>]*>', '\\n- ', text, flags=re.IGNORECASE)\n        # Remove remaining tags\n        text = re.sub(r'<[^>]+>', '', text)\n        # Decode entities\n        text = re.sub(r'&nbsp;', ' ', text)\n        text = re.sub(r'&amp;', '&', text)\n        text = re.sub(r'&lt;', '<', text)\n        text = re.sub(r'&gt;', '>', text)\n        text = re.sub(r'&quot;', '\"', text)\n        # Clean whitespace\n        text = re.sub(r'[ \\t]+', ' ', text)\n        text = re.sub(r'\\n\\s*\\n\\s*\\n+', '\\n\\n', text)\n        return text.strip()\n\n    def extract_links(html_content):\n        \"\"\"Extract links from HTML content.\"\"\"\n        links = []\n        pattern = r'<a\\s+[^>]*href=[\"\\'](https?://[^\"\\' ]+)[\"\\'][^>]*>([^<]*)</a>'\n        for match in re.finditer(pattern, html_content, re.IGNORECASE):\n            url = match.group(1)\n            text = match.group(2).strip()\n            links.append({'url': url, 'text': text or url})\n        # Also find plain URLs\n        url_pattern = r'https?://[^\\s<>\"\\')\\]]+' \n        for url in re.findall(url_pattern, html_content):\n            if not any(l['url'] == url for l in links):\n                links.append({'url': url, 'text': url})\n        return links\n\n    def extract_qr_urls(image_data):\n        \"\"\"Extract URLs from QR codes in images.\"\"\"\n        urls = []\n        try:\n            from PIL import Image\n            try:\n                import pyzbar.pyzbar as pyzbar\n                img = Image.open(io.BytesIO(image_data))\n                if img.mode not in ('RGB', 'L'):\n                    img = img.convert('RGB')\n                decoded = pyzbar.decode(img)\n                for obj in decoded:\n                    if obj.type == 'QRCODE':\n                        data = obj.data.decode('utf-8', errors='replace')\n                        if data.startswith('http'):\n                            urls.append(data)\n                        elif re.match(r'^[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}', data):\n                            urls.append(f'https://{data}')\n                        else:\n                            urls.append(f'[QR: {data}]')\n            except ImportError:\n                pass\n        except Exception:\n            pass\n        return urls\n\n    def extract_pdf_text(pdf_data):\n        \"\"\"Extract text from PDF.\"\"\"\n        try:\n            from PyPDF2 import PdfReader\n            reader = PdfReader(io.BytesIO(pdf_data))\n            text = \"\"\n            for page in reader.pages:\n                t = page.extract_text()\n                if t:\n                    text += t + \"\\n\"\n            return text.strip()\n        except:\n            return \"\"\n\n    def extract_docx_text(docx_data):\n        \"\"\"Extract text from DOCX.\"\"\"\n        try:\n            from docx import Document\n            doc = Document(io.BytesIO(docx_data))\n            return \"\\n\".join(p.text for p in doc.paragraphs if p.text.strip())\n        except:\n            return \"\"\n\n    def extract_xlsx_text(xlsx_data):\n        \"\"\"Extract text from XLSX.\"\"\"\n        try:\n            import openpyxl\n            wb = openpyxl.load_workbook(io.BytesIO(xlsx_data), data_only=True)\n            text = \"\"\n            for sheet in wb.sheetnames:\n                ws = wb[sheet]\n                text += f\"[Sheet: {sheet}]\\n\"\n                for row in ws.iter_rows(values_only=True):\n                    row_text = \"\\t\".join(str(c) if c else \"\" for c in row)\n                    if row_text.strip():\n                        text += row_text + \"\\n\"\n            return text.strip()\n        except:\n            return \"\"\n\n    def parse_nested_email(data, ext):\n        \"\"\"Parse nested email attachment.\"\"\"\n        result = {'subject': '', 'from': '', 'to': '', 'body': ''}\n        try:\n            if ext.lower() == '.msg':\n                import extract_msg\n                with tempfile.NamedTemporaryFile(suffix='.msg', delete=False) as tmp:\n                    tmp.write(data)\n                    tmp_path = tmp.name\n                msg = extract_msg.Message(tmp_path)\n                result['subject'] = msg.subject or ''\n                result['from'] = msg.sender or ''\n                result['to'] = msg.to or ''\n                result['body'] = msg.body or ''\n                if not result['body'] and msg.htmlBody:\n                    result['body'] = html_to_text(msg.htmlBody)\n                msg.close()\n                os.unlink(tmp_path)\n            else:\n                msg = email.message_from_bytes(data)\n                subj = msg.get('Subject', '')\n                if subj:\n                    parts = decode_header(subj)\n                    subj = ''.join(c.decode(e or 'utf-8') if isinstance(c, bytes) else c for c, e in parts)\n                result['subject'] = subj\n                result['from'] = msg.get('From', '')\n                result['to'] = msg.get('To', '')\n                if msg.is_multipart():\n                    for part in msg.walk():\n                        ct = part.get_content_type()\n                        if ct == 'text/plain' and not result['body']:\n                            try:\n                                result['body'] = part.get_payload(decode=True).decode('utf-8', errors='replace')\n                            except:\n                                pass\n                else:\n                    try:\n                        result['body'] = msg.get_payload(decode=True).decode('utf-8', errors='replace')\n                    except:\n                        pass\n        except:\n            pass\n        return result\n\n    def process_attachment(data, filename, mimetype):\n        \"\"\"Extract content from attachment.\"\"\"\n        result = {'type': 'unknown', 'text': '', 'qr_urls': [], 'nested_email': None}\n        if not data:\n            return result\n        ext = os.path.splitext(filename.lower())[1] if filename else ''\n        \n        # Images - check for QR codes\n        if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:\n            result['type'] = 'image'\n            result['qr_urls'] = extract_qr_urls(data)\n        # PDF\n        elif ext == '.pdf':\n            result['type'] = 'pdf'\n            result['text'] = extract_pdf_text(data)\n        # Word\n        elif ext == '.docx':\n            result['type'] = 'docx'\n            result['text'] = extract_docx_text(data)\n        # Excel\n        elif ext == '.xlsx':\n            result['type'] = 'xlsx'\n            result['text'] = extract_xlsx_text(data)\n        # Text files\n        elif ext in ['.txt', '.csv', '.log', '.json', '.xml', '.md']:\n            result['type'] = 'text'\n            try:\n                result['text'] = data.decode('utf-8', errors='replace')\n            except:\n                pass\n        # Nested emails\n        elif ext in ['.eml', '.msg']:\n            result['type'] = 'email'\n            result['nested_email'] = parse_nested_email(data, ext)\n        return result\n\n    try:\n        file_ext = os.path.splitext(email_path)[1].lower()\n        \n        if file_ext == '.msg':\n            try:\n                import extract_msg\n            except ImportError:\n                return {'success': False, 'error': 'extract_msg module not installed'}\n            \n            msg = extract_msg.Message(email_path)\n            subject = msg.subject or ''\n            from_addr = msg.sender or ''\n            to_addr = msg.to or ''\n            cc = msg.cc or ''\n            date = str(msg.date) if msg.date else ''\n            body = msg.body or ''\n            html_body = msg.htmlBody or ''\n            \n            # Extract links from body\n            links = []\n            if html_body:\n                if isinstance(html_body, bytes):\n                    html_body = html_body.decode('utf-8', errors='replace')\n                links = extract_links(html_body)\n                if not body:\n                    body = html_to_text(html_body)\n            \n            # Process attachments\n            attachments = []\n            attachment_contents = []\n            nested_emails = []\n            qr_urls = []\n            \n            for att in msg.attachments:\n                filename = att.longFilename or att.shortFilename or 'unknown'\n                att_data = att.data if hasattr(att, 'data') else None\n                mimetype = att.mimetype if hasattr(att, 'mimetype') else ''\n                size = len(att_data) if att_data else 0\n                \n                attachments.append({\n                    'filename': filename,\n                    'content_type': mimetype or 'application/octet-stream',\n                    'size': size\n                })\n                \n                # Extract content\n                if extract_attachments and att_data:\n                    extracted = process_attachment(att_data, filename, mimetype)\n                    if extracted['text']:\n                        attachment_contents.append({\n                            'filename': filename,\n                            'type': extracted['type'],\n                            'content': extracted['text'][:5000]\n                        })\n                    if extracted['qr_urls']:\n                        qr_urls.extend(extracted['qr_urls'])\n                    if extracted['nested_email']:\n                        nested_emails.append({\n                            'filename': filename,\n                            **extracted['nested_email']\n                        })\n            \n            msg.close()\n            \n            return {\n                'success': True,\n                'format': 'msg',\n                'subject': subject,\n                'from': from_addr,\n                'to': to_addr,\n                'cc': cc,\n                'date': date,\n                'body': body,\n                'html_body': html_body,\n                'links': links,\n                'attachments': attachments,\n                'attachment_contents': attachment_contents,\n                'nested_emails': nested_emails,\n                'qr_urls': qr_urls,\n                'emailPath': email_path\n            }\n        else:\n            # Handle .eml format\n            with open(email_path, 'rb') as f:\n                msg = email.message_from_bytes(f.read())\n\n            # Decode subject\n            subject = msg.get('Subject', '')\n            if subject:\n                decoded_parts = decode_header(subject)\n                subject = ''\n                for content, encoding in decoded_parts:\n                    if isinstance(content, bytes):\n                        subject += content.decode(encoding or 'utf-8', errors='replace')\n                    else:\n                        subject += content\n\n            from_addr = msg.get('From', '')\n            to_addr = msg.get('To', '')\n            date = msg.get('Date', '')\n            cc = msg.get('Cc', '')\n\n            body = ''\n            html_body = ''\n            links = []\n            attachments = []\n            attachment_contents = []\n            nested_emails = []\n            qr_urls = []\n\n            if msg.is_multipart():\n                for part in msg.walk():\n                    content_type = part.get_content_type()\n                    disposition = part.get_content_disposition()\n                    \n                    if content_type == 'text/plain' and not body and disposition != 'attachment':\n                        try:\n                            body = part.get_payload(decode=True).decode('utf-8', errors='replace')\n                        except:\n                            body = str(part.get_payload())\n                    elif content_type == 'text/html' and not html_body and disposition != 'attachment':\n                        try:\n                            html_body = part.get_payload(decode=True).decode('utf-8', errors='replace')\n                            links = extract_links(html_body)\n                        except:\n                            html_body = str(part.get_payload())\n                    elif disposition == 'attachment':\n                        filename = part.get_filename()\n                        if filename:\n                            decoded_parts = decode_header(filename)\n                            filename = ''\n                            for content, encoding in decoded_parts:\n                                if isinstance(content, bytes):\n                                    filename += content.decode(encoding or 'utf-8', errors='replace')\n                                else:\n                                    filename += content\n                            \n                            payload = part.get_payload(decode=True)\n                            attachments.append({\n                                'filename': filename,\n                                'content_type': content_type,\n                                'size': len(payload) if payload else 0\n                            })\n                            \n                            # Extract content\n                            if extract_attachments and payload:\n                                extracted = process_attachment(payload, filename, content_type)\n                                if extracted['text']:\n                                    attachment_contents.append({\n                                        'filename': filename,\n                                        'type': extracted['type'],\n                                        'content': extracted['text'][:5000]\n                                    })\n                                if extracted['qr_urls']:\n                                    qr_urls.extend(extracted['qr_urls'])\n                                if extracted['nested_email']:\n                                    nested_emails.append({\n                                        'filename': filename,\n                                        **extracted['nested_email']\n                                    })\n            else:\n                try:\n                    body = msg.get_payload(decode=True).decode('utf-8', errors='replace')\n                except:\n                    body = str(msg.get_payload())\n\n            # If no plain body, convert HTML\n            if not body and html_body:\n                body = html_to_text(html_body)\n\n            return {\n                'success': True,\n                'format': 'eml',\n                'subject': subject,\n                'from': from_addr,\n                'to': to_addr,\n                'cc': cc,\n                'date': date,\n                'body': body,\n                'html_body': html_body,\n                'links': links,\n                'attachments': attachments,\n                'attachment_contents': attachment_contents,\n                'nested_emails': nested_emails,\n                'qr_urls': qr_urls,\n                'emailPath': email_path\n            }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'Email file not found: {email_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
   },
   {
     "name": "get_file_metadata",
     "description": "Get file metadata (size, dates, permissions)",
     "type": "function",
-    "parameters": {"filePath": "string"},
+    "parameters": {
+      "filePath": "string"
+    },
     "systemPrompt": "Use this skill to get detailed file information: size, creation/modification/access dates, permissions, and whether it's a file or directory. Useful for file management and troubleshooting.",
     "code": "def execute(params):\n    \"\"\"Get file metadata.\"\"\"\n    import os\n    import stat\n    import datetime\n\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    try:\n        stats = os.stat(file_path)\n\n        return {\n            'success': True,\n            'path': file_path,\n            'size': stats.st_size,\n            'created': datetime.datetime.fromtimestamp(stats.st_ctime).isoformat(),\n            'modified': datetime.datetime.fromtimestamp(stats.st_mtime).isoformat(),\n            'accessed': datetime.datetime.fromtimestamp(stats.st_atime).isoformat(),\n            'permissions': oct(stat.S_IMODE(stats.st_mode)),\n            'is_file': os.path.isfile(file_path),\n            'is_directory': os.path.isdir(file_path)\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -345,7 +448,11 @@
     "name": "search_files",
     "description": "Search for files by name pattern in a directory",
     "type": "function",
-    "parameters": {"directory": "string", "pattern": "string", "recursive": "boolean"},
+    "parameters": {
+      "directory": "string",
+      "pattern": "string",
+      "recursive": "boolean"
+    },
     "systemPrompt": "Use this skill to find files matching a pattern (e.g., '*.py', 'config*', '*.log'). Supports glob patterns. Set recursive=true to search subdirectories. Returns full paths of matching files.",
     "code": "def execute(params):\n    \"\"\"Search for files by name pattern.\"\"\"\n    import os\n    import fnmatch\n\n    directory = params.get('directory')\n    pattern = params.get('pattern')\n\n    if not directory or not pattern:\n        return {'success': False, 'error': 'directory and pattern parameters are required'}\n\n    recursive = params.get('recursive', True)\n\n    try:\n        matches = []\n\n        if recursive:\n            for root, dirs, files in os.walk(directory):\n                for filename in fnmatch.filter(files, pattern):\n                    matches.append(os.path.join(root, filename))\n        else:\n            files = os.listdir(directory)\n            for filename in fnmatch.filter(files, pattern):\n                full_path = os.path.join(directory, filename)\n                if os.path.isfile(full_path):\n                    matches.append(full_path)\n\n        return {\n            'success': True,\n            'count': len(matches),\n            'files': matches\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -354,7 +461,10 @@
     "name": "download_file",
     "description": "Download a file from a URL",
     "type": "tool",
-    "parameters": {"url": "string", "savePath": "string"},
+    "parameters": {
+      "url": "string",
+      "savePath": "string"
+    },
     "systemPrompt": "Use this skill to download files from URLs. If savePath is not specified, saves to current directory with filename from URL. For web pages, use fetch_url or playwright_fetch instead.",
     "code": "def execute(params):\n    \"\"\"Download a file from a URL.\"\"\"\n    import urllib.request\n    import os\n\n    url = params.get('url')\n    save_path = params.get('savePath')\n\n    if not url:\n        return {'success': False, 'error': 'url parameter is required'}\n\n    if not save_path:\n        save_path = os.path.basename(url)\n\n    try:\n        urllib.request.urlretrieve(url, save_path)\n        file_size = os.path.getsize(save_path)\n\n        return {\n            'success': True,\n            'message': f'Downloaded {file_size} bytes',\n            'savePath': save_path,\n            'size': file_size\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -363,7 +473,9 @@
     "name": "screenshot",
     "description": "Take a screenshot and save to file",
     "type": "tool",
-    "parameters": {"savePath": "string"},
+    "parameters": {
+      "savePath": "string"
+    },
     "systemPrompt": "Use this skill to capture a screenshot of the primary monitor. Requires the mss package. Saves as PNG. Useful for documentation, bug reports, or visual verification.",
     "code": "def execute(params):\n    \"\"\"Take a screenshot.\"\"\"\n    save_path = params.get('savePath', 'screenshot.png')\n\n    try:\n        import mss\n\n        with mss.mss() as sct:\n            monitor = sct.monitors[1]\n            screenshot = sct.grab(monitor)\n            mss.tools.to_png(screenshot.rgb, screenshot.size, output=save_path)\n\n        return {\n            'success': True,\n            'message': f'Screenshot saved to {save_path}',\n            'savePath': save_path\n        }\n    except ImportError:\n        return {'success': False, 'error': 'mss module not installed. Install with: pip install mss'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -372,7 +484,11 @@
     "name": "convert_image",
     "description": "Convert image format (PNG, JPG, BMP, GIF, etc.)",
     "type": "tool",
-    "parameters": {"inputPath": "string", "outputPath": "string", "format": "string"},
+    "parameters": {
+      "inputPath": "string",
+      "outputPath": "string",
+      "format": "string"
+    },
     "systemPrompt": "Use this skill to convert images between formats (PNG, JPG, BMP, GIF, TIFF, etc.). Requires Pillow. If format is not specified, infers from output file extension.",
     "code": "def execute(params):\n    \"\"\"Convert image format.\"\"\"\n    input_path = params.get('inputPath')\n    output_path = params.get('outputPath')\n\n    if not input_path or not output_path:\n        return {'success': False, 'error': 'inputPath and outputPath parameters are required'}\n\n    format_param = params.get('format', '').upper()\n\n    try:\n        from PIL import Image\n\n        img = Image.open(input_path)\n\n        if format_param:\n            img.save(output_path, format=format_param)\n        else:\n            img.save(output_path)\n\n        return {\n            'success': True,\n            'message': f'Image converted: {input_path} -> {output_path}',\n            'inputPath': input_path,\n            'outputPath': output_path,\n            'format': format_param if format_param else 'auto'\n        }\n    except ImportError:\n        return {'success': False, 'error': 'PIL (Pillow) not installed. Install with: pip install pillow'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -381,7 +497,10 @@
     "name": "list_processes",
     "description": "List running processes with PID, name, CPU%, and memory usage (cross-platform)",
     "type": "command",
-    "parameters": {"sort_by": "string", "limit": "number"},
+    "parameters": {
+      "sort_by": "string",
+      "limit": "number"
+    },
     "systemPrompt": "Use this skill to see running processes. Sort by 'cpu', 'memory', 'name', or 'pid'. Limit results for readability. Cross-platform (Windows, macOS, Linux). Useful for system monitoring and finding resource-heavy processes.",
     "code": "def execute(params):\n    \"\"\"List running processes.\"\"\"\n    import platform\n    import subprocess\n\n    sort_by = params.get('sort_by', 'pid')\n    limit = params.get('limit', 50)\n    system = platform.system().lower()\n    processes = []\n\n    try:\n        if system == 'windows':\n            cmd = 'tasklist /fo csv /nh'\n            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)\n            lines = result.stdout.strip().split('\\n')\n            for line in lines:\n                if line.strip():\n                    parts = line.strip().split('\",\"')\n                    if len(parts) >= 5:\n                        name = parts[0].strip('\"')\n                        pid = parts[1].strip('\"')\n                        mem = parts[4].strip('\"').replace(' K', '').replace(',', '')\n                        try:\n                            processes.append({'pid': int(pid), 'name': name, 'cpu_percent': 0.0, 'memory_mb': int(mem) / 1024 if mem.isdigit() else 0})\n                        except ValueError:\n                            pass\n        else:\n            cmd = 'ps aux --no-headers' if system == 'linux' else 'ps aux'\n            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)\n            lines = result.stdout.strip().split('\\n')\n            start_idx = 1 if system == 'darwin' else 0\n            for line in lines[start_idx:]:\n                if line.strip():\n                    parts = line.split()\n                    if len(parts) >= 11:\n                        try:\n                            processes.append({'pid': int(parts[1]), 'name': parts[10], 'cpu_percent': float(parts[2]), 'memory_mb': int(parts[5]) / 1024})\n                        except (ValueError, IndexError):\n                            pass\n\n        sort_key = sort_by.lower()\n        if sort_key == 'cpu':\n            processes.sort(key=lambda x: x['cpu_percent'], reverse=True)\n        elif sort_key in ('memory', 'mem'):\n            processes.sort(key=lambda x: x['memory_mb'], reverse=True)\n        elif sort_key == 'name':\n            processes.sort(key=lambda x: x['name'].lower())\n        else:\n            processes.sort(key=lambda x: x['pid'])\n\n        if limit and limit > 0:\n            processes = processes[:int(limit)]\n\n        return {'success': True, 'platform': system, 'count': len(processes), 'processes': processes}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -390,7 +509,10 @@
     "name": "kill_process",
     "description": "Kill a process by PID or name (cross-platform)",
     "type": "command",
-    "parameters": {"pid": "number", "name": "string"},
+    "parameters": {
+      "pid": "number",
+      "name": "string"
+    },
     "systemPrompt": "Use this skill to terminate processes. Can kill by PID (specific) or name (all matching). DANGEROUS: Disabled by default. Use list_processes first to identify the correct process. Cross-platform.",
     "code": "def execute(params):\n    \"\"\"Kill a process by PID or name.\"\"\"\n    import platform\n    import subprocess\n    import os\n    import signal\n\n    pid = params.get('pid')\n    name = params.get('name')\n\n    if not pid and not name:\n        return {'success': False, 'error': 'Either pid or name parameter is required'}\n\n    system = platform.system().lower()\n    killed = []\n\n    try:\n        if pid:\n            pid = int(pid)\n            if system == 'windows':\n                result = subprocess.run(f'taskkill /PID {pid} /F', shell=True, capture_output=True, text=True, timeout=10)\n                if result.returncode == 0:\n                    killed.append({'pid': pid})\n                else:\n                    return {'success': False, 'error': result.stderr.strip()}\n            else:\n                os.kill(pid, signal.SIGTERM)\n                killed.append({'pid': pid})\n\n        if name:\n            if system == 'windows':\n                result = subprocess.run(f'taskkill /IM \"{name}\" /F', shell=True, capture_output=True, text=True, timeout=10)\n                if result.returncode == 0:\n                    killed.append({'name': name})\n            else:\n                result = subprocess.run(f'pkill -f \"{name}\"', shell=True, capture_output=True, text=True, timeout=10)\n                if result.returncode == 0:\n                    killed.append({'name': name})\n\n        return {'success': True, 'killed': killed} if killed else {'success': False, 'error': 'No processes killed'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -399,7 +521,10 @@
     "name": "start_process",
     "description": "Start a process in the background (cross-platform)",
     "type": "command",
-    "parameters": {"command": "string", "args": "array"},
+    "parameters": {
+      "command": "string",
+      "args": "array"
+    },
     "systemPrompt": "Use this skill to launch background processes. DANGEROUS: Disabled by default. Process runs detached from the terminal. Returns the PID of the started process. Cross-platform.",
     "code": "def execute(params):\n    \"\"\"Start a process in the background.\"\"\"\n    import platform\n    import subprocess\n\n    command = params.get('command')\n    args = params.get('args', [])\n\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    system = platform.system().lower()\n    full_cmd = [command] + [str(a) for a in args] if args else [command]\n\n    try:\n        if system == 'windows':\n            process = subprocess.Popen(full_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, creationflags=0x00000008)\n        else:\n            process = subprocess.Popen(full_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)\n\n        return {'success': True, 'pid': process.pid, 'command': command, 'args': args}\n    except FileNotFoundError:\n        return {'success': False, 'error': f'Command not found: {command}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": false
@@ -408,7 +533,9 @@
     "name": "create_directory",
     "description": "Create a new directory (creates parent directories if needed)",
     "type": "function",
-    "parameters": {"dirPath": "string"},
+    "parameters": {
+      "dirPath": "string"
+    },
     "systemPrompt": "Use this skill to create directories. Automatically creates parent directories if they don't exist (like mkdir -p). Use absolute paths starting with the user's working directory.",
     "code": "def execute(params):\n    \"\"\"Create a new directory.\"\"\"\n    import os\n\n    dir_path = params.get('dirPath')\n    if not dir_path:\n        return {'success': False, 'error': 'dirPath parameter is required'}\n\n    try:\n        os.makedirs(dir_path, exist_ok=True)\n        return {\n            'success': True,\n            'message': f'Directory created: {dir_path}',\n            'dirPath': dir_path\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -417,7 +544,14 @@
     "name": "playwright_fetch",
     "description": "Fetch webpage content using Playwright browser with stealth mode (bypasses bot detection, handles JS-rendered pages)",
     "type": "tool",
-    "parameters": {"url": "string", "urls": "array", "timeout": "number", "waitForJS": "boolean", "includeLinks": "boolean", "maxLength": "number"},
+    "parameters": {
+      "url": "string",
+      "urls": "array",
+      "timeout": "number",
+      "waitForJS": "boolean",
+      "includeLinks": "boolean",
+      "maxLength": "number"
+    },
     "systemPrompt": "Use this skill for web pages that require JavaScript rendering or have bot detection. Better than fetch_url for modern websites, SPAs, and protected content. Supports multiple URLs in parallel. Falls back to simple HTTP if Playwright unavailable.",
     "code": "# This skill is executed via the /api/playwright/fetch endpoint\n# Parameters:\n#   url (string): Single URL to fetch\n#   urls (array): Multiple URLs to fetch in parallel\n#   timeout (number): Timeout in ms (default: 15000)\n#   waitForJS (boolean): Wait for JavaScript to render (default: true)\n#   includeLinks (boolean): Extract links from page (default: false)\n#   maxLength (number): Max content length (default: 8000)\n#\n# Features:\n# - Browser pooling for fast execution\n# - Stealth mode with fingerprint randomization\n# - Handles JavaScript-rendered content\n# - Automatic bot detection avoidance\n# - Falls back to axios if Playwright unavailable",
     "enabled": true
@@ -426,7 +560,12 @@
     "name": "playwright_interact",
     "description": "Interact with a webpage (click, type, scroll) before extracting content (for complex sites requiring user actions)",
     "type": "tool",
-    "parameters": {"url": "string", "actions": "array", "timeout": "number", "maxLength": "number"},
+    "parameters": {
+      "url": "string",
+      "actions": "array",
+      "timeout": "number",
+      "maxLength": "number"
+    },
     "systemPrompt": "Use this skill when you need to interact with a page before getting content (click buttons, fill forms, scroll to load content). Define a sequence of actions: click, type, wait, scroll, waitForNavigation. For simple page fetching, use playwright_fetch instead.",
     "code": "# This skill is executed via the /api/playwright/interact endpoint\n# Parameters:\n#   url (string): URL to navigate to\n#   actions (array): Actions to perform, each with:\n#     - type: 'click', 'type', 'wait', 'scroll', 'waitForNavigation'\n#     - selector: CSS selector for click/type/wait\n#     - text: Text to type (for 'type' action)\n#     - timeout: Max wait time (for 'wait' and 'waitForNavigation')\n#   timeout (number): Overall timeout in ms (default: 30000)\n#   maxLength (number): Max content length (default: 8000)\n#\n# Example actions:\n#   [{\"type\": \"click\", \"selector\": \"button.accept-cookies\"}]\n#   [{\"type\": \"type\", \"selector\": \"input#search\", \"text\": \"query\"}]\n#   [{\"type\": \"scroll\"}]\n#   [{\"type\": \"waitForNavigation\"}]",
     "enabled": true
@@ -435,7 +574,13 @@
     "name": "web_search",
     "description": "Search the web using DuckDuckGo with optional Playwright content fetching (returns actual page content, not just snippets)",
     "type": "tool",
-    "parameters": {"query": "string", "limit": "number", "fetchContent": "boolean", "contentLimit": "number", "timeRange": "string"},
+    "parameters": {
+      "query": "string",
+      "limit": "number",
+      "fetchContent": "boolean",
+      "contentLimit": "number",
+      "timeRange": "string"
+    },
     "systemPrompt": "Use this skill to search the web for current information. Set fetchContent=true to get actual page content, not just snippets. Use timeRange for recent results: 'd' (day), 'w' (week), 'm' (month), 'y' (year). Queries with 'recent', 'latest', or 'news' are auto-enhanced with current date.",
     "code": "# This skill is executed via the /api/search endpoint\n# Parameters:\n#   query (string): Search query\n#   limit (number): Max number of results (default: 5)\n#   fetchContent (boolean): Fetch actual page content (default: false)\n#   contentLimit (number): Number of URLs to fetch content from (default: 3)\n#   timeRange (string): d/w/m/y for day/week/month/year filter\n#\n# Features:\n# - Auto-enhances 'recent/latest/news' queries with current date\n# - Uses Playwright for content fetching when available\n# - Falls back to axios for basic content extraction\n# - Caches results for 1 hour\n# - Returns extracted content including title, summary, headings, and paragraphs",
     "enabled": true
@@ -444,7 +589,11 @@
     "name": "create_pdf",
     "description": "Generate a PDF file from text content (tries reportlab, wkhtmltopdf, enscript; falls back to HTML if no PDF tools available)",
     "type": "tool",
-    "parameters": {"outputPath": "string", "title": "string", "content": "string"},
+    "parameters": {
+      "outputPath": "string",
+      "title": "string",
+      "content": "string"
+    },
     "systemPrompt": "Use this skill to create PDF documents from text content. Tries multiple methods (reportlab, wkhtmltopdf, enscript) and falls back to HTML if none available. For complex layouts, create HTML first with create_file, then convert with html_to_pdf.",
     "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   outputPath (string): Path to save the PDF file\n#   title (string): Document title (optional, default: 'Document')\n#   content (string): Text content for the PDF\n#\n# PDF Generation Methods (tried in order):\n# 1. Python reportlab library\n# 2. wkhtmltopdf (converts HTML wrapper to PDF)\n# 3. enscript + ps2pdf (plain text to PDF)\n# 4. Fallback: Creates HTML file instead if no PDF tools available\n#\n# Example:\n# [SKILL:create_pdf(outputPath=\"/tmp/report.pdf\", title=\"My Report\", content=\"Report content here\")]",
     "enabled": true
@@ -453,7 +602,10 @@
     "name": "html_to_pdf",
     "description": "Convert an HTML file to PDF (tries wkhtmltopdf, weasyprint, or Chrome headless)",
     "type": "tool",
-    "parameters": {"htmlPath": "string", "outputPath": "string"},
+    "parameters": {
+      "htmlPath": "string",
+      "outputPath": "string"
+    },
     "systemPrompt": "Use this skill to convert HTML files to PDF. Tries wkhtmltopdf, WeasyPrint, or Chrome headless. Best for complex layouts with CSS styling. Create the HTML first with create_file if needed.",
     "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   htmlPath (string): Path to the HTML file to convert\n#   outputPath (string): Path to save the PDF (optional, defaults to same name with .pdf extension)\n#\n# PDF Conversion Methods (tried in order):\n# 1. wkhtmltopdf - Most common, fast conversion\n# 2. WeasyPrint - Python-based, good CSS support\n# 3. Chrome/Chromium headless - Print to PDF feature\n#\n# Example:\n# [SKILL:html_to_pdf(htmlPath=\"/tmp/report.html\", outputPath=\"/tmp/report.pdf\")]",
     "enabled": true
@@ -462,7 +614,11 @@
     "name": "markdown_to_html",
     "description": "Convert a Markdown file to styled HTML (uses pandoc if available, otherwise built-in converter)",
     "type": "tool",
-    "parameters": {"mdPath": "string", "outputPath": "string", "title": "string"},
+    "parameters": {
+      "mdPath": "string",
+      "outputPath": "string",
+      "title": "string"
+    },
     "systemPrompt": "Use this skill to convert Markdown to styled HTML. Uses pandoc if available, otherwise a built-in converter supporting headers, bold, italic, links, code blocks, and lists. Chain with html_to_pdf for Markdown to PDF conversion.",
     "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   mdPath (string): Path to the Markdown file to convert\n#   outputPath (string): Path to save the HTML (optional, defaults to same name with .html extension)\n#   title (string): Document title (optional, default: 'Document')\n#\n# Conversion Methods:\n# 1. Pandoc - Full-featured Markdown processor\n# 2. Built-in converter - Supports headers, bold, italic, links, code blocks, lists\n#\n# The built-in converter handles:\n# - Headers (# ## ###)\n# - Bold (**text**) and italic (*text*)\n# - Links [text](url)\n# - Code blocks (```code```)\n# - Inline code (`code`)\n# - Bullet lists (* item or - item)\n#\n# Example:\n# [SKILL:markdown_to_html(mdPath=\"/tmp/notes.md\", outputPath=\"/tmp/notes.html\", title=\"My Notes\")]",
     "enabled": true
@@ -471,7 +627,9 @@
     "name": "read_pdf",
     "description": "Extract text content from a PDF file",
     "type": "tool",
-    "parameters": {"filePath": "string"},
+    "parameters": {
+      "filePath": "string"
+    },
     "systemPrompt": "Use this skill to extract text from PDF files. Tries pdftotext (poppler-utils) first, then PyPDF2. Returns extracted text from all pages. For page count or image extraction, use pdf_page_count or pdf_to_images.",
     "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   filePath (string): Path to the PDF file to read\n#\n# Text Extraction Methods (tried in order):\n# 1. pdftotext (from poppler-utils)\n# 2. Python PyPDF2 library\n#\n# Returns extracted text content from all pages.\n#\n# Example:\n# [SKILL:read_pdf(filePath=\"/tmp/document.pdf\")]",
     "enabled": true
@@ -480,7 +638,9 @@
     "name": "pdf_page_count",
     "description": "Get the number of pages in a PDF file",
     "type": "tool",
-    "parameters": {"filePath": "string"},
+    "parameters": {
+      "filePath": "string"
+    },
     "systemPrompt": "Use this skill to quickly get the page count of a PDF without extracting content. Useful for large PDFs or when you just need the page count.",
     "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   filePath (string): Path to the PDF file\n#\n# Methods (tried in order):\n# 1. pdfinfo (from poppler-utils)\n# 2. Python PyPDF2 library\n#\n# Example:\n# [SKILL:pdf_page_count(filePath=\"/tmp/document.pdf\")]",
     "enabled": true
@@ -489,7 +649,10 @@
     "name": "pdf_to_images",
     "description": "Convert PDF pages to PNG images",
     "type": "tool",
-    "parameters": {"filePath": "string", "outputDir": "string"},
+    "parameters": {
+      "filePath": "string",
+      "outputDir": "string"
+    },
     "systemPrompt": "Use this skill to convert PDF pages to PNG images. Requires pdftoppm from poppler-utils. Creates one image per page (page-1.png, page-2.png, etc.). Useful for OCR processing or visual inspection.",
     "code": "# This skill is executed client-side by Koda CLI\n# Parameters:\n#   filePath (string): Path to the PDF file\n#   outputDir (string): Directory to save images (optional, defaults to current directory)\n#\n# Requires: pdftoppm from poppler-utils\n#\n# Output files are named: page-1.png, page-2.png, etc.\n#\n# Example:\n# [SKILL:pdf_to_images(filePath=\"/tmp/document.pdf\", outputDir=\"/tmp/pages\")]",
     "enabled": true
@@ -498,7 +661,10 @@
     "name": "append_to_file",
     "description": "Append content to an existing file",
     "type": "function",
-    "parameters": {"filePath": "string", "content": "string"},
+    "parameters": {
+      "filePath": "string",
+      "content": "string"
+    },
     "systemPrompt": "Use this skill to add content to the end of an existing file without overwriting it. Useful for log files, accumulating data, or adding new entries. Creates the file if it doesn't exist.",
     "code": "def execute(params):\n    \"\"\"Append content to an existing file.\"\"\"\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    content = params.get('content', '')\n\n    try:\n        with open(file_path, 'a') as f:\n            f.write(content)\n        return {\n            'success': True,\n            'message': f'Content appended to: {file_path}',\n            'filePath': file_path,\n            'appendedSize': len(content)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -507,7 +673,10 @@
     "name": "tail_file",
     "description": "Read the last N lines of a file",
     "type": "function",
-    "parameters": {"filePath": "string", "lines": "number"},
+    "parameters": {
+      "filePath": "string",
+      "lines": "number"
+    },
     "systemPrompt": "Use this skill to read the last lines of a file (like Unix tail). Default is 10 lines. Useful for log files, recent entries, or checking file endings without reading the whole file.",
     "code": "def execute(params):\n    \"\"\"Read the last N lines of a file.\"\"\"\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    num_lines = params.get('lines', 10)\n\n    try:\n        with open(file_path, 'r') as f:\n            lines = f.readlines()\n            tail_lines = lines[-num_lines:] if len(lines) > num_lines else lines\n        return {\n            'success': True,\n            'content': ''.join(tail_lines),\n            'filePath': file_path,\n            'linesReturned': len(tail_lines)\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -516,7 +685,10 @@
     "name": "head_file",
     "description": "Read the first N lines of a file",
     "type": "function",
-    "parameters": {"filePath": "string", "lines": "number"},
+    "parameters": {
+      "filePath": "string",
+      "lines": "number"
+    },
     "systemPrompt": "Use this skill to read the first lines of a file (like Unix head). Default is 10 lines. Useful for previewing files, checking headers, or reading file beginnings without loading everything.",
     "code": "def execute(params):\n    \"\"\"Read the first N lines of a file.\"\"\"\n    file_path = params.get('filePath')\n    if not file_path:\n        return {'success': False, 'error': 'filePath parameter is required'}\n\n    num_lines = params.get('lines', 10)\n\n    try:\n        with open(file_path, 'r') as f:\n            head_lines = []\n            for i, line in enumerate(f):\n                if i >= num_lines:\n                    break\n                head_lines.append(line)\n        return {\n            'success': True,\n            'content': ''.join(head_lines),\n            'filePath': file_path,\n            'linesReturned': len(head_lines)\n        }\n    except FileNotFoundError:\n        return {'success': False, 'error': f'File not found: {file_path}'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -525,7 +697,9 @@
     "name": "git_status",
     "description": "Get git repository status (modified, staged, untracked files)",
     "type": "command",
-    "parameters": {"repoPath": "string"},
+    "parameters": {
+      "repoPath": "string"
+    },
     "systemPrompt": "Use this skill to check the current state of a git repository: modified files, staged changes, untracked files, current branch. Defaults to current directory. Use before git_diff for a full picture.",
     "code": "def execute(params):\n    \"\"\"Get git repository status.\"\"\"\n    import subprocess\n    import os\n\n    repo_path = params.get('repoPath', os.getcwd())\n\n    try:\n        result = subprocess.run(\n            ['git', 'status', '--porcelain', '-b'],\n            capture_output=True,\n            text=True,\n            cwd=repo_path,\n            timeout=30\n        )\n\n        if result.returncode != 0:\n            return {'success': False, 'error': result.stderr.strip()}\n\n        lines = result.stdout.strip().split('\\n')\n        branch = lines[0][3:] if lines and lines[0].startswith('##') else 'unknown'\n        \n        files = {'modified': [], 'staged': [], 'untracked': []}\n        for line in lines[1:]:\n            if line:\n                status = line[:2]\n                filename = line[3:]\n                if status[0] in 'MADRC':\n                    files['staged'].append(filename)\n                if status[1] in 'MD':\n                    files['modified'].append(filename)\n                if status == '??':\n                    files['untracked'].append(filename)\n\n        return {\n            'success': True,\n            'branch': branch,\n            'files': files,\n            'raw': result.stdout\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -534,7 +708,11 @@
     "name": "git_diff",
     "description": "Get git diff of changes (staged or unstaged)",
     "type": "command",
-    "parameters": {"repoPath": "string", "staged": "boolean", "filePath": "string"},
+    "parameters": {
+      "repoPath": "string",
+      "staged": "boolean",
+      "filePath": "string"
+    },
     "systemPrompt": "Use this skill to see the actual changes in a git repository. Set staged=true for staged changes, false for working directory changes. Optionally specify a specific file path. Returns the diff output.",
     "code": "def execute(params):\n    \"\"\"Get git diff of changes.\"\"\"\n    import subprocess\n    import os\n\n    repo_path = params.get('repoPath', os.getcwd())\n    staged = params.get('staged', False)\n    file_path = params.get('filePath')\n\n    try:\n        cmd = ['git', 'diff']\n        if staged:\n            cmd.append('--staged')\n        if file_path:\n            cmd.extend(['--', file_path])\n\n        result = subprocess.run(\n            cmd,\n            capture_output=True,\n            text=True,\n            cwd=repo_path,\n            timeout=30\n        )\n\n        return {\n            'success': True,\n            'diff': result.stdout,\n            'staged': staged,\n            'filePath': file_path\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -543,7 +721,11 @@
     "name": "git_log",
     "description": "Get git commit history",
     "type": "command",
-    "parameters": {"repoPath": "string", "limit": "number", "oneline": "boolean"},
+    "parameters": {
+      "repoPath": "string",
+      "limit": "number",
+      "oneline": "boolean"
+    },
     "systemPrompt": "Use this skill to view commit history. Default limit is 10 commits. Set oneline=true for compact output. Useful for understanding recent changes, finding commit hashes, or reviewing project history.",
     "code": "def execute(params):\n    \"\"\"Get git commit history.\"\"\"\n    import subprocess\n    import os\n\n    repo_path = params.get('repoPath', os.getcwd())\n    limit = params.get('limit', 10)\n    oneline = params.get('oneline', True)\n\n    try:\n        cmd = ['git', 'log', f'-{limit}']\n        if oneline:\n            cmd.append('--oneline')\n        else:\n            cmd.append('--pretty=format:%H|%an|%ad|%s')\n\n        result = subprocess.run(\n            cmd,\n            capture_output=True,\n            text=True,\n            cwd=repo_path,\n            timeout=30\n        )\n\n        if result.returncode != 0:\n            return {'success': False, 'error': result.stderr.strip()}\n\n        commits = []\n        for line in result.stdout.strip().split('\\n'):\n            if line:\n                if oneline:\n                    parts = line.split(' ', 1)\n                    commits.append({'hash': parts[0], 'message': parts[1] if len(parts) > 1 else ''})\n                else:\n                    parts = line.split('|')\n                    if len(parts) >= 4:\n                        commits.append({'hash': parts[0], 'author': parts[1], 'date': parts[2], 'message': parts[3]})\n\n        return {\n            'success': True,\n            'commits': commits,\n            'count': len(commits)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -552,7 +734,9 @@
     "name": "git_branch",
     "description": "List git branches or get current branch",
     "type": "command",
-    "parameters": {"repoPath": "string"},
+    "parameters": {
+      "repoPath": "string"
+    },
     "systemPrompt": "Use this skill to list all branches in a git repository and identify the current branch. Useful for understanding branch structure or before switching branches.",
     "code": "def execute(params):\n    \"\"\"List git branches.\"\"\"\n    import subprocess\n    import os\n\n    repo_path = params.get('repoPath', os.getcwd())\n\n    try:\n        result = subprocess.run(\n            ['git', 'branch', '-a'],\n            capture_output=True,\n            text=True,\n            cwd=repo_path,\n            timeout=30\n        )\n\n        if result.returncode != 0:\n            return {'success': False, 'error': result.stderr.strip()}\n\n        branches = []\n        current = None\n        for line in result.stdout.strip().split('\\n'):\n            if line:\n                is_current = line.startswith('*')\n                branch_name = line.lstrip('* ').strip()\n                branches.append(branch_name)\n                if is_current:\n                    current = branch_name\n\n        return {\n            'success': True,\n            'current': current,\n            'branches': branches,\n            'count': len(branches)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -561,7 +745,9 @@
     "name": "get_env_var",
     "description": "Get environment variable value",
     "type": "command",
-    "parameters": {"name": "string"},
+    "parameters": {
+      "name": "string"
+    },
     "systemPrompt": "Use this skill to read environment variables. Useful for checking configuration, paths, or system settings. Returns the value or indicates if not set.",
     "code": "def execute(params):\n    \"\"\"Get environment variable value.\"\"\"\n    import os\n\n    name = params.get('name')\n    if not name:\n        return {'success': False, 'error': 'name parameter is required'}\n\n    value = os.environ.get(name)\n    return {\n        'success': True,\n        'name': name,\n        'value': value,\n        'exists': value is not None\n    }",
     "enabled": true
@@ -570,7 +756,10 @@
     "name": "set_env_var",
     "description": "Set environment variable (current session only)",
     "type": "command",
-    "parameters": {"name": "string", "value": "string"},
+    "parameters": {
+      "name": "string",
+      "value": "string"
+    },
     "systemPrompt": "Use this skill to set environment variables for the current session. Changes are NOT persistent across sessions. Useful for temporary configuration or testing.",
     "code": "def execute(params):\n    \"\"\"Set environment variable.\"\"\"\n    import os\n\n    name = params.get('name')\n    value = params.get('value')\n\n    if not name:\n        return {'success': False, 'error': 'name parameter is required'}\n    if value is None:\n        return {'success': False, 'error': 'value parameter is required'}\n\n    os.environ[name] = str(value)\n    return {\n        'success': True,\n        'name': name,\n        'value': str(value),\n        'message': f'Environment variable {name} set (session only)'\n    }",
     "enabled": true
@@ -579,7 +768,9 @@
     "name": "which_command",
     "description": "Find the path of an executable command",
     "type": "command",
-    "parameters": {"command": "string"},
+    "parameters": {
+      "command": "string"
+    },
     "systemPrompt": "Use this skill to find where a command is installed (like Unix 'which'). Useful for verifying tool availability, debugging PATH issues, or finding the exact binary location.",
     "code": "def execute(params):\n    \"\"\"Find the path of an executable command.\"\"\"\n    import shutil\n\n    command = params.get('command')\n    if not command:\n        return {'success': False, 'error': 'command parameter is required'}\n\n    path = shutil.which(command)\n    return {\n        'success': True,\n        'command': command,\n        'path': path,\n        'found': path is not None\n    }",
     "enabled": true
@@ -588,7 +779,9 @@
     "name": "disk_usage",
     "description": "Get disk usage information for a path",
     "type": "command",
-    "parameters": {"path": "string"},
+    "parameters": {
+      "path": "string"
+    },
     "systemPrompt": "Use this skill to check disk space: total, used, free, and percentage. Defaults to root filesystem. Useful for monitoring storage or before large file operations.",
     "code": "def execute(params):\n    \"\"\"Get disk usage information.\"\"\"\n    import shutil\n\n    path = params.get('path', '/')\n\n    try:\n        usage = shutil.disk_usage(path)\n        return {\n            'success': True,\n            'path': path,\n            'total': usage.total,\n            'used': usage.used,\n            'free': usage.free,\n            'percent': round(usage.used / usage.total * 100, 2)\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -624,7 +817,10 @@
     "name": "diff_files",
     "description": "Compare two files and show differences",
     "type": "function",
-    "parameters": {"file1": "string", "file2": "string"},
+    "parameters": {
+      "file1": "string",
+      "file2": "string"
+    },
     "systemPrompt": "Use this skill to compare two files and see the differences. Returns a unified diff showing what changed between the files. Useful for code review, comparing versions, or verifying changes.",
     "code": "def execute(params):\n    \"\"\"Compare two files and show differences.\"\"\"\n    import difflib\n\n    file1 = params.get('file1')\n    file2 = params.get('file2')\n\n    if not file1 or not file2:\n        return {'success': False, 'error': 'file1 and file2 parameters are required'}\n\n    try:\n        with open(file1, 'r') as f:\n            content1 = f.readlines()\n        with open(file2, 'r') as f:\n            content2 = f.readlines()\n\n        diff = list(difflib.unified_diff(content1, content2, fromfile=file1, tofile=file2))\n\n        return {\n            'success': True,\n            'file1': file1,\n            'file2': file2,\n            'diff': ''.join(diff),\n            'identical': len(diff) == 0\n        }\n    except FileNotFoundError as e:\n        return {'success': False, 'error': str(e)}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -633,7 +829,12 @@
     "name": "search_replace_file",
     "description": "Search and replace text in a file",
     "type": "function",
-    "parameters": {"filePath": "string", "search": "string", "replace": "string", "regex": "boolean"},
+    "parameters": {
+      "filePath": "string",
+      "search": "string",
+      "replace": "string",
+      "regex": "boolean"
+    },
     "systemPrompt": "Use this skill to find and replace text in a file. Supports plain text or regex patterns. Returns the number of replacements made. For complex multi-line changes, use read_file and update_file instead.",
     "code": "def execute(params):\n    \"\"\"Search and replace text in a file.\"\"\"\n    import re\n\n    file_path = params.get('filePath')\n    search = params.get('search')\n    replace = params.get('replace', '')\n    use_regex = params.get('regex', False)\n\n    if not file_path or not search:\n        return {'success': False, 'error': 'filePath and search parameters are required'}\n\n    try:\n        with open(file_path, 'r') as f:\n            content = f.read()\n\n        if use_regex:\n            new_content, count = re.subn(search, replace, content)\n        else:\n            count = content.count(search)\n            new_content = content.replace(search, replace)\n\n        with open(file_path, 'w') as f:\n            f.write(new_content)\n\n        return {\n            'success': True,\n            'filePath': file_path,\n            'replacements': count,\n            'message': f'Replaced {count} occurrences'\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -642,7 +843,10 @@
     "name": "tar_extract",
     "description": "Extract a tar archive (.tar, .tar.gz, .tgz, .tar.bz2)",
     "type": "function",
-    "parameters": {"tarPath": "string", "extractPath": "string"},
+    "parameters": {
+      "tarPath": "string",
+      "extractPath": "string"
+    },
     "systemPrompt": "Use this skill to extract tar archives including compressed variants (.gz, .bz2, .xz). If extractPath is not specified, extracts to the same directory as the archive.",
     "code": "def execute(params):\n    \"\"\"Extract a tar archive.\"\"\"\n    import tarfile\n    import os\n\n    tar_path = params.get('tarPath')\n    extract_path = params.get('extractPath')\n\n    if not tar_path:\n        return {'success': False, 'error': 'tarPath parameter is required'}\n\n    if not extract_path:\n        extract_path = os.path.dirname(tar_path) or '.'\n\n    try:\n        with tarfile.open(tar_path, 'r:*') as tar:\n            tar.extractall(path=extract_path)\n            members = tar.getnames()\n\n        return {\n            'success': True,\n            'message': f'Extracted {len(members)} items',\n            'files': members,\n            'extractPath': extract_path\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -651,7 +855,11 @@
     "name": "tar_create",
     "description": "Create a tar archive from files/directories",
     "type": "function",
-    "parameters": {"tarPath": "string", "sourcePaths": "array", "compression": "string"},
+    "parameters": {
+      "tarPath": "string",
+      "sourcePaths": "array",
+      "compression": "string"
+    },
     "systemPrompt": "Use this skill to create tar archives. Supports compression: 'gz' (gzip), 'bz2' (bzip2), 'xz', or '' (none). Directories are added recursively.",
     "code": "def execute(params):\n    \"\"\"Create a tar archive.\"\"\"\n    import tarfile\n    import os\n\n    tar_path = params.get('tarPath')\n    source_paths = params.get('sourcePaths', [])\n    compression = params.get('compression', 'gz')\n\n    if not tar_path:\n        return {'success': False, 'error': 'tarPath parameter is required'}\n    if not source_paths:\n        return {'success': False, 'error': 'sourcePaths parameter is required'}\n\n    mode = 'w'\n    if compression:\n        mode = f'w:{compression}'\n\n    try:\n        file_count = 0\n        with tarfile.open(tar_path, mode) as tar:\n            for source_path in source_paths:\n                tar.add(source_path, arcname=os.path.basename(source_path))\n                if os.path.isfile(source_path):\n                    file_count += 1\n                else:\n                    for root, dirs, files in os.walk(source_path):\n                        file_count += len(files)\n\n        return {\n            'success': True,\n            'message': f'Created tar archive with {file_count} files',\n            'tarPath': tar_path,\n            'compression': compression or 'none',\n            'fileCount': file_count\n        }\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
     "enabled": true
@@ -660,7 +868,12 @@
     "name": "analyze_video",
     "description": "Analyze a video file for metadata, duration, resolution, frame rate, codec info, and optionally extract frames",
     "type": "function",
-    "parameters": {"videoPath": "string", "extractFrames": "boolean", "frameInterval": "number", "outputDir": "string"},
+    "parameters": {
+      "videoPath": "string",
+      "extractFrames": "boolean",
+      "frameInterval": "number",
+      "outputDir": "string"
+    },
     "systemPrompt": "Use this skill to analyze video files. Returns metadata including duration, resolution, frame rate, codec, bit rate, and file size. Set extractFrames=true to extract sample frames at frameInterval seconds (default: 10). Frames are saved to outputDir (defaults to same directory as video). Supports common formats: MP4, AVI, MKV, MOV, WebM, etc.",
     "code": "def execute(params):\n    \"\"\"Analyze a video file for metadata and optionally extract frames.\"\"\"\n    import subprocess\n    import json\n    import os\n\n    video_path = params.get('videoPath')\n    if not video_path:\n        return {'success': False, 'error': 'videoPath parameter is required'}\n\n    if not os.path.exists(video_path):\n        return {'success': False, 'error': f'Video file not found: {video_path}'}\n\n    extract_frames = params.get('extractFrames', False)\n    frame_interval = params.get('frameInterval', 10)\n    output_dir = params.get('outputDir', os.path.dirname(video_path) or '.')\n\n    results = {\n        'success': True,\n        'videoPath': video_path,\n        'metadata': {}\n    }\n\n    # Use ffprobe to get video metadata\n    try:\n        ffprobe_cmd = [\n            'ffprobe',\n            '-v', 'quiet',\n            '-print_format', 'json',\n            '-show_format',\n            '-show_streams',\n            video_path\n        ]\n\n        result = subprocess.run(ffprobe_cmd, capture_output=True, text=True, timeout=60)\n\n        if result.returncode != 0:\n            return {'success': False, 'error': f'ffprobe failed: {result.stderr}'}\n\n        probe_data = json.loads(result.stdout)\n\n        # Extract format info\n        format_info = probe_data.get('format', {})\n        results['metadata']['filename'] = os.path.basename(video_path)\n        results['metadata']['format'] = format_info.get('format_long_name', 'Unknown')\n        results['metadata']['duration'] = float(format_info.get('duration', 0))\n        results['metadata']['duration_formatted'] = _format_duration(float(format_info.get('duration', 0)))\n        results['metadata']['size_bytes'] = int(format_info.get('size', 0))\n        results['metadata']['size_mb'] = round(int(format_info.get('size', 0)) / (1024 * 1024), 2)\n        results['metadata']['bit_rate'] = int(format_info.get('bit_rate', 0))\n        results['metadata']['bit_rate_mbps'] = round(int(format_info.get('bit_rate', 0)) / 1000000, 2)\n\n        # Extract stream info\n        streams = probe_data.get('streams', [])\n        video_streams = [s for s in streams if s.get('codec_type') == 'video']\n        audio_streams = [s for s in streams if s.get('codec_type') == 'audio']\n\n        if video_streams:\n            vs = video_streams[0]\n            results['metadata']['video'] = {\n                'codec': vs.get('codec_name', 'Unknown'),\n                'codec_long': vs.get('codec_long_name', 'Unknown'),\n                'width': vs.get('width', 0),\n                'height': vs.get('height', 0),\n                'resolution': f\"{vs.get('width', 0)}x{vs.get('height', 0)}\",\n                'aspect_ratio': vs.get('display_aspect_ratio', 'Unknown'),\n                'frame_rate': _parse_frame_rate(vs.get('r_frame_rate', '0/1')),\n                'frame_count': int(vs.get('nb_frames', 0)) if vs.get('nb_frames') else 'Unknown',\n                'pixel_format': vs.get('pix_fmt', 'Unknown'),\n                'color_space': vs.get('color_space', 'Unknown'),\n                'bit_depth': vs.get('bits_per_raw_sample', 'Unknown')\n            }\n\n        if audio_streams:\n            aus = audio_streams[0]\n            results['metadata']['audio'] = {\n                'codec': aus.get('codec_name', 'Unknown'),\n                'codec_long': aus.get('codec_long_name', 'Unknown'),\n                'channels': aus.get('channels', 0),\n                'channel_layout': aus.get('channel_layout', 'Unknown'),\n                'sample_rate': int(aus.get('sample_rate', 0)),\n                'bit_rate': int(aus.get('bit_rate', 0)) if aus.get('bit_rate') else 'Unknown'\n            }\n\n        results['metadata']['stream_count'] = {\n            'video': len(video_streams),\n            'audio': len(audio_streams),\n            'total': len(streams)\n        }\n\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': 'ffprobe timed out'}\n    except FileNotFoundError:\n        return {'success': False, 'error': 'ffprobe not found. Please install ffmpeg.'}\n    except json.JSONDecodeError as e:\n        return {'success': False, 'error': f'Failed to parse ffprobe output: {str(e)}'}\n    except Exception as e:\n        return {'success': False, 'error': f'Error analyzing video: {str(e)}'}\n\n    # Extract frames if requested\n    if extract_frames:\n        try:\n            os.makedirs(output_dir, exist_ok=True)\n            base_name = os.path.splitext(os.path.basename(video_path))[0]\n            frame_pattern = os.path.join(output_dir, f'{base_name}_frame_%04d.jpg')\n\n            # Calculate number of frames to extract\n            duration = results['metadata'].get('duration', 0)\n            if duration > 0:\n                ffmpeg_cmd = [\n                    'ffmpeg',\n                    '-i', video_path,\n                    '-vf', f'fps=1/{frame_interval}',\n                    '-q:v', '2',\n                    '-y',\n                    frame_pattern\n                ]\n\n                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)\n\n                if result.returncode == 0:\n                    # Count extracted frames\n                    extracted = [f for f in os.listdir(output_dir) if f.startswith(f'{base_name}_frame_') and f.endswith('.jpg')]\n                    results['frames'] = {\n                        'extracted': True,\n                        'count': len(extracted),\n                        'interval_seconds': frame_interval,\n                        'output_dir': output_dir,\n                        'files': sorted(extracted)[:10]  # First 10 for reference\n                    }\n                else:\n                    results['frames'] = {\n                        'extracted': False,\n                        'error': result.stderr[:500] if result.stderr else 'Unknown error'\n                    }\n            else:\n                results['frames'] = {\n                    'extracted': False,\n                    'error': 'Could not determine video duration'\n                }\n        except Exception as e:\n            results['frames'] = {\n                'extracted': False,\n                'error': str(e)\n            }\n\n    return results\n\ndef _format_duration(seconds):\n    \"\"\"Format seconds into HH:MM:SS.ms\"\"\"\n    hours = int(seconds // 3600)\n    minutes = int((seconds % 3600) // 60)\n    secs = seconds % 60\n    if hours > 0:\n        return f'{hours}:{minutes:02d}:{secs:05.2f}'\n    else:\n        return f'{minutes}:{secs:05.2f}'\n\ndef _parse_frame_rate(rate_str):\n    \"\"\"Parse frame rate from fraction string like '30000/1001'\"\"\"\n    try:\n        if '/' in rate_str:\n            num, den = map(int, rate_str.split('/'))\n            return round(num / den, 2) if den != 0 else 0\n        return float(rate_str)\n    except:\n        return 0",
     "enabled": true

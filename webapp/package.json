@@ -1,6 +1,6 @@
 {
   "name": "model-management-webapp",
-  "version": "0.5.53",
+  "version": "0.5.54",
   "description": "Web application for managing ML models",
   "main": "server.js",
   "dependencies": {
@@ -11,15 +11,21 @@
     "dockerode": "^4.0.2",
     "express": "^4.18.2",
     "express-session": "^1.17.3",
+    "jimp": "^1.6.0",
+    "jsqr": "^1.4.0",
+    "mailparser": "^3.9.3",
+    "mammoth": "^1.11.0",
     "passport": "^0.6.0",
     "passport-local": "^1.0.0",
+    "pdf-parse": "^2.4.5",
+    "playwright": "^1.40.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "react-hook-form": "^7.71.2",
     "session-file-store": "^1.5.0",
     "ws": "^8.13.0",
-    "zustand": "^5.0.11",
-    "playwright": "^1.40.0",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "xlsx": "^0.18.5",
+    "zustand": "^5.0.11"
   },
   "devDependencies": {
     "@babel/core": "^7.18.0",

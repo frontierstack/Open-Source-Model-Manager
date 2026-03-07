@@ -10,30 +10,68 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${YELLOW}>>> Configuring Open WebUI external search...${NC}"
 
+# First, wait for the webapp HTTP server on port 3080 to be ready
+# This is critical for fresh installs where the server may still be starting
+echo ">>> Waiting for webapp HTTP server on port 3080..."
+MAX_HTTP_WAIT=60
+HTTP_WAITED=0
+while ! curl -s -o /dev/null -w "%{http_code}" http://localhost:3080/api/models 2>/dev/null | grep -qE "^(200|401|403)"; do
+    if [ $HTTP_WAITED -ge $MAX_HTTP_WAIT ]; then
+        echo -e "${RED}Warning: Webapp HTTP server on port 3080 not ready after ${MAX_HTTP_WAIT}s${NC}"
+        echo "The provisioning will continue, but web search may need manual configuration."
+        break
+    fi
+    sleep 2
+    HTTP_WAITED=$((HTTP_WAITED + 2))
+    echo "  Waiting for HTTP server... (${HTTP_WAITED}/${MAX_HTTP_WAIT}s)"
+done
+
+if [ $HTTP_WAITED -lt $MAX_HTTP_WAIT ]; then
+    echo ">>> Webapp HTTP server is ready"
+fi
+
+# Find the Open WebUI container (handle different naming conventions)
+OPENWEBUI_CONTAINER=""
+for name in "modelserver-open-webui-1" "modelserver_open-webui_1" "open-webui"; do
+    if docker ps --format '{{.Names}}' | grep -q "$name"; then
+        OPENWEBUI_CONTAINER="$name"
+        break
+    fi
+done
+
 # Wait for Open WebUI container to be running
-MAX_WAIT=60
+MAX_WAIT=90
 WAITED=0
-while ! docker ps --format '{{.Names}}' | grep -q "open-webui"; do
+while [ -z "$OPENWEBUI_CONTAINER" ]; do
     if [ $WAITED -ge $MAX_WAIT ]; then
-        echo "Warning: Open WebUI container not found after ${MAX_WAIT}s, skipping search provisioning"
+        echo -e "${RED}Warning: Open WebUI container not found after ${MAX_WAIT}s, skipping search provisioning${NC}"
         exit 0
     fi
     sleep 2
     WAITED=$((WAITED + 2))
+    # Re-check for container
+    for name in "modelserver-open-webui-1" "modelserver_open-webui_1" "open-webui"; do
+        if docker ps --format '{{.Names}}' | grep -q "$name"; then
+            OPENWEBUI_CONTAINER="$name"
+            break
+        fi
+    done
 done
 
+echo ">>> Found Open WebUI container: $OPENWEBUI_CONTAINER"
 echo ">>> Waiting for Open WebUI database to initialize..."
 
 # Wait for database to be ready (longer wait on fresh install)
-MAX_DB_WAIT=120
+MAX_DB_WAIT=180
 DB_WAITED=0
-while ! docker exec modelserver-open-webui-1 test -f /app/backend/data/webui.db 2>/dev/null; do
+while ! docker exec "$OPENWEBUI_CONTAINER" test -f /app/backend/data/webui.db 2>/dev/null; do
     if [ $DB_WAITED -ge $MAX_DB_WAIT ]; then
-        echo "Warning: Open WebUI database not found after ${MAX_DB_WAIT}s"
+        echo -e "${RED}Warning: Open WebUI database not found after ${MAX_DB_WAIT}s${NC}"
         echo "This may happen on first run. Try running this script manually after Open WebUI is fully loaded:"
         echo "  ./scripts/provision-openwebui-search.sh"
         exit 0
@@ -43,11 +81,12 @@ while ! docker exec modelserver-open-webui-1 test -f /app/backend/data/webui.db 
     echo "  Waiting for database... (${DB_WAITED}/${MAX_DB_WAIT}s)"
 done
 
-# Give the database a moment to fully initialize after creation
-sleep 3
+# Give the database more time to fully initialize after creation (especially on fresh installs)
+echo ">>> Database file found, waiting for schema initialization..."
+sleep 5
 
 # Provision the configuration
-docker exec modelserver-open-webui-1 python3 << 'PYTHON_SCRIPT'
+docker exec "$OPENWEBUI_CONTAINER" python3 << 'PYTHON_SCRIPT'
 import sqlite3
 import json
 import sys
@@ -141,7 +180,8 @@ try:
     c = conn.cursor()
 
     # Wait for config table to exist (Open WebUI may still be running migrations)
-    max_table_wait = 30
+    # Increased timeout for fresh installs on slower systems
+    max_table_wait = 90
     table_waited = 0
     while table_waited < max_table_wait:
         c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='config'")
@@ -153,7 +193,8 @@ try:
 
     if table_waited >= max_table_wait:
         print("Config table not found - Open WebUI may still be initializing")
-        print("Try running this script again after Open WebUI is fully loaded")
+        print("Try running this script again after Open WebUI is fully loaded:")
+        print("  ./scripts/provision-openwebui-search.sh")
         sys.exit(1)
 
     # Get current config
@@ -218,4 +259,42 @@ except Exception as e:
     sys.exit(1)
 PYTHON_SCRIPT
 
-echo -e "${GREEN}>>> Open WebUI search configuration complete${NC}"
+PROVISION_EXIT_CODE=$?
+if [ $PROVISION_EXIT_CODE -ne 0 ]; then
+    echo -e "${RED}>>> Open WebUI search configuration FAILED${NC}"
+    echo "You can retry manually by running: ./scripts/provision-openwebui-search.sh"
+    exit 1
+fi
+
+# Verify the configuration was actually saved
+echo ">>> Verifying configuration..."
+VERIFY_RESULT=$(docker exec "$OPENWEBUI_CONTAINER" python3 << 'VERIFY_SCRIPT'
+import sqlite3
+import json
+try:
+    conn = sqlite3.connect('/app/backend/data/webui.db')
+    c = conn.cursor()
+    c.execute('SELECT data FROM config WHERE id=1')
+    row = c.fetchone()
+    if row:
+        data = json.loads(row[0])
+        search_url = data.get('rag', {}).get('web', {}).get('search', {}).get('external_web_search_url', '')
+        if 'host.docker.internal:3080' in search_url:
+            print("VERIFIED")
+        else:
+            print("URL_NOT_SET")
+    else:
+        print("NO_CONFIG")
+    conn.close()
+except Exception as e:
+    print(f"ERROR: {e}")
+VERIFY_SCRIPT
+)
+
+if [ "$VERIFY_RESULT" = "VERIFIED" ]; then
+    echo -e "${GREEN}>>> Open WebUI search configuration complete and verified${NC}"
+else
+    echo -e "${YELLOW}>>> Configuration may need manual verification${NC}"
+    echo "Result: $VERIFY_RESULT"
+    echo "Check Open WebUI Admin > Settings > Web Search"
+fi
