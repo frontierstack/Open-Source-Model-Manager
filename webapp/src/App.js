@@ -45,6 +45,8 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
+import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import AppsIcon from '@mui/icons-material/Apps';
 import CancelIcon from '@mui/icons-material/Cancel';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
@@ -510,6 +512,8 @@ const App = () => {
     const [fileFilter, setFileFilter] = useState('all'); // 'all', 'single', 'split'
     const [searchSortBy, setSearchSortBy] = useState('downloads'); // 'downloads', 'likes', 'params', 'trending', 'newest'
     const [searchSizeFilter, setSearchSizeFilter] = useState('all'); // 'all', 'small', 'medium', 'large', 'xlarge'
+    const [searchPage, setSearchPage] = useState(1);
+    const ITEMS_PER_PAGE = 24;
 
     // System prompt state
     const [systemPrompts, setSystemPrompts] = useState({});
@@ -700,6 +704,11 @@ const App = () => {
             console.error('Failed to save logs to localStorage:', error);
         }
     }, [logs]);
+
+    // Reset search page when sort/size filters change
+    useEffect(() => {
+        setSearchPage(1);
+    }, [searchSortBy, searchSizeFilter]);
 
     // Initial data fetch and WebSocket setup
     useEffect(() => {
@@ -3196,6 +3205,7 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
     // HuggingFace handlers
     const handleSearch = () => {
         setSearching(true);
+        setSearchPage(1); // Reset to first page on new search
 
         // Build query params
         const params = new URLSearchParams();
@@ -3956,15 +3966,74 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                             </Box>
 
                                             {/* Search Results */}
-                                            {searchResults.length > 0 && (
+                                            {searchResults.length > 0 && (() => {
+                                                const totalPages = Math.ceil(searchResults.length / ITEMS_PER_PAGE);
+                                                const startIndex = (searchPage - 1) * ITEMS_PER_PAGE;
+                                                const endIndex = startIndex + ITEMS_PER_PAGE;
+                                                const paginatedResults = searchResults.slice(startIndex, endIndex);
+
+                                                // Helper to detect model type tags from model name and HuggingFace tags
+                                                const getModelTypeTags = (modelId, tags = []) => {
+                                                    const name = modelId.toLowerCase();
+                                                    const tagSet = new Set(tags?.map(t => t.toLowerCase()) || []);
+                                                    const typeTags = [];
+
+                                                    // Thinking/Reasoning models
+                                                    if (name.includes('qwq') || name.includes('deepseek-r1') || name.includes('o1') ||
+                                                        name.includes('o3') || name.includes('reasoning') || name.includes('think') ||
+                                                        tagSet.has('reasoning') || tagSet.has('thinking')) {
+                                                        typeTags.push({ label: 'Thinking', color: 'rgba(251,191,36,0.3)', textColor: '#fbbf24' });
+                                                    }
+
+                                                    // Coding models
+                                                    if (name.includes('code') || name.includes('coder') || name.includes('starcoder') ||
+                                                        name.includes('codellama') || name.includes('deepseek-coder') || name.includes('qwen2.5-coder') ||
+                                                        tagSet.has('code') || tagSet.has('coding')) {
+                                                        typeTags.push({ label: 'Code', color: 'rgba(34,197,94,0.3)', textColor: '#22c55e' });
+                                                    }
+
+                                                    // Chat/Instruct models
+                                                    if (name.includes('instruct') || name.includes('chat') || name.includes('-it') ||
+                                                        tagSet.has('chat') || tagSet.has('conversational')) {
+                                                        typeTags.push({ label: 'Chat', color: 'rgba(59,130,246,0.3)', textColor: '#3b82f6' });
+                                                    }
+
+                                                    // Vision/Multimodal models
+                                                    if (name.includes('vision') || name.includes('vl') || name.includes('llava') ||
+                                                        name.includes('multimodal') || name.includes('minicpm-v') ||
+                                                        tagSet.has('vision') || tagSet.has('image-text-to-text')) {
+                                                        typeTags.push({ label: 'Vision', color: 'rgba(168,85,247,0.3)', textColor: '#a855f7' });
+                                                    }
+
+                                                    // Math models
+                                                    if (name.includes('math') || name.includes('mathstral') || tagSet.has('math')) {
+                                                        typeTags.push({ label: 'Math', color: 'rgba(239,68,68,0.3)', textColor: '#ef4444' });
+                                                    }
+
+                                                    // Embedding models
+                                                    if (name.includes('embed') || tagSet.has('embeddings') || tagSet.has('feature-extraction')) {
+                                                        typeTags.push({ label: 'Embed', color: 'rgba(6,182,212,0.3)', textColor: '#06b6d4' });
+                                                    }
+
+                                                    return typeTags;
+                                                };
+
+                                                return (
                                                 <Box sx={{ mt: 3 }}>
-                                                    <Typography variant="body2" sx={{ color: 'text.secondary', mb: 2 }}>
-                                                        Found {searchResults.length} models
-                                                        {searchSortBy === 'params' && ' (sorted by size)'}
-                                                        {searchSizeFilter !== 'all' && ` • Filtered: ${SIZE_FILTERS[searchSizeFilter].label}`}
-                                                    </Typography>
+                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                                                        <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                                                            Showing {startIndex + 1}-{Math.min(endIndex, searchResults.length)} of {searchResults.length} models
+                                                            {searchSortBy === 'params' && ' (sorted by size)'}
+                                                            {searchSizeFilter !== 'all' && ` • ${SIZE_FILTERS[searchSizeFilter].label}`}
+                                                        </Typography>
+                                                        {totalPages > 1 && (
+                                                            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                                                                Page {searchPage} of {totalPages}
+                                                            </Typography>
+                                                        )}
+                                                    </Box>
                                                     <Grid container spacing={2}>
-                                                        {searchResults.slice(0, 24).map(model => {
+                                                        {paginatedResults.map(model => {
                                                             // Use paramSize from API if available, otherwise extract from name
                                                             const paramSize = model.paramSize
                                                                 ? (model.paramSize >= 1 ? `${model.paramSize}B` : `${(model.paramSize * 1000).toFixed(0)}M`)
@@ -3974,6 +4043,7 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                 if (num >= 1000) return `${(num / 1000).toFixed(0)}k`;
                                                                 return num;
                                                             };
+                                                            const typeTags = getModelTypeTags(model.id, model.tags);
                                                             return (
                                                                 <Grid item xs={12} sm={6} md={4} key={model.id}>
                                                                     <Card
@@ -3993,34 +4063,54 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                                 whiteSpace: 'nowrap',
                                                                                 overflow: 'hidden',
                                                                                 textOverflow: 'ellipsis',
-                                                                                mb: 1
+                                                                                mb: 0.5,
+                                                                                fontSize: '0.95rem'
                                                                             }}>
                                                                                 {model.id.split('/')[1]}
                                                                             </Typography>
-                                                                            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                                                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
                                                                                 {model.id.split('/')[0]}
                                                                             </Typography>
-                                                                            <Box sx={{ display: 'flex', gap: 1, mt: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
+                                                                            {/* Model Type Tags */}
+                                                                            {typeTags.length > 0 && (
+                                                                                <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
+                                                                                    {typeTags.map((tag, idx) => (
+                                                                                        <Chip
+                                                                                            key={idx}
+                                                                                            label={tag.label}
+                                                                                            size="small"
+                                                                                            sx={{
+                                                                                                height: 18,
+                                                                                                fontSize: '0.65rem',
+                                                                                                bgcolor: tag.color,
+                                                                                                color: tag.textColor,
+                                                                                                fontWeight: 500
+                                                                                            }}
+                                                                                        />
+                                                                                    ))}
+                                                                                </Box>
+                                                                            )}
+                                                                            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center' }}>
                                                                                 {paramSize && (
-                                                                                    <Chip label={paramSize} size="small" color="secondary" />
+                                                                                    <Chip label={paramSize} size="small" color="secondary" sx={{ height: 22 }} />
                                                                                 )}
                                                                                 <Tooltip title="Downloads" arrow>
                                                                                     <Chip
-                                                                                        icon={<CloudDownloadIcon sx={{ fontSize: 14 }} />}
+                                                                                        icon={<CloudDownloadIcon sx={{ fontSize: 12 }} />}
                                                                                         label={formatNumber(model.downloads)}
                                                                                         size="small"
                                                                                         variant="outlined"
-                                                                                        sx={{ fontSize: '0.7rem' }}
+                                                                                        sx={{ fontSize: '0.65rem', height: 22 }}
                                                                                     />
                                                                                 </Tooltip>
                                                                                 {model.likes > 0 && (
                                                                                     <Tooltip title="Likes" arrow>
                                                                                         <Chip
-                                                                                            icon={<FavoriteIcon sx={{ fontSize: 14 }} />}
+                                                                                            icon={<FavoriteIcon sx={{ fontSize: 12 }} />}
                                                                                             label={formatNumber(model.likes)}
                                                                                             size="small"
                                                                                             variant="outlined"
-                                                                                            sx={{ fontSize: '0.7rem' }}
+                                                                                            sx={{ fontSize: '0.65rem', height: 22 }}
                                                                                         />
                                                                                     </Tooltip>
                                                                                 )}
@@ -4031,8 +4121,58 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                             );
                                                         })}
                                                     </Grid>
+                                                    {/* Pagination Controls */}
+                                                    {totalPages > 1 && (
+                                                        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 2, mt: 3, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                                                            <Button
+                                                                variant="outlined"
+                                                                size="small"
+                                                                disabled={searchPage === 1}
+                                                                onClick={() => setSearchPage(p => Math.max(1, p - 1))}
+                                                                startIcon={<NavigateBeforeIcon />}
+                                                            >
+                                                                Previous
+                                                            </Button>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                {/* Page number buttons */}
+                                                                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                                                                    let pageNum;
+                                                                    if (totalPages <= 5) {
+                                                                        pageNum = i + 1;
+                                                                    } else if (searchPage <= 3) {
+                                                                        pageNum = i + 1;
+                                                                    } else if (searchPage >= totalPages - 2) {
+                                                                        pageNum = totalPages - 4 + i;
+                                                                    } else {
+                                                                        pageNum = searchPage - 2 + i;
+                                                                    }
+                                                                    return (
+                                                                        <Button
+                                                                            key={pageNum}
+                                                                            variant={pageNum === searchPage ? 'contained' : 'outlined'}
+                                                                            size="small"
+                                                                            onClick={() => setSearchPage(pageNum)}
+                                                                            sx={{ minWidth: 36, px: 1 }}
+                                                                        >
+                                                                            {pageNum}
+                                                                        </Button>
+                                                                    );
+                                                                })}
+                                                            </Box>
+                                                            <Button
+                                                                variant="outlined"
+                                                                size="small"
+                                                                disabled={searchPage === totalPages}
+                                                                onClick={() => setSearchPage(p => Math.min(totalPages, p + 1))}
+                                                                endIcon={<NavigateNextIcon />}
+                                                            >
+                                                                Next
+                                                            </Button>
+                                                        </Box>
+                                                    )}
                                                 </Box>
-                                            )}
+                                                );
+                                            })()}
                                         </CardContent>
                                     </Card>
                                 </Grid>
@@ -6059,26 +6199,38 @@ You are a helpful coding assistant. When writing code, always include comments e
                                             <Typography sx={{ fontSize: '0.85rem' }}>Auto-configured with DuckDuckGo + Playwright content fetching</Typography>
                                         </Box>
 
+                                        {/* Search URL */}
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(167,139,250,0.08)', borderRadius: 2, border: '1px solid rgba(167,139,250,0.2)' }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 0.5, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search URL (Auto-Configured)</Typography>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, bgcolor: 'rgba(0,0,0,0.2)', p: 1, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                                <code style={{ color: '#a78bfa', wordBreak: 'break-all' }}>http://host.docker.internal:3080/api/openwebui/search</code>
+                                            </Box>
+                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', mt: 0.5 }}>
+                                                POST endpoint • Auth: Bearer token • Body: {`{ "query": "search terms" }`}
+                                            </Typography>
+                                        </Box>
+
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Setup (API Key Only)</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
                                                         <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Create API key with <code style={{ fontSize: '0.7rem', bgcolor: 'rgba(0,0,0,0.3)', p: '2px 4px', borderRadius: 2 }}>query</code> permission</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Copy the Bearer token</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Copy the Bearer token (Secret)</Typography>
                                                         <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Open WebUI → Admin → Settings → Web Search</Typography>
-                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>4.</strong> Paste token and save</Typography>
+                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>4.</strong> Paste into "External Web Search API Key" and save</Typography>
                                                     </Box>
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Auto-Provisioned</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Auto-Provisioned Features</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="External search engine" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(167,139,250,0.15)' }} />
                                                         <Chip label="Smart RAG template" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,211,238,0.15)' }} />
                                                         <Chip label="Dynamic date/time" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                         <Chip label="Auto query gen" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
+                                                        <Chip label="Content fetching" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(239,68,68,0.15)' }} />
                                                     </Box>
                                                 </Box>
                                             </Grid>
@@ -6218,6 +6370,7 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/complete</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Text completion</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/stream</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>SSE streaming chat</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Web search with content fetch</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/openwebui/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Open WebUI external search</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stealth browser fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Page interaction</TableCell></TableRow>
 
