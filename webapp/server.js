@@ -272,30 +272,50 @@ process.on('uncaughtException', (error) => {
 });
 
 // Sync model instances from Docker on startup (handles both vLLM and llama.cpp)
+// Optimized: Parallelized container inspection for faster startup
 async function syncModelInstances() {
     try {
         console.log('Syncing model instances from Docker...');
         const containers = await docker.listContainers({ all: true });
 
-        for (const containerInfo of containers) {
-            const name = containerInfo.Names[0].substring(1); // Remove leading /
+        // Filter model containers first
+        const modelContainers = containers
+            .map(containerInfo => {
+                const name = containerInfo.Names[0].substring(1); // Remove leading /
+                let backend = null;
+                let modelName = null;
 
-            // Determine backend from container name prefix
-            let backend = null;
-            let modelName = null;
+                if (name.startsWith('vllm-')) {
+                    backend = 'vllm';
+                    modelName = name.replace('vllm-', '');
+                } else if (name.startsWith('llamacpp-')) {
+                    backend = 'llamacpp';
+                    modelName = name.replace('llamacpp-', '');
+                }
 
-            if (name.startsWith('vllm-')) {
-                backend = 'vllm';
-                modelName = name.replace('vllm-', '');
-            } else if (name.startsWith('llamacpp-')) {
-                backend = 'llamacpp';
-                modelName = name.replace('llamacpp-', '');
-            } else {
-                continue; // Skip non-model containers
-            }
+                return backend ? { containerInfo, backend, modelName } : null;
+            })
+            .filter(Boolean);
 
-            const container = docker.getContainer(containerInfo.Id);
-            const inspect = await container.inspect();
+        // Parallel inspection of all model containers
+        const inspectResults = await Promise.all(
+            modelContainers.map(async ({ containerInfo, backend, modelName }) => {
+                try {
+                    const container = docker.getContainer(containerInfo.Id);
+                    const inspect = await container.inspect();
+                    return { containerInfo, backend, modelName, inspect };
+                } catch (error) {
+                    console.error(`  - Error inspecting ${modelName}:`, error.message);
+                    return null;
+                }
+            })
+        );
+
+        // Process results
+        for (const result of inspectResults) {
+            if (!result) continue;
+
+            const { containerInfo, backend, modelName, inspect } = result;
 
             // Extract port from environment or use default
             let port = 8000;
@@ -371,6 +391,37 @@ const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
 const AGENT_PERMISSIONS_FILE = path.join(DATA_DIR, 'agent-permissions.json');
 
 // ============================================================================
+// IN-MEMORY CACHE FOR PERFORMANCE
+// ============================================================================
+
+// Cache for agents, skills, tasks, and permissions with TTL
+const dataCache = {
+    agents: { data: null, timestamp: 0 },
+    skills: { data: null, timestamp: 0 },
+    tasks: { data: null, timestamp: 0 },
+    agentPermissions: { data: null, timestamp: 0 },
+    systemPrompts: { data: null, timestamp: 0 },
+    modelConfigs: { data: null, timestamp: 0 }
+};
+
+// Cache TTL in milliseconds (30 seconds default)
+const CACHE_TTL = 30000;
+
+// Invalidate specific cache
+function invalidateCache(cacheKey) {
+    if (dataCache[cacheKey]) {
+        dataCache[cacheKey].data = null;
+        dataCache[cacheKey].timestamp = 0;
+    }
+}
+
+// Check if cache is valid
+function isCacheValid(cacheKey) {
+    const cache = dataCache[cacheKey];
+    return cache && cache.data !== null && (Date.now() - cache.timestamp) < CACHE_TTL;
+}
+
+// ============================================================================
 // PERSISTENT STORAGE HELPERS
 // ============================================================================
 
@@ -415,13 +466,21 @@ async function saveModelConfigs(configs) {
 }
 
 // ============================================================================
-// AGENTS STORAGE HELPERS
+// AGENTS STORAGE HELPERS (with caching)
 // ============================================================================
 
 async function loadAgents() {
+    // Check cache first
+    if (isCacheValid('agents')) {
+        return dataCache.agents.data;
+    }
     try {
         const data = await fs.readFile(AGENTS_FILE, 'utf8');
-        return JSON.parse(data);
+        const agents = JSON.parse(data);
+        // Update cache
+        dataCache.agents.data = agents;
+        dataCache.agents.timestamp = Date.now();
+        return agents;
     } catch (err) {
         if (err.code === 'ENOENT') return [];
         console.error('Error loading agents:', err);
@@ -432,12 +491,22 @@ async function loadAgents() {
 async function saveAgents(agents) {
     await ensureDataDir();
     await fs.writeFile(AGENTS_FILE, JSON.stringify(agents, null, 2));
+    // Invalidate cache on write
+    invalidateCache('agents');
 }
 
 async function loadSkills() {
+    // Check cache first
+    if (isCacheValid('skills')) {
+        return dataCache.skills.data;
+    }
     try {
         const data = await fs.readFile(SKILLS_FILE, 'utf8');
-        return JSON.parse(data);
+        const skills = JSON.parse(data);
+        // Update cache
+        dataCache.skills.data = skills;
+        dataCache.skills.timestamp = Date.now();
+        return skills;
     } catch (err) {
         if (err.code === 'ENOENT') return [];
         console.error('Error loading skills:', err);
@@ -448,12 +517,22 @@ async function loadSkills() {
 async function saveSkills(skills) {
     await ensureDataDir();
     await fs.writeFile(SKILLS_FILE, JSON.stringify(skills, null, 2));
+    // Invalidate cache on write
+    invalidateCache('skills');
 }
 
 async function loadTasks() {
+    // Check cache first
+    if (isCacheValid('tasks')) {
+        return dataCache.tasks.data;
+    }
     try {
         const data = await fs.readFile(TASKS_FILE, 'utf8');
-        return JSON.parse(data);
+        const tasks = JSON.parse(data);
+        // Update cache
+        dataCache.tasks.data = tasks;
+        dataCache.tasks.timestamp = Date.now();
+        return tasks;
     } catch (err) {
         if (err.code === 'ENOENT') return [];
         console.error('Error loading tasks:', err);
@@ -464,16 +543,26 @@ async function loadTasks() {
 async function saveTasks(tasks) {
     await ensureDataDir();
     await fs.writeFile(TASKS_FILE, JSON.stringify(tasks, null, 2));
+    // Invalidate cache on write
+    invalidateCache('tasks');
 }
 
 async function loadAgentPermissions() {
+    // Check cache first
+    if (isCacheValid('agentPermissions')) {
+        return dataCache.agentPermissions.data;
+    }
     try {
         const data = await fs.readFile(AGENT_PERMISSIONS_FILE, 'utf8');
-        return JSON.parse(data);
+        const permissions = JSON.parse(data);
+        // Update cache
+        dataCache.agentPermissions.data = permissions;
+        dataCache.agentPermissions.timestamp = Date.now();
+        return permissions;
     } catch (err) {
         if (err.code === 'ENOENT') {
             // Default permissions - all enabled
-            return {
+            const defaultPerms = {
                 allowFileRead: true,
                 allowFileWrite: true,
                 allowFileDelete: true,
@@ -481,6 +570,10 @@ async function loadAgentPermissions() {
                 allowModelAccess: true,
                 allowCollaboration: true
             };
+            // Cache default permissions too
+            dataCache.agentPermissions.data = defaultPerms;
+            dataCache.agentPermissions.timestamp = Date.now();
+            return defaultPerms;
         }
         console.error('Error loading agent permissions:', err);
         return {};
@@ -490,6 +583,8 @@ async function loadAgentPermissions() {
 async function saveAgentPermissions(permissions) {
     await ensureDataDir();
     await fs.writeFile(AGENT_PERMISSIONS_FILE, JSON.stringify(permissions, null, 2));
+    // Invalidate cache on write
+    invalidateCache('agentPermissions');
 }
 
 // Port allocation for vLLM instances
@@ -7800,21 +7895,34 @@ server.listen(PORT, async () => {
     const protocol = useHttps ? 'https' : 'http';
     console.log(`Server is listening on ${protocol}://localhost:${PORT}`);
 
-    // Detect the host models path for creating dynamic containers
-    // This is critical for cross-platform compatibility (Windows+WSL, macOS, Linux)
-    hostModelsPath = await detectHostModelsPath();
+    // Parallel initialization for faster startup
+    console.log('Starting parallel initialization...');
+
+    // Phase 1: Independent async operations that don't depend on each other
+    const [detectedPath, loadedStats] = await Promise.all([
+        // Detect the host models path for creating dynamic containers
+        // This is critical for cross-platform compatibility (Windows+WSL, macOS, Linux)
+        detectHostModelsPath(),
+        // Load API key usage stats from disk
+        loadApiKeyUsageStats()
+    ]);
+
+    hostModelsPath = detectedPath;
     console.log(`Host models path configured: ${hostModelsPath}`);
 
-    // Load API key usage stats from disk
-    const loadedStats = await loadApiKeyUsageStats();
     for (const [key, value] of loadedStats.entries()) {
         apiKeyUsageStats.set(key, value);
     }
     console.log(`Loaded usage stats for ${apiKeyUsageStats.size} API keys`);
 
-    await initializeDefaultSkills();
-    await initializeDefaultApiKeys();
-    await syncModelInstances();
+    // Phase 2: Independent initialization tasks that can run in parallel
+    await Promise.all([
+        initializeDefaultSkills(),
+        initializeDefaultApiKeys(),
+        syncModelInstances()
+    ]);
+
+    console.log('Initialization complete');
 });
 
 // Start HTTP redirect server if HTTPS is enabled

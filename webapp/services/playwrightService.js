@@ -383,18 +383,28 @@ function startPoolCleanup() {
         const now = Date.now();
         const toRemove = [];
 
+        // Identify browsers to remove
         for (let i = browserPool.length - 1; i >= 0; i--) {
             const entry = browserPool[i];
             if (!entry.inUse && (now - entry.lastUsed > BROWSER_IDLE_TIMEOUT || !entry.browser.isConnected())) {
-                toRemove.push(i);
-                try {
-                    await entry.browser.close();
-                } catch (e) {}
+                toRemove.push({ index: i, entry });
             }
         }
 
-        for (const idx of toRemove) {
-            browserPool.splice(idx, 1);
+        // Close browsers in parallel for faster cleanup
+        if (toRemove.length > 0) {
+            await Promise.allSettled(
+                toRemove.map(async ({ entry }) => {
+                    try {
+                        await entry.browser.close();
+                    } catch (e) {}
+                })
+            );
+
+            // Remove from pool (in reverse order to maintain indices)
+            for (const { index } of toRemove.sort((a, b) => b.index - a.index)) {
+                browserPool.splice(index, 1);
+            }
         }
 
         if (browserPool.length === 0) {

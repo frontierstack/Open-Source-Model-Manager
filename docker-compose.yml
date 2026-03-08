@@ -83,6 +83,11 @@ services:
       - ENABLE_ARTIFACTS=false
       - ENABLE_CODE_EXECUTION=false
       - ENABLE_SANDBOX=false
+      # Pre-configure external web search (API key must be set manually in UI)
+      - ENABLE_WEB_SEARCH=true
+      - WEB_SEARCH_ENGINE=external
+      - EXTERNAL_WEB_SEARCH_URL=http://host.docker.internal:3080/api/openwebui/search
+      - ENABLE_SEARCH_QUERY_GENERATION=true
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { w3cwebsocket as W3CWebSocket } from "websocket";
+// Use native WebSocket (W3C-compliant in all modern browsers)
 import { useAuthStore } from './stores/useAuthStore';
 import { logout as performLogout } from './services/auth';
 import { ThemeProvider, createTheme, alpha } from '@mui/material/styles';
@@ -728,7 +728,7 @@ const App = () => {
         const wsPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
         const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}`;
 
-        const client = new W3CWebSocket(wsUrl);
+        const client = new WebSocket(wsUrl);
         wsRef.current = client;
 
         client.onopen = () => {
