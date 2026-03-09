@@ -4593,7 +4593,7 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                 <Grid container spacing={2} sx={{ mt: 1 }}>
                                                     {models.map((model) => {
                                                         const paramSize = extractParameterSize(model.name);
-                                                        const isRunning = model.loadedIn === 'vllm';
+                                                        const isRunning = model.loadedIn === 'vllm' || model.loadedIn === 'llamacpp';
                                                         const isLoading = model.status.includes('Starting') || model.status.includes('Loading');
                                                         return (
                                                             <Grid item xs={12} sm={6} md={4} key={model.name}>

@@ -11,6 +11,7 @@
 # - VLLM_KV_CACHE_DTYPE: KV cache data type: auto or fp8 (default: auto)
 # - VLLM_TRUST_REMOTE_CODE: Trust remote code from model repo (default: true)
 # - VLLM_ENFORCE_EAGER: Disable CUDA graph for debugging (default: false)
+# - VLLM_TOKENIZER: HuggingFace tokenizer repo (optional, for GGUF models)
 
 set -e
 
@@ -25,6 +26,7 @@ MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-256}
 KV_CACHE_DTYPE=${VLLM_KV_CACHE_DTYPE:-auto}
 TRUST_REMOTE_CODE=${VLLM_TRUST_REMOTE_CODE:-true}
 ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
+TOKENIZER=${VLLM_TOKENIZER:-}
 
 echo ">>> Starting vLLM server"
 echo "    Model: $MODEL_PATH"
@@ -60,6 +62,44 @@ fi
 if [[ "$MODEL_PATH" == *.gguf ]]; then
     CMD_ARGS+=(--quantization gguf)
     echo "    [GGUF model detected - using GGUF quantization]"
+
+    # For GGUF models, try to auto-detect tokenizer from model name
+    # Common patterns: Qwen3-*, Llama-*, Mistral-*, etc.
+    if [ -z "$TOKENIZER" ]; then
+        MODEL_DIR=$(dirname "$MODEL_PATH")
+        MODEL_NAME=$(basename "$MODEL_DIR")
+
+        # Try to extract a valid HuggingFace tokenizer repo from model name
+        # Pattern: Remove -GGUF suffix and common quantization suffixes
+        CLEANED_NAME=$(echo "$MODEL_NAME" | sed -E 's/-GGUF$//i' | sed -E 's/-[QIF][0-9]+.*$//')
+
+        # Map common model families to their HuggingFace repos
+        if [[ "$CLEANED_NAME" =~ ^[Qq]wen3 ]]; then
+            TOKENIZER="Qwen/Qwen3-8B"
+        elif [[ "$CLEANED_NAME" =~ ^[Qq]wen2 ]]; then
+            TOKENIZER="Qwen/Qwen2-7B"
+        elif [[ "$CLEANED_NAME" =~ ^[Qq]wen ]]; then
+            TOKENIZER="Qwen/Qwen-7B"
+        elif [[ "$CLEANED_NAME" =~ ^[Ll]lama-3 ]]; then
+            TOKENIZER="meta-llama/Meta-Llama-3-8B"
+        elif [[ "$CLEANED_NAME" =~ ^[Ll]lama-2 ]]; then
+            TOKENIZER="meta-llama/Llama-2-7b-hf"
+        elif [[ "$CLEANED_NAME" =~ ^[Mm]istral ]]; then
+            TOKENIZER="mistralai/Mistral-7B-v0.1"
+        elif [[ "$CLEANED_NAME" =~ ^[Dd]eep[Ss]eek ]]; then
+            TOKENIZER="deepseek-ai/deepseek-llm-7b-base"
+        fi
+
+        if [ -n "$TOKENIZER" ]; then
+            echo "    [Auto-detected tokenizer: $TOKENIZER]"
+        fi
+    fi
+fi
+
+# Add tokenizer if specified (required for GGUF models)
+if [ -n "$TOKENIZER" ]; then
+    CMD_ARGS+=(--tokenizer "$TOKENIZER")
+    echo "    [Using tokenizer: $TOKENIZER]"
 fi
 
 # Add trust remote code if enabled

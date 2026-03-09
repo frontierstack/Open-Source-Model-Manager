@@ -1206,12 +1206,13 @@ app.get('/api/models', requireAuth, async (req, res) => {
     }
     const modelsDir = '/models';
     try {
-        // Get running vLLM instances
+        // Get running model instances (vLLM or llama.cpp)
         const instances = Array.from(modelInstances.entries()).map(([name, info]) => ({
             name,
             port: info.port,
             config: info.config,
-            status: info.status
+            status: info.status,
+            backend: info.backend || 'llamacpp'
         }));
 
         // Scan filesystem for available GGUF models
@@ -1277,7 +1278,9 @@ app.get('/api/models', requireAuth, async (req, res) => {
                 } else if (instance.status === 'unhealthy') {
                     status = 'Slow to load (will auto-recover)';
                 } else if (instance.status === 'running') {
-                    status = 'Loaded in vLLM';
+                    // Show correct backend name based on what's actually running
+                    const backendName = instance.backend === 'vllm' ? 'vLLM' : 'llama.cpp';
+                    status = `Loaded in ${backendName}`;
                 } else {
                     status = `Instance: ${instance.status}`;
                 }
@@ -1288,8 +1291,8 @@ app.get('/api/models', requireAuth, async (req, res) => {
                 status,
                 instanceStatus: instance?.status,
                 format: hasGGUF ? 'GGUF' : 'Unknown',
-                targetBackend: 'vllm',
-                loadedIn: instance ? 'vllm' : null,
+                targetBackend: instance?.backend || 'llamacpp',
+                loadedIn: instance ? instance.backend : null,
                 port: instance?.port,
                 config: instance?.config,
                 // Enhanced model metadata
@@ -1405,7 +1408,8 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 enforceEager: req.body.enforceEager ?? false,
                 contextShift: req.body.contextShift ?? true,
                 contextSize: req.body.maxModelLen || 4096,  // Alias for API compatibility
-                disableThinking: req.body.disableThinking ?? false
+                disableThinking: req.body.disableThinking ?? false,
+                tokenizer: req.body.tokenizer || ''  // HuggingFace tokenizer repo for GGUF models
             };
 
             broadcast({ type: 'log', message: `Creating vLLM instance for ${modelName}...` });
@@ -1461,21 +1465,29 @@ async function createVllmInstance(modelName, modelPath, config) {
             throw new Error('modelserver-vllm:latest image not found. Please run ./build.sh to build the base image.');
         }
 
+        // Build environment variables
+        const envVars = [
+            `VLLM_MODEL_PATH=${modelPath}`,
+            `VLLM_PORT=${port}`,
+            `VLLM_MAX_MODEL_LEN=${config.maxModelLen}`,
+            `VLLM_CPU_OFFLOAD_GB=${config.cpuOffloadGb}`,
+            `VLLM_GPU_MEMORY_UTILIZATION=${config.gpuMemoryUtilization}`,
+            `VLLM_TENSOR_PARALLEL_SIZE=${config.tensorParallelSize}`,
+            `VLLM_MAX_NUM_SEQS=${config.maxNumSeqs}`,
+            `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
+            `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
+            `VLLM_ENFORCE_EAGER=${config.enforceEager}`
+        ];
+
+        // Add tokenizer if specified (helps with GGUF models)
+        if (config.tokenizer) {
+            envVars.push(`VLLM_TOKENIZER=${config.tokenizer}`);
+        }
+
         const container = await docker.createContainer({
             Image: 'modelserver-vllm:latest',
             name: containerName,
-            Env: [
-                `VLLM_MODEL_PATH=${modelPath}`,
-                `VLLM_PORT=${port}`,
-                `VLLM_MAX_MODEL_LEN=${config.maxModelLen}`,
-                `VLLM_CPU_OFFLOAD_GB=${config.cpuOffloadGb}`,
-                `VLLM_GPU_MEMORY_UTILIZATION=${config.gpuMemoryUtilization}`,
-                `VLLM_TENSOR_PARALLEL_SIZE=${config.tensorParallelSize}`,
-                `VLLM_MAX_NUM_SEQS=${config.maxNumSeqs}`,
-                `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
-                `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
-                `VLLM_ENFORCE_EAGER=${config.enforceEager}`
-            ],
+            Env: envVars,
             HostConfig: {
                 Runtime: 'nvidia',
                 Binds: [getModelsVolumeBind()],
@@ -7222,23 +7234,146 @@ async function initializeDefaultSkillsOld() {
             {
                 id: crypto.randomBytes(16).toString('hex'),
                 name: 'extract_text',
-                description: 'Extract text from various file formats (PDF, DOCX, etc.)',
+                description: 'Extract text/data from various file formats (TXT, JSON, XML, XLSX, PDF, DOCX, JPG, PNG, etc.)',
                 type: 'function',
                 parameters: { filePath: 'string', format: 'string' },
                 code: `async function execute(params) {
     if (!params.filePath) {
         throw new Error('filePath parameter is required');
     }
-    // Basic text file extraction
-    const format = params.format || 'txt';
-    if (format === 'txt') {
-        const content = await fs.readFile(params.filePath, 'utf8');
-        return { success: true, text: content };
+
+    const filePath = params.filePath;
+    // Auto-detect format from file extension if not specified
+    let format = params.format;
+    if (!format) {
+        const ext = filePath.split('.').pop().toLowerCase();
+        format = ext;
     }
-    // Other formats would require additional libraries (pdf-parse, mammoth, etc.)
-    throw new Error(\`Format \${format} not yet implemented. Install required libraries and update skill code.\`);
+    format = format.toLowerCase();
+
+    try {
+        // Text-based formats
+        if (['txt', 'text', 'md', 'markdown', 'log', 'csv', 'tsv'].includes(format)) {
+            const content = await fs.readFile(filePath, 'utf8');
+            return { success: true, format, text: content, length: content.length };
+        }
+
+        // JSON format
+        if (['json', 'jsonl'].includes(format)) {
+            const content = await fs.readFile(filePath, 'utf8');
+            try {
+                const parsed = JSON.parse(content);
+                return { success: true, format, data: parsed, text: JSON.stringify(parsed, null, 2) };
+            } catch (e) {
+                return { success: true, format, text: content, parseError: e.message };
+            }
+        }
+
+        // XML format
+        if (['xml', 'html', 'htm', 'svg'].includes(format)) {
+            const content = await fs.readFile(filePath, 'utf8');
+            // Simple text extraction - strip tags
+            const textOnly = content.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim();
+            return { success: true, format, text: textOnly, rawXml: content };
+        }
+
+        // Excel/XLSX format - requires xlsx package
+        if (['xlsx', 'xls', 'xlsm'].includes(format)) {
+            try {
+                const XLSX = require('xlsx');
+                const workbook = XLSX.readFile(filePath);
+                const sheets = {};
+                let allText = [];
+                for (const sheetName of workbook.SheetNames) {
+                    const sheet = workbook.Sheets[sheetName];
+                    const csv = XLSX.utils.sheet_to_csv(sheet);
+                    sheets[sheetName] = csv;
+                    allText.push(\`=== Sheet: \${sheetName} ===\\n\${csv}\`);
+                }
+                return { success: true, format, sheets, text: allText.join('\\n\\n'), sheetCount: workbook.SheetNames.length };
+            } catch (e) {
+                throw new Error(\`Failed to parse Excel file: \${e.message}. Make sure xlsx package is installed.\`);
+            }
+        }
+
+        // PDF format - requires pdf-parse package
+        if (format === 'pdf') {
+            try {
+                const pdfParse = require('pdf-parse');
+                const buffer = await fs.readFile(filePath);
+                const data = await pdfParse(buffer);
+                return { success: true, format, text: data.text, pages: data.numpages, info: data.info };
+            } catch (e) {
+                throw new Error(\`Failed to parse PDF: \${e.message}. Make sure pdf-parse package is installed.\`);
+            }
+        }
+
+        // Word DOCX format - requires mammoth package
+        if (['docx', 'doc'].includes(format)) {
+            try {
+                const mammoth = require('mammoth');
+                const result = await mammoth.extractRawText({ path: filePath });
+                return { success: true, format, text: result.value, messages: result.messages };
+            } catch (e) {
+                throw new Error(\`Failed to parse DOCX: \${e.message}. Make sure mammoth package is installed.\`);
+            }
+        }
+
+        // Image formats - use jimp for basic info or OCR if available
+        if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'].includes(format)) {
+            try {
+                const Jimp = require('jimp');
+                const image = await Jimp.read(filePath);
+                const info = {
+                    width: image.bitmap.width,
+                    height: image.bitmap.height,
+                    format: image.getMIME(),
+                    hasAlpha: image.hasAlpha()
+                };
+                return {
+                    success: true,
+                    format,
+                    text: \`Image: \${info.width}x\${info.height} \${info.format}\`,
+                    imageInfo: info,
+                    note: 'For OCR text extraction, use the ocr_image skill instead'
+                };
+            } catch (e) {
+                throw new Error(\`Failed to read image: \${e.message}\`);
+            }
+        }
+
+        // Email format - requires mailparser
+        if (['eml', 'email'].includes(format)) {
+            try {
+                const { simpleParser } = require('mailparser');
+                const content = await fs.readFile(filePath);
+                const parsed = await simpleParser(content);
+                return {
+                    success: true,
+                    format,
+                    text: parsed.text || parsed.textAsHtml || '',
+                    subject: parsed.subject,
+                    from: parsed.from?.text,
+                    to: parsed.to?.text,
+                    date: parsed.date,
+                    attachments: parsed.attachments?.map(a => ({ filename: a.filename, size: a.size })) || []
+                };
+            } catch (e) {
+                throw new Error(\`Failed to parse email: \${e.message}\`);
+            }
+        }
+
+        // Default: try to read as text
+        const content = await fs.readFile(filePath, 'utf8');
+        return { success: true, format: 'unknown', text: content, note: 'Read as plain text' };
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            throw new Error(\`File not found: \${filePath}\`);
+        }
+        throw error;
+    }
 }`,
-                enabled: false,
+                enabled: true,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             },
