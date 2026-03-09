@@ -84,15 +84,72 @@ SHELL_RC=$(detect_shell_config)
 echo "Shell config: ${SHELL_RC:-none detected}"
 echo ""
 
-# Check for Node.js
+# Check for Node.js and attempt to install if missing
+install_nodejs() {
+    echo ">>> Node.js not found. Attempting to install..."
+
+    if [ "$OS" = "linux" ]; then
+        # Check for package manager and install Node.js
+        if command -v apt-get &> /dev/null; then
+            echo "  Using apt to install Node.js..."
+            sudo apt-get update -qq
+            sudo apt-get install -y nodejs npm
+        elif command -v dnf &> /dev/null; then
+            echo "  Using dnf to install Node.js..."
+            sudo dnf install -y nodejs npm
+        elif command -v yum &> /dev/null; then
+            echo "  Using yum to install Node.js..."
+            sudo yum install -y nodejs npm
+        elif command -v pacman &> /dev/null; then
+            echo "  Using pacman to install Node.js..."
+            sudo pacman -S --noconfirm nodejs npm
+        else
+            echo "Error: Could not detect package manager."
+            echo "Please install Node.js manually from https://nodejs.org/"
+            exit 1
+        fi
+    elif [ "$OS" = "macos" ]; then
+        if command -v brew &> /dev/null; then
+            echo "  Using Homebrew to install Node.js..."
+            brew install node
+        else
+            echo "Error: Homebrew not found."
+            echo "Please install Node.js from https://nodejs.org/"
+            echo "Or install Homebrew first: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+            exit 1
+        fi
+    else
+        echo "Error: Cannot auto-install Node.js on this system."
+        echo "Please install Node.js from https://nodejs.org/"
+        exit 1
+    fi
+
+    # Verify installation
+    if ! command -v node &> /dev/null; then
+        echo "Error: Node.js installation failed."
+        echo "Please install Node.js manually from https://nodejs.org/"
+        exit 1
+    fi
+
+    echo "  Node.js installed successfully!"
+}
+
 if ! command -v node &> /dev/null; then
-    echo "Error: Node.js is not installed."
-    echo "Please install Node.js from https://nodejs.org/"
-    exit 1
+    install_nodejs
 fi
 
 NODE_VERSION=$(node --version)
 echo "Node.js version: $NODE_VERSION"
+
+# Check for npm
+if ! command -v npm &> /dev/null; then
+    echo "Error: npm is not installed."
+    if [ "$OS" = "linux" ]; then
+        echo "Try: sudo apt install npm"
+    fi
+    exit 1
+fi
+echo "npm version: $(npm --version)"
 echo ""
 
 # Create installation directories
@@ -126,9 +183,13 @@ chmod +x "$CLI_DIR/bin/koda.js"
 # Install dependencies
 echo ">>> Installing dependencies..."
 cd "$CLI_DIR"
-npm install --production --quiet 2>&1 | grep -v "npm WARN"
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
-    echo "Warning: Some dependencies may not have installed correctly"
+if npm install --production 2>&1; then
+    echo "  Dependencies installed successfully"
+else
+    echo ""
+    echo "Error: Failed to install dependencies."
+    echo "Try running manually: cd $CLI_DIR && npm install"
+    exit 1
 fi
 cd - > /dev/null
 
