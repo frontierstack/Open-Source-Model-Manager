@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Brain } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 
@@ -15,13 +15,22 @@ export default function ChatMessage({
     isStreaming,
     streamingContent,
     streamingReasoning,
+    responseTime,
+    tokenCount,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
+    const reasoningRef = useRef(null);
 
     const isUser = role === 'user';
     const displayContent = isStreaming ? streamingContent : content;
     const displayReasoning = isStreaming ? streamingReasoning : reasoning;
+
+    // Prevent auto-scroll when expanding thinking - scroll to reasoning section instead
+    const handleToggleReasoning = (e) => {
+        e.stopPropagation();
+        setReasoningExpanded(!reasoningExpanded);
+    };
 
     const handleCopy = async () => {
         try {
@@ -61,13 +70,13 @@ export default function ChatMessage({
             >
                 {/* Thinking/Reasoning section */}
                 {displayReasoning && (
-                    <div className="mb-3">
+                    <div className="mb-3" ref={reasoningRef}>
                         <button
-                            onClick={() => setReasoningExpanded(!reasoningExpanded)}
+                            onClick={handleToggleReasoning}
                             className="flex items-center gap-1.5 text-dark-400 hover:text-dark-200 transition-colors"
                         >
-                            <Brain className="w-4 h-4" />
                             <span className="text-xs font-medium">Thinking</span>
+                            <span className="text-xs text-dark-500">({displayReasoning.length} chars)</span>
                             {reasoningExpanded ? (
                                 <ChevronUp className="w-3.5 h-3.5" />
                             ) : (
@@ -75,7 +84,7 @@ export default function ChatMessage({
                             )}
                         </button>
                         {reasoningExpanded && (
-                            <div className="mt-2 p-3 rounded-lg bg-white/5 border border-white/10">
+                            <div className="mt-2 p-3 rounded-lg bg-white/5 border border-white/10 max-h-64 overflow-y-auto">
                                 <p className="text-sm text-dark-400 italic whitespace-pre-wrap">
                                     {displayReasoning}
                                 </p>
@@ -91,32 +100,56 @@ export default function ChatMessage({
                     <MessageContent content={displayContent} />
                 )}
 
-                {/* Actions (copy button) */}
-                {!isUser && displayContent && (
-                    <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                {/* Actions (copy button) - always visible for assistant messages */}
+                {!isUser && displayContent && !isStreaming && (
+                    <div className="flex items-center justify-end mt-2 pt-2 border-t border-white/5">
                         <button
                             onClick={handleCopy}
-                            className={`p-1.5 rounded-lg hover:bg-white/10 transition-colors ${
-                                copied ? 'text-green-400' : 'text-dark-400 hover:text-dark-200'
+                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
+                                copied
+                                    ? 'text-green-400 bg-green-500/10'
+                                    : 'text-dark-400 hover:text-dark-200 hover:bg-white/5'
                             }`}
-                            title={copied ? 'Copied!' : 'Copy'}
+                            title={copied ? 'Copied!' : 'Copy response'}
                         >
                             {copied ? (
-                                <Check className="w-4 h-4" />
+                                <>
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Copied</span>
+                                </>
                             ) : (
-                                <Copy className="w-4 h-4" />
+                                <>
+                                    <Copy className="w-3.5 h-3.5" />
+                                    <span>Copy</span>
+                                </>
                             )}
                         </button>
                     </div>
                 )}
             </div>
 
-            {/* Timestamp */}
-            {timestamp && (
-                <span className="mt-1 text-xs text-dark-500">
-                    {new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-            )}
+            {/* Timestamp and stats */}
+            <div className="flex items-center gap-3 mt-1">
+                {timestamp && (
+                    <span className="text-xs text-dark-500">
+                        {new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                )}
+                {/* Response time */}
+                {!isUser && responseTime && (
+                    <span className="flex items-center gap-1 text-xs text-dark-500">
+                        <Clock className="w-3 h-3" />
+                        {responseTime < 1000 ? `${responseTime}ms` : `${(responseTime / 1000).toFixed(1)}s`}
+                    </span>
+                )}
+                {/* Token count */}
+                {!isUser && tokenCount && (
+                    <span className="flex items-center gap-1 text-xs text-dark-500">
+                        <Zap className="w-3 h-3" />
+                        {tokenCount} tokens
+                    </span>
+                )}
+            </div>
         </div>
     );
 }

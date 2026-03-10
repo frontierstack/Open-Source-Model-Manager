@@ -310,6 +310,28 @@ export default function ChatContainer({
         }
     };
 
+    const handleToggleFavorite = async (conversationId) => {
+        const conversation = conversations.find(c => c.id === conversationId);
+        if (!conversation) return;
+
+        const newFavorite = !conversation.favorite;
+
+        try {
+            const response = await fetch(`/api/conversations/${conversationId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ favorite: newFavorite }),
+            });
+
+            if (response.ok) {
+                updateConversation(conversationId, { favorite: newFavorite });
+            }
+        } catch (error) {
+            console.error('Failed to toggle favorite:', error);
+        }
+    };
+
     /**
      * Parse error response and return user-friendly message
      */
@@ -516,6 +538,9 @@ export default function ChatContainer({
         // Create abort controller for cancellation
         abortControllerRef.current = new AbortController();
 
+        // Track response time
+        const startTime = Date.now();
+
         try {
             const requestBody = {
                 model: settings.model,
@@ -562,6 +587,7 @@ export default function ChatContainer({
             let assistantContent = '';
             let assistantReasoning = '';
             let buffer = '';
+            let tokenCount = 0;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -592,11 +618,17 @@ export default function ChatContainer({
                             if (delta?.content) {
                                 assistantContent += delta.content;
                                 setStreamingContent(assistantContent);
+                                tokenCount++; // Approximate token count by chunks
                             }
 
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
                                 setStreamingReasoning(assistantReasoning);
+                            }
+
+                            // Get actual token count from usage if available
+                            if (parsed.usage?.completion_tokens) {
+                                tokenCount = parsed.usage.completion_tokens;
                             }
 
                             // Handle finish reason
@@ -633,7 +665,8 @@ export default function ChatContainer({
                 }
             }
 
-            // Add assistant message
+            // Add assistant message with response time and token count
+            const responseTime = Date.now() - startTime;
             const assistantMessage = {
                 id: crypto.randomUUID(),
                 role: 'assistant',
@@ -641,6 +674,8 @@ export default function ChatContainer({
                 reasoning: assistantReasoning || undefined,
                 timestamp: new Date().toISOString(),
                 searchResults: searchResults ? searchResults.length : undefined,
+                responseTime,
+                tokenCount: tokenCount > 0 ? tokenCount : undefined,
             };
 
             const finalMessages = [...updatedMessages, assistantMessage];
@@ -705,7 +740,7 @@ export default function ChatContainer({
         runningInstances.forEach(inst => {
             const existing = modelMap.get(inst.name);
             if (existing) {
-                modelMap.set(inst.name, { ...existing, status: 'running', backend: inst.backend });
+                modelMap.set(inst.name, { ...existing, status: 'running', backend: inst.backend, ...inst });
             } else {
                 modelMap.set(inst.name, inst);
             }
@@ -713,6 +748,14 @@ export default function ChatContainer({
 
         return Array.from(modelMap.values());
     }, [models, runningInstances]);
+
+    // Get the context size for the selected model
+    const selectedModelContextSize = React.useMemo(() => {
+        if (!settings.model) return 4096; // Default
+        const model = combinedModels.find(m => m.name === settings.model);
+        // Check various possible properties for context size
+        return model?.contextSize || model?.context_size || model?.ctx_size || model?.maxContextLength || 4096;
+    }, [settings.model, combinedModels]);
 
     // Auto-select first running model if none selected
     useEffect(() => {
@@ -740,6 +783,7 @@ export default function ChatContainer({
                 onNewConversation={handleNewConversation}
                 onDeleteConversation={handleDeleteConversation}
                 onRenameConversation={handleRenameConversation}
+                onToggleFavorite={handleToggleFavorite}
             />
 
             {/* Main chat area */}
@@ -778,6 +822,8 @@ export default function ChatContainer({
                     onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
                     webSearchEnabled={settings.webSearchEnabled}
                     onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
+                    messages={messages}
+                    maxContextTokens={selectedModelContextSize}
                 />
             </div>
 

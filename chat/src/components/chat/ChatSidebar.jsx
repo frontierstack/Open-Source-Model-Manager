@@ -134,10 +134,10 @@ export default function ChatSidebar({
             onClick={() => onSelectConversation(conv.id)}
             className={`group relative flex items-center rounded-lg cursor-pointer transition-all duration-200 ${
                 activeConversationId === conv.id
-                    ? 'bg-white/10 border-l-2'
-                    : 'hover:bg-white/5'
+                    ? 'bg-white/10 border-l-2 shadow-sm'
+                    : 'hover:bg-white/5 border-l-2 border-transparent'
             } ${collapsed ? 'justify-center p-2' : 'px-2.5 py-2'}`}
-            style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)' } : {}}
+            style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)', backgroundColor: 'rgba(var(--primary-rgb), 0.1)' } : {}}
         >
             {collapsed ? (
                 <div className="relative">

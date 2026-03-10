@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
     Send,
     Paperclip,
@@ -13,7 +13,8 @@ import {
     ScrollText,
     ChevronDown,
     Check,
-    Globe
+    Globe,
+    MessageCircle
 } from 'lucide-react';
 
 /**
@@ -60,6 +61,8 @@ export default function ChatInput({
     onSystemPromptSelect,
     webSearchEnabled = false,
     onWebSearchToggle,
+    messages = [],
+    maxContextTokens = 4096,
 }) {
     const [message, setMessage] = useState('');
     const [isDragOver, setIsDragOver] = useState(false);
@@ -70,6 +73,42 @@ export default function ChatInput({
     const textareaRef = useRef(null);
     const dragCounterRef = useRef(0);
     const promptDropdownRef = useRef(null);
+
+    // Estimate context usage (rough approximation: ~4 chars per token)
+    const contextStats = useMemo(() => {
+        let totalChars = 0;
+
+        // Count message content
+        messages.forEach(msg => {
+            totalChars += (msg.content || '').length;
+            if (msg.reasoning) totalChars += msg.reasoning.length;
+        });
+
+        // Add current message being typed
+        totalChars += message.length;
+
+        // Add attachment content
+        attachments.forEach(att => {
+            totalChars += (att.content || '').length;
+        });
+
+        // Add system prompt if selected
+        const selectedPrompt = systemPrompts.find(p => p.id === selectedSystemPromptId);
+        if (selectedPrompt?.content) {
+            totalChars += selectedPrompt.content.length;
+        }
+
+        // Rough token estimate (4 chars per token is a common approximation)
+        const estimatedTokens = Math.ceil(totalChars / 4);
+        const usagePercent = Math.min(100, (estimatedTokens / maxContextTokens) * 100);
+
+        return {
+            estimatedTokens,
+            maxTokens: maxContextTokens,
+            usagePercent,
+            messageCount: messages.length,
+        };
+    }, [messages, message, attachments, systemPrompts, selectedSystemPromptId, maxContextTokens]);
 
     // Supported file types
     const supportedTypes = {
@@ -597,6 +636,38 @@ export default function ChatInput({
                         )}
                     </div>
 
+                    {/* Context window status */}
+                    <div className="flex items-center justify-between mt-1.5 px-1">
+                        <div className="flex items-center gap-2 text-[10px] text-dark-500">
+                            <MessageCircle className="w-3 h-3" />
+                            <span>{contextStats.messageCount} messages</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1.5">
+                                <div className="w-20 h-1.5 bg-dark-800 rounded-full overflow-hidden">
+                                    <div
+                                        className={`h-full rounded-full transition-all duration-300 ${
+                                            contextStats.usagePercent > 90
+                                                ? 'bg-red-500'
+                                                : contextStats.usagePercent > 70
+                                                ? 'bg-amber-500'
+                                                : 'bg-emerald-500'
+                                        }`}
+                                        style={{ width: `${contextStats.usagePercent}%` }}
+                                    />
+                                </div>
+                                <span className={`text-[10px] ${
+                                    contextStats.usagePercent > 90
+                                        ? 'text-red-400'
+                                        : contextStats.usagePercent > 70
+                                        ? 'text-amber-400'
+                                        : 'text-dark-500'
+                                }`}>
+                                    ~{(contextStats.estimatedTokens / 1000).toFixed(1)}k / {(contextStats.maxTokens / 1000).toFixed(0)}k
+                                </span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
