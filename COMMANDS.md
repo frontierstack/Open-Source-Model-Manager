@@ -305,7 +305,7 @@ docker compose exec webapp cat /etc/os-release
 
 ## Koda CLI Commands
 
-### Setup & Authentication
+### Setup & Configuration
 
 ```bash
 # Install Koda CLI
@@ -314,97 +314,107 @@ curl -sk https://localhost:3001/api/cli/install | bash
 # Start Koda
 koda
 
-# Authenticate
-/auth                           # Enter API credentials from webapp
+# Authenticate with API credentials
+/auth                           # Interactive setup (URL, key, secret)
 
 # Initialize project analysis
-/init                           # Creates koda.md with project context
+/init                           # Analyzes project and creates koda.md context
 
-# Check connection status
-/status
+# Create project directory
+/project <name>                 # Creates a project directory structure
+/project my_app
+/project data_analysis
+
+# Show current working directory
+/cwd                            # Displays CWD and first 10 items
 ```
 
-### Mode Selection
+### Mode & Web Search
 
 ```bash
+# Switch modes
 /mode standalone                # Direct chat with AI (default)
 /mode agent                     # Agent-specific context mode
-/mode collab                    # Multi-agent collaboration mode
+/mode agent collab              # Multi-agent collaboration mode
+
+# Combine mode with web search
 /mode standalone,websearch      # Chat mode with web search enabled
 /mode agent,websearch           # Agent mode with web search enabled
+
+# Toggle web search independently
+/web                            # Toggle web search on/off
+/websearch                      # Alias for /web
+/ws                             # Short alias for /web
 ```
 
-### Agent Management
+### Working Files & Focus
 
 ```bash
-# List all agents
-/agents
+# View files in working set
+/files                          # Shows files currently in context
 
-# Create new agent (interactive)
-/create-agent
+# Add/remove files from working set
+/add-file <path>                # Add file to context
+/add-file ./src/index.js
+/remove-file <path>             # Remove file from context
 
-# View agent details
-/agents                         # Shows ID, name, model, description
+# Focus on specific file
+/focus <path>                   # Set focus to a file
+/clear-focus                    # Clear file focus
 ```
 
-### Skills & Tasks
+### Code Analysis & Refactoring
 
 ```bash
-# List available skills
-/skills
+# Code quality analysis
+/quality <path>                 # Analyze code quality metrics
+/quality ./src/app.js
 
-# List tasks
-/tasks                          # All tasks
-/tasks [agentId]                # Tasks for specific agent
+# Refactoring commands
+/refactor extract <path>        # Extract code suggestions
+/refactor rename <path>         # Rename suggestions
+/refactor move <path>           # Move suggestions
 ```
 
-### File Operations
+### Search & Documentation
 
 ```bash
-# Read file
-/file-read <path>
-/file-read ./src/index.js
-/file-read /home/user/document.txt
+# Web search (requires /web enabled or ,websearch in mode)
+/search <query>                 # Search the web
+/search react hooks tutorial
 
-# Write file
-/file-write <path> <content>
-/file-write ./test.txt "Hello World"
-/file-write ./config.json '{"key": "value"}'
-
-# Delete file
-/file-delete <path>
-/file-delete ./temp.log
+# Documentation lookup
+/docs <topic>                   # Fetch documentation
+/docs express middleware
 ```
 
 ### Session Management
 
 ```bash
 # Clear chat history
-/clear
+/clear                          # Clears visible chat history
 
 # Clear context but keep history visible
-/clearsession
+/clearsession                   # Resets session context, keeps history
 
 # Exit Koda
-/quit
+/quit                           # Exit the CLI
+/exit                           # Alias for /quit
 ```
 
 ### Chat Features
 
-**TAB Autocomplete:**
-- Press TAB to cycle through commands
-- Press TAB after partial command to autocomplete
-
-**Command Menu:**
-- Type `/` to see available commands
-- Commands are color-coded by category
+**Live Command Completion:**
+- Type `/` to see inline grayed suggestions
+- Press TAB to complete commands
+- Press TAB to cycle through mode options (`/mode ` + TAB)
 
 **Context Window Display:**
 - Status bar shows: `Context: used/limit`
 - Color-coded warnings (yellow: 80%, red: 95%)
 
 **Autonomous Skill Execution:**
-- AI can execute skills directly
+- AI executes skills automatically when needed
 - Format: `[SKILL:skill_name(param="value")]`
 - Works in standalone, agent, and collab modes
 - 55+ built-in skills including:
@@ -412,9 +422,16 @@ koda
   - Email parsing (.eml and .msg Outlook format)
   - PDF generation and reading
   - Web scraping with Playwright
-  - System commands (bash, PowerShell)
-  - Git operations
+  - Git operations (status, diff, log)
+  - System info and process management
   - And more...
+
+**Web-Dependent Skills:**
+The following skills require `/web` mode to be enabled:
+- `threat_intel` - Query threat intelligence sources
+- `web_search` - Search the web
+- `playwright_fetch` - Fetch JS-rendered pages
+- `playwright_interact` - Interact with web pages
 
 ---
 
