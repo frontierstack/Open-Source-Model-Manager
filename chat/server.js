@@ -12,7 +12,7 @@ const app = express();
 
 // Configuration
 const PORT = process.env.PORT || 3002;
-const WEBAPP_URL = process.env.WEBAPP_URL || 'https://localhost:3001';
+const WEBAPP_URL = process.env.WEBAPP_URL || 'https://host.docker.internal:3001';
 // Use the same session secret as main webapp for shared authentication
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 

@@ -60,6 +60,7 @@ services:
       - "3002:3002"      # HTTPS
     volumes:
       - ./certs:/usr/src/app/certs:ro
+      - ./models:/models    # Shared sessions with webapp
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
