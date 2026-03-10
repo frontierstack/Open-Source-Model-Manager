@@ -5,33 +5,27 @@ module.exports = {
     theme: {
         extend: {
             colors: {
-                // Primary purple palette
+                // Primary colors using CSS variables for theming
                 primary: {
-                    50: '#faf5ff',
-                    100: '#f3e8ff',
-                    200: '#e9d5ff',
-                    300: '#d8b4fe',
-                    400: '#c084fc',
-                    500: '#a78bfa',
-                    600: '#9333ea',
-                    700: '#7c3aed',
-                    800: '#6b21a8',
-                    900: '#581c87',
+                    50: 'rgba(var(--primary-rgb), 0.05)',
+                    100: 'rgba(var(--primary-rgb), 0.1)',
+                    200: 'rgba(var(--primary-rgb), 0.2)',
+                    300: 'rgba(var(--primary-rgb), 0.4)',
+                    400: 'var(--accent-hover)',
+                    500: 'var(--accent-primary)',
+                    600: 'var(--accent-secondary)',
+                    700: 'var(--accent-secondary)',
+                    800: 'rgba(var(--primary-rgb), 0.8)',
+                    900: 'rgba(var(--primary-rgb), 0.9)',
                 },
-                // Cyan accent
+                // Accent colors
                 accent: {
-                    50: '#ecfeff',
-                    100: '#cffafe',
-                    200: '#a5f3fc',
-                    300: '#67e8f9',
-                    400: '#22d3ee',
-                    500: '#06b6d4',
-                    600: '#0891b2',
-                    700: '#0e7490',
-                    800: '#155e75',
-                    900: '#164e63',
+                    300: 'var(--accent-hover)',
+                    400: 'var(--accent-hover)',
+                    500: 'var(--accent-primary)',
+                    600: 'var(--accent-secondary)',
                 },
-                // Dark background
+                // Dark background - these stay consistent
                 dark: {
                     50: '#fafafa',
                     100: '#f4f4f5',
@@ -77,8 +71,8 @@ module.exports = {
                 },
             },
             boxShadow: {
-                'glow-primary': '0 0 20px rgba(167, 139, 250, 0.3)',
-                'glow-accent': '0 0 20px rgba(34, 211, 238, 0.3)',
+                'glow-primary': '0 0 20px var(--shadow-accent)',
+                'glow-accent': '0 0 20px var(--shadow-accent)',
             },
         },
     },

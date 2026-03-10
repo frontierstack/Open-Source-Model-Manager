@@ -749,15 +749,11 @@ export default function ChatContainer({
                     models={combinedModels}
                     selectedModel={settings.model}
                     onModelChange={handleModelChange}
-                    webSearchEnabled={settings.webSearchEnabled}
-                    onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
                     onSettingsClick={() => setSettingsOpen(true)}
                     onNewChat={handleNewConversation}
                     isLoading={isLoading}
                     user={user}
                     onLogout={onLogout}
-                    theme={theme}
-                    onThemeChange={setTheme}
                 />
 
                 {/* Messages */}

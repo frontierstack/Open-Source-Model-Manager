@@ -132,18 +132,18 @@ export default function ChatSidebar({
         <div
             key={conv.id}
             onClick={() => onSelectConversation(conv.id)}
-            className={`group relative flex items-start rounded-xl cursor-pointer transition-all duration-200 ${
+            className={`group relative flex items-center rounded-lg cursor-pointer transition-all duration-200 ${
                 activeConversationId === conv.id
-                    ? 'bg-gradient-to-r from-primary-500/15 to-primary-500/5 border-l-2 border-primary-500'
+                    ? 'bg-white/10 border-l-2'
                     : 'hover:bg-white/5'
-            } ${collapsed ? 'justify-center p-2' : 'px-3 py-3'}`}
+            } ${collapsed ? 'justify-center p-2' : 'px-2.5 py-2'}`}
+            style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)' } : {}}
         >
             {collapsed ? (
                 <div className="relative">
                     <MessageSquare
-                        className={`w-4 h-4 ${
-                            activeConversationId === conv.id ? 'text-primary-400' : 'text-dark-400'
-                        }`}
+                        className="w-4 h-4 text-dark-400"
+                        style={activeConversationId === conv.id ? { color: 'var(--accent-primary)' } : {}}
                     />
                     {conv.favorite && (
                         <Star className="w-2 h-2 absolute -top-1 -right-1 fill-yellow-400 text-yellow-400" />
@@ -174,13 +174,12 @@ export default function ChatSidebar({
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                             <MessageSquare
-                                className={`w-4 h-4 flex-shrink-0 ${
-                                    activeConversationId === conv.id ? 'text-primary-400' : 'text-dark-500'
-                                }`}
+                                className="w-4 h-4 flex-shrink-0 text-dark-500"
+                                style={activeConversationId === conv.id ? { color: 'var(--accent-primary)' } : {}}
                             />
                             <span
                                 className={`text-sm truncate font-medium ${
-                                    activeConversationId === conv.id ? 'text-primary-300' : 'text-dark-200'
+                                    activeConversationId === conv.id ? 'text-dark-100' : 'text-dark-200'
                                 }`}
                             >
                                 {conv.title || 'New Conversation'}
@@ -234,10 +233,10 @@ export default function ChatSidebar({
             }}
         >
             {/* Header */}
-            <div className="flex items-center justify-between p-3 border-b border-white/5">
+            <div className="flex items-center justify-between p-2.5 border-b border-white/5">
                 {!collapsed && (
                     <h2 className="text-sm font-semibold text-dark-200 flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4 text-primary-400" />
+                        <MessageSquare className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} />
                         Conversations
                     </h2>
                 )}
@@ -252,15 +251,15 @@ export default function ChatSidebar({
 
             {/* Search */}
             {!collapsed && (
-                <div className="p-2">
+                <div className="px-2 pb-1">
                     <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" />
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-500" />
                         <input
                             type="text"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder="Search conversations..."
-                            className="w-full pl-9 pr-3 py-2 text-sm bg-dark-800/80 border border-white/5 rounded-xl text-dark-200 placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
+                            placeholder="Search..."
+                            className="w-full pl-8 pr-3 py-1.5 text-sm bg-dark-800/60 border border-white/5 rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-white/20 transition-all"
                         />
                         {searchQuery && (
                             <button
@@ -278,9 +277,10 @@ export default function ChatSidebar({
             <div className="px-2 pb-2">
                 <button
                     onClick={onNewConversation}
-                    className={`flex items-center gap-2 w-full px-3 py-2.5 rounded-xl bg-gradient-to-r from-primary-500/20 to-primary-500/10 text-primary-400 border border-primary-500/30 hover:from-primary-500/30 hover:to-primary-500/20 hover:border-primary-500/40 transition-all duration-200 shadow-lg shadow-primary-500/5 ${
+                    className={`flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/15 transition-all duration-200 ${
                         collapsed ? 'justify-center' : ''
                     }`}
+                    style={{ color: 'var(--accent-primary)' }}
                     title="New Chat"
                 >
                     <Plus className="w-4 h-4 flex-shrink-0" />
