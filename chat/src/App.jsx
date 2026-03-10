@@ -308,10 +308,6 @@ function LoginForm({ onLogin, error, loading, onShowResetPassword }) {
                     </div>
                 </div>
 
-                {/* Footer note */}
-                <p className="text-center mt-6 text-xs" style={{ color: 'var(--text-muted)' }}>
-                    Accounts are managed in the Management Console
-                </p>
             </div>
         </div>
     );

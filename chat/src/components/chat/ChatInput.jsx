@@ -100,24 +100,22 @@ export default function ChatInput({
 
         // Rough token estimate (4 chars per token is a common approximation)
         const estimatedTokens = Math.ceil(totalChars / 4);
-        const usagePercent = Math.min(100, (estimatedTokens / maxContextTokens) * 100);
+
+        // Check if context is unlimited (0, undefined, or null means no limit)
+        const isUnlimited = !maxContextTokens || maxContextTokens === 0;
+        const usagePercent = isUnlimited ? 0 : Math.min(100, (estimatedTokens / maxContextTokens) * 100);
 
         return {
             estimatedTokens,
             maxTokens: maxContextTokens,
             usagePercent,
             messageCount: messages.length,
+            isUnlimited,
         };
     }, [messages, message, attachments, systemPrompts, selectedSystemPromptId, maxContextTokens]);
 
-    // Supported file types
-    const supportedTypes = {
-        text: ['.txt', '.md', '.json', '.yaml', '.yml', '.xml', '.csv', '.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.html', '.css', '.scss', '.less', '.sh', '.bash', '.sql', '.rb', '.php', '.swift', '.kt', '.toml', '.ini', '.env'],
-        image: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'],
-        pdf: ['.pdf'],
-    };
-
-    const allSupportedExtensions = [...supportedTypes.text, ...supportedTypes.image, ...supportedTypes.pdf];
+    // All file types are now allowed - no restrictions
+    const allowAllFileTypes = true;
 
     // Window-level drag detection for full-screen drop zone
     useEffect(() => {
@@ -206,10 +204,8 @@ export default function ChatInput({
 
     const handleFileSelect = useCallback(async (files) => {
         const fileArray = Array.from(files);
-        const validFiles = fileArray.filter(file => {
-            const extension = '.' + file.name.split('.').pop().toLowerCase();
-            return allSupportedExtensions.includes(extension);
-        });
+        // All file types are now allowed - no filtering
+        const validFiles = fileArray;
 
         if (validFiles.length === 0) return;
 
@@ -263,7 +259,7 @@ export default function ChatInput({
             };
             reader.readAsDataURL(file);
         }
-    }, [onAddAttachment, allSupportedExtensions]);
+    }, [onAddAttachment]);
 
     const handleDrop = useCallback((e) => {
         e.preventDefault();
@@ -427,7 +423,6 @@ export default function ChatInput({
                             ref={fileInputRef}
                             type="file"
                             multiple
-                            accept={allSupportedExtensions.join(',')}
                             className="hidden"
                             onChange={(e) => {
                                 handleFileSelect(e.target.files);
@@ -657,13 +652,15 @@ export default function ChatInput({
                                     />
                                 </div>
                                 <span className={`text-[10px] ${
-                                    contextStats.usagePercent > 90
+                                    contextStats.isUnlimited
+                                        ? 'text-dark-500'
+                                        : contextStats.usagePercent > 90
                                         ? 'text-red-400'
                                         : contextStats.usagePercent > 70
                                         ? 'text-amber-400'
                                         : 'text-dark-500'
                                 }`}>
-                                    ~{(contextStats.estimatedTokens / 1000).toFixed(1)}k / {(contextStats.maxTokens / 1000).toFixed(0)}k
+                                    ~{(contextStats.estimatedTokens / 1000).toFixed(1)}k / {contextStats.isUnlimited ? '∞' : `${(contextStats.maxTokens / 1000).toFixed(0)}k`}
                                 </span>
                             </div>
                         </div>

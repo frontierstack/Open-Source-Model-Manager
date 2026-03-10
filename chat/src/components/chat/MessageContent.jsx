@@ -117,26 +117,47 @@ export default function MessageContent({ content }) {
                         );
                     },
 
-                    // Tables
+                    // Tables - with proper structure and borders
                     table({ children }) {
                         return (
-                            <div className="overflow-x-auto my-4">
-                                <table className="w-full border-collapse">
+                            <div className="overflow-x-auto my-4 rounded-lg border border-white/10">
+                                <table className="w-full border-collapse min-w-max">
                                     {children}
                                 </table>
                             </div>
                         );
                     },
+                    thead({ children }) {
+                        return (
+                            <thead className="bg-dark-800/70">
+                                {children}
+                            </thead>
+                        );
+                    },
+                    tbody({ children }) {
+                        return (
+                            <tbody className="divide-y divide-white/5">
+                                {children}
+                            </tbody>
+                        );
+                    },
+                    tr({ children }) {
+                        return (
+                            <tr className="hover:bg-white/[0.02] transition-colors">
+                                {children}
+                            </tr>
+                        );
+                    },
                     th({ children }) {
                         return (
-                            <th className="bg-dark-800/50 px-4 py-2 text-left text-dark-200 font-semibold text-sm border-b border-white/10">
+                            <th className="px-4 py-3 text-left text-dark-200 font-semibold text-sm border-b border-white/10 whitespace-nowrap">
                                 {children}
                             </th>
                         );
                     },
                     td({ children }) {
                         return (
-                            <td className="px-4 py-2 text-dark-300 text-sm border-b border-white/5">
+                            <td className="px-4 py-3 text-dark-300 text-sm border-b border-white/5">
                                 {children}
                             </td>
                         );

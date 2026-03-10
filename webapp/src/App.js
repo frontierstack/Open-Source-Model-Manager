@@ -478,12 +478,23 @@ const App = () => {
 
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
-        const saved = localStorage.getItem('tabOrder');
-        if (saved) {
-            const parsed = JSON.parse(saved);
-            if (parsed.length === 7) return parsed;
+        const defaultOrder = [0, 1, 2, 3, 4, 5, 6];
+        try {
+            const saved = localStorage.getItem('tabOrder');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                // Validate: must have exactly 7 elements and include all tab IDs 0-6
+                const hasAllTabs = defaultOrder.every(id => parsed.includes(id));
+                if (parsed.length === 7 && hasAllTabs) {
+                    return parsed;
+                }
+                // Invalid saved order - clear it
+                localStorage.removeItem('tabOrder');
+            }
+        } catch (e) {
+            localStorage.removeItem('tabOrder');
         }
-        return [0, 1, 2, 3, 4, 5, 6];
+        return defaultOrder;
     });
 
     // Docs accordion order state

@@ -52,11 +52,11 @@ export default function ChatSettings({
         fontFamily = 'system',
     } = settings;
 
-    // Font options
+    // Font options with resolution presets
     const fontSizeOptions = [
-        { value: 'small', label: 'Small' },
-        { value: 'medium', label: 'Medium' },
-        { value: 'large', label: 'Large' },
+        { value: 'small', label: 'Small', description: '1080p / Compact' },
+        { value: 'medium', label: 'Medium', description: '2K / Default' },
+        { value: 'large', label: 'Large', description: '4K / Spacious' },
     ];
 
     const fontFamilyOptions = [
@@ -127,12 +127,18 @@ export default function ChatSettings({
         { value: 'dark', label: 'Dark', icon: Moon, description: 'Default dark theme' },
         { value: 'light', label: 'Light', icon: Sun, description: 'Clean white theme' },
         { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Purple accents' },
+        { value: 'obsidian', label: 'Obsidian', icon: Moon, description: 'Pure black OLED' },
         { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Deep blue theme' },
         { value: 'forest', label: 'Forest', icon: Sparkles, description: 'Natural greens' },
         { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm orange tones' },
         { value: 'rose', label: 'Rose', icon: Sparkles, description: 'Soft pink theme' },
         { value: 'nord', label: 'Nord', icon: Moon, description: 'Arctic color palette' },
         { value: 'dracula', label: 'Dracula', icon: Moon, description: 'Popular dark theme' },
+        { value: 'solarized', label: 'Solarized', icon: Sun, description: 'Solarized Dark' },
+        { value: 'monokai', label: 'Monokai', icon: Code, description: 'Code editor theme' },
+        { value: 'gruvbox', label: 'Gruvbox', icon: Moon, description: 'Retro groove' },
+        { value: 'tokyo', label: 'Tokyo Night', icon: Moon, description: 'Storm colors' },
+        { value: 'catppuccin', label: 'Catppuccin', icon: Sparkles, description: 'Pastel dark theme' },
         { value: 'matrix', label: 'Matrix', icon: Code, description: 'Hacker terminal' },
         { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon vibes' },
     ];
@@ -326,39 +332,6 @@ export default function ChatSettings({
                                 <div className="flex justify-between text-xs text-dark-500 mt-2">
                                     <span>Precise</span>
                                     <span>Creative</span>
-                                </div>
-                            </div>
-
-                            {/* Max Tokens */}
-                            <div>
-                                <div className="flex justify-between items-center mb-3">
-                                    <label className="text-sm font-medium text-dark-200">Max Tokens</label>
-                                    <span className="text-sm font-mono text-primary-400 bg-primary-500/10 px-2 py-0.5 rounded">
-                                        {maxTokens.toLocaleString()}
-                                    </span>
-                                </div>
-                                <input
-                                    type="range"
-                                    value={maxTokens}
-                                    onChange={(e) => onUpdateSettings({ maxTokens: parseInt(e.target.value) })}
-                                    min={64}
-                                    max={32768}
-                                    step={64}
-                                    className="w-full h-2 bg-dark-800 rounded-full appearance-none cursor-pointer
-                                               [&::-webkit-slider-thumb]:appearance-none
-                                               [&::-webkit-slider-thumb]:w-5
-                                               [&::-webkit-slider-thumb]:h-5
-                                               [&::-webkit-slider-thumb]:rounded-full
-                                               [&::-webkit-slider-thumb]:bg-primary-500
-                                               [&::-webkit-slider-thumb]:shadow-lg
-                                               [&::-webkit-slider-thumb]:shadow-primary-500/30
-                                               [&::-webkit-slider-thumb]:cursor-pointer
-                                               [&::-webkit-slider-thumb]:border-2
-                                               [&::-webkit-slider-thumb]:border-dark-900"
-                                />
-                                <div className="flex justify-between text-xs text-dark-500 mt-2">
-                                    <span>64</span>
-                                    <span>32,768</span>
                                 </div>
                             </div>
 
@@ -592,6 +565,9 @@ export default function ChatSettings({
                                                     <div className="text-xs font-medium flex items-center gap-1 justify-center">
                                                         {option.label}
                                                         {isActive && <Check className="w-3 h-3" />}
+                                                    </div>
+                                                    <div className="text-[10px] text-dark-500 mt-0.5">
+                                                        {option.description}
                                                     </div>
                                                 </div>
                                             </button>
