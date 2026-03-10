@@ -26,17 +26,7 @@ Complete command reference for Open Source Model Manager utilities, management s
 
 Starts all services in detached mode:
 - Webapp (port 3001)
-- Open WebUI (port 3002)
 - Base model containers (llamacpp, vllm)
-- **Auto-provisions Open WebUI** with external web search configuration
-
-**Auto-Provisioned Settings:**
-- External search URL pointing to webapp's search endpoint
-- RAG template with web search awareness
-- Query generation template for aggressive time-sensitive searches
-- Dynamic date/time injection in search results
-
-**Note:** Only the API key needs to be set manually in Open WebUI (Admin > Settings > Web Search).
 
 ### Stop Services
 
@@ -56,17 +46,14 @@ Rebuild and restart services without data loss:
 ```bash
 # Reload specific service
 ./reload.sh webapp              # Rebuild and restart webapp only
-./reload.sh openwebui           # Update OpenWebUI to latest image
 ./reload.sh all                 # Rebuild and restart all services
 
 # Examples
 ./reload.sh webapp              # After code changes to webapp
-./reload.sh openwebui           # Update to latest Open WebUI version
 ```
 
 **Use Cases:**
 - Code changes to webapp
-- Update Open WebUI to latest version
 - Apply configuration changes
 
 ### Reset System
@@ -78,22 +65,17 @@ System reset with various options:
 ./reset.sh
 
 # Reset with options
-./reset.sh --keep-openwebui     # Reset but keep Open WebUI data
 ./reset.sh --rebuild            # Reset and rebuild all images from scratch
 ./reset.sh --full               # Full factory reset (removes EVERYTHING including models)
 ./reset.sh --full -f            # Full factory reset without prompts
-
-# Reset only Open WebUI
-./reset-openwebui.sh            # Removes only Open WebUI data
 ```
 
 **Reset Levels:**
 
-| Option | Models | Webapp Users | Open WebUI | API Keys |
-|--------|--------|--------------|------------|----------|
-| `./reset.sh` | KEPT | Removed | Removed | Removed |
-| `./reset.sh --keep-openwebui` | KEPT | Removed | KEPT | Removed |
-| `./reset.sh --full` | Removed | Removed | Removed | Removed |
+| Option | Models | Webapp Users | API Keys |
+|--------|--------|--------------|----------|
+| `./reset.sh` | KEPT | Removed | Removed |
+| `./reset.sh --full` | Removed | Removed | Removed |
 
 **Warning:** The `--full` flag will permanently delete all downloaded models!
 
@@ -106,32 +88,6 @@ Quick rebuild of webapp only (faster than full rebuild):
 ```
 
 Rebuilds and restarts only the webapp service without affecting running models.
-
-### Open WebUI Search Provisioning
-
-The search provisioning script configures Open WebUI to use the webapp's external search endpoint:
-
-```bash
-# Run manually (normally runs automatically on start)
-./scripts/provision-openwebui-search.sh
-```
-
-**What it configures:**
-- External search engine URL: `http://host.docker.internal:3080/api/openwebui/search`
-- RAG template with knowledge priority guidance (web search vs training knowledge)
-- Query generation template that aggressively searches for time-sensitive queries
-- Result count: 5 results per search
-
-**Features:**
-- **Dynamic Date/Time**: Every search includes current date/time in results
-- **Smart Query Generation**: Automatically searches for date, time, news, current events
-- **Knowledge Priority**: Model knows when to use search vs built-in knowledge
-- **No Disclaimers**: Model won't claim it "can't search the web"
-
-**Manual API Key Setup:**
-After provisioning, set the API key in Open WebUI:
-1. Admin > Settings > Web Search
-2. Enter your API key (from webapp's API Keys tab)
 
 ---
 
@@ -264,7 +220,6 @@ docker compose ps
 
 # Check specific service
 docker compose ps webapp
-docker compose ps openwebui
 
 # Detailed container inspection
 docker inspect webapp
@@ -275,7 +230,6 @@ docker inspect webapp
 ```bash
 # Follow logs (real-time)
 docker compose logs -f webapp         # Webapp logs
-docker compose logs -f openwebui      # Open WebUI logs
 docker compose logs -f                # All services
 
 # View last 100 lines
@@ -308,16 +262,13 @@ nvidia-smi dmon
 ```bash
 # Check listening ports
 netstat -tulpn | grep 3001            # Webapp
-netstat -tulpn | grep 3002            # Open WebUI
 netstat -tulpn | grep 8001            # First model instance
 
 # Check port conflicts
 lsof -i :3001
-lsof -i :3002
 
 # Test HTTPS endpoints
 curl -sk https://localhost:3001
-curl -sk https://localhost:3002
 ```
 
 ### Disk Usage
@@ -480,7 +431,6 @@ docker compose down
 
 # Restart specific service
 docker compose restart webapp
-docker compose restart openwebui
 
 # Remove all containers (preserves volumes)
 docker compose down
@@ -526,7 +476,6 @@ docker run --rm -v lmstudio_webapp_data:/data -v $(pwd):/backup \
 ```bash
 # Build specific service
 docker compose build webapp
-docker compose build openwebui
 
 # Build with no cache
 docker compose build --no-cache webapp
@@ -668,9 +617,7 @@ rm -rf .build-state/
 **Check what's using ports:**
 ```bash
 netstat -tulpn | grep 3001
-netstat -tulpn | grep 3002
 lsof -i :3001
-lsof -i :3002
 ```
 
 **Kill process using port:**
@@ -831,7 +778,7 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
 
 # Restart services
-docker compose restart webapp openwebui
+docker compose restart webapp
 ```
 
 ---
@@ -873,6 +820,5 @@ docker compose restart webapp openwebui
 
 For additional help:
 - Check the main README.md for overview and setup
-- Review CLAUDE.md for technical details
 - Check logs: `docker compose logs -f`
 - GitHub Issues: Report bugs and request features
