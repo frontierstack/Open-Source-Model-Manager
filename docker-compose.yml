@@ -52,5 +52,18 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Chat interface - separate lightweight React app
+  chat:
+    build: ./chat
+    image: modelserver-chat:latest
+    ports:
+      - "3002:3002"      # HTTPS
+    volumes:
+      - ./certs:/usr/src/app/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - webapp
+
 volumes:
   webapp_data:

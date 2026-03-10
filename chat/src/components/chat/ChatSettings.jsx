@@ -1,0 +1,579 @@
+import React, { useState, useEffect } from 'react';
+import {
+    X,
+    ChevronDown,
+    Settings,
+    MessageSquare,
+    Palette,
+    Save,
+    Plus,
+    Trash2,
+    Edit3,
+    Check,
+    Sun,
+    Moon,
+    Monitor,
+    Zap,
+    Sparkles,
+    Code,
+    Target
+} from 'lucide-react';
+import { useConfirm } from '../ConfirmDialog';
+
+/**
+ * ChatSettings - Modern tabbed settings modal with chat, prompts, and appearance (Tailwind)
+ */
+export default function ChatSettings({
+    open,
+    onClose,
+    settings,
+    onUpdateSettings,
+    systemPrompts,
+    onSaveSystemPrompt,
+    onDeleteSystemPrompt,
+    theme,
+    onThemeChange,
+}) {
+    const [activeTab, setActiveTab] = useState('chat');
+    const [editingPrompt, setEditingPrompt] = useState(null);
+    const [newPromptName, setNewPromptName] = useState('');
+    const [newPromptContent, setNewPromptContent] = useState('');
+    const [isCreatingPrompt, setIsCreatingPrompt] = useState(false);
+    const confirm = useConfirm();
+
+    const {
+        temperature = 0.7,
+        maxTokens = 2048,
+        systemPromptId = null,
+        topP = 1.0,
+        frequencyPenalty = 0,
+        presencePenalty = 0,
+    } = settings;
+
+    // Reset state when modal closes
+    useEffect(() => {
+        if (!open) {
+            setEditingPrompt(null);
+            setIsCreatingPrompt(false);
+            setNewPromptName('');
+            setNewPromptContent('');
+        }
+    }, [open]);
+
+    if (!open) return null;
+
+    const presets = [
+        {
+            label: 'Precise',
+            icon: Target,
+            temperature: 0.2,
+            maxTokens: 1024,
+            topP: 0.9,
+            description: 'Focused, deterministic responses'
+        },
+        {
+            label: 'Balanced',
+            icon: Zap,
+            temperature: 0.7,
+            maxTokens: 2048,
+            topP: 1.0,
+            description: 'Good for general tasks'
+        },
+        {
+            label: 'Creative',
+            icon: Sparkles,
+            temperature: 1.0,
+            maxTokens: 4096,
+            topP: 1.0,
+            description: 'Imaginative, varied outputs'
+        },
+        {
+            label: 'Code',
+            icon: Code,
+            temperature: 0.1,
+            maxTokens: 4096,
+            topP: 0.95,
+            description: 'Precise code generation'
+        },
+    ];
+
+    const themeOptions = [
+        { value: 'system', label: 'System', icon: Monitor, description: 'Follow system preference' },
+        { value: 'dark', label: 'Dark', icon: Moon, description: 'Dark theme for low light' },
+        { value: 'light', label: 'Light', icon: Sun, description: 'Light theme for bright environments' },
+    ];
+
+    const currentTheme = theme || 'system';
+
+    const tabs = [
+        { id: 'chat', label: 'Chat Settings', icon: Settings },
+        { id: 'prompts', label: 'System Prompts', icon: MessageSquare },
+        { id: 'appearance', label: 'Appearance', icon: Palette },
+    ];
+
+    const handleStartEdit = (prompt) => {
+        setEditingPrompt(prompt);
+        setNewPromptName(prompt.name || '');
+        setNewPromptContent(prompt.content || '');
+    };
+
+    const handleSavePrompt = async () => {
+        if (!newPromptName.trim()) return;
+
+        const promptData = {
+            id: editingPrompt?.id || `prompt_${Date.now()}`,
+            name: newPromptName.trim(),
+            content: newPromptContent.trim(),
+        };
+
+        await onSaveSystemPrompt?.(promptData);
+        setEditingPrompt(null);
+        setIsCreatingPrompt(false);
+        setNewPromptName('');
+        setNewPromptContent('');
+    };
+
+    const handleDeletePrompt = async (promptId) => {
+        const confirmed = await confirm({
+            title: 'Delete System Prompt',
+            message: 'Are you sure you want to delete this system prompt? This action cannot be undone.',
+            confirmText: 'Delete',
+            cancelText: 'Cancel',
+            variant: 'danger',
+        });
+        if (confirmed) {
+            await onDeleteSystemPrompt?.(promptId);
+            if (systemPromptId === promptId) {
+                onUpdateSettings({ systemPromptId: null });
+            }
+        }
+    };
+
+    const promptsList = Array.isArray(systemPrompts) ? systemPrompts : [];
+
+    return (
+        <>
+            {/* Backdrop */}
+            <div
+                className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+                onClick={onClose}
+            />
+
+            {/* Modal */}
+            <div className="fixed inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[640px] md:max-h-[85vh] bg-dark-900 border border-white/10 rounded-2xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden animate-fade-in">
+                {/* Header */}
+                <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+                    <h2 className="text-lg font-semibold text-dark-100">Settings</h2>
+                    <button
+                        onClick={onClose}
+                        className="p-2 rounded-lg hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                {/* Tabs */}
+                <div className="flex border-b border-white/5 px-2">
+                    {tabs.map((tab) => {
+                        const Icon = tab.icon;
+                        return (
+                            <button
+                                key={tab.id}
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                                    activeTab === tab.id
+                                        ? 'text-primary-400 border-primary-500'
+                                        : 'text-dark-400 border-transparent hover:text-dark-200 hover:border-white/10'
+                                }`}
+                            >
+                                <Icon className="w-4 h-4" />
+                                <span className="hidden sm:inline">{tab.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {/* Tab Content */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                    {/* Chat Settings Tab */}
+                    {activeTab === 'chat' && (
+                        <>
+                            {/* System Prompt Selector */}
+                            <div>
+                                <label className="block text-sm font-medium text-dark-200 mb-2">
+                                    Active System Prompt
+                                </label>
+                                <div className="relative">
+                                    <select
+                                        value={systemPromptId || ''}
+                                        onChange={(e) => onUpdateSettings({ systemPromptId: e.target.value || null })}
+                                        className="w-full px-4 py-3 bg-dark-800/80 border border-white/10 rounded-xl text-dark-200 appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
+                                    >
+                                        <option value="">None (default behavior)</option>
+                                        {promptsList.map((prompt) => (
+                                            <option key={prompt.id} value={prompt.id}>
+                                                {prompt.name || prompt.id}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
+                                </div>
+                            </div>
+
+                            <div className="border-t border-white/5" />
+
+                            {/* Quick Presets */}
+                            <div>
+                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                    Quick Presets
+                                </label>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {presets.map((preset) => {
+                                        const Icon = preset.icon;
+                                        const isActive = temperature === preset.temperature && maxTokens === preset.maxTokens;
+                                        return (
+                                            <button
+                                                key={preset.label}
+                                                onClick={() => onUpdateSettings({
+                                                    temperature: preset.temperature,
+                                                    maxTokens: preset.maxTokens,
+                                                    topP: preset.topP,
+                                                })}
+                                                className={`flex items-start gap-3 p-4 rounded-xl border transition-all duration-200 text-left ${
+                                                    isActive
+                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
+                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
+                                                }`}
+                                            >
+                                                <div className={`p-2 rounded-lg ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
+                                                    <Icon className="w-4 h-4" />
+                                                </div>
+                                                <div>
+                                                    <div className="text-sm font-medium">{preset.label}</div>
+                                                    <div className="text-xs text-dark-500 mt-0.5">{preset.description}</div>
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="border-t border-white/5" />
+
+                            {/* Temperature */}
+                            <div>
+                                <div className="flex justify-between items-center mb-3">
+                                    <label className="text-sm font-medium text-dark-200">Temperature</label>
+                                    <span className="text-sm font-mono text-primary-400 bg-primary-500/10 px-2 py-0.5 rounded">
+                                        {temperature.toFixed(2)}
+                                    </span>
+                                </div>
+                                <input
+                                    type="range"
+                                    value={temperature}
+                                    onChange={(e) => onUpdateSettings({ temperature: parseFloat(e.target.value) })}
+                                    min={0}
+                                    max={2}
+                                    step={0.01}
+                                    className="w-full h-2 bg-dark-800 rounded-full appearance-none cursor-pointer
+                                               [&::-webkit-slider-thumb]:appearance-none
+                                               [&::-webkit-slider-thumb]:w-5
+                                               [&::-webkit-slider-thumb]:h-5
+                                               [&::-webkit-slider-thumb]:rounded-full
+                                               [&::-webkit-slider-thumb]:bg-primary-500
+                                               [&::-webkit-slider-thumb]:shadow-lg
+                                               [&::-webkit-slider-thumb]:shadow-primary-500/30
+                                               [&::-webkit-slider-thumb]:cursor-pointer
+                                               [&::-webkit-slider-thumb]:border-2
+                                               [&::-webkit-slider-thumb]:border-dark-900
+                                               [&::-webkit-slider-thumb]:transition-transform
+                                               [&::-webkit-slider-thumb]:hover:scale-110"
+                                />
+                                <div className="flex justify-between text-xs text-dark-500 mt-2">
+                                    <span>Precise</span>
+                                    <span>Creative</span>
+                                </div>
+                            </div>
+
+                            {/* Max Tokens */}
+                            <div>
+                                <div className="flex justify-between items-center mb-3">
+                                    <label className="text-sm font-medium text-dark-200">Max Tokens</label>
+                                    <span className="text-sm font-mono text-primary-400 bg-primary-500/10 px-2 py-0.5 rounded">
+                                        {maxTokens.toLocaleString()}
+                                    </span>
+                                </div>
+                                <input
+                                    type="range"
+                                    value={maxTokens}
+                                    onChange={(e) => onUpdateSettings({ maxTokens: parseInt(e.target.value) })}
+                                    min={64}
+                                    max={32768}
+                                    step={64}
+                                    className="w-full h-2 bg-dark-800 rounded-full appearance-none cursor-pointer
+                                               [&::-webkit-slider-thumb]:appearance-none
+                                               [&::-webkit-slider-thumb]:w-5
+                                               [&::-webkit-slider-thumb]:h-5
+                                               [&::-webkit-slider-thumb]:rounded-full
+                                               [&::-webkit-slider-thumb]:bg-primary-500
+                                               [&::-webkit-slider-thumb]:shadow-lg
+                                               [&::-webkit-slider-thumb]:shadow-primary-500/30
+                                               [&::-webkit-slider-thumb]:cursor-pointer
+                                               [&::-webkit-slider-thumb]:border-2
+                                               [&::-webkit-slider-thumb]:border-dark-900"
+                                />
+                                <div className="flex justify-between text-xs text-dark-500 mt-2">
+                                    <span>64</span>
+                                    <span>32,768</span>
+                                </div>
+                            </div>
+
+                            {/* Top P */}
+                            <div>
+                                <div className="flex justify-between items-center mb-3">
+                                    <label className="text-sm font-medium text-dark-200">Top P</label>
+                                    <span className="text-sm font-mono text-primary-400 bg-primary-500/10 px-2 py-0.5 rounded">
+                                        {topP.toFixed(2)}
+                                    </span>
+                                </div>
+                                <input
+                                    type="range"
+                                    value={topP}
+                                    onChange={(e) => onUpdateSettings({ topP: parseFloat(e.target.value) })}
+                                    min={0}
+                                    max={1}
+                                    step={0.01}
+                                    className="w-full h-2 bg-dark-800 rounded-full appearance-none cursor-pointer
+                                               [&::-webkit-slider-thumb]:appearance-none
+                                               [&::-webkit-slider-thumb]:w-5
+                                               [&::-webkit-slider-thumb]:h-5
+                                               [&::-webkit-slider-thumb]:rounded-full
+                                               [&::-webkit-slider-thumb]:bg-primary-500
+                                               [&::-webkit-slider-thumb]:shadow-lg
+                                               [&::-webkit-slider-thumb]:shadow-primary-500/30
+                                               [&::-webkit-slider-thumb]:cursor-pointer
+                                               [&::-webkit-slider-thumb]:border-2
+                                               [&::-webkit-slider-thumb]:border-dark-900"
+                                />
+                            </div>
+                        </>
+                    )}
+
+                    {/* System Prompts Tab */}
+                    {activeTab === 'prompts' && (
+                        <>
+                            {/* Create New Prompt */}
+                            {!isCreatingPrompt && !editingPrompt && (
+                                <button
+                                    onClick={() => setIsCreatingPrompt(true)}
+                                    className="flex items-center gap-2 w-full px-4 py-3 rounded-xl bg-primary-500/10 text-primary-400 border border-primary-500/20 hover:bg-primary-500/20 transition-all"
+                                >
+                                    <Plus className="w-4 h-4" />
+                                    <span className="text-sm font-medium">Create New Prompt</span>
+                                </button>
+                            )}
+
+                            {/* Prompt Editor */}
+                            {(isCreatingPrompt || editingPrompt) && (
+                                <div className="space-y-4 p-4 bg-dark-800/50 rounded-xl border border-white/10">
+                                    <div>
+                                        <label className="block text-sm font-medium text-dark-200 mb-2">
+                                            Prompt Name
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={newPromptName}
+                                            onChange={(e) => setNewPromptName(e.target.value)}
+                                            placeholder="e.g., Code Assistant, Creative Writer..."
+                                            className="w-full px-4 py-2.5 bg-dark-800 border border-white/10 rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-dark-200 mb-2">
+                                            Prompt Content
+                                        </label>
+                                        <textarea
+                                            value={newPromptContent}
+                                            onChange={(e) => setNewPromptContent(e.target.value)}
+                                            placeholder="Enter the system prompt content..."
+                                            rows={6}
+                                            className="w-full px-4 py-3 bg-dark-800 border border-white/10 rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 resize-none"
+                                        />
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={handleSavePrompt}
+                                            disabled={!newPromptName.trim()}
+                                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-500 text-white font-medium text-sm hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                        >
+                                            <Save className="w-4 h-4" />
+                                            Save Prompt
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setIsCreatingPrompt(false);
+                                                setEditingPrompt(null);
+                                                setNewPromptName('');
+                                                setNewPromptContent('');
+                                            }}
+                                            className="px-4 py-2 rounded-lg bg-dark-700 text-dark-300 font-medium text-sm hover:bg-dark-600 transition-colors"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Prompts List */}
+                            {!isCreatingPrompt && !editingPrompt && (
+                                <div className="space-y-2">
+                                    {promptsList.length === 0 ? (
+                                        <div className="text-center py-8">
+                                            <div className="w-12 h-12 rounded-full bg-dark-800 flex items-center justify-center mx-auto mb-3">
+                                                <MessageSquare className="w-5 h-5 text-dark-500" />
+                                            </div>
+                                            <p className="text-sm text-dark-400">No system prompts yet</p>
+                                            <p className="text-xs text-dark-500 mt-1">Create one to customize AI behavior</p>
+                                        </div>
+                                    ) : (
+                                        promptsList.map((prompt) => (
+                                            <div
+                                                key={prompt.id}
+                                                className={`group flex items-start justify-between p-4 rounded-xl border transition-all ${
+                                                    systemPromptId === prompt.id
+                                                        ? 'bg-primary-500/10 border-primary-500/30'
+                                                        : 'bg-dark-800/50 border-white/5 hover:border-white/10'
+                                                }`}
+                                            >
+                                                <div
+                                                    className="flex-1 min-w-0 cursor-pointer"
+                                                    onClick={() => onUpdateSettings({ systemPromptId: prompt.id })}
+                                                >
+                                                    <div className="flex items-center gap-2">
+                                                        <span className={`text-sm font-medium ${
+                                                            systemPromptId === prompt.id ? 'text-primary-300' : 'text-dark-200'
+                                                        }`}>
+                                                            {prompt.name || prompt.id}
+                                                        </span>
+                                                        {systemPromptId === prompt.id && (
+                                                            <span className="text-xs bg-primary-500/20 text-primary-400 px-2 py-0.5 rounded">
+                                                                Active
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {prompt.content && (
+                                                        <p className="text-xs text-dark-500 mt-1 truncate">
+                                                            {prompt.content.substring(0, 100)}...
+                                                        </p>
+                                                    )}
+                                                </div>
+                                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-3">
+                                                    <button
+                                                        onClick={() => handleStartEdit(prompt)}
+                                                        className="p-2 rounded-lg hover:bg-white/10 text-dark-400 hover:text-dark-200"
+                                                        title="Edit"
+                                                    >
+                                                        <Edit3 className="w-4 h-4" />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDeletePrompt(prompt.id)}
+                                                        className="p-2 rounded-lg hover:bg-red-500/20 text-dark-400 hover:text-red-400"
+                                                        title="Delete"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            )}
+                        </>
+                    )}
+
+                    {/* Appearance Tab */}
+                    {activeTab === 'appearance' && (
+                        <>
+                            <div>
+                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                    Theme
+                                </label>
+                                <div className="grid grid-cols-3 gap-3">
+                                    {themeOptions.map((option) => {
+                                        const Icon = option.icon;
+                                        const isActive = currentTheme === option.value;
+                                        return (
+                                            <button
+                                                key={option.value}
+                                                onClick={() => onThemeChange?.(option.value)}
+                                                className={`flex flex-col items-center gap-3 p-4 rounded-xl border transition-all duration-200 ${
+                                                    isActive
+                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
+                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
+                                                }`}
+                                            >
+                                                <div className={`p-3 rounded-xl ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
+                                                    <Icon className="w-6 h-6" />
+                                                </div>
+                                                <div className="text-center">
+                                                    <div className="text-sm font-medium flex items-center gap-1.5 justify-center">
+                                                        {option.label}
+                                                        {isActive && <Check className="w-3.5 h-3.5" />}
+                                                    </div>
+                                                    <div className="text-[10px] text-dark-500 mt-0.5">{option.description}</div>
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="border-t border-white/5" />
+
+                            {/* Theme Preview */}
+                            <div>
+                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                    Preview
+                                </label>
+                                <div className={`p-4 rounded-xl border ${
+                                    currentTheme === 'light'
+                                        ? 'bg-white border-gray-200'
+                                        : 'bg-dark-800 border-white/10'
+                                }`}>
+                                    <div className="flex items-start gap-3 mb-3">
+                                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                                            currentTheme === 'light' ? 'bg-gray-100' : 'bg-dark-700'
+                                        }`}>
+                                            <MessageSquare className={`w-4 h-4 ${
+                                                currentTheme === 'light' ? 'text-gray-500' : 'text-dark-400'
+                                            }`} />
+                                        </div>
+                                        <div className={`flex-1 p-3 rounded-lg ${
+                                            currentTheme === 'light' ? 'bg-gray-100' : 'bg-dark-700'
+                                        }`}>
+                                            <p className={`text-sm ${
+                                                currentTheme === 'light' ? 'text-gray-700' : 'text-dark-300'
+                                            }`}>
+                                                This is how messages will appear in {currentTheme === 'system' ? 'your system' : currentTheme} mode.
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-start gap-3 flex-row-reverse">
+                                        <div className="w-8 h-8 rounded-lg bg-primary-500 flex items-center justify-center">
+                                            <span className="text-xs font-bold text-white">U</span>
+                                        </div>
+                                        <div className="flex-1 p-3 rounded-lg bg-primary-500/20">
+                                            <p className="text-sm text-primary-300">
+                                                Your messages will look like this.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        </>
+    );
+}

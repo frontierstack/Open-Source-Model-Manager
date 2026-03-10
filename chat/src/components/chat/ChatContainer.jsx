@@ -1,0 +1,724 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useChatStore } from '../../stores/useChatStore';
+import ChatHeader from './ChatHeader';
+import ChatSidebar from './ChatSidebar';
+import ChatMessages from './ChatMessages';
+import ChatInput from './ChatInput';
+import ChatSettings from './ChatSettings';
+
+/**
+ * ChatContainer - Main chat interface container with Tailwind styling
+ */
+export default function ChatContainer({
+    models,
+    systemPrompts,
+    showSnackbar,
+    user,
+    onLogout,
+}) {
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
+    const [runningInstances, setRunningInstances] = useState([]);
+    const abortControllerRef = useRef(null);
+
+    // Chat store
+    const {
+        conversations,
+        activeConversationId,
+        messages,
+        isStreaming,
+        streamingContent,
+        streamingReasoning,
+        attachments,
+        settings,
+        setConversations,
+        setActiveConversation,
+        addConversation,
+        updateConversation,
+        deleteConversation,
+        setMessages,
+        addMessage,
+        setStreaming,
+        setStreamingContent,
+        setStreamingReasoning,
+        appendStreamingContent,
+        appendStreamingReasoning,
+        clearStreaming,
+        addAttachment,
+        removeAttachment,
+        clearAttachments,
+        updateSettings,
+        theme,
+        setTheme,
+    } = useChatStore();
+
+    // Load conversations on mount
+    useEffect(() => {
+        loadConversations();
+    }, []);
+
+    // Fetch running instances from both backends
+    useEffect(() => {
+        const fetchRunningInstances = async () => {
+            try {
+                const [llamacppRes, vllmRes] = await Promise.allSettled([
+                    fetch('/api/llamacpp/instances', { credentials: 'include' }),
+                    fetch('/api/vllm/instances', { credentials: 'include' }),
+                ]);
+
+                const instances = [];
+
+                // Parse llama.cpp instances
+                if (llamacppRes.status === 'fulfilled' && llamacppRes.value.ok) {
+                    const llamacppData = await llamacppRes.value.json();
+                    const llamacppInstances = Array.isArray(llamacppData) ? llamacppData : (llamacppData.instances || []);
+                    llamacppInstances.forEach(inst => {
+                        instances.push({
+                            name: inst.name || inst.model,
+                            status: 'running',
+                            backend: 'llamacpp',
+                            port: inst.port,
+                        });
+                    });
+                }
+
+                // Parse vLLM instances
+                if (vllmRes.status === 'fulfilled' && vllmRes.value.ok) {
+                    const vllmData = await vllmRes.value.json();
+                    const vllmInstances = Array.isArray(vllmData) ? vllmData : (vllmData.instances || []);
+                    vllmInstances.forEach(inst => {
+                        instances.push({
+                            name: inst.name || inst.model,
+                            status: 'running',
+                            backend: 'vllm',
+                            port: inst.port,
+                        });
+                    });
+                }
+
+                setRunningInstances(instances);
+            } catch (error) {
+                console.error('Failed to fetch running instances:', error);
+            }
+        };
+
+        fetchRunningInstances();
+        // Poll for running instances every 10 seconds
+        const interval = setInterval(fetchRunningInstances, 10000);
+        return () => clearInterval(interval);
+    }, []);
+
+    // Load conversation messages when active changes
+    useEffect(() => {
+        if (activeConversationId) {
+            loadConversationMessages(activeConversationId);
+        }
+    }, [activeConversationId]);
+
+    const loadConversations = async () => {
+        try {
+            const response = await fetch('/api/conversations', { credentials: 'include' });
+            if (response.ok) {
+                const data = await response.json();
+                setConversations(data);
+            }
+        } catch (error) {
+            console.error('Failed to load conversations:', error);
+        }
+    };
+
+    const loadConversationMessages = async (conversationId) => {
+        try {
+            const response = await fetch(`/api/conversations/${conversationId}`, { credentials: 'include' });
+            if (response.ok) {
+                const data = await response.json();
+                setMessages(data.messages || []);
+            }
+        } catch (error) {
+            console.error('Failed to load messages:', error);
+        }
+    };
+
+    const saveMessages = async (conversationId, msgs) => {
+        try {
+            await fetch(`/api/conversations/${conversationId}/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ messages: msgs }),
+            });
+        } catch (error) {
+            console.error('Failed to save messages:', error);
+        }
+    };
+
+    const handleNewConversation = async () => {
+        // Stop any ongoing generation
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+
+        // Clear current state immediately for responsive UI
+        clearStreaming();
+        clearAttachments();
+        setMessages([]);
+        setActiveConversation(null);
+
+        try {
+            const response = await fetch('/api/conversations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ title: 'New Conversation' }),
+            });
+
+            if (response.ok) {
+                const conversation = await response.json();
+                addConversation(conversation);
+                setActiveConversation(conversation.id);
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || 'Failed to create conversation');
+            }
+        } catch (error) {
+            console.error('Failed to create conversation:', error);
+            showSnackbar(error.message || 'Failed to create conversation', 'error');
+        }
+    };
+
+    const handleSelectConversation = (conversationId) => {
+        if (conversationId !== activeConversationId) {
+            // Stop any ongoing generation
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+            }
+            clearStreaming();
+            clearAttachments();
+            setActiveConversation(conversationId);
+        }
+    };
+
+    const handleDeleteConversation = async (conversationId) => {
+        try {
+            const response = await fetch(`/api/conversations/${conversationId}`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
+
+            if (response.ok) {
+                deleteConversation(conversationId);
+                if (conversationId === activeConversationId) {
+                    setMessages([]);
+                    setActiveConversation(null);
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || 'Failed to delete conversation');
+            }
+        } catch (error) {
+            console.error('Failed to delete conversation:', error);
+            showSnackbar(error.message || 'Failed to delete conversation', 'error');
+        }
+    };
+
+    const handleRenameConversation = async (conversationId, newTitle) => {
+        try {
+            const response = await fetch(`/api/conversations/${conversationId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ title: newTitle }),
+            });
+
+            if (response.ok) {
+                updateConversation(conversationId, { title: newTitle });
+            }
+        } catch (error) {
+            console.error('Failed to rename conversation:', error);
+        }
+    };
+
+    /**
+     * Parse error response and return user-friendly message
+     */
+    const parseErrorMessage = (error, response = null) => {
+        // Handle abort errors
+        if (error?.name === 'AbortError') {
+            return { type: 'abort', message: 'Generation stopped' };
+        }
+
+        // Handle network errors
+        if (error?.message === 'Failed to fetch' || error?.name === 'TypeError') {
+            return {
+                type: 'connection',
+                message: 'Connection error: Unable to reach the server. Please check your connection.',
+            };
+        }
+
+        // Handle HTTP errors
+        if (response && !response.ok) {
+            const status = response.status;
+
+            switch (status) {
+                case 401:
+                    return { type: 'auth', message: 'Authentication error: Please log in again.' };
+                case 403:
+                    return { type: 'permission', message: 'Permission denied: You do not have access to this resource.' };
+                case 404:
+                    return { type: 'model', message: 'Model not found: The selected model may have been stopped.' };
+                case 429:
+                    return { type: 'rateLimit', message: 'Rate limit exceeded: Please wait before sending more requests.' };
+                case 500:
+                    return { type: 'server', message: 'Server error: An internal error occurred. Please try again.' };
+                case 502:
+                case 503:
+                case 504:
+                    return { type: 'model', message: 'Model unavailable: The model service is not responding. It may be loading or crashed.' };
+                default:
+                    return { type: 'unknown', message: `Request failed with status ${status}` };
+            }
+        }
+
+        // Handle model-specific errors
+        if (error?.message) {
+            const msg = error.message.toLowerCase();
+
+            if (msg.includes('model') && (msg.includes('not found') || msg.includes('not loaded'))) {
+                return { type: 'model', message: 'Model error: The model is not available. Please start it from the management console.' };
+            }
+
+            if (msg.includes('context') || msg.includes('token') || msg.includes('length')) {
+                return { type: 'context', message: 'Context length exceeded: The conversation is too long. Try starting a new chat.' };
+            }
+
+            if (msg.includes('memory') || msg.includes('oom') || msg.includes('cuda')) {
+                return { type: 'memory', message: 'Memory error: The model ran out of memory. Try reducing context or using a smaller model.' };
+            }
+
+            if (msg.includes('timeout')) {
+                return { type: 'timeout', message: 'Request timeout: The model took too long to respond. Please try again.' };
+            }
+        }
+
+        // Default error
+        return {
+            type: 'unknown',
+            message: error?.message || 'An unexpected error occurred. Please try again.',
+        };
+    };
+
+    const handleSendMessage = async (content, attachedFiles) => {
+        if (!settings.model) {
+            showSnackbar('Please select a model first', 'warning');
+            return;
+        }
+
+        // Check if selected model is still running
+        const modelRunning = runningInstances.some(m => m.name === settings.model);
+        if (!modelRunning && runningInstances.length > 0) {
+            showSnackbar('Selected model is no longer running. Please select another model.', 'warning');
+            return;
+        }
+
+        // Create conversation if none exists
+        let conversationId = activeConversationId;
+        if (!conversationId) {
+            try {
+                const response = await fetch('/api/conversations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ title: content.slice(0, 50) + (content.length > 50 ? '...' : '') }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.message || 'Failed to create conversation');
+                }
+
+                const conversation = await response.json();
+                addConversation(conversation);
+                setActiveConversation(conversation.id);
+                conversationId = conversation.id;
+            } catch (error) {
+                const { message } = parseErrorMessage(error);
+                showSnackbar(message, 'error');
+                return;
+            }
+        }
+
+        // Build message with attachments
+        let fullContent = content;
+        if (attachedFiles && attachedFiles.length > 0) {
+            const attachmentContext = attachedFiles
+                .filter(att => att.type !== 'image')
+                .map(att => `--- ${att.filename} ---\n${att.content}\n`)
+                .join('\n');
+
+            if (attachmentContext) {
+                fullContent = `${attachmentContext}\n---\n\n${content}`;
+            }
+        }
+
+        // Add user message
+        const userMessage = {
+            id: crypto.randomUUID(),
+            role: 'user',
+            content,
+            attachments: attachedFiles?.map(a => ({ filename: a.filename, type: a.type })),
+            timestamp: new Date().toISOString(),
+        };
+
+        const updatedMessages = [...messages, userMessage];
+        addMessage(userMessage);
+        clearAttachments();
+
+        // Start streaming
+        setStreaming(true);
+        setStreamingContent('');
+        setStreamingReasoning('');
+        setIsLoading(true);
+
+        // Prepare messages for API
+        const apiMessages = updatedMessages.map(m => ({
+            role: m.role,
+            content: m.content,
+        }));
+
+        // Add system prompt if selected
+        const selectedSystemPrompt = systemPrompts.find(p => p.id === settings.selectedSystemPromptId);
+        if (selectedSystemPrompt) {
+            apiMessages.unshift({
+                role: 'system',
+                content: selectedSystemPrompt.content,
+            });
+        }
+
+        // Handle web search
+        let searchResults = null;
+        if (settings.webSearchEnabled) {
+            try {
+                setIsLoading(true);
+                const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=3`, {
+                    credentials: 'include',
+                });
+
+                if (searchResponse.ok) {
+                    const searchData = await searchResponse.json();
+                    if (searchData.results && searchData.results.length > 0) {
+                        searchResults = searchData.results;
+
+                        // Format search results for the model
+                        const searchContext = searchData.results
+                            .map((r, i) => {
+                                let resultText = `[${i + 1}] ${r.title}\nURL: ${r.url || r.link}\n`;
+                                if (r.snippet) {
+                                    resultText += `Summary: ${r.snippet}\n`;
+                                }
+                                if (r.content) {
+                                    // Include fetched content if available
+                                    const truncatedContent = r.content.length > 1000
+                                        ? r.content.slice(0, 1000) + '...'
+                                        : r.content;
+                                    resultText += `Content: ${truncatedContent}\n`;
+                                }
+                                return resultText;
+                            })
+                            .join('\n---\n');
+
+                        // Update the last user message with search context
+                        apiMessages[apiMessages.length - 1].content =
+                            `The following web search results are provided for context. Use them to answer the user's question if relevant.\n\n` +
+                            `--- Web Search Results ---\n${searchContext}\n--- End of Search Results ---\n\n` +
+                            `User question: ${content}`;
+                    }
+                } else {
+                    console.warn('Web search returned non-OK status:', searchResponse.status);
+                }
+            } catch (error) {
+                console.error('Web search failed:', error);
+                showSnackbar('Web search failed, proceeding without search results', 'warning');
+            }
+        }
+
+        // Create abort controller for cancellation
+        abortControllerRef.current = new AbortController();
+
+        try {
+            const requestBody = {
+                model: settings.model,
+                messages: apiMessages,
+                temperature: settings.temperature,
+                max_tokens: settings.maxTokens,
+                stream: true,
+            };
+
+            // Include search results metadata if available
+            if (searchResults) {
+                requestBody.searchResults = searchResults;
+            }
+
+            const response = await fetch('/api/chat/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(requestBody),
+                signal: abortControllerRef.current.signal,
+            });
+
+            setIsLoading(false);
+
+            if (!response.ok) {
+                // Try to parse error body
+                let errorBody = null;
+                try {
+                    errorBody = await response.json();
+                } catch {
+                    // Ignore parse errors
+                }
+
+                const { type, message } = parseErrorMessage(
+                    errorBody ? new Error(errorBody.message || errorBody.error) : null,
+                    response
+                );
+
+                throw new Error(message);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let assistantContent = '';
+            let assistantReasoning = '';
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+
+                // Keep the last potentially incomplete line in the buffer
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6).trim();
+                        if (data === '[DONE]') continue;
+                        if (!data) continue;
+
+                        try {
+                            const parsed = JSON.parse(data);
+
+                            // Handle error in stream
+                            if (parsed.error) {
+                                throw new Error(parsed.error.message || parsed.error);
+                            }
+
+                            const delta = parsed.choices?.[0]?.delta;
+
+                            if (delta?.content) {
+                                assistantContent += delta.content;
+                                setStreamingContent(assistantContent);
+                            }
+
+                            if (delta?.reasoning) {
+                                assistantReasoning += delta.reasoning;
+                                setStreamingReasoning(assistantReasoning);
+                            }
+
+                            // Handle finish reason
+                            const finishReason = parsed.choices?.[0]?.finish_reason;
+                            if (finishReason === 'length') {
+                                showSnackbar('Response was cut off due to length limit', 'warning');
+                            }
+                        } catch (e) {
+                            // Only log if it's not a JSON parse error for partial data
+                            if (e.message && !e.message.includes('JSON')) {
+                                console.error('Stream processing error:', e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Process any remaining data in buffer
+            if (buffer.trim() && buffer.startsWith('data: ')) {
+                const data = buffer.slice(6).trim();
+                if (data && data !== '[DONE]') {
+                    try {
+                        const parsed = JSON.parse(data);
+                        const delta = parsed.choices?.[0]?.delta;
+                        if (delta?.content) {
+                            assistantContent += delta.content;
+                        }
+                        if (delta?.reasoning) {
+                            assistantReasoning += delta.reasoning;
+                        }
+                    } catch {
+                        // Ignore final parse errors
+                    }
+                }
+            }
+
+            // Add assistant message
+            const assistantMessage = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: assistantContent,
+                reasoning: assistantReasoning || undefined,
+                timestamp: new Date().toISOString(),
+                searchResults: searchResults ? searchResults.length : undefined,
+            };
+
+            const finalMessages = [...updatedMessages, assistantMessage];
+            addMessage(assistantMessage);
+            saveMessages(conversationId, finalMessages);
+
+            // Update conversation title if it's the first message
+            if (updatedMessages.length === 1) {
+                handleRenameConversation(
+                    conversationId,
+                    content.slice(0, 50) + (content.length > 50 ? '...' : '')
+                );
+            }
+
+        } catch (error) {
+            const { type, message } = parseErrorMessage(error);
+
+            if (type === 'abort') {
+                showSnackbar(message, 'info');
+            } else {
+                console.error('Chat error:', error);
+                showSnackbar(message, 'error');
+
+                // Add error message to chat for context
+                const errorMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: `Error: ${message}`,
+                    isError: true,
+                    timestamp: new Date().toISOString(),
+                };
+                addMessage(errorMessage);
+            }
+        } finally {
+            setIsLoading(false);
+            clearStreaming();
+            abortControllerRef.current = null;
+        }
+    };
+
+    const handleStopGeneration = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+    };
+
+    const handleModelChange = (modelName) => {
+        updateSettings({ model: modelName });
+    };
+
+    // Combine models prop with running instances for comprehensive list
+    const combinedModels = React.useMemo(() => {
+        const modelMap = new Map();
+
+        // Add models from props (may include stopped models)
+        const modelsArray = Array.isArray(models) ? models : [];
+        modelsArray.forEach(m => {
+            modelMap.set(m.name, { ...m });
+        });
+
+        // Update/add running instances (these are definitely running)
+        runningInstances.forEach(inst => {
+            const existing = modelMap.get(inst.name);
+            if (existing) {
+                modelMap.set(inst.name, { ...existing, status: 'running', backend: inst.backend });
+            } else {
+                modelMap.set(inst.name, inst);
+            }
+        });
+
+        return Array.from(modelMap.values());
+    }, [models, runningInstances]);
+
+    // Auto-select first running model if none selected
+    useEffect(() => {
+        const runningModels = combinedModels.filter(m => m.status === 'running');
+        if (!settings.model && runningModels.length > 0) {
+            updateSettings({ model: runningModels[0].name });
+        } else if (settings.model && runningModels.length > 0) {
+            // Check if currently selected model is still running
+            const stillRunning = runningModels.some(m => m.name === settings.model);
+            if (!stillRunning) {
+                // Auto-switch to first available model
+                updateSettings({ model: runningModels[0].name });
+                showSnackbar(`Model "${settings.model}" stopped. Switched to "${runningModels[0].name}"`, 'info');
+            }
+        }
+    }, [combinedModels, settings.model]);
+
+    return (
+        <div className="flex h-full overflow-hidden">
+            {/* Sidebar */}
+            <ChatSidebar
+                conversations={conversations}
+                activeConversationId={activeConversationId}
+                onSelectConversation={handleSelectConversation}
+                onNewConversation={handleNewConversation}
+                onDeleteConversation={handleDeleteConversation}
+                onRenameConversation={handleRenameConversation}
+            />
+
+            {/* Main chat area */}
+            <div className="flex-1 flex flex-col overflow-hidden bg-dark-950">
+                {/* Header */}
+                <ChatHeader
+                    models={combinedModels}
+                    selectedModel={settings.model}
+                    onModelChange={handleModelChange}
+                    webSearchEnabled={settings.webSearchEnabled}
+                    onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
+                    onSettingsClick={() => setSettingsOpen(true)}
+                    onNewChat={handleNewConversation}
+                    isLoading={isLoading}
+                    user={user}
+                    onLogout={onLogout}
+                    theme={theme}
+                    onThemeChange={setTheme}
+                />
+
+                {/* Messages */}
+                <ChatMessages
+                    messages={messages}
+                    isStreaming={isStreaming}
+                    streamingContent={streamingContent}
+                    streamingReasoning={streamingReasoning}
+                />
+
+                {/* Input */}
+                <ChatInput
+                    onSend={handleSendMessage}
+                    onStop={handleStopGeneration}
+                    isStreaming={isStreaming}
+                    disabled={!settings.model}
+                    attachments={attachments}
+                    onAddAttachment={addAttachment}
+                    onRemoveAttachment={removeAttachment}
+                    systemPrompts={systemPrompts}
+                    selectedSystemPromptId={settings.selectedSystemPromptId}
+                    onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
+                />
+            </div>
+
+            {/* Settings drawer */}
+            <ChatSettings
+                open={settingsOpen}
+                onClose={() => setSettingsOpen(false)}
+                settings={settings}
+                onUpdateSettings={updateSettings}
+                systemPrompts={systemPrompts}
+            />
+        </div>
+    );
+}
