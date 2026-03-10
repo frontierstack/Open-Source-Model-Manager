@@ -18,8 +18,13 @@ function initialize(passport) {
                 return done(null, false, { message: 'Login failed' });
             }
 
+            // Check if user account is pending (hasn't completed registration)
+            if (user.status === 'pending') {
+                return done(null, false, { message: 'Account registration incomplete. Please complete your registration.' });
+            }
+
             // Check if user is disabled
-            if (user.disabled) {
+            if (user.status === 'disabled') {
                 return done(null, false, { message: 'Account is disabled' });
             }
 

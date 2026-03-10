@@ -50,7 +50,7 @@ export const useChatStore = create(
         attachments: [],
 
         // Theme (persisted to localStorage)
-        theme: loadFromStorage(STORAGE_KEYS.THEME, 'midnight'),
+        theme: loadFromStorage(STORAGE_KEYS.THEME, 'dark'),
 
         // System Prompts (persisted to localStorage)
         systemPrompts: loadFromStorage(STORAGE_KEYS.SYSTEM_PROMPTS, []),

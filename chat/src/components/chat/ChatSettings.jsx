@@ -54,16 +54,26 @@ export default function ChatSettings({
 
     // Font options
     const fontSizeOptions = [
-        { value: 'small', label: 'Small', description: 'Compact text' },
-        { value: 'medium', label: 'Medium', description: 'Default size' },
-        { value: 'large', label: 'Large', description: 'Easier to read' },
+        { value: 'small', label: 'Small' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'large', label: 'Large' },
     ];
 
     const fontFamilyOptions = [
-        { value: 'system', label: 'System', description: 'Default system font' },
-        { value: 'sans', label: 'Sans Serif', description: 'Clean and modern' },
-        { value: 'serif', label: 'Serif', description: 'Classic and elegant' },
-        { value: 'mono', label: 'Monospace', description: 'Fixed-width code font' },
+        { value: 'system', label: 'System Default' },
+        { value: 'inter', label: 'Inter' },
+        { value: 'roboto', label: 'Roboto' },
+        { value: 'opensans', label: 'Open Sans' },
+        { value: 'lato', label: 'Lato' },
+        { value: 'poppins', label: 'Poppins' },
+        { value: 'nunito', label: 'Nunito' },
+        { value: 'sourcesans', label: 'Source Sans Pro' },
+        { value: 'merriweather', label: 'Merriweather' },
+        { value: 'playfair', label: 'Playfair Display' },
+        { value: 'georgia', label: 'Georgia' },
+        { value: 'jetbrains', label: 'JetBrains Mono' },
+        { value: 'firacode', label: 'Fira Code' },
+        { value: 'consolas', label: 'Consolas' },
     ];
 
     // Reset state when modal closes
@@ -114,14 +124,17 @@ export default function ChatSettings({
     ];
 
     const themeOptions = [
-        { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Dark zinc theme (default)' },
-        { value: 'obsidian', label: 'Obsidian', icon: Moon, description: 'Pure black OLED theme' },
-        { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Calm blues and teals' },
+        { value: 'dark', label: 'Dark', icon: Moon, description: 'Default dark theme' },
+        { value: 'light', label: 'Light', icon: Sun, description: 'Clean white theme' },
+        { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Purple accents' },
+        { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Deep blue theme' },
         { value: 'forest', label: 'Forest', icon: Sparkles, description: 'Natural greens' },
-        { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm oranges and reds' },
-        { value: 'matrix', label: 'Matrix', icon: Code, description: 'Classic green terminal' },
-        { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon pink and cyan' },
-        { value: 'light', label: 'Light', icon: Sun, description: 'Clean light theme' },
+        { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm orange tones' },
+        { value: 'rose', label: 'Rose', icon: Sparkles, description: 'Soft pink theme' },
+        { value: 'nord', label: 'Nord', icon: Moon, description: 'Arctic color palette' },
+        { value: 'dracula', label: 'Dracula', icon: Moon, description: 'Popular dark theme' },
+        { value: 'matrix', label: 'Matrix', icon: Code, description: 'Hacker terminal' },
+        { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon vibes' },
     ];
 
     const currentTheme = theme || 'system';
@@ -589,35 +602,22 @@ export default function ChatSettings({
 
                             {/* Font Family */}
                             <div>
-                                <label className="block text-sm font-medium text-dark-200 mb-3">
-                                    Font Style
+                                <label className="block text-sm font-medium text-dark-200 mb-2">
+                                    Font Family
                                 </label>
-                                <div className="grid grid-cols-2 gap-3">
-                                    {fontFamilyOptions.map((option) => {
-                                        const isActive = fontFamily === option.value;
-                                        const fontClass = option.value === 'mono' ? 'font-mono' :
-                                                          option.value === 'serif' ? 'font-serif' : '';
-                                        return (
-                                            <button
-                                                key={option.value}
-                                                onClick={() => onUpdateSettings({ fontFamily: option.value })}
-                                                className={`flex items-center gap-3 p-3 rounded-xl border transition-all duration-200 ${
-                                                    isActive
-                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
-                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
-                                                }`}
-                                            >
-                                                <span className={`text-lg ${fontClass}`}>Aa</span>
-                                                <div className="text-left">
-                                                    <div className="text-xs font-medium flex items-center gap-1">
-                                                        {option.label}
-                                                        {isActive && <Check className="w-3 h-3" />}
-                                                    </div>
-                                                    <div className="text-[10px] text-dark-500">{option.description}</div>
-                                                </div>
-                                            </button>
-                                        );
-                                    })}
+                                <div className="relative">
+                                    <select
+                                        value={fontFamily}
+                                        onChange={(e) => onUpdateSettings({ fontFamily: e.target.value })}
+                                        className="w-full px-3 py-2 bg-dark-800/80 border border-white/10 rounded-lg text-dark-200 text-sm appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
+                                    >
+                                        {fontFamilyOptions.map((option) => (
+                                            <option key={option.value} value={option.value}>
+                                                {option.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
                                 </div>
                             </div>
 

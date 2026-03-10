@@ -56,9 +56,11 @@ show_menu() {
     echo "1) List all users"
     echo "2) Reset user password"
     echo "3) Delete a user"
-    echo "4) Delete ALL users"
-    echo "5) Create admin user"
-    echo "6) Exit"
+    echo "4) Disable a user"
+    echo "5) Enable a user"
+    echo "6) Delete ALL users (reset)"
+    echo "7) Create admin user"
+    echo "8) Exit"
     echo ""
 }
 
@@ -73,7 +75,7 @@ list_users() {
             echo 'No users found.'
             exit 0
         fi
-        cat '$CONTAINER_USERS_FILE' | jq -r '.[] | \"\(.username) (\(.email)) - Role: \(.role) - Created: \(.createdAt)\"' 2>/dev/null || echo 'No users found or invalid JSON'
+        cat '$CONTAINER_USERS_FILE' | jq -r '.[] | \"\(.username // \"(pending)\") (\(.email)) - Role: \(.role) - Status: \(.status // \"active\")\"' 2>/dev/null || echo 'No users found or invalid JSON'
     "
 }
 
@@ -181,6 +183,95 @@ delete_user() {
     fi
 }
 
+disable_user() {
+    echo ""
+    read -p "Enter username to disable: " USERNAME
+
+    if [ -z "$USERNAME" ]; then
+        echo -e "${RED}Error: Username cannot be empty${NC}"
+        return
+    fi
+
+    docker exec "$WEBAPP_CONTAINER" node -e "
+        const fs = require('fs');
+        const path = '/models/.modelserver/users.json';
+
+        try {
+            const users = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const userIndex = users.findIndex(u => u.username && u.username.toLowerCase() === '$USERNAME'.toLowerCase());
+
+            if (userIndex === -1) {
+                console.error('User not found');
+                process.exit(1);
+            }
+
+            // Check if this is the only admin
+            if (users[userIndex].role === 'admin') {
+                const activeAdmins = users.filter(u => u.role === 'admin' && u.status !== 'disabled');
+                if (activeAdmins.length <= 1) {
+                    console.error('Cannot disable the only admin account');
+                    process.exit(1);
+                }
+            }
+
+            users[userIndex].status = 'disabled';
+            users[userIndex].updatedAt = new Date().toISOString();
+
+            fs.writeFileSync(path, JSON.stringify(users, null, 2));
+            console.log('User disabled successfully');
+        } catch (error) {
+            console.error('Error:', error.message);
+            process.exit(1);
+        }
+    "
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ User disabled: $USERNAME${NC}"
+    else
+        echo -e "${RED}✗ Failed to disable user${NC}"
+    fi
+}
+
+enable_user() {
+    echo ""
+    read -p "Enter username to enable: " USERNAME
+
+    if [ -z "$USERNAME" ]; then
+        echo -e "${RED}Error: Username cannot be empty${NC}"
+        return
+    fi
+
+    docker exec "$WEBAPP_CONTAINER" node -e "
+        const fs = require('fs');
+        const path = '/models/.modelserver/users.json';
+
+        try {
+            const users = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const userIndex = users.findIndex(u => u.username && u.username.toLowerCase() === '$USERNAME'.toLowerCase());
+
+            if (userIndex === -1) {
+                console.error('User not found');
+                process.exit(1);
+            }
+
+            users[userIndex].status = 'active';
+            users[userIndex].updatedAt = new Date().toISOString();
+
+            fs.writeFileSync(path, JSON.stringify(users, null, 2));
+            console.log('User enabled successfully');
+        } catch (error) {
+            console.error('Error:', error.message);
+            process.exit(1);
+        }
+    "
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ User enabled: $USERNAME${NC}"
+    else
+        echo -e "${RED}✗ Failed to enable user${NC}"
+    fi
+}
+
 delete_all_users() {
     echo ""
     echo -e "${RED}WARNING: This will delete ALL user accounts and sessions!${NC}"
@@ -263,6 +354,7 @@ create_admin() {
                 email: '$EMAIL',
                 passwordHash: passwordHash,
                 role: 'admin',
+                status: 'active',
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             };
@@ -293,15 +385,17 @@ create_admin() {
 # Main loop
 while true; do
     show_menu
-    read -p "Select an option (1-6): " CHOICE
+    read -p "Select an option (1-8): " CHOICE
 
     case $CHOICE in
         1) list_users ;;
         2) reset_password ;;
         3) delete_user ;;
-        4) delete_all_users ;;
-        5) create_admin ;;
-        6) echo "Goodbye!"; exit 0 ;;
+        4) disable_user ;;
+        5) enable_user ;;
+        6) delete_all_users ;;
+        7) create_admin ;;
+        8) echo "Goodbye!"; exit 0 ;;
         *) echo -e "${RED}Invalid option${NC}" ;;
     esac
 done

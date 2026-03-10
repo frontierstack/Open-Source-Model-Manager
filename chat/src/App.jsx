@@ -5,8 +5,200 @@ import { useChatStore } from './stores/useChatStore';
 import { ToastProvider, useShowSnackbar } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
 
+// Password Reset Form
+function PasswordResetForm({ onBack, onSuccess }) {
+    const [username, setUsername] = useState('');
+    const [email, setEmail] = useState('');
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+    const [showNewPassword, setShowNewPassword] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState(false);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+
+        if (newPassword !== confirmPassword) {
+            setError('New passwords do not match');
+            return;
+        }
+
+        if (newPassword.length < 8) {
+            setError('New password must be at least 8 characters');
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const response = await fetch('/api/auth/reset-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, email, currentPassword, newPassword }),
+            });
+
+            if (response.ok) {
+                setSuccess(true);
+                setTimeout(() => {
+                    onSuccess?.();
+                    onBack();
+                }, 2000);
+            } else {
+                const data = await response.json();
+                setError(data.error || 'Password reset failed');
+            }
+        } catch (err) {
+            setError('Network error. Please try again.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-screen flex items-center justify-center relative overflow-hidden" style={{ backgroundColor: 'var(--bg-primary)' }}>
+            <div className="absolute top-[10%] left-[10%] w-[400px] h-[400px] rounded-full blur-[100px] pointer-events-none animate-pulse-subtle" style={{ backgroundColor: 'var(--accent-muted)' }} />
+            <div className="absolute bottom-[10%] right-[10%] w-[350px] h-[350px] rounded-full blur-[100px] pointer-events-none animate-pulse-subtle" style={{ backgroundColor: 'var(--accent-muted)', opacity: 0.5 }} />
+
+            <div className="w-full max-w-[420px] mx-4 relative z-10 animate-in">
+                <div className="text-center mb-8">
+                    <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4 shadow-lg" style={{ background: 'linear-gradient(135deg, var(--accent-secondary), var(--accent-primary))', boxShadow: '0 8px 24px var(--shadow-accent)' }}>
+                        <MessageSquare className="w-8 h-8 text-white" />
+                    </div>
+                    <h1 className="text-3xl font-bold text-gradient mb-1">Reset Password</h1>
+                    <p style={{ color: 'var(--text-tertiary)' }} className="text-sm">Enter your credentials to reset</p>
+                </div>
+
+                <div className="glass-card p-8">
+                    {error && (
+                        <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm animate-slide-down">
+                            {error}
+                        </div>
+                    )}
+
+                    {success && (
+                        <div className="mb-6 p-4 rounded-xl bg-green-500/10 border border-green-500/20 text-green-400 text-sm animate-slide-down">
+                            Password reset successfully! Redirecting...
+                        </div>
+                    )}
+
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Username</label>
+                            <input
+                                type="text"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                className="input-field w-full"
+                                placeholder="Enter your username"
+                                disabled={loading || success}
+                                autoFocus
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Email</label>
+                            <input
+                                type="email"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                className="input-field w-full"
+                                placeholder="Enter your email"
+                                disabled={loading || success}
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Current Password</label>
+                            <div className="relative">
+                                <input
+                                    type={showCurrentPassword ? 'text' : 'password'}
+                                    value={currentPassword}
+                                    onChange={(e) => setCurrentPassword(e.target.value)}
+                                    className="input-field w-full pr-12"
+                                    placeholder="Enter current password"
+                                    disabled={loading || success}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
+                                    style={{ color: 'var(--text-tertiary)' }}
+                                >
+                                    {showCurrentPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>New Password</label>
+                            <div className="relative">
+                                <input
+                                    type={showNewPassword ? 'text' : 'password'}
+                                    value={newPassword}
+                                    onChange={(e) => setNewPassword(e.target.value)}
+                                    className="input-field w-full pr-12"
+                                    placeholder="Enter new password (min 8 chars)"
+                                    disabled={loading || success}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowNewPassword(!showNewPassword)}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
+                                    style={{ color: 'var(--text-tertiary)' }}
+                                >
+                                    {showNewPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Confirm New Password</label>
+                            <input
+                                type="password"
+                                value={confirmPassword}
+                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                className="input-field w-full"
+                                placeholder="Confirm new password"
+                                disabled={loading || success}
+                            />
+                        </div>
+
+                        <button
+                            type="submit"
+                            disabled={loading || success || !username || !email || !currentPassword || !newPassword || !confirmPassword}
+                            className="btn-primary w-full py-3 text-base flex items-center justify-center gap-2"
+                        >
+                            {loading ? (
+                                <>
+                                    <Loader2 className="w-5 h-5 animate-spin" />
+                                    Resetting...
+                                </>
+                            ) : (
+                                'Reset Password'
+                            )}
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={onBack}
+                            disabled={loading}
+                            className="w-full py-2 text-sm transition-colors"
+                            style={{ color: 'var(--text-tertiary)' }}
+                        >
+                            Back to Sign In
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // Modern Login component with Tailwind
-function LoginForm({ onLogin, error, loading }) {
+function LoginForm({ onLogin, error, loading, onShowResetPassword }) {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
@@ -103,6 +295,17 @@ function LoginForm({ onLogin, error, loading }) {
                             )}
                         </button>
                     </form>
+
+                    <div className="mt-4 text-center">
+                        <button
+                            type="button"
+                            onClick={onShowResetPassword}
+                            className="text-sm transition-colors hover:underline"
+                            style={{ color: 'var(--accent-primary)' }}
+                        >
+                            Forgot Password?
+                        </button>
+                    </div>
                 </div>
 
                 {/* Footer note */}
@@ -120,6 +323,7 @@ function AppContent() {
     const [loading, setLoading] = useState(true);
     const [loginError, setLoginError] = useState('');
     const [loginLoading, setLoginLoading] = useState(false);
+    const [showResetPassword, setShowResetPassword] = useState(false);
     const [models, setModels] = useState([]);
     const [systemPrompts, setSystemPrompts] = useState([]);
 
@@ -287,6 +491,16 @@ function AppContent() {
         );
     }
 
+    // Show password reset form
+    if (!user && showResetPassword) {
+        return (
+            <PasswordResetForm
+                onBack={() => setShowResetPassword(false)}
+                onSuccess={() => setLoginError('')}
+            />
+        );
+    }
+
     // Show login form if not authenticated
     if (!user) {
         return (
@@ -294,6 +508,7 @@ function AppContent() {
                 onLogin={handleLogin}
                 error={loginError}
                 loading={loginLoading}
+                onShowResetPassword={() => setShowResetPassword(true)}
             />
         );
     }

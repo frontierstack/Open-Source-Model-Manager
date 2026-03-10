@@ -1769,12 +1769,46 @@ streamChat('Write a short poem about coding', 'your_bearer_token');`
             // ============================================================================
             // AUTHENTICATION
             // ============================================================================
+            '/api/auth/has-users': {
+                curl: `# Check if any users exist (for first admin setup)
+curl -k -X GET ${baseUrl}/api/auth/has-users`,
+                python: `import requests
+
+response = requests.get(
+    '${baseUrl}/api/auth/has-users',
+    verify=False
+)
+
+result = response.json()
+if result['hasUsers']:
+    print("Users exist - registration requires pre-registered email")
+else:
+    print("No users - first registration becomes admin")`,
+                powershell: `$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/has-users" -Method Get
+if ($response.hasUsers) {
+    Write-Output "Users exist - registration requires pre-registered email"
+} else {
+    Write-Output "No users - first registration becomes admin"
+}`,
+                javascript: `fetch('${baseUrl}/api/auth/has-users')
+.then(res => res.json())
+.then(data => {
+  if (data.hasUsers) {
+    console.log('Users exist - registration requires pre-registered email');
+  } else {
+    console.log('No users - first registration becomes admin');
+  }
+})
+.catch(err => console.error(err));`
+            },
             '/api/auth/register': {
                 curl: `# Register a new user account
+# First user becomes admin, subsequent users need pre-registered email
 curl -k -X POST ${baseUrl}/api/auth/register \\
   -H "Content-Type: application/json" \\
   -d '{
     "username": "newuser",
+    "email": "user@example.com",
     "password": "securepassword123"
   }'`,
                 python: `import requests
@@ -1783,6 +1817,7 @@ response = requests.post(
     '${baseUrl}/api/auth/register',
     json={
         'username': 'newuser',
+        'email': 'user@example.com',
         'password': 'securepassword123'
     },
     verify=False
@@ -1791,10 +1826,13 @@ response = requests.post(
 result = response.json()
 if response.status_code == 201:
     print(f"User created: {result['user']['username']}")
+    if result.get('isFirstUser'):
+        print("This is the admin account!")
 else:
     print(f"Error: {result['error']}")`,
                 powershell: `$body = @{
     username = "newuser"
+    email = "user@example.com"
     password = "securepassword123"
 } | ConvertTo-Json
 
@@ -1805,11 +1843,15 @@ Write-Output "User created: $($response.user.username)"`,
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     username: 'newuser',
+    email: 'user@example.com',
     password: 'securepassword123'
   })
 })
 .then(res => res.json())
-.then(data => console.log('User created:', data.user?.username))
+.then(data => {
+  console.log('User created:', data.user?.username);
+  if (data.isFirstUser) console.log('This is the admin account!');
+})
 .catch(err => console.error(err));`
             },
             '/api/auth/login': {
@@ -1858,6 +1900,167 @@ Write-Output "Login successful!"`,
 })
 .then(res => res.json())
 .then(data => console.log('Login successful:', data.user?.username))
+.catch(err => console.error(err));`
+            },
+            '/api/auth/reset-password': {
+                curl: `# Self-service password reset (requires username, email, current password)
+curl -k -X POST ${baseUrl}/api/auth/reset-password \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "username": "youruser",
+    "email": "your@email.com",
+    "currentPassword": "oldpassword",
+    "newPassword": "newpassword123"
+  }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/auth/reset-password',
+    json={
+        'username': 'youruser',
+        'email': 'your@email.com',
+        'currentPassword': 'oldpassword',
+        'newPassword': 'newpassword123'
+    },
+    verify=False
+)
+
+if response.status_code == 200:
+    print("Password reset successful!")
+else:
+    print(f"Error: {response.json()['error']}")`,
+                powershell: `$body = @{
+    username = "youruser"
+    email = "your@email.com"
+    currentPassword = "oldpassword"
+    newPassword = "newpassword123"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/reset-password" -Method Post -Body $body -ContentType "application/json"
+Write-Output "Password reset successful!"`,
+                javascript: `fetch('${baseUrl}/api/auth/reset-password', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    username: 'youruser',
+    email: 'your@email.com',
+    currentPassword: 'oldpassword',
+    newPassword: 'newpassword123'
+  })
+})
+.then(res => res.json())
+.then(data => console.log(data.success ? 'Password reset!' : data.error))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // USER MANAGEMENT (Admin Only)
+            // ============================================================================
+            '/api/users/invite': {
+                curl: `# Invite user by email (admin only) - creates pending account
+# Bearer Token or Session Authentication required
+curl -k -X POST ${baseUrl}/api/users/invite \\
+  -H "Authorization: Bearer your_admin_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "email": "newuser@example.com" }'`,
+                python: `import requests
+
+response = requests.post(
+    '${baseUrl}/api/users/invite',
+    headers={'Authorization': 'Bearer your_admin_token'},
+    json={'email': 'newuser@example.com'},
+    verify=False
+)
+
+result = response.json()
+if response.status_code == 201:
+    print(f"Invitation sent to {result['user']['email']}")
+else:
+    print(f"Error: {result['error']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_admin_token"
+}
+$body = @{ email = "newuser@example.com" } | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/users/invite" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+Write-Output "Invitation sent to $($response.user.email)"`,
+                javascript: `fetch('${baseUrl}/api/users/invite', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_admin_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ email: 'newuser@example.com' })
+})
+.then(res => res.json())
+.then(data => console.log('Invitation sent:', data.user?.email))
+.catch(err => console.error(err));`
+            },
+            '/api/users/:id/disable': {
+                curl: `# Disable user account (admin only)
+curl -k -X PUT ${baseUrl}/api/users/USER_ID_HERE/disable \\
+  -H "Authorization: Bearer your_admin_token"`,
+                python: `import requests
+
+user_id = "USER_ID_HERE"
+response = requests.put(
+    f'${baseUrl}/api/users/{user_id}/disable',
+    headers={'Authorization': 'Bearer your_admin_token'},
+    verify=False
+)
+
+result = response.json()
+if result.get('success'):
+    print(f"User {result['user']['username']} disabled")
+else:
+    print(f"Error: {result['error']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_admin_token"
+}
+$userId = "USER_ID_HERE"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/users/$userId/disable" -Method Put -Headers $headers
+Write-Output "User $($response.user.username) disabled"`,
+                javascript: `const userId = 'USER_ID_HERE';
+fetch(\`${baseUrl}/api/users/\${userId}/disable\`, {
+  method: 'PUT',
+  headers: { 'Authorization': 'Bearer your_admin_token' }
+})
+.then(res => res.json())
+.then(data => console.log('User disabled:', data.user?.username))
+.catch(err => console.error(err));`
+            },
+            '/api/users/:id/enable': {
+                curl: `# Enable user account (admin only)
+curl -k -X PUT ${baseUrl}/api/users/USER_ID_HERE/enable \\
+  -H "Authorization: Bearer your_admin_token"`,
+                python: `import requests
+
+user_id = "USER_ID_HERE"
+response = requests.put(
+    f'${baseUrl}/api/users/{user_id}/enable',
+    headers={'Authorization': 'Bearer your_admin_token'},
+    verify=False
+)
+
+result = response.json()
+if result.get('success'):
+    print(f"User {result['user']['username']} enabled")
+else:
+    print(f"Error: {result['error']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_admin_token"
+}
+$userId = "USER_ID_HERE"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/users/$userId/enable" -Method Put -Headers $headers
+Write-Output "User $($response.user.username) enabled"`,
+                javascript: `const userId = 'USER_ID_HERE';
+fetch(\`${baseUrl}/api/users/\${userId}/enable\`, {
+  method: 'PUT',
+  headers: { 'Authorization': 'Bearer your_admin_token' }
+})
+.then(res => res.json())
+.then(data => console.log('User enabled:', data.user?.username))
 .catch(err => console.error(err));`
             },
             // ============================================================================
@@ -6030,8 +6233,10 @@ fetch('${baseUrl}/api/apps', {
                                                             <MenuItem value="/api/chat/stream">POST /api/chat/stream - Streaming Chat (SSE)</MenuItem>
                                                             <MenuItem value="/api/complete">POST /api/complete - Text Completion</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Authentication ───</MenuItem>
+                                                            <MenuItem value="/api/auth/has-users">GET /api/auth/has-users - Check If Users Exist</MenuItem>
                                                             <MenuItem value="/api/auth/register">POST /api/auth/register - Register User</MenuItem>
                                                             <MenuItem value="/api/auth/login">POST /api/auth/login - Login</MenuItem>
+                                                            <MenuItem value="/api/auth/reset-password">POST /api/auth/reset-password - Reset Password (Self-Service)</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Models ───</MenuItem>
                                                             <MenuItem value="/api/models">GET /api/models - List Models</MenuItem>
                                                             <MenuItem value="/api/models/pull">POST /api/models/pull - Download Model</MenuItem>
@@ -6061,11 +6266,14 @@ fetch('${baseUrl}/api/apps', {
                                                             <MenuItem value="/api/agent/file/read">POST /api/agent/file/read - Read File</MenuItem>
                                                             <MenuItem value="/api/agent/file/write">POST /api/agent/file/write - Write File</MenuItem>
                                                             <MenuItem value="/api/agent/file/list">POST /api/agent/file/list - List Directory</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── User Management ───</MenuItem>
-                                                            <MenuItem value="/api/users">GET /api/users - List Users (Admin)</MenuItem>
-                                                            <MenuItem value="/api/users/:id">PUT /api/users/:id - Update User (Admin)</MenuItem>
-                                                            <MenuItem value="/api/users/:id/delete">DELETE /api/users/:id - Delete User (Admin)</MenuItem>
-                                                            <MenuItem value="/api/users/:username/reset-password">POST /api/users/:username/reset-password - Reset Password (Admin)</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── User Management (Admin) ───</MenuItem>
+                                                            <MenuItem value="/api/users">GET /api/users - List Users</MenuItem>
+                                                            <MenuItem value="/api/users/invite">POST /api/users/invite - Invite User by Email</MenuItem>
+                                                            <MenuItem value="/api/users/:id">PUT /api/users/:id - Update User</MenuItem>
+                                                            <MenuItem value="/api/users/:id/disable">PUT /api/users/:id/disable - Disable User</MenuItem>
+                                                            <MenuItem value="/api/users/:id/enable">PUT /api/users/:id/enable - Enable User</MenuItem>
+                                                            <MenuItem value="/api/users/:id/delete">DELETE /api/users/:id - Delete User</MenuItem>
+                                                            <MenuItem value="/api/users/:username/reset-password">POST /api/users/:username/reset-password - Admin Reset Password</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Admin ───</MenuItem>
                                                             <MenuItem value="/api/api-keys">GET/POST /api/api-keys - Manage API Keys</MenuItem>
                                                         </Select>

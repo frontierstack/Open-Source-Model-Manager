@@ -77,24 +77,23 @@ async function getUserByEmail(email) {
 }
 
 /**
- * Create a new user
- * @param {Object} userData - User data
- * @param {string} userData.username - Username (required)
- * @param {string} userData.email - Email address (required)
- * @param {string} userData.password - Plain text password (required)
- * @param {string} userData.role - User role (optional, defaults to 'user')
- * @returns {Promise<Object>} Created user object (without password)
+ * Check if any users exist (for first admin setup)
+ * @returns {Promise<boolean>} True if users exist
  */
-async function createUser({ username, email, password, role = 'user' }) {
-    // Validate required fields
-    if (!username || !email || !password) {
-        throw new Error('Username, email, and password are required');
-    }
+async function hasAnyUsers() {
+    const users = await loadUsers();
+    return users.length > 0;
+}
 
-    // Check if username already exists
-    const existingUser = await getUserByUsername(username);
-    if (existingUser) {
-        throw new Error('Username already exists');
+/**
+ * Create a pending user (admin invites user with email only)
+ * User must complete registration with username and password
+ * @param {string} email - Email address
+ * @returns {Promise<Object>} Created pending user object
+ */
+async function createPendingUser(email) {
+    if (!email) {
+        throw new Error('Email is required');
     }
 
     // Check if email already exists
@@ -103,9 +102,123 @@ async function createUser({ username, email, password, role = 'user' }) {
         throw new Error('Email already exists');
     }
 
+    // Create pending user object
+    const user = {
+        id: crypto.randomUUID(),
+        email,
+        status: 'pending', // pending, active, disabled
+        role: 'user',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    };
+
+    // Save to file
+    const users = await loadUsers();
+    users.push(user);
+    await saveUsers(users);
+
+    return user;
+}
+
+/**
+ * Complete registration for a pending user
+ * @param {string} email - Email address
+ * @param {string} username - Username
+ * @param {string} password - Password
+ * @returns {Promise<Object>} Completed user object (without password)
+ */
+async function completeRegistration(email, username, password) {
+    if (!email || !username || !password) {
+        throw new Error('Email, username, and password are required');
+    }
+
+    const users = await loadUsers();
+    const index = users.findIndex(u => u.email.toLowerCase() === email.toLowerCase());
+
+    if (index === -1) {
+        throw new Error('Email not found. Please contact an admin to be invited.');
+    }
+
+    if (users[index].status === 'active') {
+        throw new Error('Account already activated');
+    }
+
+    if (users[index].status === 'disabled') {
+        throw new Error('Account is disabled');
+    }
+
+    // Check if username already exists
+    const existingUser = users.find(u => u.username && u.username.toLowerCase() === username.toLowerCase());
+    if (existingUser) {
+        throw new Error('Username already exists');
+    }
+
     // Hash password
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
+
+    // Complete registration
+    users[index] = {
+        ...users[index],
+        username,
+        passwordHash,
+        status: 'active',
+        updatedAt: new Date().toISOString()
+    };
+
+    await saveUsers(users);
+
+    const { passwordHash: _, ...userWithoutPassword } = users[index];
+    return userWithoutPassword;
+}
+
+/**
+ * Create a new user (full registration)
+ * @param {Object} userData - User data
+ * @param {string} userData.username - Username (required)
+ * @param {string} userData.email - Email address (required)
+ * @param {string} userData.password - Plain text password (required)
+ * @param {string} userData.role - User role (optional, defaults to 'user')
+ * @param {boolean} isFirstUser - If true, bypasses email pre-registration requirement
+ * @returns {Promise<Object>} Created user object (without password)
+ */
+async function createUser({ username, email, password, role = 'user' }, isFirstUser = false) {
+    // Validate required fields
+    if (!username || !email || !password) {
+        throw new Error('Username, email, and password are required');
+    }
+
+    const users = await loadUsers();
+
+    // If not first user, check if email was pre-registered (pending user)
+    if (!isFirstUser && users.length > 0) {
+        const pendingUser = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.status === 'pending');
+        if (pendingUser) {
+            // Complete the pending registration
+            return completeRegistration(email, username, password);
+        }
+        // Email not pre-registered
+        throw new Error('Email not pre-registered. Please contact an admin to be invited.');
+    }
+
+    // Check if username already exists
+    const existingUser = users.find(u => u.username && u.username.toLowerCase() === username.toLowerCase());
+    if (existingUser) {
+        throw new Error('Username already exists');
+    }
+
+    // Check if email already exists (active user)
+    const existingEmail = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.status === 'active');
+    if (existingEmail) {
+        throw new Error('Email already exists');
+    }
+
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(password, salt);
+
+    // First user becomes admin
+    const actualRole = users.length === 0 ? 'admin' : role;
 
     // Create user object
     const user = {
@@ -113,13 +226,13 @@ async function createUser({ username, email, password, role = 'user' }) {
         username,
         email,
         passwordHash,
-        role,
+        role: actualRole,
+        status: 'active',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
     };
 
     // Save to file
-    const users = await loadUsers();
     users.push(user);
     await saveUsers(users);
 
@@ -234,7 +347,7 @@ async function changePassword(id, currentPassword, newPassword) {
  */
 async function adminResetPassword(username, newPassword) {
     const users = await loadUsers();
-    const index = users.findIndex(user => user.username.toLowerCase() === username.toLowerCase());
+    const index = users.findIndex(user => user.username && user.username.toLowerCase() === username.toLowerCase());
 
     if (index === -1) {
         throw new Error('User not found');
@@ -252,16 +365,116 @@ async function adminResetPassword(username, newPassword) {
     return true;
 }
 
+/**
+ * Self-service password reset (requires username, email, and current password)
+ * @param {string} username - Username
+ * @param {string} email - Email address
+ * @param {string} currentPassword - Current password
+ * @param {string} newPassword - New password
+ * @returns {Promise<boolean>} True if password reset
+ */
+async function selfServicePasswordReset(username, email, currentPassword, newPassword) {
+    const users = await loadUsers();
+    const index = users.findIndex(user =>
+        user.username &&
+        user.username.toLowerCase() === username.toLowerCase() &&
+        user.email.toLowerCase() === email.toLowerCase()
+    );
+
+    if (index === -1) {
+        throw new Error('Invalid username or email');
+    }
+
+    if (users[index].status === 'disabled') {
+        throw new Error('Account is disabled');
+    }
+
+    // Verify current password
+    const isMatch = await bcrypt.compare(currentPassword, users[index].passwordHash);
+    if (!isMatch) {
+        throw new Error('Current password is incorrect');
+    }
+
+    // Hash new password
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(newPassword, salt);
+
+    // Update user
+    users[index].passwordHash = passwordHash;
+    users[index].updatedAt = new Date().toISOString();
+
+    await saveUsers(users);
+    return true;
+}
+
+/**
+ * Disable a user account
+ * @param {string} id - User ID
+ * @returns {Promise<Object>} Updated user object
+ */
+async function disableUser(id) {
+    const users = await loadUsers();
+    const index = users.findIndex(user => user.id === id);
+
+    if (index === -1) {
+        throw new Error('User not found');
+    }
+
+    // Can't disable the last admin
+    if (users[index].role === 'admin') {
+        const activeAdmins = users.filter(u => u.role === 'admin' && u.status === 'active');
+        if (activeAdmins.length <= 1) {
+            throw new Error('Cannot disable the only admin account');
+        }
+    }
+
+    users[index].status = 'disabled';
+    users[index].updatedAt = new Date().toISOString();
+
+    await saveUsers(users);
+
+    const { passwordHash: _, ...userWithoutPassword } = users[index];
+    return userWithoutPassword;
+}
+
+/**
+ * Enable a user account
+ * @param {string} id - User ID
+ * @returns {Promise<Object>} Updated user object
+ */
+async function enableUser(id) {
+    const users = await loadUsers();
+    const index = users.findIndex(user => user.id === id);
+
+    if (index === -1) {
+        throw new Error('User not found');
+    }
+
+    users[index].status = 'active';
+    users[index].updatedAt = new Date().toISOString();
+
+    await saveUsers(users);
+
+    const { passwordHash: _, ...userWithoutPassword } = users[index];
+    return userWithoutPassword;
+}
+
 module.exports = {
     getUserById,
     getUserByUsername,
     getUserByEmail,
     createUser,
+    createPendingUser,
+    completeRegistration,
     updateUser,
     deleteUser,
+    disableUser,
+    enableUser,
     getAllUsers,
+    hasAnyUsers,
     changePassword,
     adminResetPassword,
+    selfServicePasswordReset,
     loadUsers,
     saveUsers
 };

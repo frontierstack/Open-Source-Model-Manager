@@ -838,9 +838,36 @@ const broadcast = (data, targetUserId = null) => {
 // AUTHENTICATION ENDPOINTS
 // ============================================================================
 
-const { createUser, getUserById, changePassword, getAllUsers, updateUser, deleteUser, adminResetPassword } = require('./auth/users');
+const {
+    createUser,
+    getUserById,
+    changePassword,
+    getAllUsers,
+    updateUser,
+    deleteUser,
+    adminResetPassword,
+    createPendingUser,
+    completeRegistration,
+    disableUser,
+    enableUser,
+    hasAnyUsers,
+    selfServicePasswordReset
+} = require('./auth/users');
+
+// Check if any users exist (for first admin setup)
+app.get('/api/auth/has-users', async (req, res) => {
+    try {
+        const hasUsers = await hasAnyUsers();
+        res.json({ hasUsers });
+    } catch (error) {
+        console.error('Check users error:', error);
+        res.status(500).json({ error: 'Failed to check users' });
+    }
+});
 
 // Register a new user (rate limited to prevent brute force)
+// First user becomes admin and bypasses email requirement
+// Subsequent users must have email pre-registered by admin
 app.post('/api/auth/register', authRateLimiter, async (req, res) => {
     try {
         const { username, email, password } = req.body;
@@ -854,7 +881,10 @@ app.post('/api/auth/register', authRateLimiter, async (req, res) => {
             return res.status(400).json({ error: 'Password must be at least 8 characters long' });
         }
 
-        const user = await createUser({ username, email, password });
+        // Check if this is the first user (becomes admin)
+        const isFirstUser = !(await hasAnyUsers());
+
+        const user = await createUser({ username, email, password }, isFirstUser);
 
         res.status(201).json({
             success: true,
@@ -864,11 +894,36 @@ app.post('/api/auth/register', authRateLimiter, async (req, res) => {
                 email: user.email,
                 role: user.role,
                 createdAt: user.createdAt
-            }
+            },
+            isFirstUser
         });
     } catch (error) {
         console.error('Registration error:', error);
         res.status(400).json({ error: error.message || 'Registration failed' });
+    }
+});
+
+// Self-service password reset (requires username, email, and current password)
+app.post('/api/auth/reset-password', authRateLimiter, async (req, res) => {
+    try {
+        const { username, email, currentPassword, newPassword } = req.body;
+
+        if (!username || !email || !currentPassword || !newPassword) {
+            return res.status(400).json({
+                error: 'Username, email, current password, and new password are required'
+            });
+        }
+
+        if (newPassword.length < 8) {
+            return res.status(400).json({ error: 'New password must be at least 8 characters long' });
+        }
+
+        await selfServicePasswordReset(username, email, currentPassword, newPassword);
+
+        res.json({ success: true, message: 'Password reset successfully' });
+    } catch (error) {
+        console.error('Self-service password reset error:', error);
+        res.status(400).json({ error: error.message || 'Password reset failed' });
     }
 });
 
@@ -1133,6 +1188,87 @@ app.post('/api/users', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Create user error:', error);
         res.status(400).json({ error: error.message || 'Failed to create user' });
+    }
+});
+
+// Invite user by email (admin only) - creates pending user
+app.post('/api/users/invite', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ error: 'Email is required' });
+        }
+
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+
+        const user = await createPendingUser(email);
+        res.status(201).json({
+            success: true,
+            user,
+            message: `Invitation created for ${email}. User can now register with this email.`
+        });
+    } catch (error) {
+        console.error('Invite user error:', error);
+        res.status(400).json({ error: error.message || 'Failed to invite user' });
+    }
+});
+
+// Disable user (admin only)
+app.put('/api/users/:id/disable', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { id } = req.params;
+
+        // Prevent disabling self
+        if (id === req.user.id) {
+            return res.status(400).json({ error: 'Cannot disable your own account' });
+        }
+
+        const user = await disableUser(id);
+        res.json({
+            success: true,
+            user,
+            message: 'User disabled successfully'
+        });
+    } catch (error) {
+        console.error('Disable user error:', error);
+        res.status(400).json({ error: error.message || 'Failed to disable user' });
+    }
+});
+
+// Enable user (admin only)
+app.put('/api/users/:id/enable', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { id } = req.params;
+
+        const user = await enableUser(id);
+        res.json({
+            success: true,
+            user,
+            message: 'User enabled successfully'
+        });
+    } catch (error) {
+        console.error('Enable user error:', error);
+        res.status(400).json({ error: error.message || 'Failed to enable user' });
     }
 });
 

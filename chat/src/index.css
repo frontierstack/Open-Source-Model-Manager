@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Open+Sans:wght@300;400;600&family=Lato:wght@300;400;700&family=Poppins:wght@300;400;500;600&family=Nunito:wght@300;400;600&family=Source+Sans+Pro:wght@300;400;600&family=Merriweather:wght@300;400;700&family=Playfair+Display:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Fira+Code:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -32,54 +34,54 @@
 }
 
 /* ============================================
-   Theme: Midnight (Default)
-   Dark zinc/slate theme inspired by ChatGPT
+   Theme: Dark (Default)
+   Clean dark theme with blue accents
    ============================================ */
 :root,
-.theme-midnight {
+.theme-dark {
     /* RGB values for Tailwind rgba() */
-    --primary-rgb: 139, 92, 246;
+    --primary-rgb: 59, 130, 246;
 
     /* Background colors */
-    --bg-primary: #18181b;      /* zinc-900 */
-    --bg-secondary: #27272a;    /* zinc-800 */
-    --bg-tertiary: #3f3f46;     /* zinc-700 */
-    --bg-elevated: #1f1f23;     /* slightly lighter than primary */
+    --bg-primary: #111113;
+    --bg-secondary: #1a1a1e;
+    --bg-tertiary: #252529;
+    --bg-elevated: #161618;
     --bg-hover: rgba(255, 255, 255, 0.05);
     --bg-active: rgba(255, 255, 255, 0.08);
 
     /* Surface colors for cards/panels */
-    --surface-primary: rgba(39, 39, 42, 0.8);   /* zinc-800 with opacity */
-    --surface-secondary: rgba(63, 63, 70, 0.6); /* zinc-700 with opacity */
-    --surface-glass: rgba(24, 24, 27, 0.85);
+    --surface-primary: rgba(26, 26, 30, 0.9);
+    --surface-secondary: rgba(37, 37, 41, 0.8);
+    --surface-glass: rgba(17, 17, 19, 0.9);
 
     /* Text colors */
-    --text-primary: #fafafa;    /* zinc-50 */
-    --text-secondary: #a1a1aa;  /* zinc-400 */
-    --text-tertiary: #71717a;   /* zinc-500 */
-    --text-muted: #52525b;      /* zinc-600 */
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --text-muted: #52525b;
 
-    /* Border colors - thinner, more subtle */
+    /* Border colors */
     --border-primary: rgba(255, 255, 255, 0.08);
     --border-secondary: rgba(255, 255, 255, 0.04);
     --border-hover: rgba(255, 255, 255, 0.12);
-    --border-focus: rgba(139, 92, 246, 0.4);
+    --border-focus: rgba(59, 130, 246, 0.4);
 
-    /* Accent/Brand colors */
-    --accent-primary: #8b5cf6;   /* violet-500 */
-    --accent-secondary: #7c3aed; /* violet-600 */
-    --accent-hover: #a78bfa;     /* violet-400 */
-    --accent-muted: rgba(139, 92, 246, 0.2);
+    /* Accent/Brand colors - blue */
+    --accent-primary: #3b82f6;
+    --accent-secondary: #2563eb;
+    --accent-hover: #60a5fa;
+    --accent-muted: rgba(59, 130, 246, 0.15);
 
     /* User message gradient */
-    --user-msg-from: #7c3aed;   /* violet-600 */
-    --user-msg-to: #6d28d9;     /* violet-700 */
-    --user-msg-hover-from: #8b5cf6; /* violet-500 */
-    --user-msg-hover-to: #7c3aed;   /* violet-600 */
+    --user-msg-from: #2563eb;
+    --user-msg-to: #1d4ed8;
+    --user-msg-hover-from: #3b82f6;
+    --user-msg-hover-to: #2563eb;
 
     /* Assistant message */
-    --assistant-bg: rgba(39, 39, 42, 0.6);
-    --assistant-border: rgba(255, 255, 255, 0.08);
+    --assistant-bg: rgba(26, 26, 30, 0.7);
+    --assistant-border: rgba(255, 255, 255, 0.06);
 
     /* Status colors */
     --success: #22c55e;
@@ -93,17 +95,73 @@
     --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
 
     /* Code blocks */
-    --code-bg: #09090b;         /* zinc-950 */
-    --code-header-bg: rgba(39, 39, 42, 0.5);
+    --code-bg: #0a0a0c;
+    --code-header-bg: rgba(26, 26, 30, 0.6);
     --code-border: rgba(255, 255, 255, 0.05);
 
     /* Input */
+    --input-bg: rgba(17, 17, 19, 0.7);
+    --input-border: rgba(255, 255, 255, 0.1);
+    --input-focus-border: rgba(59, 130, 246, 0.5);
+    --input-focus-ring: rgba(59, 130, 246, 0.15);
+
+    /* Shadow colors */
+    --shadow-accent: rgba(59, 130, 246, 0.25);
+    --shadow-accent-hover: rgba(59, 130, 246, 0.35);
+}
+
+/* ============================================
+   Theme: Midnight
+   Purple-accented dark theme
+   ============================================ */
+.theme-midnight {
+    --primary-rgb: 139, 92, 246;
+    --bg-primary: #18181b;
+    --bg-secondary: #27272a;
+    --bg-tertiary: #3f3f46;
+    --bg-elevated: #1f1f23;
+    --bg-hover: rgba(255, 255, 255, 0.05);
+    --bg-active: rgba(255, 255, 255, 0.08);
+
+    --surface-primary: rgba(39, 39, 42, 0.8);
+    --surface-secondary: rgba(63, 63, 70, 0.6);
+    --surface-glass: rgba(24, 24, 27, 0.85);
+
+    --text-primary: #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --text-muted: #52525b;
+
+    --border-primary: rgba(255, 255, 255, 0.08);
+    --border-secondary: rgba(255, 255, 255, 0.04);
+    --border-hover: rgba(255, 255, 255, 0.12);
+    --border-focus: rgba(139, 92, 246, 0.4);
+
+    --accent-primary: #8b5cf6;
+    --accent-secondary: #7c3aed;
+    --accent-hover: #a78bfa;
+    --accent-muted: rgba(139, 92, 246, 0.2);
+
+    --user-msg-from: #7c3aed;
+    --user-msg-to: #6d28d9;
+    --user-msg-hover-from: #8b5cf6;
+    --user-msg-hover-to: #7c3aed;
+
+    --assistant-bg: rgba(39, 39, 42, 0.6);
+    --assistant-border: rgba(255, 255, 255, 0.08);
+
+    --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+
+    --code-bg: #09090b;
+    --code-header-bg: rgba(39, 39, 42, 0.5);
+    --code-border: rgba(255, 255, 255, 0.05);
+
     --input-bg: rgba(24, 24, 27, 0.6);
     --input-border: rgba(255, 255, 255, 0.1);
     --input-focus-border: rgba(139, 92, 246, 0.5);
     --input-focus-ring: rgba(139, 92, 246, 0.2);
 
-    /* Shadow colors */
     --shadow-accent: rgba(139, 92, 246, 0.3);
     --shadow-accent-hover: rgba(139, 92, 246, 0.4);
 }
@@ -456,63 +514,241 @@
 
 /* ============================================
    Theme: Light
-   Clean light theme for daytime use
+   Clean white theme with blue accents
    ============================================ */
 .theme-light {
-    --primary-rgb: 124, 58, 237;
+    --primary-rgb: 37, 99, 235;
     --bg-primary: #ffffff;
-    --bg-secondary: #f4f4f5;
-    --bg-tertiary: #e4e4e7;
-    --bg-elevated: #fafafa;
-    --bg-hover: rgba(0, 0, 0, 0.04);
-    --bg-active: rgba(0, 0, 0, 0.08);
+    --bg-secondary: #f8fafc;
+    --bg-tertiary: #f1f5f9;
+    --bg-elevated: #ffffff;
+    --bg-hover: rgba(0, 0, 0, 0.03);
+    --bg-active: rgba(0, 0, 0, 0.06);
 
-    --surface-primary: rgba(255, 255, 255, 0.9);
-    --surface-secondary: rgba(244, 244, 245, 0.9);
-    --surface-glass: rgba(255, 255, 255, 0.85);
+    --surface-primary: rgba(255, 255, 255, 0.95);
+    --surface-secondary: rgba(248, 250, 252, 0.95);
+    --surface-glass: rgba(255, 255, 255, 0.9);
 
-    --text-primary: #18181b;
-    --text-secondary: #52525b;
-    --text-tertiary: #71717a;
-    --text-muted: #a1a1aa;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-tertiary: #64748b;
+    --text-muted: #94a3b8;
 
-    --border-primary: rgba(0, 0, 0, 0.1);
-    --border-secondary: rgba(0, 0, 0, 0.05);
-    --border-hover: rgba(0, 0, 0, 0.15);
-    --border-focus: rgba(124, 58, 237, 0.5);
+    --border-primary: rgba(0, 0, 0, 0.08);
+    --border-secondary: rgba(0, 0, 0, 0.04);
+    --border-hover: rgba(0, 0, 0, 0.12);
+    --border-focus: rgba(37, 99, 235, 0.4);
 
-    --accent-primary: #7c3aed;
-    --accent-secondary: #6d28d9;
-    --accent-hover: #8b5cf6;
-    --accent-muted: rgba(124, 58, 237, 0.15);
+    --accent-primary: #2563eb;
+    --accent-secondary: #1d4ed8;
+    --accent-hover: #3b82f6;
+    --accent-muted: rgba(37, 99, 235, 0.1);
 
-    --user-msg-from: #7c3aed;
-    --user-msg-to: #6d28d9;
-    --user-msg-hover-from: #8b5cf6;
-    --user-msg-hover-to: #7c3aed;
+    --user-msg-from: #2563eb;
+    --user-msg-to: #1d4ed8;
+    --user-msg-hover-from: #3b82f6;
+    --user-msg-hover-to: #2563eb;
 
-    --assistant-bg: rgba(244, 244, 245, 0.8);
-    --assistant-border: rgba(0, 0, 0, 0.08);
+    --assistant-bg: rgba(248, 250, 252, 0.9);
+    --assistant-border: rgba(0, 0, 0, 0.06);
 
-    --scrollbar-thumb: rgba(0, 0, 0, 0.15);
-    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.12);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.2);
 
-    --code-bg: #f4f4f5;
-    --code-header-bg: rgba(228, 228, 231, 0.8);
-    --code-border: rgba(0, 0, 0, 0.08);
+    --code-bg: #f8fafc;
+    --code-header-bg: rgba(241, 245, 249, 0.9);
+    --code-border: rgba(0, 0, 0, 0.06);
 
-    --input-bg: rgba(255, 255, 255, 0.9);
-    --input-border: rgba(0, 0, 0, 0.12);
-    --input-focus-border: rgba(124, 58, 237, 0.5);
-    --input-focus-ring: rgba(124, 58, 237, 0.15);
+    --input-bg: rgba(255, 255, 255, 0.95);
+    --input-border: rgba(0, 0, 0, 0.1);
+    --input-focus-border: rgba(37, 99, 235, 0.5);
+    --input-focus-ring: rgba(37, 99, 235, 0.12);
 
-    --shadow-accent: rgba(124, 58, 237, 0.2);
-    --shadow-accent-hover: rgba(124, 58, 237, 0.3);
+    --shadow-accent: rgba(37, 99, 235, 0.15);
+    --shadow-accent-hover: rgba(37, 99, 235, 0.25);
 
     --success: #16a34a;
     --warning: #d97706;
     --error: #dc2626;
     --info: #2563eb;
+}
+
+/* ============================================
+   Theme: Rose
+   Soft pink and rose-toned theme
+   ============================================ */
+.theme-rose {
+    --primary-rgb: 244, 63, 94;
+    --bg-primary: #0f0a0b;
+    --bg-secondary: #1a1214;
+    --bg-tertiary: #261a1d;
+    --bg-elevated: #140d0f;
+    --bg-hover: rgba(244, 63, 94, 0.08);
+    --bg-active: rgba(244, 63, 94, 0.12);
+
+    --surface-primary: rgba(26, 18, 20, 0.9);
+    --surface-secondary: rgba(38, 26, 29, 0.8);
+    --surface-glass: rgba(15, 10, 11, 0.95);
+
+    --text-primary: #fdf2f4;
+    --text-secondary: #fda4af;
+    --text-tertiary: #fb7185;
+    --text-muted: #9f1239;
+
+    --border-primary: rgba(244, 63, 94, 0.15);
+    --border-secondary: rgba(244, 63, 94, 0.08);
+    --border-hover: rgba(244, 63, 94, 0.25);
+    --border-focus: rgba(244, 63, 94, 0.5);
+
+    --accent-primary: #f43f5e;
+    --accent-secondary: #e11d48;
+    --accent-hover: #fb7185;
+    --accent-muted: rgba(244, 63, 94, 0.15);
+
+    --user-msg-from: #e11d48;
+    --user-msg-to: #be123c;
+    --user-msg-hover-from: #f43f5e;
+    --user-msg-hover-to: #e11d48;
+
+    --assistant-bg: rgba(26, 18, 20, 0.8);
+    --assistant-border: rgba(244, 63, 94, 0.12);
+
+    --scrollbar-thumb: rgba(244, 63, 94, 0.2);
+    --scrollbar-thumb-hover: rgba(244, 63, 94, 0.35);
+
+    --code-bg: #0a0607;
+    --code-header-bg: rgba(26, 18, 20, 0.7);
+    --code-border: rgba(244, 63, 94, 0.1);
+
+    --input-bg: rgba(20, 13, 15, 0.8);
+    --input-border: rgba(244, 63, 94, 0.2);
+    --input-focus-border: rgba(244, 63, 94, 0.5);
+    --input-focus-ring: rgba(244, 63, 94, 0.15);
+
+    --shadow-accent: rgba(244, 63, 94, 0.3);
+    --shadow-accent-hover: rgba(244, 63, 94, 0.4);
+}
+
+/* ============================================
+   Theme: Nord
+   Arctic, north-bluish color palette
+   ============================================ */
+.theme-nord {
+    --primary-rgb: 136, 192, 208;
+    --bg-primary: #2e3440;
+    --bg-secondary: #3b4252;
+    --bg-tertiary: #434c5e;
+    --bg-elevated: #343a47;
+    --bg-hover: rgba(136, 192, 208, 0.08);
+    --bg-active: rgba(136, 192, 208, 0.12);
+
+    --surface-primary: rgba(59, 66, 82, 0.9);
+    --surface-secondary: rgba(67, 76, 94, 0.8);
+    --surface-glass: rgba(46, 52, 64, 0.95);
+
+    --text-primary: #eceff4;
+    --text-secondary: #d8dee9;
+    --text-tertiary: #a3be8c;
+    --text-muted: #4c566a;
+
+    --border-primary: rgba(136, 192, 208, 0.15);
+    --border-secondary: rgba(136, 192, 208, 0.08);
+    --border-hover: rgba(136, 192, 208, 0.25);
+    --border-focus: rgba(136, 192, 208, 0.5);
+
+    --accent-primary: #88c0d0;
+    --accent-secondary: #81a1c1;
+    --accent-hover: #8fbcbb;
+    --accent-muted: rgba(136, 192, 208, 0.15);
+
+    --user-msg-from: #5e81ac;
+    --user-msg-to: #4c6b94;
+    --user-msg-hover-from: #81a1c1;
+    --user-msg-hover-to: #5e81ac;
+
+    --assistant-bg: rgba(59, 66, 82, 0.8);
+    --assistant-border: rgba(136, 192, 208, 0.12);
+
+    --scrollbar-thumb: rgba(136, 192, 208, 0.2);
+    --scrollbar-thumb-hover: rgba(136, 192, 208, 0.35);
+
+    --code-bg: #242933;
+    --code-header-bg: rgba(59, 66, 82, 0.7);
+    --code-border: rgba(136, 192, 208, 0.1);
+
+    --input-bg: rgba(52, 58, 71, 0.8);
+    --input-border: rgba(136, 192, 208, 0.2);
+    --input-focus-border: rgba(136, 192, 208, 0.5);
+    --input-focus-ring: rgba(136, 192, 208, 0.15);
+
+    --shadow-accent: rgba(136, 192, 208, 0.25);
+    --shadow-accent-hover: rgba(136, 192, 208, 0.35);
+
+    --success: #a3be8c;
+    --warning: #ebcb8b;
+    --error: #bf616a;
+    --info: #88c0d0;
+}
+
+/* ============================================
+   Theme: Dracula
+   Famous dark theme with vibrant colors
+   ============================================ */
+.theme-dracula {
+    --primary-rgb: 189, 147, 249;
+    --bg-primary: #282a36;
+    --bg-secondary: #343746;
+    --bg-tertiary: #44475a;
+    --bg-elevated: #2e303e;
+    --bg-hover: rgba(189, 147, 249, 0.08);
+    --bg-active: rgba(189, 147, 249, 0.12);
+
+    --surface-primary: rgba(52, 55, 70, 0.9);
+    --surface-secondary: rgba(68, 71, 90, 0.8);
+    --surface-glass: rgba(40, 42, 54, 0.95);
+
+    --text-primary: #f8f8f2;
+    --text-secondary: #bd93f9;
+    --text-tertiary: #6272a4;
+    --text-muted: #44475a;
+
+    --border-primary: rgba(189, 147, 249, 0.15);
+    --border-secondary: rgba(189, 147, 249, 0.08);
+    --border-hover: rgba(189, 147, 249, 0.25);
+    --border-focus: rgba(189, 147, 249, 0.5);
+
+    --accent-primary: #bd93f9;
+    --accent-secondary: #9d79d9;
+    --accent-hover: #caa7fa;
+    --accent-muted: rgba(189, 147, 249, 0.15);
+
+    --user-msg-from: #bd93f9;
+    --user-msg-to: #9d79d9;
+    --user-msg-hover-from: #caa7fa;
+    --user-msg-hover-to: #bd93f9;
+
+    --assistant-bg: rgba(52, 55, 70, 0.8);
+    --assistant-border: rgba(189, 147, 249, 0.12);
+
+    --scrollbar-thumb: rgba(189, 147, 249, 0.2);
+    --scrollbar-thumb-hover: rgba(189, 147, 249, 0.35);
+
+    --code-bg: #21222c;
+    --code-header-bg: rgba(52, 55, 70, 0.7);
+    --code-border: rgba(189, 147, 249, 0.1);
+
+    --input-bg: rgba(46, 48, 62, 0.8);
+    --input-border: rgba(189, 147, 249, 0.2);
+    --input-focus-border: rgba(189, 147, 249, 0.5);
+    --input-focus-ring: rgba(189, 147, 249, 0.15);
+
+    --shadow-accent: rgba(189, 147, 249, 0.3);
+    --shadow-accent-hover: rgba(189, 147, 249, 0.4);
+
+    --success: #50fa7b;
+    --warning: #f1fa8c;
+    --error: #ff5555;
+    --info: #8be9fd;
 }
 
 /* ============================================
@@ -555,14 +791,44 @@
     body.font-family-system {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
-    body.font-family-sans {
-        font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+    body.font-family-inter {
+        font-family: "Inter", -apple-system, sans-serif;
     }
-    body.font-family-serif {
-        font-family: "Georgia", "Times New Roman", Times, serif;
+    body.font-family-roboto {
+        font-family: "Roboto", -apple-system, sans-serif;
     }
-    body.font-family-mono {
-        font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, monospace;
+    body.font-family-opensans {
+        font-family: "Open Sans", -apple-system, sans-serif;
+    }
+    body.font-family-lato {
+        font-family: "Lato", -apple-system, sans-serif;
+    }
+    body.font-family-poppins {
+        font-family: "Poppins", -apple-system, sans-serif;
+    }
+    body.font-family-nunito {
+        font-family: "Nunito", -apple-system, sans-serif;
+    }
+    body.font-family-sourcesans {
+        font-family: "Source Sans Pro", -apple-system, sans-serif;
+    }
+    body.font-family-merriweather {
+        font-family: "Merriweather", Georgia, serif;
+    }
+    body.font-family-playfair {
+        font-family: "Playfair Display", Georgia, serif;
+    }
+    body.font-family-georgia {
+        font-family: Georgia, "Times New Roman", serif;
+    }
+    body.font-family-jetbrains {
+        font-family: "JetBrains Mono", "Fira Code", monospace;
+    }
+    body.font-family-firacode {
+        font-family: "Fira Code", "JetBrains Mono", monospace;
+    }
+    body.font-family-consolas {
+        font-family: Consolas, "Courier New", monospace;
     }
 
     /* Selection styling */
