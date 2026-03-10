@@ -17,6 +17,8 @@ import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import AddIcon from '@mui/icons-material/Add';
 import MenuIcon from '@mui/icons-material/Menu';
+import StarIcon from '@mui/icons-material/Star';
+import StarBorderIcon from '@mui/icons-material/StarBorder';
 
 /**
  * ChatSidebar - Conversation history list with mobile support
@@ -28,6 +30,7 @@ export default function ChatSidebar({
     onNewConversation,
     onDeleteConversation,
     onRenameConversation,
+    onToggleFavorite,
     collapsed,
 }) {
     const [editingId, setEditingId] = useState(null);
@@ -195,6 +198,24 @@ export default function ChatSidebar({
                                 </Box>
                             ) : (
                                 <>
+                                    {/* Favorite star - always visible when favorited */}
+                                    {conversation.favorite && (
+                                        <IconButton
+                                            size="small"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onToggleFavorite?.(conversation.id);
+                                            }}
+                                            sx={{
+                                                color: 'warning.main',
+                                                p: 0.25,
+                                                mr: 0.5,
+                                                minWidth: 'auto'
+                                            }}
+                                        >
+                                            <StarIcon sx={{ fontSize: 14 }} />
+                                        </IconButton>
+                                    )}
                                     <ListItemText
                                         primary={conversation.title}
                                         secondary={formatDate(conversation.updatedAt || conversation.createdAt)}
@@ -215,6 +236,24 @@ export default function ChatSidebar({
                                             gap: 0,
                                         }}
                                     >
+                                        {/* Favorite toggle - only show unfavorite star in actions when not already favorited */}
+                                        <IconButton
+                                            size="small"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onToggleFavorite?.(conversation.id);
+                                            }}
+                                            sx={{
+                                                color: conversation.favorite ? 'warning.main' : 'text.secondary',
+                                                p: 0.25
+                                            }}
+                                        >
+                                            {conversation.favorite ? (
+                                                <StarIcon sx={{ fontSize: 14 }} />
+                                            ) : (
+                                                <StarBorderIcon sx={{ fontSize: 14 }} />
+                                            )}
+                                        </IconButton>
                                         <IconButton
                                             size="small"
                                             onClick={(e) => handleStartEdit(conversation, e)}

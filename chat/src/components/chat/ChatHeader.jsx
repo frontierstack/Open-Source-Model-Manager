@@ -5,7 +5,8 @@ import {
     Plus,
     LogOut,
     Circle,
-    Loader2
+    Loader2,
+    Check
 } from 'lucide-react';
 
 /**

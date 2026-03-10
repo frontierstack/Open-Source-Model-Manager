@@ -5866,12 +5866,12 @@ app.get('/api/conversations/:id', requireAuth, async (req, res) => {
     }
 });
 
-// Update a conversation (title, etc.)
+// Update a conversation (title, favorite, etc.)
 app.put('/api/conversations/:id', requireAuth, async (req, res) => {
     try {
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const { id } = req.params;
-        const { title } = req.body;
+        const { title, favorite } = req.body;
 
         const conversations = await loadConversationsIndex(userId);
         const index = conversations.findIndex(c => c.id === id);
@@ -5880,11 +5880,23 @@ app.put('/api/conversations/:id', requireAuth, async (req, res) => {
             return res.status(404).json({ error: 'Conversation not found' });
         }
 
-        conversations[index] = {
+        // Build update object
+        const updates = {
             ...conversations[index],
-            title: title || conversations[index].title,
             updatedAt: new Date().toISOString()
         };
+
+        // Only update title if provided
+        if (title !== undefined) {
+            updates.title = title;
+        }
+
+        // Only update favorite if provided (allow toggling on/off)
+        if (favorite !== undefined) {
+            updates.favorite = Boolean(favorite);
+        }
+
+        conversations[index] = updates;
 
         await saveConversationsIndex(userId, conversations);
         res.json(conversations[index]);

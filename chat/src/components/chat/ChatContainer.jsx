@@ -416,6 +416,7 @@ export default function ChatContainer({
 
         // Create conversation if none exists
         let conversationId = activeConversationId;
+        let isNewConversation = false;
         if (!conversationId) {
             try {
                 const response = await fetch('/api/conversations', {
@@ -434,6 +435,7 @@ export default function ChatContainer({
                 addConversation(conversation);
                 setActiveConversation(conversation.id);
                 conversationId = conversation.id;
+                isNewConversation = true;
             } catch (error) {
                 const { message } = parseErrorMessage(error);
                 showSnackbar(message, 'error');
@@ -463,9 +465,17 @@ export default function ChatContainer({
             timestamp: new Date().toISOString(),
         };
 
-        const updatedMessages = [...messages, userMessage];
-        addMessage(userMessage);
+        // For new conversations, start with empty array to avoid stale closure issues
+        // For existing conversations, use the current messages from the store
+        const currentMessages = isNewConversation ? [] : useChatStore.getState().messages;
+        const updatedMessages = [...currentMessages, userMessage];
+
+        // Update store with messages (including user message)
+        setMessages(updatedMessages);
         clearAttachments();
+
+        // Save user message immediately so it persists on refresh
+        saveMessages(conversationId, updatedMessages);
 
         // Start streaming
         setStreaming(true);
@@ -678,12 +688,14 @@ export default function ChatContainer({
                 tokenCount: tokenCount > 0 ? tokenCount : undefined,
             };
 
-            const finalMessages = [...updatedMessages, assistantMessage];
+            // Get current messages from store to ensure we have the latest state
+            const currentMsgs = useChatStore.getState().messages;
+            const finalMessages = [...currentMsgs, assistantMessage];
             addMessage(assistantMessage);
             saveMessages(conversationId, finalMessages);
 
-            // Update conversation title if it's the first message
-            if (updatedMessages.length === 1) {
+            // Update conversation title if it's the first message (user message only)
+            if (currentMsgs.length === 1) {
                 handleRenameConversation(
                     conversationId,
                     content.slice(0, 50) + (content.length > 50 ? '...' : '')

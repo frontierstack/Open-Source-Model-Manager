@@ -241,6 +241,29 @@ export default function ChatContainer({
         }
     };
 
+    const handleToggleFavorite = async (conversationId) => {
+        // Find current conversation to toggle its favorite status
+        const conversation = conversations.find(c => c.id === conversationId);
+        if (!conversation) return;
+
+        const newFavoriteStatus = !conversation.favorite;
+
+        try {
+            const response = await fetch(`/api/conversations/${conversationId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ favorite: newFavoriteStatus }),
+            });
+
+            if (response.ok) {
+                updateConversation(conversationId, { favorite: newFavoriteStatus });
+            }
+        } catch (error) {
+            console.error('Failed to toggle favorite:', error);
+        }
+    };
+
     const handleSendMessage = async (content, attachedFiles) => {
         if (!settings.model) {
             showSnackbar('Please select a model first', 'warning');
@@ -503,6 +526,7 @@ export default function ChatContainer({
                 onNewConversation={handleNewConversation}
                 onDeleteConversation={handleDeleteConversation}
                 onRenameConversation={handleRenameConversation}
+                onToggleFavorite={handleToggleFavorite}
             />
 
             {/* Main chat area */}

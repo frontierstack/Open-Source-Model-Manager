@@ -588,7 +588,7 @@ export default function ChatInput({
                             {isStreaming ? (
                                 <button
                                     onClick={onStop}
-                                    className="w-8 h-8 rounded-lg
+                                    className="w-7 h-7 rounded-lg
                                                bg-red-500/20 text-red-400
                                                hover:bg-red-500/30
                                                active:scale-95
@@ -597,7 +597,7 @@ export default function ChatInput({
                                     aria-label="Stop"
                                     title="Stop"
                                 >
-                                    <Square className="w-3.5 h-3.5 fill-current" />
+                                    <Square className="w-3 h-3 fill-current" />
                                 </button>
                             ) : (
                                 <button

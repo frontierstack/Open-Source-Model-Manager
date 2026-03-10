@@ -361,9 +361,10 @@ function AppContent() {
             const response = await fetch('/api/auth/me', { credentials: 'include' });
             if (response.ok) {
                 const data = await response.json();
-                setUser(data);
+                // API returns { user: {...} } for session auth
+                setUser(data.user);
                 // Also set user in zustand store
-                setStoreUser(data);
+                setStoreUser(data.user);
             }
         } catch (error) {
             console.error('Auth check failed:', error);

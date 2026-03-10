@@ -134,10 +134,10 @@ export default function ChatSidebar({
             onClick={() => onSelectConversation(conv.id)}
             className={`group relative flex items-center rounded-lg cursor-pointer transition-all duration-200 ${
                 activeConversationId === conv.id
-                    ? 'bg-white/10 border-l-2 shadow-sm'
-                    : 'hover:bg-white/5 border-l-2 border-transparent'
+                    ? 'bg-white/15 border-l-[3px] shadow-sm'
+                    : 'hover:bg-white/5 border-l-[3px] border-transparent'
             } ${collapsed ? 'justify-center p-2' : 'px-2.5 py-2'}`}
-            style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)', backgroundColor: 'rgba(var(--primary-rgb), 0.1)' } : {}}
+            style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)', backgroundColor: 'rgba(var(--primary-rgb), 0.15)' } : {}}
         >
             {collapsed ? (
                 <div className="relative">
@@ -277,13 +277,13 @@ export default function ChatSidebar({
             <div className="px-2 pb-2">
                 <button
                     onClick={onNewConversation}
-                    className={`flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/15 transition-all duration-200 ${
-                        collapsed ? 'justify-center' : ''
+                    className={`flex items-center gap-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/15 transition-all duration-200 ${
+                        collapsed ? 'justify-center w-8 h-8 p-0 mx-auto' : 'w-full px-2 py-1'
                     }`}
                     style={{ color: 'var(--accent-primary)' }}
                     title="New Chat"
                 >
-                    <Plus className="w-4 h-4 flex-shrink-0" />
+                    <Plus className={`flex-shrink-0 ${collapsed ? 'w-3.5 h-3.5' : 'w-4 h-4'}`} />
                     {!collapsed && <span className="text-sm font-medium">New Chat</span>}
                 </button>
             </div>
