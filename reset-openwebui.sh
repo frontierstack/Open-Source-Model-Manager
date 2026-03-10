@@ -1,1 +1,0 @@
-scripts/reset-openwebui.sh
