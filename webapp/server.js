@@ -16,6 +16,8 @@ const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const passport = require('passport');
 const initializePassport = require('./auth/passport-config');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 // Playwright service for advanced web scraping
 let playwrightService = null;
@@ -30,6 +32,45 @@ try {
 }
 
 const app = express();
+
+// Security: HTTP headers via helmet
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],  // Required for React
+            styleSrc: ["'self'", "'unsafe-inline'"],  // Required for MUI
+            imgSrc: ["'self'", "data:", "https:"],
+            connectSrc: ["'self'", "wss:", "ws:"],  // WebSocket connections
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            objectSrc: ["'none'"],
+            upgradeInsecureRequests: [],
+        },
+    },
+    crossOriginEmbedderPolicy: false,  // Required for some external resources
+    crossOriginResourcePolicy: { policy: "cross-origin" },  // Allow cross-origin requests
+}));
+
+// Security: Rate limiting for authentication endpoints
+const authRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 10, // 10 attempts per window
+    message: { error: 'Too many login attempts, please try again later' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: false, // Count all requests
+});
+
+// Security: General API rate limiting
+const apiRateLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 100, // 100 requests per minute
+    message: { error: 'Too many requests, please slow down' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Apply rate limiters to specific routes (applied later when routes are defined)
 
 // SSL configuration - use HTTPS if certificates exist
 const CERTS_DIR = '/certs';
@@ -51,7 +92,7 @@ if (fsSync.existsSync(SSL_KEY_PATH) && fsSync.existsSync(SSL_CERT_PATH)) {
         console.log('HTTPS enabled with SSL certificates');
 
         // Create HTTP server on port 3080 for internal container-to-container communication
-        // This allows services like Open WebUI to connect without SSL verification issues
+        // This allows internal services to connect without SSL verification issues
         console.log('HTTP server enabled on port 3080 for internal API access');
         httpRedirectServer = http.createServer(app);
     } catch (error) {
@@ -797,10 +838,10 @@ const broadcast = (data, targetUserId = null) => {
 // AUTHENTICATION ENDPOINTS
 // ============================================================================
 
-const { createUser, getUserById, changePassword } = require('./auth/users');
+const { createUser, getUserById, changePassword, getAllUsers, updateUser, deleteUser, adminResetPassword } = require('./auth/users');
 
-// Register a new user
-app.post('/api/auth/register', async (req, res) => {
+// Register a new user (rate limited to prevent brute force)
+app.post('/api/auth/register', authRateLimiter, async (req, res) => {
     try {
         const { username, email, password } = req.body;
 
@@ -831,9 +872,9 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Login user
-app.post('/api/auth/login', (req, res, next) => {
-    passport.authenticate('local', (err, user, info) => {
+// Login user (rate limited to prevent brute force)
+app.post('/api/auth/login', authRateLimiter, (req, res, next) => {
+    passport.authenticate('local', async (err, user, info) => {
         if (err) {
             return res.status(500).json({ error: 'Authentication error' });
         }
@@ -842,9 +883,16 @@ app.post('/api/auth/login', (req, res, next) => {
             return res.status(401).json({ error: info.message || 'Invalid credentials' });
         }
 
-        req.logIn(user, (err) => {
+        req.logIn(user, async (err) => {
             if (err) {
                 return res.status(500).json({ error: 'Login failed' });
+            }
+
+            // Update last login time
+            try {
+                await updateUser(user.id, { lastLoginAt: new Date().toISOString() });
+            } catch (updateErr) {
+                console.error('Failed to update lastLoginAt:', updateErr);
             }
 
             res.json({
@@ -949,8 +997,8 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
     }
 });
 
-// Change password
-app.put('/api/auth/password', requireAuth, async (req, res) => {
+// Change password (rate limited to prevent brute force)
+app.put('/api/auth/password', authRateLimiter, requireAuth, async (req, res) => {
     // requireAuth middleware handles both session and API key authentication
     // No need for additional isAuthenticated check
 
@@ -971,6 +1019,120 @@ app.put('/api/auth/password', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Change password error:', error);
         res.status(400).json({ error: error.message || 'Failed to change password' });
+    }
+});
+
+// ============================================================================
+// USER MANAGEMENT ENDPOINTS (Admin Only)
+// ============================================================================
+
+// Get all users (admin only)
+app.get('/api/users', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const users = await getAllUsers();
+        res.json(users);
+    } catch (error) {
+        console.error('Get users error:', error);
+        res.status(500).json({ error: 'Failed to get users' });
+    }
+});
+
+// Update user (admin only)
+app.put('/api/users/:id', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { id } = req.params;
+        const updates = req.body;
+
+        // Don't allow changing role to admin unless current user is admin
+        // (already checked above, but for safety)
+
+        const updatedUser = await updateUser(id, updates);
+        res.json(updatedUser);
+    } catch (error) {
+        console.error('Update user error:', error);
+        res.status(400).json({ error: error.message || 'Failed to update user' });
+    }
+});
+
+// Delete user (admin only)
+app.delete('/api/users/:id', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { id } = req.params;
+
+        // Prevent deleting self
+        if (id === req.user.id) {
+            return res.status(400).json({ error: 'Cannot delete your own account' });
+        }
+
+        await deleteUser(id);
+        res.json({ success: true, message: 'User deleted successfully' });
+    } catch (error) {
+        console.error('Delete user error:', error);
+        res.status(400).json({ error: error.message || 'Failed to delete user' });
+    }
+});
+
+// Reset user password (admin only)
+app.post('/api/users/:username/reset-password', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { username } = req.params;
+        const { newPassword } = req.body;
+
+        if (!newPassword || newPassword.length < 8) {
+            return res.status(400).json({ error: 'New password must be at least 8 characters long' });
+        }
+
+        await adminResetPassword(username, newPassword);
+        res.json({ success: true, message: 'Password reset successfully' });
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(400).json({ error: error.message || 'Failed to reset password' });
+    }
+});
+
+// Create user (admin only)
+app.post('/api/users', requireAuth, async (req, res) => {
+    try {
+        // Check if user is admin
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { username, email, password, role } = req.body;
+
+        if (!username || !email || !password) {
+            return res.status(400).json({ error: 'Username, email, and password are required' });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+        }
+
+        const user = await createUser({ username, email, password, role: role || 'user' });
+        res.status(201).json(user);
+    } catch (error) {
+        console.error('Create user error:', error);
+        res.status(400).json({ error: error.message || 'Failed to create user' });
     }
 });
 
@@ -1841,16 +2003,18 @@ async function monitorContainerHealth(container, modelName, port) {
     setTimeout(healthCheck, 500);
 }
 
-// List all running instances
+// List all running vLLM instances
 app.get('/api/vllm/instances', requireAuth, (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'instances')) {
         return res.status(403).json({ error: 'Instances permission required' });
     }
-    const instances = Array.from(modelInstances.entries()).map(([name, info]) => ({
-        name,
-        ...info
-    }));
+    const instances = Array.from(modelInstances.entries())
+        .filter(([name, info]) => info.backend === 'vllm')
+        .map(([name, info]) => ({
+            name,
+            ...info
+        }));
     res.json(instances);
 });
 
@@ -1918,6 +2082,92 @@ app.delete('/api/vllm/instances/:modelName', requireAuth, async (req, res) => {
     } catch (error) {
         console.error(`Error stopping instance:`, error);
         // Even on error, try to clean up our state to prevent stale entries
+        modelInstances.delete(modelName);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================================
+// LLAMA.CPP INSTANCES ENDPOINTS
+// ============================================================================
+
+// List all running llama.cpp instances
+app.get('/api/llamacpp/instances', requireAuth, (req, res) => {
+    // Check permission
+    if (!checkPermission(req.apiKeyData, 'instances')) {
+        return res.status(403).json({ error: 'Instances permission required' });
+    }
+    const instances = Array.from(modelInstances.entries())
+        .filter(([name, info]) => info.backend === 'llamacpp')
+        .map(([name, info]) => ({
+            name,
+            ...info
+        }));
+    res.json(instances);
+});
+
+// Stop and remove llama.cpp instance
+app.delete('/api/llamacpp/instances/:modelName', requireAuth, async (req, res) => {
+    // Check permission
+    if (!checkPermission(req.apiKeyData, 'instances')) {
+        return res.status(403).json({ error: 'Instances permission required' });
+    }
+    const { modelName } = req.params;
+    const instance = modelInstances.get(modelName);
+
+    if (!instance) {
+        return res.status(404).json({ error: 'Instance not found' });
+    }
+
+    // Ensure it's a llama.cpp instance
+    if (instance.backend !== 'llamacpp') {
+        return res.status(400).json({ error: 'Not a llama.cpp instance' });
+    }
+
+    try {
+        const container = docker.getContainer(instance.containerId);
+
+        // Check container state first
+        let containerInfo;
+        try {
+            containerInfo = await container.inspect();
+        } catch (inspectErr) {
+            // Container doesn't exist, just clean up our state
+            console.log(`Container for ${modelName} not found, cleaning up state`);
+            modelInstances.delete(modelName);
+            broadcast({ type: 'status', message: `Instance ${modelName} cleaned up` });
+            return res.json({ message: 'Instance cleaned up' });
+        }
+
+        // Stop the container if it's running
+        if (containerInfo.State.Running) {
+            broadcast({ type: 'log', message: `[${modelName}] Stopping container...` });
+            try {
+                await container.kill();
+            } catch (killErr) {
+                try {
+                    await container.stop({ t: 5 });
+                } catch (stopErr) {
+                    console.log(`Stop also failed for ${modelName}, container may already be stopped`);
+                }
+            }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        try {
+            await container.remove({ force: true, v: true });
+            broadcast({ type: 'log', message: `[${modelName}] Container removed` });
+        } catch (removeErr) {
+            console.error(`Error removing container for ${modelName}:`, removeErr.message);
+        }
+
+        modelInstances.delete(modelName);
+        broadcast({ type: 'status', message: `Instance ${modelName} stopped` });
+
+        res.json({ message: 'Instance stopped' });
+    } catch (error) {
+        console.error(`Error stopping instance:`, error);
         modelInstances.delete(modelName);
         res.status(500).json({ error: error.message });
     }
@@ -2879,7 +3129,7 @@ async function requireAuth(req, res, next) {
     const apiSecret = req.header('X-API-Secret');
     const authHeader = req.header('Authorization');
 
-    // Priority 2: Check for Bearer token authentication (for OpenWebUI)
+    // Priority 2: Check for Bearer token authentication
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const bearerToken = authHeader.substring(7);
         try {
@@ -4429,6 +4679,65 @@ app.put('/api/agent-permissions', requireAuth, async (req, res) => {
 // AGENT FILE OPERATIONS API
 // ============================================================================
 
+// Security: Allowed base directories for agent file operations
+// This prevents path traversal attacks (e.g., ../../etc/passwd)
+const AGENT_ALLOWED_PATHS = [
+    path.resolve('/models'),           // Model files
+    path.resolve('/data'),             // Agent data
+    path.resolve(process.cwd()),       // Current working directory
+    path.resolve(process.env.HOME || '/root'), // User home directory
+];
+
+/**
+ * Validates a file path against allowed directories to prevent path traversal attacks.
+ * @param {string} filePath - The path to validate
+ * @returns {{ valid: boolean, resolved: string|null, error: string|null }}
+ */
+function validateAgentFilePath(filePath) {
+    if (!filePath || typeof filePath !== 'string') {
+        return { valid: false, resolved: null, error: 'Invalid file path' };
+    }
+
+    // Resolve to absolute path
+    const resolved = path.resolve(filePath);
+
+    // Check if path starts with any allowed directory
+    const isAllowed = AGENT_ALLOWED_PATHS.some(allowedPath => {
+        return resolved.startsWith(allowedPath + path.sep) || resolved === allowedPath;
+    });
+
+    if (!isAllowed) {
+        return {
+            valid: false,
+            resolved: null,
+            error: 'Access denied: Path is outside allowed directories'
+        };
+    }
+
+    // Additional check: prevent access to sensitive files
+    const sensitivePatterns = [
+        /\.env$/i,
+        /credentials/i,
+        /secrets?/i,
+        /password/i,
+        /\.pem$/i,
+        /\.key$/i,
+        /id_rsa/i,
+        /\.ssh\//i,
+    ];
+
+    const isSensitive = sensitivePatterns.some(pattern => pattern.test(resolved));
+    if (isSensitive) {
+        return {
+            valid: false,
+            resolved: null,
+            error: 'Access denied: Cannot access sensitive files'
+        };
+    }
+
+    return { valid: true, resolved, error: null };
+}
+
 // Read a file (requires agent authentication)
 app.post('/api/agent/file/read', requireAuth, async (req, res) => {
     // Check permission
@@ -4441,6 +4750,12 @@ app.post('/api/agent/file/read', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'File path is required' });
     }
 
+    // Security: Validate path to prevent traversal attacks
+    const validation = validateAgentFilePath(filePath);
+    if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+    }
+
     try {
         // Check global agent permissions
         const globalPermissions = await loadAgentPermissions();
@@ -4448,9 +4763,9 @@ app.post('/api/agent/file/read', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'File read operations are disabled' });
         }
 
-        // Read file
-        const content = await fs.readFile(filePath, 'utf8');
-        res.json({ content, path: filePath });
+        // Read file using validated path
+        const content = await fs.readFile(validation.resolved, 'utf8');
+        res.json({ content, path: validation.resolved });
     } catch (error) {
         console.error('Error reading file:', error);
         res.status(500).json({ error: 'Failed to read file', details: error.message });
@@ -4469,6 +4784,12 @@ app.post('/api/agent/file/write', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'File path and content are required' });
     }
 
+    // Security: Validate path to prevent traversal attacks
+    const validation = validateAgentFilePath(filePath);
+    if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+    }
+
     try {
         // Check global agent permissions
         const globalPermissions = await loadAgentPermissions();
@@ -4476,13 +4797,13 @@ app.post('/api/agent/file/write', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'File write operations are disabled' });
         }
 
-        // Ensure directory exists
-        const dir = path.dirname(filePath);
+        // Ensure directory exists using validated path
+        const dir = path.dirname(validation.resolved);
         await fs.mkdir(dir, { recursive: true });
 
-        // Write file
-        await fs.writeFile(filePath, content, 'utf8');
-        res.json({ message: 'File written successfully', path: filePath });
+        // Write file using validated path
+        await fs.writeFile(validation.resolved, content, 'utf8');
+        res.json({ message: 'File written successfully', path: validation.resolved });
     } catch (error) {
         console.error('Error writing file:', error);
         res.status(500).json({ error: 'Failed to write file', details: error.message });
@@ -4501,6 +4822,12 @@ app.post('/api/agent/file/delete', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'File path is required' });
     }
 
+    // Security: Validate path to prevent traversal attacks
+    const validation = validateAgentFilePath(filePath);
+    if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+    }
+
     try {
         // Check global agent permissions
         const globalPermissions = await loadAgentPermissions();
@@ -4508,9 +4835,9 @@ app.post('/api/agent/file/delete', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'File delete operations are disabled' });
         }
 
-        // Delete file
-        await fs.unlink(filePath);
-        res.json({ message: 'File deleted successfully', path: filePath });
+        // Delete file using validated path
+        await fs.unlink(validation.resolved);
+        res.json({ message: 'File deleted successfully', path: validation.resolved });
     } catch (error) {
         console.error('Error deleting file:', error);
         res.status(500).json({ error: 'Failed to delete file', details: error.message });
@@ -4529,6 +4856,12 @@ app.post('/api/agent/file/list', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'Directory path is required' });
     }
 
+    // Security: Validate path to prevent traversal attacks
+    const validation = validateAgentFilePath(dirPath);
+    if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+    }
+
     try {
         // Check global agent permissions
         const globalPermissions = await loadAgentPermissions();
@@ -4536,15 +4869,15 @@ app.post('/api/agent/file/list', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'File read operations are disabled' });
         }
 
-        // List directory
-        const entries = await fs.readdir(dirPath, { withFileTypes: true });
+        // List directory using validated path
+        const entries = await fs.readdir(validation.resolved, { withFileTypes: true });
         const files = entries.map(entry => ({
             name: entry.name,
             isDirectory: entry.isDirectory(),
             isFile: entry.isFile()
         }));
 
-        res.json({ files, path: dirPath });
+        res.json({ files, path: validation.resolved });
     } catch (error) {
         console.error('Error listing directory:', error);
         res.status(500).json({ error: 'Failed to list directory', details: error.message });
@@ -4563,6 +4896,16 @@ app.post('/api/agent/file/move', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'Source and destination paths are required' });
     }
 
+    // Security: Validate both paths to prevent traversal attacks
+    const sourceValidation = validateAgentFilePath(sourcePath);
+    if (!sourceValidation.valid) {
+        return res.status(403).json({ error: `Source: ${sourceValidation.error}` });
+    }
+    const destValidation = validateAgentFilePath(destPath);
+    if (!destValidation.valid) {
+        return res.status(403).json({ error: `Destination: ${destValidation.error}` });
+    }
+
     try {
         // Check global agent permissions
         const globalPermissions = await loadAgentPermissions();
@@ -4570,13 +4913,13 @@ app.post('/api/agent/file/move', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'File write operations are disabled' });
         }
 
-        // Ensure destination directory exists
-        const destDir = path.dirname(destPath);
+        // Ensure destination directory exists using validated path
+        const destDir = path.dirname(destValidation.resolved);
         await fs.mkdir(destDir, { recursive: true });
 
-        // Move file
-        await fs.rename(sourcePath, destPath);
-        res.json({ message: 'File moved successfully', from: sourcePath, to: destPath });
+        // Move file using validated paths
+        await fs.rename(sourceValidation.resolved, destValidation.resolved);
+        res.json({ message: 'File moved successfully', from: sourceValidation.resolved, to: destValidation.resolved });
     } catch (error) {
         console.error('Error moving file:', error);
         res.status(500).json({ error: 'Failed to move file', details: error.message });
@@ -5275,6 +5618,284 @@ app.get('/api/docs', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
+// CONVERSATION MANAGEMENT API
+// ============================================================================
+
+const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations');
+
+// Ensure conversations directory exists for a user
+async function ensureUserConversationsDir(userId) {
+    const userDir = path.join(CONVERSATIONS_DIR, userId);
+    await fs.mkdir(userDir, { recursive: true });
+    return userDir;
+}
+
+// Load conversations index for a user
+async function loadConversationsIndex(userId) {
+    const userDir = await ensureUserConversationsDir(userId);
+    const indexPath = path.join(userDir, 'index.json');
+    try {
+        const data = await fs.readFile(indexPath, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+    }
+}
+
+// Save conversations index for a user
+async function saveConversationsIndex(userId, conversations) {
+    const userDir = await ensureUserConversationsDir(userId);
+    const indexPath = path.join(userDir, 'index.json');
+    await fs.writeFile(indexPath, JSON.stringify(conversations, null, 2));
+}
+
+// Load messages for a conversation
+async function loadConversationMessages(userId, conversationId) {
+    const userDir = await ensureUserConversationsDir(userId);
+    const messagesPath = path.join(userDir, `${conversationId}.json`);
+    try {
+        const data = await fs.readFile(messagesPath, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+    }
+}
+
+// Save messages for a conversation
+async function saveConversationMessages(userId, conversationId, messages) {
+    const userDir = await ensureUserConversationsDir(userId);
+    const messagesPath = path.join(userDir, `${conversationId}.json`);
+    await fs.writeFile(messagesPath, JSON.stringify(messages, null, 2));
+}
+
+// List all conversations for a user
+app.get('/api/conversations', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const conversations = await loadConversationsIndex(userId);
+        res.json(conversations);
+    } catch (error) {
+        console.error('Error loading conversations:', error);
+        res.status(500).json({ error: 'Failed to load conversations' });
+    }
+});
+
+// Create a new conversation
+app.post('/api/conversations', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { title } = req.body;
+
+        const conversation = {
+            id: crypto.randomUUID(),
+            title: title || 'New Conversation',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+
+        const conversations = await loadConversationsIndex(userId);
+        conversations.unshift(conversation);
+        await saveConversationsIndex(userId, conversations);
+
+        // Create empty messages file
+        await saveConversationMessages(userId, conversation.id, []);
+
+        res.json(conversation);
+    } catch (error) {
+        console.error('Error creating conversation:', error);
+        res.status(500).json({ error: 'Failed to create conversation' });
+    }
+});
+
+// Get a specific conversation with messages
+app.get('/api/conversations/:id', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id } = req.params;
+
+        const conversations = await loadConversationsIndex(userId);
+        const conversation = conversations.find(c => c.id === id);
+
+        if (!conversation) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+
+        const messages = await loadConversationMessages(userId, id);
+        res.json({ ...conversation, messages });
+    } catch (error) {
+        console.error('Error loading conversation:', error);
+        res.status(500).json({ error: 'Failed to load conversation' });
+    }
+});
+
+// Update a conversation (title, etc.)
+app.put('/api/conversations/:id', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id } = req.params;
+        const { title } = req.body;
+
+        const conversations = await loadConversationsIndex(userId);
+        const index = conversations.findIndex(c => c.id === id);
+
+        if (index === -1) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+
+        conversations[index] = {
+            ...conversations[index],
+            title: title || conversations[index].title,
+            updatedAt: new Date().toISOString()
+        };
+
+        await saveConversationsIndex(userId, conversations);
+        res.json(conversations[index]);
+    } catch (error) {
+        console.error('Error updating conversation:', error);
+        res.status(500).json({ error: 'Failed to update conversation' });
+    }
+});
+
+// Delete a conversation
+app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id } = req.params;
+
+        const conversations = await loadConversationsIndex(userId);
+        const index = conversations.findIndex(c => c.id === id);
+
+        if (index === -1) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+
+        conversations.splice(index, 1);
+        await saveConversationsIndex(userId, conversations);
+
+        // Delete messages file
+        const userDir = await ensureUserConversationsDir(userId);
+        const messagesPath = path.join(userDir, `${id}.json`);
+        try {
+            await fs.unlink(messagesPath);
+        } catch (e) {
+            // Ignore if file doesn't exist
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting conversation:', error);
+        res.status(500).json({ error: 'Failed to delete conversation' });
+    }
+});
+
+// Save messages to a conversation
+app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id } = req.params;
+        const { messages } = req.body;
+
+        if (!Array.isArray(messages)) {
+            return res.status(400).json({ error: 'Messages must be an array' });
+        }
+
+        // Verify conversation exists
+        const conversations = await loadConversationsIndex(userId);
+        const conversation = conversations.find(c => c.id === id);
+
+        if (!conversation) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+
+        await saveConversationMessages(userId, id, messages);
+
+        // Update conversation timestamp
+        conversation.updatedAt = new Date().toISOString();
+        await saveConversationsIndex(userId, conversations);
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error saving messages:', error);
+        res.status(500).json({ error: 'Failed to save messages' });
+    }
+});
+
+// File upload endpoint for chat context
+app.post('/api/chat/upload', requireAuth, async (req, res) => {
+    // Check permission
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'Query permission required' });
+    }
+
+    try {
+        // Handle base64-encoded file content
+        const { filename, content, mimeType } = req.body;
+
+        if (!content) {
+            return res.status(400).json({ error: 'File content is required' });
+        }
+
+        // For text-based files, decode and return content
+        const textTypes = [
+            'text/', 'application/json', 'application/xml',
+            'application/javascript', 'application/x-yaml'
+        ];
+
+        const isText = textTypes.some(t => mimeType?.startsWith(t) || mimeType?.includes(t));
+
+        if (isText) {
+            try {
+                const decoded = Buffer.from(content, 'base64').toString('utf8');
+                return res.json({
+                    type: 'text',
+                    filename,
+                    content: decoded,
+                    charCount: decoded.length
+                });
+            } catch (e) {
+                return res.status(400).json({ error: 'Failed to decode text content' });
+            }
+        }
+
+        // For PDFs, extract text
+        if (mimeType === 'application/pdf') {
+            try {
+                const pdfParse = require('pdf-parse');
+                const buffer = Buffer.from(content, 'base64');
+                const data = await pdfParse(buffer);
+                return res.json({
+                    type: 'pdf',
+                    filename,
+                    content: data.text,
+                    pageCount: data.numpages,
+                    charCount: data.text.length
+                });
+            } catch (e) {
+                console.error('PDF parsing error:', e);
+                return res.status(400).json({ error: 'Failed to parse PDF' });
+            }
+        }
+
+        // For images, return as base64 data URL (for vision models)
+        if (mimeType?.startsWith('image/')) {
+            return res.json({
+                type: 'image',
+                filename,
+                dataUrl: `data:${mimeType};base64,${content}`,
+                mimeType
+            });
+        }
+
+        return res.status(400).json({ error: 'Unsupported file type' });
+    } catch (error) {
+        console.error('File upload error:', error);
+        res.status(500).json({ error: 'Failed to process file' });
+    }
+});
+
+// ============================================================================
 // SIMPLIFIED WRAPPER API
 // ============================================================================
 
@@ -5505,10 +6126,13 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
 // Streaming chat endpoint - Server-Sent Events (SSE)
 app.post('/api/chat/stream', requireAuth, async (req, res) => {
-    const { message, model, temperature, maxTokens } = req.body;
+    // Support both single message (legacy) and messages array (OpenAI compatible)
+    const { message, messages: inputMessages, model, temperature, maxTokens, max_tokens } = req.body;
+    const effectiveMaxTokens = maxTokens || max_tokens;
 
-    if (!message) {
-        return res.status(400).json({ error: 'Message is required' });
+    // Validate that either message or messages is provided
+    if (!message && (!inputMessages || !Array.isArray(inputMessages) || inputMessages.length === 0)) {
+        return res.status(400).json({ error: 'Message or messages array is required' });
     }
 
     // Check permission
@@ -5545,25 +6169,50 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
-        // Apply thinking mode control - prepend /no_think for models that support it (e.g., Qwen3)
-        let userContent = message;
-        if (disableThinking) {
-            userContent = `/no_think\n${message}`;
-        }
-
-        // Load system prompt for this model
-        const systemPrompts = await loadSystemPrompts();
-        const systemPrompt = systemPrompts[targetModel] || '';
-
         // Estimate token count (rough estimate: 1 token ≈ 4 characters)
         const estimateTokens = (text) => Math.ceil(text.length / 4);
 
-        let systemTokens = systemPrompt ? estimateTokens(systemPrompt) : 0;
-        let messageTokens = estimateTokens(userContent);
-        let totalInputTokens = systemTokens + messageTokens;
+        // Build messages array based on input format
+        let chatMessages = [];
 
-        // Reserve space for response (default 20% of context or maxTokens if specified)
-        const responseReserve = maxTokens || Math.floor(contextSize * 0.2);
+        if (inputMessages && Array.isArray(inputMessages) && inputMessages.length > 0) {
+            // Use provided messages array (OpenAI compatible format)
+            chatMessages = inputMessages.map(msg => ({ ...msg }));
+
+            // Apply thinking mode control to the last user message if disableThinking is enabled
+            if (disableThinking) {
+                for (let i = chatMessages.length - 1; i >= 0; i--) {
+                    if (chatMessages[i].role === 'user') {
+                        chatMessages[i].content = `/no_think\n${chatMessages[i].content}`;
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Legacy single message format
+            let userContent = message;
+            if (disableThinking) {
+                userContent = `/no_think\n${message}`;
+            }
+
+            // Load system prompt for this model (only for legacy format)
+            const systemPrompts = await loadSystemPrompts();
+            const systemPrompt = systemPrompts[targetModel] || '';
+
+            if (systemPrompt) {
+                chatMessages.push({ role: 'system', content: systemPrompt });
+            }
+            chatMessages.push({ role: 'user', content: userContent });
+        }
+
+        // Calculate total tokens from all messages
+        let totalInputTokens = 0;
+        for (const msg of chatMessages) {
+            totalInputTokens += estimateTokens(msg.content || '');
+        }
+
+        // Reserve space for response (default 20% of context or effectiveMaxTokens if specified)
+        const responseReserve = effectiveMaxTokens || Math.floor(contextSize * 0.2);
         const availableContextForInput = contextSize - responseReserve;
 
         // Check if input exceeds available context
@@ -5574,16 +6223,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     error: `Not enough context window: Input requires ~${totalInputTokens} tokens but only ${availableContextForInput} available (context: ${contextSize}, reserved for response: ${responseReserve}). Enable context shifting or reduce input size.`
                 });
             }
-            // If context shift enabled, truncate message
-            const excessTokens = totalInputTokens - availableContextForInput;
-            const targetMessageLength = userContent.length - (excessTokens * 4);
-
-            if (targetMessageLength <= 0) {
-                return res.status(400).json({
-                    success: false,
-                    error: `Input too large: Your message (${totalInputTokens} tokens) exceeds the model's context window (${contextSize} tokens). Please reduce input size or increase context size in model settings.`
-                });
-            }
+            // Context shift warning - let the model handle truncation
+            console.log(`[Chat Stream] Context may be truncated: ${totalInputTokens} tokens requested, ${availableContextForInput} available`);
         }
 
         // Set up SSE headers
@@ -5592,21 +6233,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
-        // Build messages array (with /no_think prepended if disableThinking is enabled)
-        const messages = [];
-        if (systemPrompt) {
-            messages.push({ role: 'system', content: systemPrompt });
-        }
-        messages.push({ role: 'user', content: userContent });
-
         const requestBody = {
-            messages: messages,
+            messages: chatMessages,
             temperature: temperature || 0.7,
             stream: true // Enable streaming from the model
         };
 
-        if (maxTokens) {
-            requestBody.max_tokens = maxTokens;
+        if (effectiveMaxTokens) {
+            requestBody.max_tokens = effectiveMaxTokens;
         }
 
         // Make streaming request to model instance
@@ -5634,19 +6268,23 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // Check for [DONE] marker
                         if (data === '[DONE]') {
                             console.log(`[Stream Token Tracking] [DONE] marker received. promptTokens=${promptTokens}, completionTokens=${completionTokens}`);
-                            // Send final event with token stats
+
+                            // Send final event with finish_reason in OpenAI-compatible format
                             const finalEvent = {
-                                done: true,
-                                tokens: {
+                                choices: [{
+                                    delta: {},
+                                    index: 0,
+                                    finish_reason: 'stop'
+                                }],
+                                usage: {
                                     prompt_tokens: promptTokens,
                                     completion_tokens: completionTokens,
                                     total_tokens: promptTokens + completionTokens
                                 },
-                                model: targetModel,
-                                response: fullResponse,
-                                contextSize: contextSize  // Include context window size for client tracking
+                                model: targetModel
                             };
                             res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+                            res.write(`data: [DONE]\n\n`);
 
                             // Manually update token usage stats (streaming doesn't use res.send interceptor)
                             if (req.apiKeyData) {
@@ -5668,20 +6306,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             const parsed = JSON.parse(data);
                             console.log(`[Stream Debug] Parsed chunk:`, JSON.stringify(parsed, null, 2).substring(0, 200));
 
-                            // Extract token from delta
+                            // Extract token from delta and forward in OpenAI-compatible format
                             if (parsed.choices && parsed.choices[0]?.delta) {
                                 const delta = parsed.choices[0].delta;
-                                const content = delta.content || delta.reasoning_content || '';
+                                const content = delta.content || '';
+                                const reasoning = delta.reasoning_content || delta.reasoning || '';
 
-                                if (content) {
-                                    fullResponse += content;
+                                if (content || reasoning) {
+                                    if (content) fullResponse += content;
                                     tokenCount++;
                                     completionTokens++;
 
-                                    // Send token event
+                                    // Send in OpenAI-compatible format for client compatibility
                                     const event = {
-                                        token: content,
-                                        done: false
+                                        choices: [{
+                                            delta: {
+                                                content: content || undefined,
+                                                reasoning: reasoning || undefined
+                                            },
+                                            index: 0
+                                        }]
                                     };
                                     res.write(`data: ${JSON.stringify(event)}\n\n`);
                                 }
@@ -5956,9 +6600,7 @@ app.delete('/api/models/:modelName', requireAuth, async (req, res) => {
 // Helper function to map app names to their docker-compose services
 // Returns services in the order they should be operated (for stop: proxy first, then app)
 function getAppServices(appName) {
-    const serviceMap = {
-        'open-webui': ['nginx', 'open-webui']  // Stop nginx first, then open-webui
-    };
+    const serviceMap = {};
     return serviceMap[appName] || [appName];
 }
 
@@ -6093,16 +6735,6 @@ app.get('/api/apps', requireAuth, async (req, res) => {
     try {
         const hostIp = getHostIp();
         const apps = [
-            {
-                name: 'open-webui',
-                displayName: 'Open WebUI',
-                description: 'Chat interface for interacting with models',
-                ports: [
-                    { internal: 8080, external: 3002, protocol: 'https' }
-                ],
-                url: `https://${hostIp}:3002`,
-                status: await getServiceStatus('open-webui')
-            },
             {
                 name: 'open-model-agents',
                 displayName: 'Open Model Agents',
@@ -7620,37 +8252,28 @@ async function initializeDefaultApiKeys() {
         const keys = await loadApiKeys();
         let keysCreated = false;
 
-        // Check if default OpenWebUI key exists
-        let openWebuiKeyExists = keys.find(k => k.name === 'Default OpenWebUI Key');
-        if (!openWebuiKeyExists) {
-            const openwebuiKey = {
+        // Check if default bearer key exists
+        let bearerKeyExists = keys.find(k => k.name === 'OpenWebUI Integration Key');
+        if (!bearerKeyExists) {
+            const bearerKey = {
                 id: crypto.randomUUID(),
-                name: 'Default OpenWebUI Key',
+                name: 'OpenWebUI Integration Key',
                 key: generateApiKey(),
                 secret: generateApiSecret(),
-                bearerOnly: true, // Bearer token for OpenWebUI
+                bearerOnly: true,
                 permissions: ['query', 'models'],
-                rateLimitRequests: null, // No rate limit
-                rateLimitTokens: null, // No token limit
+                rateLimitRequests: null,
+                rateLimitTokens: null,
                 active: true,
                 createdAt: new Date().toISOString()
             };
-            keys.push(openwebuiKey);
+            keys.push(bearerKey);
             console.log('');
             console.log('========================================');
-            console.log('  OpenWebUI Bearer Token Created');
+            console.log('  OpenWebUI Integration Key Created');
             console.log('========================================');
+            console.log(`Bearer Token: ${bearerKey.key}`);
             console.log('');
-            const hostIp = getHostIp();
-            console.log('To configure Open WebUI:');
-            console.log(`1. Open https://${hostIp}:3002`);
-            console.log('2. Go to Settings > Connections');
-            console.log('3. Set OpenAI API Base URL to:');
-            console.log('   https://host.docker.internal:3001/v1');
-            console.log('4. Set API Key to:');
-            console.log(`   ${openwebuiKey.key}`);
-            console.log('');
-            console.log('========================================');
             keysCreated = true;
         }
 
@@ -7667,10 +8290,29 @@ async function initializeDefaultApiKeys() {
 // CLI INSTALL SCRIPT ENDPOINT
 // ============================================================================
 
+/**
+ * Validates and sanitizes the host header to prevent injection attacks.
+ * Only allows valid hostname:port format.
+ */
+function sanitizeHost(hostHeader) {
+    if (!hostHeader) return 'localhost:3001';
+
+    // Only allow alphanumeric, dots, hyphens, colons (for port), and brackets (for IPv6)
+    const sanitized = hostHeader.replace(/[^a-zA-Z0-9.:[\]-]/g, '');
+
+    // Validate format: hostname or hostname:port or IP or [IPv6]:port
+    const validHostPattern = /^([a-zA-Z0-9.-]+|\[[a-fA-F0-9:]+\])(:[0-9]{1,5})?$/;
+    if (!validHostPattern.test(sanitized)) {
+        return 'localhost:3001';
+    }
+
+    return sanitized;
+}
+
 // Bash installer (Linux/macOS/WSL/Git Bash)
 app.get('/api/cli/install', (req, res) => {
     const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.sh');
-    const host = req.get('host') || 'localhost:3001';
+    const host = sanitizeHost(req.get('host'));
     const protocol = req.protocol || 'https';
     const apiUrl = `${protocol}://${host}`;
 
@@ -7691,7 +8333,7 @@ app.get('/api/cli/install', (req, res) => {
 // PowerShell installer (Windows)
 app.get('/api/cli/install.ps1', (req, res) => {
     const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.ps1');
-    const host = req.get('host') || 'localhost:3001';
+    const host = sanitizeHost(req.get('host'));
     const protocol = req.protocol || 'https';
     const apiUrl = `${protocol}://${host}`;
 
@@ -7734,96 +8376,6 @@ app.get('/api/cli/files/koda.js', (req, res) => {
             console.error('Error reading koda.js:', error);
             res.status(500).json({ error: 'Failed to load koda.js' });
         });
-});
-
-// ============================================================================
-// OPEN WEBUI EXTERNAL WEB SEARCH
-// ============================================================================
-// Endpoint for Open WebUI's external web search feature
-// Configure in Open WebUI: Admin > Settings > Web Search > External
-// URL: http://host.docker.internal:3080/api/openwebui/search
-// API Key: Your bearer token from API Keys tab
-
-app.post('/api/openwebui/search', requireAuth, async (req, res) => {
-    try {
-        // Check permission
-        if (!checkPermission(req.apiKeyData, 'query')) {
-            return res.status(403).json({ error: 'Query permission required' });
-        }
-
-        const { query } = req.body;
-        if (!query) {
-            return res.status(400).json({ error: 'Query is required' });
-        }
-
-        console.log(`[OpenWebUI Search] Query: "${query}"`);
-
-        // Generate current date/time context
-        const now = new Date();
-        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-        const months = ['January', 'February', 'March', 'April', 'May', 'June',
-                        'July', 'August', 'September', 'October', 'November', 'December'];
-        const currentDateTime = {
-            date: `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`,
-            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-            iso: now.toISOString(),
-            timestamp: now.getTime()
-        };
-
-        // Use existing search functionality
-        const searchParams = new URLSearchParams({
-            q: query,
-            limit: '5',
-            fetchContent: 'true',
-            contentLimit: '3'
-        });
-
-        // Make internal request to our search endpoint
-        const searchUrl = `http://localhost:3080/api/search?${searchParams}`;
-        const axios = require('axios');
-
-        const response = await axios.get(searchUrl, {
-            headers: {
-                'X-API-Key': req.apiKeyData?.key || '',
-                'X-API-Secret': req.apiKeyData?.secret || '',
-                'Authorization': req.headers.authorization || ''
-            },
-            timeout: 30000
-        });
-
-        const searchResults = response.data.results || [];
-
-        // Format for Open WebUI's expected structure
-        const formattedResults = searchResults.map(r => ({
-            title: r.title || 'Untitled',
-            link: r.url || '',
-            snippet: r.snippet || '',
-            content: r.content || r.snippet || ''
-        }));
-
-        // Prepend a context result with current date/time (always included)
-        const contextResult = {
-            title: 'Current Date & Time (Live)',
-            link: '',
-            snippet: `Today is ${currentDateTime.date}. Current time: ${currentDateTime.time}.`,
-            content: `CURRENT DATE/TIME CONTEXT (Real-time, authoritative):\n` +
-                     `- Today's Date: ${currentDateTime.date}\n` +
-                     `- Current Time: ${currentDateTime.time}\n` +
-                     `- ISO Timestamp: ${currentDateTime.iso}\n` +
-                     `- This information is live and accurate at the moment of this search.`
-        };
-
-        // Add context as first result
-        const resultsWithContext = [contextResult, ...formattedResults];
-
-        console.log(`[OpenWebUI Search] Found ${formattedResults.length} results + date context`);
-
-        res.json(resultsWithContext);
-
-    } catch (error) {
-        console.error('[OpenWebUI Search] Error:', error.message);
-        res.status(500).json({ error: 'Search failed: ' + error.message });
-    }
 });
 
 // ============================================================================

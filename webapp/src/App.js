@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 // Use native WebSocket (W3C-compliant in all modern browsers)
 import { useAuthStore } from './stores/useAuthStore';
+import { useAppStore } from './stores/useAppStore';
 import { logout as performLogout } from './services/auth';
-import { ThemeProvider, createTheme, alpha } from '@mui/material/styles';
+import { ThemeProvider, alpha } from '@mui/material/styles';
+import { createAppTheme } from './theme';
 import CssBaseline from '@mui/material/CssBaseline';
 import Container from '@mui/material/Container';
 import Typography from '@mui/material/Typography';
@@ -96,192 +98,11 @@ import DialogActions from '@mui/material/DialogActions';
 import LinearProgress from '@mui/material/LinearProgress';
 import Checkbox from '@mui/material/Checkbox';
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
 import Menu from '@mui/material/Menu';
 
-// LM Studio inspired dark theme
-const darkTheme = createTheme({
-    palette: {
-        mode: 'dark',
-        background: {
-            default: '#09090b',
-            paper: '#18181b',
-        },
-        primary: {
-            main: '#a78bfa',
-            light: '#c4b5fd',
-            dark: '#7c3aed',
-        },
-        secondary: {
-            main: '#22d3ee',
-            light: '#67e8f9',
-            dark: '#06b6d4',
-        },
-        success: {
-            main: '#22c55e',
-            light: '#4ade80',
-        },
-        warning: {
-            main: '#f59e0b',
-        },
-        error: {
-            main: '#ef4444',
-        },
-        text: {
-            primary: '#fafafa',
-            secondary: '#a1a1aa',
-        },
-        divider: 'rgba(255, 255, 255, 0.06)',
-    },
-    typography: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        h1: {
-            fontWeight: 700,
-            fontSize: '2rem',
-            letterSpacing: '-0.025em',
-        },
-        h2: {
-            fontWeight: 600,
-            fontSize: '1.5rem',
-            letterSpacing: '-0.02em',
-        },
-        h3: {
-            fontWeight: 600,
-            fontSize: '1.25rem',
-            letterSpacing: '-0.015em',
-        },
-        h5: {
-            fontWeight: 600,
-            fontSize: '1rem',
-            letterSpacing: '-0.01em',
-        },
-        h6: {
-            fontWeight: 600,
-            fontSize: '0.875rem',
-        },
-        body1: {
-            fontSize: '0.875rem',
-        },
-        body2: {
-            fontSize: '0.8125rem',
-        },
-        caption: {
-            fontSize: '0.75rem',
-        },
-    },
-    shape: {
-        borderRadius: 8,
-    },
-    components: {
-        MuiButton: {
-            styleOverrides: {
-                root: {
-                    borderRadius: 6,
-                    textTransform: 'none',
-                    fontWeight: 500,
-                    fontSize: '0.8125rem',
-                    padding: '6px 12px',
-                    boxShadow: 'none',
-                    '&:hover': {
-                        boxShadow: 'none',
-                    },
-                },
-                contained: {
-                    '&:hover': {
-                        boxShadow: '0 0 0 1px rgba(167, 139, 250, 0.5)',
-                    },
-                },
-                outlined: {
-                    borderColor: 'rgba(255, 255, 255, 0.1)',
-                    '&:hover': {
-                        borderColor: 'rgba(255, 255, 255, 0.2)',
-                        backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                    },
-                },
-            },
-        },
-        MuiPaper: {
-            styleOverrides: {
-                root: {
-                    backgroundImage: 'none',
-                    borderRadius: 8,
-                },
-            },
-        },
-        MuiCard: {
-            styleOverrides: {
-                root: {
-                    backgroundImage: 'none',
-                    borderRadius: 12,
-                    border: '1px solid rgba(255, 255, 255, 0.06)',
-                    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.3)',
-                },
-            },
-        },
-        MuiTextField: {
-            styleOverrides: {
-                root: {
-                    '& .MuiOutlinedInput-root': {
-                        borderRadius: 8,
-                        fontSize: '0.875rem',
-                        '& fieldset': {
-                            borderColor: 'rgba(255, 255, 255, 0.08)',
-                        },
-                        '&:hover fieldset': {
-                            borderColor: 'rgba(255, 255, 255, 0.15)',
-                        },
-                        '&.Mui-focused fieldset': {
-                            borderColor: '#a78bfa',
-                            borderWidth: 1,
-                        },
-                    },
-                },
-            },
-        },
-        MuiChip: {
-            styleOverrides: {
-                root: {
-                    borderRadius: 4,
-                    fontWeight: 500,
-                    fontSize: '0.75rem',
-                    height: 24,
-                },
-            },
-        },
-        MuiSelect: {
-            styleOverrides: {
-                root: {
-                    fontSize: '0.875rem',
-                },
-            },
-        },
-        MuiInputLabel: {
-            styleOverrides: {
-                root: {
-                    fontSize: '0.875rem',
-                },
-            },
-        },
-        MuiTab: {
-            styleOverrides: {
-                root: {
-                    textTransform: 'none',
-                    fontWeight: 500,
-                    fontSize: '0.8125rem',
-                    minHeight: 40,
-                    padding: '8px 16px',
-                },
-            },
-        },
-        MuiTabs: {
-            styleOverrides: {
-                indicator: {
-                    height: 2,
-                },
-            },
-        },
-    },
-});
+// Theme is now created dynamically using createAppTheme from ./theme.js
 
 // Helper functions
 const extractParameterSize = (filename) => {
@@ -496,6 +317,18 @@ const App = () => {
     const { user } = useAuthStore();
     const [userMenuAnchor, setUserMenuAnchor] = useState(null);
 
+    // App preferences (theme, font, etc.)
+    const { preferences } = useAppStore();
+
+    // Dynamic theme based on user preferences
+    const theme = useMemo(() => {
+        return createAppTheme(
+            preferences.theme || 'dark',
+            preferences.fontFamily || 'default',
+            preferences.fontSize || 'medium'
+        );
+    }, [preferences.theme, preferences.fontFamily, preferences.fontSize]);
+
     // UI state
     const [activeTab, setActiveTab] = useState(0);
     const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -515,11 +348,13 @@ const App = () => {
     const [searchPage, setSearchPage] = useState(1);
     const ITEMS_PER_PAGE = 24;
 
-    // System prompt state
-    const [systemPrompts, setSystemPrompts] = useState({});
-    const [selectedModelForPrompt, setSelectedModelForPrompt] = useState('');
-    const [currentSystemPrompt, setCurrentSystemPrompt] = useState('');
-    const [systemPromptDirty, setSystemPromptDirty] = useState(false);
+    // User management state
+    const [users, setUsers] = useState([]);
+    const [usersLoading, setUsersLoading] = useState(false);
+    const [selectedUser, setSelectedUser] = useState(null);
+    const [userDialogOpen, setUserDialogOpen] = useState(false);
+    const [userDialogMode, setUserDialogMode] = useState('create'); // 'create', 'edit', 'resetPassword'
+    const [newUserData, setNewUserData] = useState({ username: '', email: '', password: '', role: 'user' });
 
     // Backend selection (llamacpp works with older GPUs like Maxwell 5.2+)
     const [selectedBackend, setSelectedBackend] = useState('llamacpp');
@@ -644,7 +479,11 @@ const App = () => {
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
         const saved = localStorage.getItem('tabOrder');
-        return saved ? JSON.parse(saved) : [0, 1, 2, 3, 4, 5, 6];
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            if (parsed.length === 7) return parsed;
+        }
+        return [0, 1, 2, 3, 4, 5, 6];
     });
 
     // Docs accordion order state
@@ -669,7 +508,6 @@ const App = () => {
     const hostname = window.location.hostname;
     const port = window.location.port || '3001';
     const baseUrl = `${protocol}//${hostname}:${port}`;
-    const openWebUIUrl = `${protocol}//${hostname}:3002`;
 
     const showSnackbar = (message, severity) => {
         setSnackbarMessage(message);
@@ -710,11 +548,17 @@ const App = () => {
         setSearchPage(1);
     }, [searchSortBy, searchSizeFilter]);
 
+    // Fetch users when Users tab is selected
+    useEffect(() => {
+        if (tabOrder[activeTab] === 2 && user?.role === 'admin') {
+            fetchUsers();
+        }
+    }, [activeTab, user?.role]);
+
     // Initial data fetch and WebSocket setup
     useEffect(() => {
         fetchModels();
         fetchInstances();
-        fetchSystemPrompts();
         fetchApiKeys();
         fetchDownloads();
         fetchApps();
@@ -807,18 +651,33 @@ const App = () => {
             .catch(error => showSnackbar(`Failed to fetch models: ${error.message}`, 'error'));
     };
 
-    const fetchInstances = () => {
-        fetch('/api/vllm/instances', { credentials: 'include' })
-            .then(res => res.json())
-            .then(data => setInstances(data))
-            .catch(error => console.error('Error fetching instances:', error));
-    };
+    const fetchInstances = async () => {
+        try {
+            const [llamacppRes, vllmRes] = await Promise.allSettled([
+                fetch('/api/llamacpp/instances', { credentials: 'include' }),
+                fetch('/api/vllm/instances', { credentials: 'include' }),
+            ]);
 
-    const fetchSystemPrompts = () => {
-        fetch('/api/system-prompts', { credentials: 'include' })
-            .then(res => res.json())
-            .then(data => setSystemPrompts(data))
-            .catch(error => console.error('Error fetching system prompts:', error));
+            const allInstances = [];
+
+            // Parse llama.cpp instances
+            if (llamacppRes.status === 'fulfilled' && llamacppRes.value.ok) {
+                const llamacppData = await llamacppRes.value.json();
+                const llamacppInstances = Array.isArray(llamacppData) ? llamacppData : (llamacppData.instances || []);
+                allInstances.push(...llamacppInstances);
+            }
+
+            // Parse vLLM instances
+            if (vllmRes.status === 'fulfilled' && vllmRes.value.ok) {
+                const vllmData = await vllmRes.value.json();
+                const vllmInstances = Array.isArray(vllmData) ? vllmData : (vllmData.instances || []);
+                allInstances.push(...vllmInstances);
+            }
+
+            setInstances(allInstances);
+        } catch (error) {
+            console.error('Error fetching instances:', error);
+        }
     };
 
     const fetchApiKeys = () => {
@@ -3015,18 +2874,6 @@ fetch(\`${baseUrl}/api/huggingface/search?\${params}\`, {
             '/api/apps': {
                 curl: `# List all apps and their status
 curl -k -X GET ${baseUrl}/api/apps \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# Start an app (e.g., open-webui)
-curl -k -X POST ${baseUrl}/api/apps/open-webui/start \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# Stop an app
-curl -k -X POST ${baseUrl}/api/apps/open-webui/stop \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# Restart an app
-curl -k -X POST ${baseUrl}/api/apps/open-webui/restart \\
   -H "Authorization: Bearer your_bearer_token"`,
                 python: `import requests
 
@@ -3038,38 +2885,18 @@ response = requests.get(
 )
 apps = response.json()
 for app in apps:
-    print(f"- {app['name']}: {app['status']}")
-
-# Start an app
-response = requests.post(
-    '${baseUrl}/api/apps/open-webui/start',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-print(response.json()['message'])`,
+    print(f"- {app['name']}: {app.get('status', {}).get('status', 'unknown')}")`,
                 powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
 
 # List apps
 $apps = Invoke-RestMethod -Uri "${baseUrl}/api/apps" -Headers $headers
-$apps | ForEach-Object { Write-Output "- $($_.name): $($_.status)" }
-
-# Start app
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/open-webui/start" -Method Post -Headers $headers
-Write-Output $response.message`,
+$apps | ForEach-Object { Write-Output "- $($_.name): $($_.status.status)" }`,
                 javascript: `// List apps
 fetch('${baseUrl}/api/apps', {
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
-.then(apps => apps.forEach(a => console.log(\`- \${a.name}: \${a.status}\`)));
-
-// Start app
-fetch('${baseUrl}/api/apps/open-webui/start', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(data => console.log(data.message));`
+.then(apps => apps.forEach(a => console.log(\`- \${a.name}: \${a.status?.status || 'unknown'}\`)));`
             }
         };
 
@@ -3186,7 +3013,7 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
     const tabDefinitions = [
         { id: 0, icon: <SearchIcon sx={{ fontSize: 18 }} />, label: 'Discover' },
         { id: 1, icon: <StorageIcon sx={{ fontSize: 18 }} />, label: 'My Models' },
-        { id: 2, icon: <ChatIcon sx={{ fontSize: 18 }} />, label: 'System Prompts' },
+        { id: 2, icon: <PeopleIcon sx={{ fontSize: 18 }} />, label: 'Users' },
         { id: 3, icon: <VpnKeyIcon sx={{ fontSize: 18 }} />, label: 'API Keys' },
         { id: 4, icon: <MenuBookIcon sx={{ fontSize: 18 }} />, label: 'Docs' },
         { id: 5, icon: <TerminalIcon sx={{ fontSize: 18 }} />, label: 'Logs' },
@@ -3388,9 +3215,12 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
         }
     };
 
-    const handleStopInstance = (modelName) => {
+    const handleStopInstance = (modelName, backend = 'llamacpp') => {
         showSnackbar(`Stopping ${modelName}...`, 'info');
-        fetch(`/api/vllm/instances/${modelName}`, {
+        const endpoint = backend === 'vllm'
+            ? `/api/vllm/instances/${modelName}`
+            : `/api/llamacpp/instances/${modelName}`;
+        fetch(endpoint, {
             method: 'DELETE',
         })
         .then(response => {
@@ -3752,47 +3582,132 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
         .catch(error => showSnackbar(error.message, 'error'));
     };
 
-    // System prompt handlers
-    const handleSelectModelForPrompt = (modelName) => {
-        setSelectedModelForPrompt(modelName);
-        setCurrentSystemPrompt(systemPrompts[modelName] || '');
-        setSystemPromptDirty(false);
+    // User management handlers
+    const fetchUsers = () => {
+        if (user?.role !== 'admin') return;
+        setUsersLoading(true);
+        fetch('/api/users')
+            .then(response => {
+                if (!response.ok) throw new Error('Failed to fetch users');
+                return response.json();
+            })
+            .then(data => {
+                setUsers(data);
+                setUsersLoading(false);
+            })
+            .catch(error => {
+                console.error('Fetch users error:', error);
+                setUsersLoading(false);
+            });
     };
 
-    const handleSystemPromptChange = (value) => {
-        setCurrentSystemPrompt(value);
-        setSystemPromptDirty(value !== (systemPrompts[selectedModelForPrompt] || ''));
+    const handleOpenUserDialog = (mode, userData = null) => {
+        setUserDialogMode(mode);
+        if (mode === 'create') {
+            setNewUserData({ username: '', email: '', password: '', role: 'user' });
+        } else if (mode === 'edit' && userData) {
+            setSelectedUser(userData);
+            setNewUserData({ username: userData.username, email: userData.email, role: userData.role, password: '' });
+        } else if (mode === 'resetPassword' && userData) {
+            setSelectedUser(userData);
+            setNewUserData({ ...newUserData, password: '' });
+        }
+        setUserDialogOpen(true);
     };
 
-    const handleSaveSystemPrompt = () => {
-        if (!selectedModelForPrompt) return;
-        fetch(`/api/system-prompts/${encodeURIComponent(selectedModelForPrompt)}`, {
-            method: 'PUT',
+    const handleCloseUserDialog = () => {
+        setUserDialogOpen(false);
+        setSelectedUser(null);
+        setNewUserData({ username: '', email: '', password: '', role: 'user' });
+    };
+
+    const handleCreateUser = () => {
+        fetch('/api/users', {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ systemPrompt: currentSystemPrompt }),
+            body: JSON.stringify(newUserData),
         })
         .then(response => {
-            if (!response.ok) throw new Error('Failed to save');
+            if (!response.ok) return response.json().then(err => { throw new Error(err.error); });
             return response.json();
         })
         .then(() => {
-            setSystemPrompts(prev => ({
-                ...prev,
-                [selectedModelForPrompt]: currentSystemPrompt
-            }));
-            setSystemPromptDirty(false);
-            showSnackbar('System prompt saved', 'success');
+            showSnackbar('User created successfully', 'success');
+            handleCloseUserDialog();
+            fetchUsers();
         })
         .catch(error => showSnackbar(error.message, 'error'));
     };
 
-    const handleClearSystemPrompt = () => {
-        setCurrentSystemPrompt('');
-        setSystemPromptDirty(systemPrompts[selectedModelForPrompt] !== '');
+    const handleUpdateUser = () => {
+        const updates = { email: newUserData.email, role: newUserData.role };
+        fetch(`/api/users/${selectedUser.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        })
+        .then(response => {
+            if (!response.ok) return response.json().then(err => { throw new Error(err.error); });
+            return response.json();
+        })
+        .then(() => {
+            showSnackbar('User updated successfully', 'success');
+            handleCloseUserDialog();
+            fetchUsers();
+        })
+        .catch(error => showSnackbar(error.message, 'error'));
+    };
+
+    const handleToggleUserStatus = (userId, disabled) => {
+        fetch(`/api/users/${userId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disabled }),
+        })
+        .then(response => {
+            if (!response.ok) return response.json().then(err => { throw new Error(err.error); });
+            return response.json();
+        })
+        .then(() => {
+            showSnackbar(`User ${disabled ? 'disabled' : 'enabled'} successfully`, 'success');
+            fetchUsers();
+        })
+        .catch(error => showSnackbar(error.message, 'error'));
+    };
+
+    const handleDeleteUser = (userId) => {
+        if (!confirm('Are you sure you want to delete this user?')) return;
+        fetch(`/api/users/${userId}`, { method: 'DELETE' })
+        .then(response => {
+            if (!response.ok) return response.json().then(err => { throw new Error(err.error); });
+            return response.json();
+        })
+        .then(() => {
+            showSnackbar('User deleted successfully', 'success');
+            fetchUsers();
+        })
+        .catch(error => showSnackbar(error.message, 'error'));
+    };
+
+    const handleResetPassword = () => {
+        fetch(`/api/users/${selectedUser.username}/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ newPassword: newUserData.password }),
+        })
+        .then(response => {
+            if (!response.ok) return response.json().then(err => { throw new Error(err.error); });
+            return response.json();
+        })
+        .then(() => {
+            showSnackbar('Password reset successfully', 'success');
+            handleCloseUserDialog();
+        })
+        .catch(error => showSnackbar(error.message, 'error'));
     };
 
     return (
-        <ThemeProvider theme={darkTheme}>
+        <ThemeProvider theme={theme}>
             <CssBaseline />
             <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
                 {/* Main Content */}
@@ -4550,7 +4465,7 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                                                                         <Tooltip title="Stop Instance">
                                                                             <IconButton
                                                                                 size="small"
-                                                                                onClick={() => handleStopInstance(instance.name)}
+                                                                                onClick={() => handleStopInstance(instance.name, instance.backend)}
                                                                                 sx={{ color: 'error.main' }}
                                                                             >
                                                                                 <StopIcon />
@@ -5331,136 +5246,224 @@ fetch('${baseUrl}/api/apps/open-webui/start', {
                             </Grid>
                         )}
 
-                        {/* System Prompts Tab */}
+                        {/* Users Tab */}
                         {tabOrder[activeTab] === 2 && (
                             <Grid container spacing={3}>
-                                <Grid item xs={12} md={4}>
-                                    <Card sx={{ height: '100%' }}>
+                                <Grid item xs={12}>
+                                    <Card>
                                         <CardContent>
-                                            <SectionHeader
-                                                icon={<ChatIcon />}
-                                                title="Select Model"
-                                                subtitle="Choose a model to configure its system prompt"
-                                            />
-                                            {models.length === 0 ? (
+                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+                                                <SectionHeader
+                                                    icon={<PeopleIcon />}
+                                                    title="User Management"
+                                                    subtitle="Manage user accounts and permissions"
+                                                />
+                                                {user?.role === 'admin' && (
+                                                    <Button
+                                                        variant="contained"
+                                                        startIcon={<AddIcon />}
+                                                        onClick={() => handleOpenUserDialog('create')}
+                                                    >
+                                                        Add User
+                                                    </Button>
+                                                )}
+                                            </Box>
+
+                                            {user?.role !== 'admin' ? (
+                                                <Box sx={{ textAlign: 'center', py: 8 }}>
+                                                    <PeopleIcon sx={{ fontSize: 48, color: 'text.secondary', mb: 2 }} />
+                                                    <Typography variant="body1" sx={{ color: 'text.secondary' }}>
+                                                        Admin access required to manage users
+                                                    </Typography>
+                                                </Box>
+                                            ) : usersLoading ? (
+                                                <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                                                    <CircularProgress />
+                                                </Box>
+                                            ) : users.length === 0 ? (
                                                 <Box sx={{ textAlign: 'center', py: 4 }}>
                                                     <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                                                        No models available
+                                                        No users found
                                                     </Typography>
                                                 </Box>
                                             ) : (
-                                                <List sx={{ mt: 1 }}>
-                                                    {models.map(model => {
-                                                        const hasPrompt = !!systemPrompts[model.name];
-                                                        const isSelected = selectedModelForPrompt === model.name;
-                                                        return (
-                                                            <ListItemButton
-                                                                key={model.name}
-                                                                selected={isSelected}
-                                                                onClick={() => handleSelectModelForPrompt(model.name)}
-                                                                sx={{
-                                                                    borderRadius: 1,
-                                                                    mb: 0.5,
-                                                                    '&.Mui-selected': {
-                                                                        bgcolor: 'rgba(167, 139, 250, 0.1)',
-                                                                        '&:hover': {
-                                                                            bgcolor: 'rgba(167, 139, 250, 0.15)',
-                                                                        },
-                                                                    },
-                                                                }}
-                                                            >
-                                                                <ListItemText
-                                                                    primary={model.name}
-                                                                    primaryTypographyProps={{
-                                                                        sx: {
-                                                                            whiteSpace: 'nowrap',
-                                                                            overflow: 'hidden',
-                                                                            textOverflow: 'ellipsis',
-                                                                            fontSize: '0.875rem',
-                                                                        }
-                                                                    }}
-                                                                />
-                                                                {hasPrompt && (
-                                                                    <Chip
-                                                                        label="Configured"
-                                                                        size="small"
-                                                                        color="success"
-                                                                        variant="outlined"
-                                                                        sx={{ fontSize: '0.7rem', height: 20 }}
-                                                                    />
-                                                                )}
-                                                            </ListItemButton>
-                                                        );
-                                                    })}
-                                                </List>
-                                            )}
-                                        </CardContent>
-                                    </Card>
-                                </Grid>
-
-                                <Grid item xs={12} md={8}>
-                                    <Card sx={{ height: '100%' }}>
-                                        <CardContent>
-                                            <SectionHeader
-                                                icon={<ChatIcon />}
-                                                title="System Prompt"
-                                                subtitle={selectedModelForPrompt ? `Editing prompt for ${selectedModelForPrompt}` : 'Select a model to edit its system prompt'}
-                                            />
-                                            {selectedModelForPrompt ? (
-                                                <Box sx={{ mt: 2 }}>
-                                                    <TextField
-                                                        fullWidth
-                                                        multiline
-                                                        rows={12}
-                                                        placeholder="Enter a system prompt for this model...
-
-Example:
-You are a helpful coding assistant. When writing code, always include comments explaining the logic. Prefer clear, readable code over clever one-liners."
-                                                        value={currentSystemPrompt}
-                                                        onChange={(e) => handleSystemPromptChange(e.target.value)}
-                                                        sx={{
-                                                            '& .MuiOutlinedInput-root': {
-                                                                fontFamily: '"Fira Code", monospace',
-                                                                fontSize: '0.8125rem',
-                                                            },
-                                                        }}
-                                                    />
-                                                    <Box sx={{ display: 'flex', gap: 1, mt: 2, justifyContent: 'flex-end' }}>
-                                                        <Button
-                                                            variant="outlined"
-                                                            startIcon={<ClearIcon />}
-                                                            onClick={handleClearSystemPrompt}
-                                                            disabled={!currentSystemPrompt}
-                                                        >
-                                                            Clear
-                                                        </Button>
-                                                        <Button
-                                                            variant="contained"
-                                                            startIcon={<SaveIcon />}
-                                                            onClick={handleSaveSystemPrompt}
-                                                            disabled={!systemPromptDirty}
-                                                        >
-                                                            Save Prompt
-                                                        </Button>
-                                                    </Box>
-                                                    <Typography variant="caption" sx={{ color: 'text.secondary', mt: 2, display: 'block' }}>
-                                                        System prompts are saved persistently and will be loaded even after page refresh.
-                                                        They are stored per-model and can be used by chat interfaces like Open WebUI.
-                                                    </Typography>
-                                                </Box>
-                                            ) : (
-                                                <Box sx={{ textAlign: 'center', py: 8 }}>
-                                                    <ChatIcon sx={{ fontSize: 48, color: 'text.secondary', mb: 2 }} />
-                                                    <Typography variant="body1" sx={{ color: 'text.secondary' }}>
-                                                        Select a model from the list to configure its system prompt
-                                                    </Typography>
-                                                </Box>
+                                                <TableContainer>
+                                                    <Table>
+                                                        <TableHead>
+                                                            <TableRow>
+                                                                <TableCell>Username</TableCell>
+                                                                <TableCell>Email</TableCell>
+                                                                <TableCell>Role</TableCell>
+                                                                <TableCell>Status</TableCell>
+                                                                <TableCell>Last Login</TableCell>
+                                                                <TableCell align="right">Actions</TableCell>
+                                                            </TableRow>
+                                                        </TableHead>
+                                                        <TableBody>
+                                                            {users.map((u) => (
+                                                                <TableRow key={u.id} sx={{ opacity: u.disabled ? 0.6 : 1 }}>
+                                                                    <TableCell>
+                                                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                            <AccountCircleIcon sx={{ color: u.disabled ? 'text.disabled' : 'text.secondary' }} />
+                                                                            {u.username}
+                                                                            {u.id === user?.id && (
+                                                                                <Chip label="You" size="small" color="primary" sx={{ height: 20, fontSize: '0.7rem' }} />
+                                                                            )}
+                                                                        </Box>
+                                                                    </TableCell>
+                                                                    <TableCell>{u.email}</TableCell>
+                                                                    <TableCell>
+                                                                        <Chip
+                                                                            label={u.role}
+                                                                            size="small"
+                                                                            color={u.role === 'admin' ? 'secondary' : 'default'}
+                                                                            sx={{ textTransform: 'capitalize' }}
+                                                                        />
+                                                                    </TableCell>
+                                                                    <TableCell>
+                                                                        <Chip
+                                                                            label={u.disabled ? 'Disabled' : 'Active'}
+                                                                            size="small"
+                                                                            color={u.disabled ? 'error' : 'success'}
+                                                                            sx={{ minWidth: 70 }}
+                                                                        />
+                                                                    </TableCell>
+                                                                    <TableCell>
+                                                                        {u.lastLoginAt ? (
+                                                                            <Tooltip title={new Date(u.lastLoginAt).toLocaleString()}>
+                                                                                <Typography variant="body2" sx={{ fontSize: '0.85rem' }}>
+                                                                                    {new Date(u.lastLoginAt).toLocaleDateString()}
+                                                                                </Typography>
+                                                                            </Tooltip>
+                                                                        ) : (
+                                                                            <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.85rem' }}>
+                                                                                Never
+                                                                            </Typography>
+                                                                        )}
+                                                                    </TableCell>
+                                                                    <TableCell align="right">
+                                                                        {u.id !== user?.id && (
+                                                                            <Tooltip title={u.disabled ? 'Enable Account' : 'Disable Account'}>
+                                                                                <Switch
+                                                                                    size="small"
+                                                                                    checked={!u.disabled}
+                                                                                    onChange={() => handleToggleUserStatus(u.id, !u.disabled)}
+                                                                                    color="success"
+                                                                                />
+                                                                            </Tooltip>
+                                                                        )}
+                                                                        <Tooltip title="Edit">
+                                                                            <IconButton
+                                                                                size="small"
+                                                                                onClick={() => handleOpenUserDialog('edit', u)}
+                                                                            >
+                                                                                <EditIcon fontSize="small" />
+                                                                            </IconButton>
+                                                                        </Tooltip>
+                                                                        <Tooltip title="Reset Password">
+                                                                            <IconButton
+                                                                                size="small"
+                                                                                onClick={() => handleOpenUserDialog('resetPassword', u)}
+                                                                            >
+                                                                                <VpnKeyIcon fontSize="small" />
+                                                                            </IconButton>
+                                                                        </Tooltip>
+                                                                        {u.id !== user?.id && (
+                                                                            <Tooltip title="Delete">
+                                                                                <IconButton
+                                                                                    size="small"
+                                                                                    color="error"
+                                                                                    onClick={() => handleDeleteUser(u.id)}
+                                                                                >
+                                                                                    <DeleteIcon fontSize="small" />
+                                                                                </IconButton>
+                                                                            </Tooltip>
+                                                                        )}
+                                                                    </TableCell>
+                                                                </TableRow>
+                                                            ))}
+                                                        </TableBody>
+                                                    </Table>
+                                                </TableContainer>
                                             )}
                                         </CardContent>
                                     </Card>
                                 </Grid>
                             </Grid>
                         )}
+
+                        {/* User Dialog */}
+                        <Dialog open={userDialogOpen} onClose={handleCloseUserDialog} maxWidth="sm" fullWidth>
+                            <DialogTitle>
+                                {userDialogMode === 'create' ? 'Create New User' :
+                                 userDialogMode === 'edit' ? `Edit User: ${selectedUser?.username}` :
+                                 `Reset Password: ${selectedUser?.username}`}
+                            </DialogTitle>
+                            <DialogContent>
+                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+                                    {userDialogMode === 'create' && (
+                                        <TextField
+                                            label="Username"
+                                            value={newUserData.username}
+                                            onChange={(e) => setNewUserData({ ...newUserData, username: e.target.value })}
+                                            fullWidth
+                                        />
+                                    )}
+                                    {(userDialogMode === 'create' || userDialogMode === 'edit') && (
+                                        <>
+                                            <TextField
+                                                label="Email"
+                                                type="email"
+                                                value={newUserData.email}
+                                                onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })}
+                                                fullWidth
+                                            />
+                                            <FormControl fullWidth>
+                                                <InputLabel>Role</InputLabel>
+                                                <Select
+                                                    value={newUserData.role}
+                                                    label="Role"
+                                                    onChange={(e) => setNewUserData({ ...newUserData, role: e.target.value })}
+                                                >
+                                                    <MenuItem value="user">User</MenuItem>
+                                                    <MenuItem value="admin">Admin</MenuItem>
+                                                </Select>
+                                            </FormControl>
+                                        </>
+                                    )}
+                                    {(userDialogMode === 'create' || userDialogMode === 'resetPassword') && (
+                                        <TextField
+                                            label={userDialogMode === 'create' ? 'Password' : 'New Password'}
+                                            type="password"
+                                            value={newUserData.password}
+                                            onChange={(e) => setNewUserData({ ...newUserData, password: e.target.value })}
+                                            fullWidth
+                                            helperText="Minimum 8 characters"
+                                        />
+                                    )}
+                                </Box>
+                            </DialogContent>
+                            <DialogActions>
+                                <Button onClick={handleCloseUserDialog}>Cancel</Button>
+                                <Button
+                                    variant="contained"
+                                    onClick={
+                                        userDialogMode === 'create' ? handleCreateUser :
+                                        userDialogMode === 'edit' ? handleUpdateUser :
+                                        handleResetPassword
+                                    }
+                                    disabled={
+                                        userDialogMode === 'create' ? (!newUserData.username || !newUserData.email || !newUserData.password || newUserData.password.length < 8) :
+                                        userDialogMode === 'edit' ? !newUserData.email :
+                                        !newUserData.password || newUserData.password.length < 8
+                                    }
+                                >
+                                    {userDialogMode === 'create' ? 'Create' :
+                                     userDialogMode === 'edit' ? 'Save' :
+                                     'Reset Password'}
+                                </Button>
+                            </DialogActions>
+                        </Dialog>
 
                         {/* API Keys Tab */}
                         {tabOrder[activeTab] === 3 && (
@@ -5525,10 +5528,10 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                                         onChange={(e) => setBearerOnly(e.target.checked)}
                                                                     />
                                                                 }
-                                                                label="Bearer Token Only (for OpenWebUI - no secret required)"
+                                                                label="Bearer Token Only (no secret required)"
                                                             />
                                                             <Typography variant="caption" sx={{ display: 'block', mt: 0.5, color: 'text.secondary' }}>
-                                                                Enable this for OpenWebUI compatibility. Bearer tokens can be used with "Authorization: Bearer &lt;token&gt;" header without requiring a secret.
+                                                                Bearer tokens can be used with "Authorization: Bearer &lt;token&gt;" header without requiring a secret.
                                                             </Typography>
                                                         </Grid>
                                                         <Grid item xs={12} md={6}>
@@ -5949,7 +5952,7 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
                                                     </Box>
                                                     <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
-                                                        <strong style={{ color: '#fafafa' }}>Koda CLI</strong> for terminal • <strong style={{ color: '#fafafa' }}>Open WebUI</strong> for chat • <strong style={{ color: '#fafafa' }}>API</strong> for code
+                                                        <strong style={{ color: '#fafafa' }}>AI Chat</strong> for web • <strong style={{ color: '#fafafa' }}>Koda CLI</strong> for terminal • <strong style={{ color: '#fafafa' }}>API</strong> for code
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -5979,14 +5982,14 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                     </TableHead>
                                                     <TableBody>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600, color: 'primary.main' }}>Koda CLI</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -sk {baseUrl}/api/cli/install | bash</TableCell>
-                                                            <TableCell sx={{ color: 'text.secondary' }}>Terminal, automation</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'primary.main' }}>AI Chat</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>https://localhost:3002</TableCell>
+                                                            <TableCell sx={{ color: 'text.secondary' }}>Web chat interface with streaming</TableCell>
                                                         </TableRow>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600, color: 'secondary.main' }}>Open WebUI</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{openWebUIUrl}</TableCell>
-                                                            <TableCell sx={{ color: 'text.secondary' }}>Chat interface</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'secondary.main' }}>Koda CLI</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -sk {baseUrl}/api/cli/install | bash</TableCell>
+                                                            <TableCell sx={{ color: 'text.secondary' }}>Terminal, automation</TableCell>
                                                         </TableRow>
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'success.main' }}>Direct API</TableCell>
@@ -6058,6 +6061,11 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                             <MenuItem value="/api/agent/file/read">POST /api/agent/file/read - Read File</MenuItem>
                                                             <MenuItem value="/api/agent/file/write">POST /api/agent/file/write - Write File</MenuItem>
                                                             <MenuItem value="/api/agent/file/list">POST /api/agent/file/list - List Directory</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── User Management ───</MenuItem>
+                                                            <MenuItem value="/api/users">GET /api/users - List Users (Admin)</MenuItem>
+                                                            <MenuItem value="/api/users/:id">PUT /api/users/:id - Update User (Admin)</MenuItem>
+                                                            <MenuItem value="/api/users/:id/delete">DELETE /api/users/:id - Delete User (Admin)</MenuItem>
+                                                            <MenuItem value="/api/users/:username/reset-password">POST /api/users/:username/reset-password - Reset Password (Admin)</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Admin ───</MenuItem>
                                                             <MenuItem value="/api/api-keys">GET/POST /api/api-keys - Manage API Keys</MenuItem>
                                                         </Select>
@@ -6182,55 +6190,43 @@ You are a helpful coding assistant. When writing code, always include comments e
                                     </AccordionDetails>
                                 </Accordion>
 
-                                {/* Open WebUI Web Search */}
+                                {/* Chat Web Search */}
                                 <Accordion sx={docAccordionSx}>
                                     <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<SearchIcon />} color="secondary" />
                                             <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Open WebUI Search</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Auto-configured web search integration</Typography>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Chat Web Search</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Built-in web search integration</Typography>
                                             </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
                                             <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
-                                            <Typography sx={{ fontSize: '0.85rem' }}>Auto-configured with DuckDuckGo + Playwright content fetching</Typography>
-                                        </Box>
-
-                                        {/* Search URL */}
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(167,139,250,0.08)', borderRadius: 2, border: '1px solid rgba(167,139,250,0.2)' }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 0.5, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search URL (Auto-Configured)</Typography>
-                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, bgcolor: 'rgba(0,0,0,0.2)', p: 1, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                <code style={{ color: '#a78bfa', wordBreak: 'break-all' }}>http://host.docker.internal:3080/api/openwebui/search</code>
-                                            </Box>
-                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', mt: 0.5 }}>
-                                                POST endpoint • Auth: Bearer token • Body: {`{ "query": "search terms" }`}
-                                            </Typography>
+                                            <Typography sx={{ fontSize: '0.85rem' }}>Powered by DuckDuckGo + Playwright content fetching</Typography>
                                         </Box>
 
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Setup (API Key Only)</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How to Use</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Create API key with <code style={{ fontSize: '0.7rem', bgcolor: 'rgba(0,0,0,0.3)', p: '2px 4px', borderRadius: 2 }}>query</code> permission</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Copy the Bearer token (Secret)</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Open WebUI → Admin → Settings → Web Search</Typography>
-                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>4.</strong> Paste into "External Web Search API Key" and save</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Go to the Chat tab</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Click the search icon in the header to enable web search</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Ask questions that require current information</Typography>
+                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>4.</strong> Search results are automatically included in context</Typography>
                                                     </Box>
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Auto-Provisioned Features</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="External search engine" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(167,139,250,0.15)' }} />
-                                                        <Chip label="Smart RAG template" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,211,238,0.15)' }} />
-                                                        <Chip label="Dynamic date/time" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Auto query gen" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                        <Chip label="Content fetching" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(239,68,68,0.15)' }} />
+                                                        <Chip label="DuckDuckGo search" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(167,139,250,0.15)' }} />
+                                                        <Chip label="Content extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,211,238,0.15)' }} />
+                                                        <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="Auto context injection" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
                                                     </Box>
                                                 </Box>
                                             </Grid>
@@ -6370,7 +6366,6 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/complete</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Text completion</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/stream</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>SSE streaming chat</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Web search with content fetch</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/openwebui/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Open WebUI external search</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stealth browser fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Page interaction</TableCell></TableRow>
 
@@ -6476,13 +6471,12 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                     </TableRow>
                                                 </TableHead>
                                                 <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>./start.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start all services (webapp, Open WebUI). Auto-provisions web search settings.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>./start.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start all services (webapp and model backends).</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./stop.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop all services and cleanup running model instances.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>./build.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Build Docker images with parallel builds, auto-resume, and state tracking.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'text.secondary' }}>Rebuild and restart services without data loss. Options: webapp, openwebui, all</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'text.secondary' }}>Rebuild and restart services without data loss. Options: webapp, all</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>./update.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Quick rebuild of webapp only (for code updates).</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Full system reset. Removes all data except downloaded models. Options: --keep-openwebui, --rebuild</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset-openwebui.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Reset only Open WebUI data (users, chats, settings).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Full system reset. Removes all data except downloaded models. Options: --rebuild</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -6504,48 +6498,9 @@ You are a helpful coding assistant. When writing code, always include comments e
                                                 </TableHead>
                                                 <TableBody>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>scripts/manage-users.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Interactive user account management: list users, create admin, reset passwords, delete accounts.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>scripts/provision-openwebui-search.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Configure Open WebUI external web search. Auto-runs on start.sh but can be run manually for troubleshooting.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Linux/macOS. Creates ~/.local/bin/koda symlink.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.ps1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Windows PowerShell. Creates AppData shortcut.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>scripts/download_model.py</TableCell><TableCell sx={{ color: 'text.secondary' }}>Python script for downloading GGUF models from HuggingFace (used internally by webapp).</TableCell></TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </TableContainer>
-
-                                        {/* Open WebUI Patches */}
-                                        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'primary.main' }}>
-                                            Open WebUI Patches
-                                        </Typography>
-                                        <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', mb: 1.5 }}>
-                                            Custom patches applied to Open WebUI Docker image for enhanced functionality.
-                                        </Typography>
-                                        <TableContainer component={Paper} variant="outlined" sx={{ mb: 2 }}>
-                                            <Table size="small" sx={compactTableSx}>
-                                                <TableHead>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontWeight: 600, width: '35%' }}>File</TableCell>
-                                                        <TableCell sx={{ fontWeight: 600 }}>Description</TableCell>
-                                                    </TableRow>
-                                                </TableHead>
-                                                <TableBody>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>openwebui/msg_loader_patch.py</TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>
-                                                            Enhanced .msg email loader for Open WebUI document retrieval. Features:
-                                                            <Box component="ul" sx={{ m: 0, pl: 2, mt: 0.5, '& li': { fontSize: '0.7rem', mb: 0.25 } }}>
-                                                                <li>Robust HTML-to-text conversion with link preservation</li>
-                                                                <li>Attachment content extraction (PDF, DOCX, XLSX, TXT)</li>
-                                                                <li>Nested email parsing (.eml/.msg attachments)</li>
-                                                                <li>QR code URL detection from image attachments</li>
-                                                            </Box>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                    <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>openwebui/Dockerfile</TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>
-                                                            Custom Open WebUI image with additional dependencies: extract_msg, pyzbar (QR), PyPDF2, python-docx, openpyxl
-                                                        </TableCell>
-                                                    </TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>

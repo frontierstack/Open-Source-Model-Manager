@@ -18,6 +18,11 @@ function initialize(passport) {
                 return done(null, false, { message: 'Login failed' });
             }
 
+            // Check if user is disabled
+            if (user.disabled) {
+                return done(null, false, { message: 'Account is disabled' });
+            }
+
             // Compare provided password with stored hash
             const isMatch = await bcrypt.compare(password, user.passwordHash);
 

@@ -28,9 +28,11 @@ export const useAppStore = create(
                     launchSettingsDialog: false
                 },
 
-                // UI preferences
+                // UI preferences with theme support
                 preferences: {
                     theme: 'dark',
+                    fontFamily: 'default',
+                    fontSize: 'medium',
                     docsAccordionOrder: [0, 1, 2, 3, 4, 5]
                 },
 
@@ -82,6 +84,28 @@ export const useAppStore = create(
                     preferences: {
                         ...state.preferences,
                         [key]: value
+                    }
+                })),
+
+                // Theme actions
+                setTheme: (theme) => set((state) => ({
+                    preferences: {
+                        ...state.preferences,
+                        theme
+                    }
+                })),
+
+                setFontFamily: (fontFamily) => set((state) => ({
+                    preferences: {
+                        ...state.preferences,
+                        fontFamily
+                    }
+                })),
+
+                setFontSize: (fontSize) => set((state) => ({
+                    preferences: {
+                        ...state.preferences,
+                        fontSize
                     }
                 }))
             }),
