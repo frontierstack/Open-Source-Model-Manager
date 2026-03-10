@@ -8252,12 +8252,13 @@ async function initializeDefaultApiKeys() {
         const keys = await loadApiKeys();
         let keysCreated = false;
 
-        // Check if default bearer key exists
-        let bearerKeyExists = keys.find(k => k.name === 'OpenWebUI Integration Key');
-        if (!bearerKeyExists) {
-            const bearerKey = {
+        // Check if chat integration key exists (for Model Chat on port 3002)
+        // Also check for legacy name to avoid creating duplicates
+        let chatKeyExists = keys.find(k => k.name === 'Model Chat Key' || k.name === 'OpenWebUI Integration Key');
+        if (!chatKeyExists) {
+            const chatKey = {
                 id: crypto.randomUUID(),
-                name: 'OpenWebUI Integration Key',
+                name: 'Model Chat Key',
                 key: generateApiKey(),
                 secret: generateApiSecret(),
                 bearerOnly: true,
@@ -8267,12 +8268,12 @@ async function initializeDefaultApiKeys() {
                 active: true,
                 createdAt: new Date().toISOString()
             };
-            keys.push(bearerKey);
+            keys.push(chatKey);
             console.log('');
             console.log('========================================');
-            console.log('  OpenWebUI Integration Key Created');
+            console.log('  Model Chat Key Created');
             console.log('========================================');
-            console.log(`Bearer Token: ${bearerKey.key}`);
+            console.log(`Bearer Token: ${chatKey.key}`);
             console.log('');
             keysCreated = true;
         }
