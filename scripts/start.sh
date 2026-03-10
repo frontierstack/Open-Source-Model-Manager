@@ -80,25 +80,17 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     sleep 2
 done
 
-# Provision Open WebUI with external search configuration
-echo ""
-if [ -f "$SCRIPT_DIR/provision-openwebui-search.sh" ]; then
-    "$SCRIPT_DIR/provision-openwebui-search.sh"
-fi
-
 echo ""
 echo "=========================================="
 echo "  Model Server Started!"
 echo "=========================================="
 echo ""
-echo "Access URLs (all HTTPS):"
+echo "Access URL:"
 echo ""
-echo "  Webapp:     https://localhost:3001"
-echo "  Open WebUI: https://localhost:3002"
+echo "  Webapp: https://localhost:3001"
 echo ""
 echo "HTTP requests are automatically redirected to HTTPS."
 echo ""
-
 echo "Note: Your browser will show a security warning for the"
 echo "self-signed certificate - this is expected for local development."
 echo ""

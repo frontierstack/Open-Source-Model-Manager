@@ -14,7 +14,6 @@ echo ""
 
 # Parse arguments
 FORCE_RESET=false
-KEEP_OPENWEBUI=false
 REBUILD_IMAGES=false
 FULL_WIPE=false
 
@@ -22,10 +21,6 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -f|--force)
             FORCE_RESET=true
-            shift
-            ;;
-        --keep-openwebui)
-            KEEP_OPENWEBUI=true
             shift
             ;;
         --rebuild)
@@ -41,14 +36,12 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  -f, --force        Skip confirmation prompts"
-            echo "  --keep-openwebui   Keep Open WebUI data (users, chat history)"
             echo "  --rebuild          Rebuild Docker images from scratch"
             echo "  --full             Full factory reset (removes EVERYTHING including models)"
             echo "  -h, --help         Show this help message"
             echo ""
             echo "Examples:"
             echo "  $0                      # Reset API keys, settings, users"
-            echo "  $0 --keep-openwebui     # Reset but keep Open WebUI users/history"
             echo "  $0 --full -f            # Complete factory reset (no prompts)"
             echo "  $0 --rebuild            # Reset and rebuild all Docker images"
             exit 0
@@ -66,10 +59,9 @@ if [ "$FORCE_RESET" = false ]; then
         echo "WARNING: This is a FULL FACTORY RESET!"
         echo "This will permanently delete:"
         echo "  - All downloaded models"
-        echo "  - All user accounts (webapp and Open WebUI)"
+        echo "  - All user accounts"
         echo "  - All API keys and sessions"
         echo "  - All agents, skills, and tasks"
-        echo "  - All Open WebUI chat history"
         echo ""
         read -p "Are you absolutely sure? Type 'YES' to confirm: " -r
         echo ""
@@ -110,22 +102,6 @@ docker volume rm modelserver_webapp_data 2>/dev/null || \
 docker volume rm opensourcemodelmanager_webapp_data 2>/dev/null || \
 docker volume rm webapp_data 2>/dev/null || true
 
-# Handle OpenWebUI data
-if [ "$KEEP_OPENWEBUI" = false ]; then
-    if [ "$FULL_WIPE" = true ] || [ "$FORCE_RESET" = true ]; then
-        REPLY="y"
-    else
-        read -p "Also reset Open WebUI data (users, chat history)? [y/N] " -n 1 -r
-        echo ""
-    fi
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo ">>> Removing Open WebUI data volume..."
-        docker volume rm modelserver_openwebui_data 2>/dev/null || \
-        docker volume rm opensourcemodelmanager_openwebui_data 2>/dev/null || \
-        docker volume rm openwebui_data 2>/dev/null || true
-    fi
-fi
-
 # Handle full wipe (delete models)
 if [ "$FULL_WIPE" = true ]; then
     echo ""
@@ -161,9 +137,6 @@ if [ "$REBUILD_IMAGES" = true ]; then
 
     # Build webapp
     docker compose build webapp --no-cache
-
-    # Build custom OpenWebUI image
-    docker compose build open-webui --no-cache
 fi
 
 # Ensure SSL certificates exist
@@ -211,13 +184,6 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     sleep 2
 done
 
-# Get Bearer token from logs
-echo ""
-echo ">>> Step 6: Fetching credentials..."
-sleep 3
-
-BEARER_TOKEN=$(docker compose logs webapp 2>/dev/null | grep "Bearer Token:" | tail -1 | awk '{print $NF}' || echo "")
-
 echo ""
 echo "=========================================="
 echo "  Reset Complete!"
@@ -229,27 +195,9 @@ if [ "$FULL_WIPE" = true ]; then
     echo ""
 fi
 
-echo "Services are running. Access URLs (all HTTPS):"
+echo "Services are running. Access URL:"
 echo ""
-echo "  Webapp:     https://localhost:3001"
-echo "  Open WebUI: https://localhost:3002"
-echo ""
-
-if [ -n "$BEARER_TOKEN" ]; then
-    echo "Open WebUI Bearer Token:"
-    echo "  $BEARER_TOKEN"
-    echo ""
-    echo "To configure Open WebUI:"
-    echo "  1. Go to https://localhost:3002"
-    echo "  2. Settings -> Connections"
-    echo "  3. Add OpenAI API connection:"
-    echo "     - API Base URL: https://host.docker.internal:3001/v1"
-    echo "     - API Key: $BEARER_TOKEN"
-else
-    echo "View credentials with:"
-    echo "  docker compose logs webapp | grep -A5 'Bearer Token'"
-fi
-
+echo "  Webapp: https://localhost:3001"
 echo ""
 echo "HTTP requests are automatically redirected to HTTPS."
 echo ""
