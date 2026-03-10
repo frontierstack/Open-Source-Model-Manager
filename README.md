@@ -59,6 +59,12 @@ Your autonomous AI project assistant with direct skill execution:
 - AES-256 encrypted credentials
 - Cross-platform (Linux, macOS, Windows)
 
+### Chat Interface
+
+<p align="center">
+  <img src="docs/images/chat-ui.png" alt="Model Chat Interface" width="800">
+</p>
+
 ---
 
 ## Prerequisites
