@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
     ChevronDown,
-    Globe,
     Settings,
     Plus,
     LogOut,
@@ -182,21 +181,6 @@ export default function ChatHeader({
                     </div>
                 )}
 
-                {/* Web Search Toggle */}
-                <button
-                    onClick={onWebSearchToggle}
-                    className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl transition-all duration-200 ${
-                        webSearchEnabled
-                            ? 'bg-gradient-to-b from-accent-500/25 to-accent-500/15 text-accent-300 border border-accent-500/40 shadow-lg shadow-accent-500/10'
-                            : 'bg-dark-800/50 text-dark-400 border border-white/5 hover:border-white/10 hover:text-dark-300'
-                    }`}
-                    title={webSearchEnabled ? 'Web search enabled' : 'Enable web search'}
-                >
-                    <Globe className={`w-4 h-4 ${webSearchEnabled ? 'animate-pulse' : ''}`} />
-                    <span className="text-xs font-medium hidden sm:inline">
-                        {webSearchEnabled ? 'Search On' : 'Search'}
-                    </span>
-                </button>
             </div>
 
             {/* Right side - Actions */}

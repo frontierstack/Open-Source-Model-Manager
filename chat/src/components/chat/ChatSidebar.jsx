@@ -70,15 +70,6 @@ export default function ChatSidebar({
         onToggleFavorite?.(id);
     };
 
-    // Get the first message preview from a conversation
-    const getPreview = (conv) => {
-        if (!conv.messages || conv.messages.length === 0) return '';
-        const firstUserMsg = conv.messages.find(m => m.role === 'user');
-        if (!firstUserMsg) return '';
-        const content = firstUserMsg.content || '';
-        return content.length > 50 ? content.substring(0, 50) + '...' : content;
-    };
-
     // Categorize date
     const categorizeDate = (dateString) => {
         const date = new Date(dateString);
@@ -198,10 +189,6 @@ export default function ChatSidebar({
                                 <Star className="w-3 h-3 flex-shrink-0 fill-yellow-400 text-yellow-400" />
                             )}
                         </div>
-                        {/* Preview */}
-                        <p className="text-xs text-dark-500 mt-1 ml-6 truncate">
-                            {getPreview(conv) || 'No messages yet'}
-                        </p>
                     </div>
 
                     {/* Action buttons - show on hover */}

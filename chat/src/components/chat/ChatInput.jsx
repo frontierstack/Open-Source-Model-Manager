@@ -12,7 +12,8 @@ import {
     File,
     ScrollText,
     ChevronDown,
-    Check
+    Check,
+    Globe
 } from 'lucide-react';
 
 /**
@@ -57,6 +58,8 @@ export default function ChatInput({
     systemPrompts = [],
     selectedSystemPromptId,
     onSystemPromptSelect,
+    webSearchEnabled = false,
+    onWebSearchToggle,
 }) {
     const [message, setMessage] = useState('');
     const [isDragOver, setIsDragOver] = useState(false);
@@ -433,6 +436,23 @@ export default function ChatInput({
                             title="Attach files (images, PDFs, code, text)"
                         >
                             <Paperclip className="w-5 h-5" />
+                        </button>
+
+                        {/* Web search toggle */}
+                        <button
+                            onClick={onWebSearchToggle}
+                            disabled={disabled || isStreaming}
+                            className={`flex-shrink-0 p-2 rounded-xl transition-all duration-200
+                                       disabled:opacity-40 disabled:cursor-not-allowed
+                                       focus:outline-none focus:ring-2 focus:ring-primary-500/40
+                                       ${webSearchEnabled
+                                           ? 'text-blue-400 bg-blue-500/15 hover:bg-blue-500/25'
+                                           : 'text-dark-400 hover:text-dark-200 hover:bg-dark-700/50'
+                                       }`}
+                            aria-label={webSearchEnabled ? 'Disable web search' : 'Enable web search'}
+                            title={webSearchEnabled ? 'Web search enabled - click to disable' : 'Enable web search'}
+                        >
+                            <Globe className={`w-5 h-5 ${webSearchEnabled ? 'animate-pulse' : ''}`} />
                         </button>
 
                         {/* System prompt selector */}

@@ -48,7 +48,23 @@ export default function ChatSettings({
         topP = 1.0,
         frequencyPenalty = 0,
         presencePenalty = 0,
+        fontSize = 'medium',
+        fontFamily = 'system',
     } = settings;
+
+    // Font options
+    const fontSizeOptions = [
+        { value: 'small', label: 'Small', description: 'Compact text' },
+        { value: 'medium', label: 'Medium', description: 'Default size' },
+        { value: 'large', label: 'Large', description: 'Easier to read' },
+    ];
+
+    const fontFamilyOptions = [
+        { value: 'system', label: 'System', description: 'Default system font' },
+        { value: 'sans', label: 'Sans Serif', description: 'Clean and modern' },
+        { value: 'serif', label: 'Serif', description: 'Classic and elegant' },
+        { value: 'mono', label: 'Monospace', description: 'Fixed-width code font' },
+    ];
 
     // Reset state when modal closes
     useEffect(() => {
@@ -98,9 +114,14 @@ export default function ChatSettings({
     ];
 
     const themeOptions = [
-        { value: 'system', label: 'System', icon: Monitor, description: 'Follow system preference' },
-        { value: 'dark', label: 'Dark', icon: Moon, description: 'Dark theme for low light' },
-        { value: 'light', label: 'Light', icon: Sun, description: 'Light theme for bright environments' },
+        { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Dark zinc theme (default)' },
+        { value: 'obsidian', label: 'Obsidian', icon: Moon, description: 'Pure black OLED theme' },
+        { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Calm blues and teals' },
+        { value: 'forest', label: 'Forest', icon: Sparkles, description: 'Natural greens' },
+        { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm oranges and reds' },
+        { value: 'matrix', label: 'Matrix', icon: Code, description: 'Classic green terminal' },
+        { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon pink and cyan' },
+        { value: 'light', label: 'Light', icon: Sun, description: 'Clean light theme' },
     ];
 
     const currentTheme = theme || 'system';
@@ -521,6 +542,78 @@ export default function ChatSettings({
                                                         {isActive && <Check className="w-3.5 h-3.5" />}
                                                     </div>
                                                     <div className="text-[10px] text-dark-500 mt-0.5">{option.description}</div>
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="border-t border-white/5" />
+
+                            {/* Font Size */}
+                            <div>
+                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                    Font Size
+                                </label>
+                                <div className="grid grid-cols-3 gap-3">
+                                    {fontSizeOptions.map((option) => {
+                                        const isActive = fontSize === option.value;
+                                        return (
+                                            <button
+                                                key={option.value}
+                                                onClick={() => onUpdateSettings({ fontSize: option.value })}
+                                                className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all duration-200 ${
+                                                    isActive
+                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
+                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
+                                                }`}
+                                            >
+                                                <span className={`font-medium ${
+                                                    option.value === 'small' ? 'text-xs' :
+                                                    option.value === 'large' ? 'text-lg' : 'text-sm'
+                                                }`}>
+                                                    Aa
+                                                </span>
+                                                <div className="text-center">
+                                                    <div className="text-xs font-medium flex items-center gap-1 justify-center">
+                                                        {option.label}
+                                                        {isActive && <Check className="w-3 h-3" />}
+                                                    </div>
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Font Family */}
+                            <div>
+                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                    Font Style
+                                </label>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {fontFamilyOptions.map((option) => {
+                                        const isActive = fontFamily === option.value;
+                                        const fontClass = option.value === 'mono' ? 'font-mono' :
+                                                          option.value === 'serif' ? 'font-serif' : '';
+                                        return (
+                                            <button
+                                                key={option.value}
+                                                onClick={() => onUpdateSettings({ fontFamily: option.value })}
+                                                className={`flex items-center gap-3 p-3 rounded-xl border transition-all duration-200 ${
+                                                    isActive
+                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
+                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
+                                                }`}
+                                            >
+                                                <span className={`text-lg ${fontClass}`}>Aa</span>
+                                                <div className="text-left">
+                                                    <div className="text-xs font-medium flex items-center gap-1">
+                                                        {option.label}
+                                                        {isActive && <Check className="w-3 h-3" />}
+                                                    </div>
+                                                    <div className="text-[10px] text-dark-500">{option.description}</div>
                                                 </div>
                                             </button>
                                         );

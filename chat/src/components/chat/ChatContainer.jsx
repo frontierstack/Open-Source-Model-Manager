@@ -11,7 +11,7 @@ import ChatSettings from './ChatSettings';
  */
 export default function ChatContainer({
     models,
-    systemPrompts,
+    systemPrompts: initialSystemPrompts,
     showSnackbar,
     user,
     onLogout,
@@ -50,7 +50,12 @@ export default function ChatContainer({
         updateSettings,
         theme,
         setTheme,
+        systemPrompts: storeSystemPrompts,
+        setSystemPrompts,
     } = useChatStore();
+
+    // Use system prompts from store, falling back to initial props
+    const systemPrompts = storeSystemPrompts?.length > 0 ? storeSystemPrompts : initialSystemPrompts;
 
     // Load conversations on mount
     useEffect(() => {
@@ -149,6 +154,73 @@ export default function ChatContainer({
             });
         } catch (error) {
             console.error('Failed to save messages:', error);
+        }
+    };
+
+    // Load system prompts from API and update store
+    const refreshSystemPrompts = async () => {
+        try {
+            const response = await fetch('/api/system-prompts', { credentials: 'include' });
+            if (response.ok) {
+                const data = await response.json();
+                let promptsArray = [];
+                if (data && typeof data === 'object' && !Array.isArray(data)) {
+                    promptsArray = Object.entries(data).map(([name, content]) => ({
+                        id: name,
+                        name: name,
+                        content: content || '',
+                    }));
+                } else if (Array.isArray(data)) {
+                    promptsArray = data;
+                }
+                setSystemPrompts(promptsArray);
+            }
+        } catch (error) {
+            console.error('Failed to refresh system prompts:', error);
+        }
+    };
+
+    // Save system prompt via API
+    const handleSaveSystemPrompt = async (promptData) => {
+        try {
+            const response = await fetch(`/api/system-prompts/${encodeURIComponent(promptData.name)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ systemPrompt: promptData.content }),
+            });
+
+            if (response.ok) {
+                await refreshSystemPrompts();
+                showSnackbar('System prompt saved', 'success');
+            } else {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Failed to save system prompt');
+            }
+        } catch (error) {
+            console.error('Failed to save system prompt:', error);
+            showSnackbar(error.message || 'Failed to save system prompt', 'error');
+        }
+    };
+
+    // Delete system prompt via API
+    const handleDeleteSystemPrompt = async (promptId) => {
+        try {
+            const response = await fetch(`/api/system-prompts/${encodeURIComponent(promptId)}`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
+
+            if (response.ok) {
+                await refreshSystemPrompts();
+                showSnackbar('System prompt deleted', 'success');
+            } else {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Failed to delete system prompt');
+            }
+        } catch (error) {
+            console.error('Failed to delete system prompt:', error);
+            showSnackbar(error.message || 'Failed to delete system prompt', 'error');
         }
     };
 
@@ -360,7 +432,7 @@ export default function ChatContainer({
             }
         }
 
-        // Add user message
+        // Add user message (display version without file content embedded)
         const userMessage = {
             id: crypto.randomUUID(),
             role: 'user',
@@ -379,10 +451,10 @@ export default function ChatContainer({
         setStreamingReasoning('');
         setIsLoading(true);
 
-        // Prepare messages for API
-        const apiMessages = updatedMessages.map(m => ({
+        // Prepare messages for API (use fullContent for the last message to include attachments)
+        const apiMessages = updatedMessages.map((m, idx) => ({
             role: m.role,
-            content: m.content,
+            content: idx === updatedMessages.length - 1 ? fullContent : m.content,
         }));
 
         // Add system prompt if selected
@@ -708,6 +780,8 @@ export default function ChatContainer({
                     systemPrompts={systemPrompts}
                     selectedSystemPromptId={settings.selectedSystemPromptId}
                     onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
+                    webSearchEnabled={settings.webSearchEnabled}
+                    onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
                 />
             </div>
 
@@ -718,6 +792,10 @@ export default function ChatContainer({
                 settings={settings}
                 onUpdateSettings={updateSettings}
                 systemPrompts={systemPrompts}
+                onSaveSystemPrompt={handleSaveSystemPrompt}
+                onDeleteSystemPrompt={handleDeleteSystemPrompt}
+                theme={theme}
+                onThemeChange={setTheme}
             />
         </div>
     );

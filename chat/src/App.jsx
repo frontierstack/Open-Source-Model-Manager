@@ -123,18 +123,21 @@ function AppContent() {
     const [models, setModels] = useState([]);
     const [systemPrompts, setSystemPrompts] = useState([]);
 
-    // Get theme from zustand store
+    // Get theme and settings from zustand store
     const theme = useChatStore((state) => state.theme);
+    const settings = useChatStore((state) => state.settings);
     const setStoreUser = useChatStore((state) => state.setUser);
     const setStoreSystemPrompts = useChatStore((state) => state.setSystemPrompts);
 
     // Toast notification system
     const showSnackbar = useShowSnackbar();
 
-    // Apply theme class to document body
+    // Apply theme and font classes to document body
     useEffect(() => {
-        document.body.className = `theme-${theme}`;
-    }, [theme]);
+        const fontSize = settings?.fontSize || 'medium';
+        const fontFamily = settings?.fontFamily || 'system';
+        document.body.className = `theme-${theme} font-size-${fontSize} font-family-${fontFamily}`;
+    }, [theme, settings?.fontSize, settings?.fontFamily]);
 
     // Check authentication status on mount
     useEffect(() => {

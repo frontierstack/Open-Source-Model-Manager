@@ -326,6 +326,186 @@
 }
 
 /* ============================================
+   Theme: Matrix
+   Classic green terminal hacker theme
+   ============================================ */
+.theme-matrix {
+    --bg-primary: #000000;
+    --bg-secondary: #0a0a0a;
+    --bg-tertiary: #0f0f0f;
+    --bg-elevated: #050505;
+    --bg-hover: rgba(0, 255, 0, 0.08);
+    --bg-active: rgba(0, 255, 0, 0.12);
+
+    --surface-primary: rgba(0, 20, 0, 0.9);
+    --surface-secondary: rgba(0, 30, 0, 0.8);
+    --surface-glass: rgba(0, 10, 0, 0.95);
+
+    --text-primary: #00ff00;
+    --text-secondary: #00cc00;
+    --text-tertiary: #00aa00;
+    --text-muted: #008800;
+
+    --border-primary: rgba(0, 255, 0, 0.2);
+    --border-secondary: rgba(0, 255, 0, 0.1);
+    --border-hover: rgba(0, 255, 0, 0.35);
+    --border-focus: rgba(0, 255, 0, 0.6);
+
+    --accent-primary: #00ff00;
+    --accent-secondary: #00cc00;
+    --accent-hover: #33ff33;
+    --accent-muted: rgba(0, 255, 0, 0.15);
+
+    --user-msg-from: #00cc00;
+    --user-msg-to: #009900;
+    --user-msg-hover-from: #00ff00;
+    --user-msg-hover-to: #00cc00;
+
+    --assistant-bg: rgba(0, 20, 0, 0.8);
+    --assistant-border: rgba(0, 255, 0, 0.15);
+
+    --scrollbar-thumb: rgba(0, 255, 0, 0.2);
+    --scrollbar-thumb-hover: rgba(0, 255, 0, 0.35);
+
+    --code-bg: #000000;
+    --code-header-bg: rgba(0, 30, 0, 0.7);
+    --code-border: rgba(0, 255, 0, 0.15);
+
+    --input-bg: rgba(0, 15, 0, 0.8);
+    --input-border: rgba(0, 255, 0, 0.25);
+    --input-focus-border: rgba(0, 255, 0, 0.6);
+    --input-focus-ring: rgba(0, 255, 0, 0.2);
+
+    --shadow-accent: rgba(0, 255, 0, 0.3);
+    --shadow-accent-hover: rgba(0, 255, 0, 0.4);
+
+    --success: #00ff00;
+    --warning: #ffff00;
+    --error: #ff0000;
+    --info: #00ffff;
+}
+
+/* ============================================
+   Theme: Cyberpunk
+   Neon pink and cyan futuristic theme
+   ============================================ */
+.theme-cyberpunk {
+    --bg-primary: #0a0014;
+    --bg-secondary: #140020;
+    --bg-tertiary: #1f0030;
+    --bg-elevated: #0f001a;
+    --bg-hover: rgba(255, 0, 255, 0.1);
+    --bg-active: rgba(255, 0, 255, 0.15);
+
+    --surface-primary: rgba(20, 0, 32, 0.9);
+    --surface-secondary: rgba(31, 0, 48, 0.8);
+    --surface-glass: rgba(10, 0, 20, 0.95);
+
+    --text-primary: #ffffff;
+    --text-secondary: #ff66ff;
+    --text-tertiary: #cc00cc;
+    --text-muted: #880088;
+
+    --border-primary: rgba(255, 0, 255, 0.25);
+    --border-secondary: rgba(255, 0, 255, 0.12);
+    --border-hover: rgba(255, 0, 255, 0.4);
+    --border-focus: rgba(0, 255, 255, 0.6);
+
+    --accent-primary: #ff00ff;
+    --accent-secondary: #cc00cc;
+    --accent-hover: #ff66ff;
+    --accent-muted: rgba(255, 0, 255, 0.2);
+
+    --user-msg-from: #ff00ff;
+    --user-msg-to: #cc00cc;
+    --user-msg-hover-from: #ff66ff;
+    --user-msg-hover-to: #ff00ff;
+
+    --assistant-bg: rgba(20, 0, 40, 0.8);
+    --assistant-border: rgba(0, 255, 255, 0.2);
+
+    --scrollbar-thumb: rgba(255, 0, 255, 0.25);
+    --scrollbar-thumb-hover: rgba(255, 0, 255, 0.4);
+
+    --code-bg: #050010;
+    --code-header-bg: rgba(20, 0, 40, 0.7);
+    --code-border: rgba(0, 255, 255, 0.15);
+
+    --input-bg: rgba(15, 0, 25, 0.8);
+    --input-border: rgba(255, 0, 255, 0.3);
+    --input-focus-border: rgba(0, 255, 255, 0.6);
+    --input-focus-ring: rgba(0, 255, 255, 0.2);
+
+    --shadow-accent: rgba(255, 0, 255, 0.35);
+    --shadow-accent-hover: rgba(0, 255, 255, 0.4);
+
+    --success: #00ff66;
+    --warning: #ffff00;
+    --error: #ff0066;
+    --info: #00ffff;
+}
+
+/* ============================================
+   Theme: Light
+   Clean light theme for daytime use
+   ============================================ */
+.theme-light {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f4f4f5;
+    --bg-tertiary: #e4e4e7;
+    --bg-elevated: #fafafa;
+    --bg-hover: rgba(0, 0, 0, 0.04);
+    --bg-active: rgba(0, 0, 0, 0.08);
+
+    --surface-primary: rgba(255, 255, 255, 0.9);
+    --surface-secondary: rgba(244, 244, 245, 0.9);
+    --surface-glass: rgba(255, 255, 255, 0.85);
+
+    --text-primary: #18181b;
+    --text-secondary: #52525b;
+    --text-tertiary: #71717a;
+    --text-muted: #a1a1aa;
+
+    --border-primary: rgba(0, 0, 0, 0.1);
+    --border-secondary: rgba(0, 0, 0, 0.05);
+    --border-hover: rgba(0, 0, 0, 0.15);
+    --border-focus: rgba(124, 58, 237, 0.5);
+
+    --accent-primary: #7c3aed;
+    --accent-secondary: #6d28d9;
+    --accent-hover: #8b5cf6;
+    --accent-muted: rgba(124, 58, 237, 0.15);
+
+    --user-msg-from: #7c3aed;
+    --user-msg-to: #6d28d9;
+    --user-msg-hover-from: #8b5cf6;
+    --user-msg-hover-to: #7c3aed;
+
+    --assistant-bg: rgba(244, 244, 245, 0.8);
+    --assistant-border: rgba(0, 0, 0, 0.08);
+
+    --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+
+    --code-bg: #f4f4f5;
+    --code-header-bg: rgba(228, 228, 231, 0.8);
+    --code-border: rgba(0, 0, 0, 0.08);
+
+    --input-bg: rgba(255, 255, 255, 0.9);
+    --input-border: rgba(0, 0, 0, 0.12);
+    --input-focus-border: rgba(124, 58, 237, 0.5);
+    --input-focus-ring: rgba(124, 58, 237, 0.15);
+
+    --shadow-accent: rgba(124, 58, 237, 0.2);
+    --shadow-accent-hover: rgba(124, 58, 237, 0.3);
+
+    --success: #16a34a;
+    --warning: #d97706;
+    --error: #dc2626;
+    --info: #2563eb;
+}
+
+/* ============================================
    Base Styles
    ============================================ */
 @layer base {
@@ -348,6 +528,31 @@
         letter-spacing: -0.01em;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Font Size Classes */
+    body.font-size-small {
+        font-size: 13px;
+    }
+    body.font-size-medium {
+        font-size: 15px;
+    }
+    body.font-size-large {
+        font-size: 17px;
+    }
+
+    /* Font Family Classes */
+    body.font-family-system {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body.font-family-sans {
+        font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+    }
+    body.font-family-serif {
+        font-family: "Georgia", "Times New Roman", Times, serif;
+    }
+    body.font-family-mono {
+        font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, monospace;
     }
 
     /* Selection styling */
