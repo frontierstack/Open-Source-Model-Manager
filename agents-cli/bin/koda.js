@@ -1801,6 +1801,11 @@ class AgentAPI {
     async chatStream(message, model = null, maxTokens = 4000, onToken, onComplete) {
         lastApiCallStartTime = Date.now();
 
+        // Timeout constants
+        const CONNECTION_TIMEOUT = 60000;  // 60 seconds to establish connection
+        const ACTIVITY_TIMEOUT = 120000;   // 120 seconds of no data before timeout
+        const MAX_TOTAL_TIMEOUT = 600000;  // 10 minutes max total time
+
         try {
             const https = require('https');
             const url = require('url');
@@ -1817,24 +1822,63 @@ class AgentAPI {
                     'X-API-Secret': this.apiSecret,
                     'Accept': 'text/event-stream'
                 },
-                rejectUnauthorized: false
+                rejectUnauthorized: false,
+                timeout: CONNECTION_TIMEOUT
             };
 
             const postData = JSON.stringify({ message, model, maxTokens });
 
             return new Promise((resolve, reject) => {
+                let resolved = false;
+                let activityTimer = null;
+                let totalTimer = null;
+
+                const cleanup = () => {
+                    if (activityTimer) clearTimeout(activityTimer);
+                    if (totalTimer) clearTimeout(totalTimer);
+                };
+
+                const resetActivityTimer = () => {
+                    if (activityTimer) clearTimeout(activityTimer);
+                    activityTimer = setTimeout(() => {
+                        if (!resolved) {
+                            resolved = true;
+                            cleanup();
+                            req.destroy();
+                            reject(new Error('Stream timeout: No data received for 120 seconds'));
+                        }
+                    }, ACTIVITY_TIMEOUT);
+                };
+
+                // Set total timeout
+                totalTimer = setTimeout(() => {
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        req.destroy();
+                        reject(new Error('Request timeout: Maximum time of 10 minutes exceeded'));
+                    }
+                }, MAX_TOTAL_TIMEOUT);
+
                 const req = https.request(options, (res) => {
+                    // Start activity timer once connected
+                    resetActivityTimer();
+
                     if (res.statusCode !== 200) {
                         let errorData = '';
                         res.on('data', (chunk) => {
                             errorData += chunk;
                         });
                         res.on('end', () => {
-                            try {
-                                const error = JSON.parse(errorData);
-                                reject(new Error(error.error || 'Request failed'));
-                            } catch (e) {
-                                reject(new Error('Request failed'));
+                            if (!resolved) {
+                                resolved = true;
+                                cleanup();
+                                try {
+                                    const error = JSON.parse(errorData);
+                                    reject(new Error(error.error || `Request failed with status ${res.statusCode}`));
+                                } catch (e) {
+                                    reject(new Error(`Request failed with status ${res.statusCode}: ${errorData.substring(0, 200)}`));
+                                }
                             }
                         });
                         return;
@@ -1845,53 +1889,93 @@ class AgentAPI {
                     let tokens = null;
 
                     res.on('data', (chunk) => {
+                        // Reset activity timer on any data
+                        resetActivityTimer();
+
                         buffer += chunk.toString();
                         const lines = buffer.split('\n');
                         buffer = lines.pop();
 
                         for (const line of lines) {
                             if (line.startsWith('data: ')) {
+                                const dataStr = line.slice(6).trim();
+
+                                // Handle [DONE] marker
+                                if (dataStr === '[DONE]') {
+                                    if (!resolved && !tokens) {
+                                        resolved = true;
+                                        cleanup();
+                                        lastApiCallEndTime = Date.now();
+                                        if (onComplete) {
+                                            onComplete(fullResponse, null);
+                                        }
+                                        resolve({
+                                            success: true,
+                                            data: { response: fullResponse, tokens: null }
+                                        });
+                                    }
+                                    continue;
+                                }
+
                                 try {
-                                    const data = JSON.parse(line.slice(6));
+                                    const data = JSON.parse(dataStr);
 
                                     if (data.error) {
-                                        reject(new Error(data.error));
+                                        if (!resolved) {
+                                            resolved = true;
+                                            cleanup();
+                                            const errorMsg = typeof data.error === 'object'
+                                                ? (data.error.message || JSON.stringify(data.error))
+                                                : data.error;
+                                            reject(new Error(errorMsg));
+                                        }
                                         return;
                                     }
 
                                     if (data.done) {
-                                        lastApiCallEndTime = Date.now();
-                                        tokens = data.tokens;
+                                        if (!resolved) {
+                                            resolved = true;
+                                            cleanup();
+                                            lastApiCallEndTime = Date.now();
+                                            tokens = data.tokens;
 
-                                        if (tokens) {
-                                            const timeElapsed = (lastApiCallEndTime - lastApiCallStartTime) / 1000;
-                                            const tokensGenerated = tokens.completion_tokens || 0;
-                                            if (timeElapsed > 0 && tokensGenerated > 0) {
-                                                lastTokensPerSecond = tokensGenerated / timeElapsed;
+                                            if (tokens) {
+                                                const timeElapsed = (lastApiCallEndTime - lastApiCallStartTime) / 1000;
+                                                const tokensGenerated = tokens.completion_tokens || 0;
+                                                if (timeElapsed > 0 && tokensGenerated > 0) {
+                                                    lastTokensPerSecond = tokensGenerated / timeElapsed;
+                                                }
                                             }
-                                        }
 
-                                        // Update context window limit if provided
-                                        if (data.contextSize) {
-                                            contextWindowLimit = data.contextSize;
-                                        }
-
-                                        if (onComplete) {
-                                            onComplete(fullResponse, tokens);
-                                        }
-
-                                        resolve({
-                                            success: true,
-                                            data: {
-                                                response: fullResponse,
-                                                tokens: tokens,
-                                                model: data.model
+                                            // Update context window limit if provided
+                                            if (data.contextSize) {
+                                                contextWindowLimit = data.contextSize;
                                             }
-                                        });
+
+                                            if (onComplete) {
+                                                onComplete(fullResponse, tokens);
+                                            }
+
+                                            resolve({
+                                                success: true,
+                                                data: {
+                                                    response: fullResponse,
+                                                    tokens: tokens,
+                                                    model: data.model
+                                                }
+                                            });
+                                        }
                                     } else if (data.token) {
                                         fullResponse += data.token;
                                         if (onToken) {
                                             onToken(data.token);
+                                        }
+                                    } else if (data.choices && data.choices[0]?.delta?.content) {
+                                        // Handle OpenAI-compatible streaming format
+                                        const content = data.choices[0].delta.content;
+                                        fullResponse += content;
+                                        if (onToken) {
+                                            onToken(content);
                                         }
                                     }
                                 } catch (e) {
@@ -1902,21 +1986,44 @@ class AgentAPI {
                     });
 
                     res.on('end', () => {
-                        if (!tokens) {
+                        if (!resolved) {
+                            resolved = true;
+                            cleanup();
+                            lastApiCallEndTime = Date.now();
+                            if (onComplete) {
+                                onComplete(fullResponse, tokens);
+                            }
                             resolve({
                                 success: true,
-                                data: { response: fullResponse, tokens: null }
+                                data: { response: fullResponse, tokens: tokens }
                             });
                         }
                     });
 
                     res.on('error', (error) => {
-                        reject(error);
+                        if (!resolved) {
+                            resolved = true;
+                            cleanup();
+                            reject(error);
+                        }
                     });
                 });
 
+                req.on('timeout', () => {
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        req.destroy();
+                        reject(new Error('Connection timeout: Failed to connect to server within 60 seconds'));
+                    }
+                });
+
                 req.on('error', (error) => {
-                    reject(error);
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        reject(error);
+                    }
                 });
 
                 req.write(postData);

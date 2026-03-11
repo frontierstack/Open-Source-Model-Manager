@@ -6029,6 +6029,42 @@ function optimizeContent(text, options = {}) {
     return result.trim();
 }
 
+// Extract links from text/HTML content - extracts both HTML anchor tags and plain URLs
+function extractLinksFromText(text) {
+    if (!text || typeof text !== 'string') return [];
+
+    const links = [];
+    const seenUrls = new Set();
+
+    // Pattern 1: HTML anchor tags with href
+    const anchorPattern = /<a\s+[^>]*href=["']?(https?:\/\/[^"'\s>]+)["']?[^>]*>([^<]*)<\/a>/gi;
+    let match;
+    while ((match = anchorPattern.exec(text)) !== null) {
+        const url = match[1];
+        const linkText = match[2].trim() || url;
+        if (!seenUrls.has(url)) {
+            seenUrls.add(url);
+            links.push({ url, text: linkText });
+        }
+    }
+
+    // Pattern 2: Plain URLs (not already inside anchor tags)
+    // Remove HTML tags first to avoid duplicate extraction
+    const textWithoutAnchors = text.replace(/<a\s+[^>]*href=["']?https?:\/\/[^"'\s>]+["']?[^>]*>[^<]*<\/a>/gi, '');
+    const urlPattern = /https?:\/\/[^\s<>"')\]]+/gi;
+    while ((match = urlPattern.exec(textWithoutAnchors)) !== null) {
+        let url = match[0];
+        // Clean trailing punctuation that's likely not part of URL
+        url = url.replace(/[.,;:!?)]+$/, '');
+        if (!seenUrls.has(url)) {
+            seenUrls.add(url);
+            links.push({ url, text: url });
+        }
+    }
+
+    return links;
+}
+
 // File upload endpoint for chat context
 app.post('/api/chat/upload', requireAuth, async (req, res) => {
     // Check permission
@@ -6098,9 +6134,80 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             }
         }
 
-        // For .msg (Outlook) and .eml email files
+        // For .msg (Outlook binary format) files - requires msgreader
         const ext = filename?.toLowerCase()?.split('.').pop();
-        if (ext === 'msg' || ext === 'eml' || mimeType === 'message/rfc822' || mimeType === 'application/vnd.ms-outlook') {
+        if (ext === 'msg' || mimeType === 'application/vnd.ms-outlook') {
+            try {
+                const MsgReader = require('@kenjiuno/msgreader').default;
+                const buffer = Buffer.from(content, 'base64');
+                const msgReader = new MsgReader(buffer);
+                const fileData = msgReader.getFileData();
+
+                // Build email content string
+                let emailContent = '';
+                if (fileData.subject) emailContent += `Subject: ${fileData.subject}\n`;
+                if (fileData.senderName || fileData.senderEmail) {
+                    emailContent += `From: ${fileData.senderName || ''} <${fileData.senderEmail || ''}>\n`;
+                }
+                if (fileData.recipients?.length > 0) {
+                    const toRecipients = fileData.recipients.filter(r => r.recipType === 'to' || !r.recipType);
+                    const ccRecipients = fileData.recipients.filter(r => r.recipType === 'cc');
+                    if (toRecipients.length > 0) {
+                        emailContent += `To: ${toRecipients.map(r => r.name || r.email).join(', ')}\n`;
+                    }
+                    if (ccRecipients.length > 0) {
+                        emailContent += `CC: ${ccRecipients.map(r => r.name || r.email).join(', ')}\n`;
+                    }
+                }
+                if (fileData.messageDeliveryTime) emailContent += `Date: ${fileData.messageDeliveryTime}\n`;
+
+                // Extract links from body content (both plain text and HTML)
+                const bodyText = fileData.body || '';
+                const bodyHtml = fileData.bodyHTML || fileData.htmlBody || '';
+                const links = extractLinksFromText(bodyHtml || bodyText);
+
+                // Add links section if any found
+                if (links.length > 0) {
+                    emailContent += `\nLinks found: ${links.length}\n`;
+                    links.forEach((link, i) => {
+                        emailContent += `  ${i + 1}. ${link.text !== link.url ? link.text + ': ' : ''}${link.url}\n`;
+                    });
+                }
+
+                emailContent += '\n---\n\n';
+                emailContent += bodyText;
+
+                // Include attachments info if present
+                if (fileData.attachments?.length > 0) {
+                    emailContent += '\n\n---\nAttachments:\n';
+                    fileData.attachments.forEach(att => {
+                        emailContent += `- ${att.fileName || att.name || 'unnamed'} (${att.contentLength || 'unknown size'} bytes)\n`;
+                    });
+                }
+
+                const originalLength = emailContent.length;
+                const optimized = maybeOptimize(emailContent);
+
+                return res.json({
+                    type: 'email',
+                    filename,
+                    content: optimized,
+                    charCount: optimized.length,
+                    originalCharCount: originalLength,
+                    saved: originalLength - optimized.length,
+                    subject: fileData.subject,
+                    from: fileData.senderEmail,
+                    date: fileData.messageDeliveryTime,
+                    links: links
+                });
+            } catch (e) {
+                console.error('MSG parsing error:', e);
+                // Fall through to try as raw text
+            }
+        }
+
+        // For .eml email files - uses mailparser
+        if (ext === 'eml' || mimeType === 'message/rfc822') {
             try {
                 const { simpleParser } = require('mailparser');
                 const buffer = Buffer.from(content, 'base64');
@@ -6113,8 +6220,22 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 if (parsed.to?.text) emailContent += `To: ${parsed.to.text}\n`;
                 if (parsed.cc?.text) emailContent += `CC: ${parsed.cc.text}\n`;
                 if (parsed.date) emailContent += `Date: ${parsed.date.toISOString()}\n`;
+
+                // Extract links from body content (HTML first, then plain text)
+                const bodyHtml = parsed.html || parsed.textAsHtml || '';
+                const bodyText = parsed.text || '';
+                const links = extractLinksFromText(bodyHtml || bodyText);
+
+                // Add links section if any found
+                if (links.length > 0) {
+                    emailContent += `\nLinks found: ${links.length}\n`;
+                    links.forEach((link, i) => {
+                        emailContent += `  ${i + 1}. ${link.text !== link.url ? link.text + ': ' : ''}${link.url}\n`;
+                    });
+                }
+
                 emailContent += '\n---\n\n';
-                emailContent += parsed.text || parsed.textAsHtml?.replace(/<[^>]*>/g, '') || '';
+                emailContent += bodyText || bodyHtml.replace(/<[^>]*>/g, '') || '';
 
                 // Include attachments info if present
                 if (parsed.attachments?.length > 0) {
@@ -6136,10 +6257,11 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     saved: originalLength - optimized.length,
                     subject: parsed.subject,
                     from: parsed.from?.text,
-                    date: parsed.date?.toISOString()
+                    date: parsed.date?.toISOString(),
+                    links: links
                 });
             } catch (e) {
-                console.error('Email parsing error:', e);
+                console.error('EML parsing error:', e);
                 // Fall through to try as raw text
             }
         }
@@ -6613,19 +6735,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         if (data === '[DONE]') {
                             console.log(`[Stream Token Tracking] [DONE] marker received. promptTokens=${promptTokens}, completionTokens=${completionTokens}`);
 
-                            // Send final event with finish_reason in OpenAI-compatible format
+                            // Send final event with both OpenAI-compatible format and done flag for Koda compatibility
                             const finalEvent = {
+                                done: true,  // For Koda CLI compatibility
                                 choices: [{
                                     delta: {},
                                     index: 0,
                                     finish_reason: 'stop'
                                 }],
+                                tokens: {
+                                    prompt_tokens: promptTokens,
+                                    completion_tokens: completionTokens,
+                                    total_tokens: promptTokens + completionTokens
+                                },
                                 usage: {
                                     prompt_tokens: promptTokens,
                                     completion_tokens: completionTokens,
                                     total_tokens: promptTokens + completionTokens
                                 },
-                                model: targetModel
+                                model: targetModel,
+                                contextSize: contextSize
                             };
                             res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
                             res.write(`data: [DONE]\n\n`);
@@ -6661,8 +6790,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     tokenCount++;
                                     completionTokens++;
 
-                                    // Send in OpenAI-compatible format for client compatibility
+                                    // Send in both OpenAI-compatible and simple token format for client compatibility
                                     const event = {
+                                        token: content || undefined,  // Simple format for Koda CLI
                                         choices: [{
                                             delta: {
                                                 content: content || undefined,
