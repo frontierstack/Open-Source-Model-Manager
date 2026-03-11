@@ -228,8 +228,8 @@ const CollapsibleSection = ({ title, icon, children, defaultExpanded = true }) =
 // Modern Doc Icon Component - sleek pill-shaped icon container
 const DocIcon = ({ icon, color = 'primary' }) => {
     const colorMap = {
-        primary: { bg: 'rgba(167, 139, 250, 0.15)', border: 'rgba(167, 139, 250, 0.3)', icon: '#a78bfa' },
-        secondary: { bg: 'rgba(34, 211, 238, 0.15)', border: 'rgba(34, 211, 238, 0.3)', icon: '#22d3ee' },
+        primary: { bg: 'rgba(99, 102, 241, 0.15)', border: 'rgba(99, 102, 241, 0.3)', icon: '#6366f1' },
+        secondary: { bg: 'rgba(99, 102, 241, 0.15)', border: 'rgba(99, 102, 241, 0.3)', icon: '#6366f1' },
         success: { bg: 'rgba(34, 197, 94, 0.15)', border: 'rgba(34, 197, 94, 0.3)', icon: '#22c55e' },
         warning: { bg: 'rgba(251, 191, 36, 0.15)', border: 'rgba(251, 191, 36, 0.3)', icon: '#fbbf24' },
     };
@@ -261,7 +261,7 @@ const docAccordionSx = {
     '&:before': { display: 'none' },
     '&.Mui-expanded': {
         margin: '0 0 12px 0 !important',
-        border: '1px solid rgba(167, 139, 250, 0.2)',
+        border: '1px solid rgba(99, 102, 241, 0.2)',
     },
     '& .MuiAccordionSummary-root': {
         minHeight: 56,
@@ -561,11 +561,13 @@ const App = () => {
     }, [searchSortBy, searchSizeFilter]);
 
     // Fetch users when Users tab is selected
+    // Note: Using tabOrder here instead of visibleTabOrder since this runs early in component
+    // and visibleTabOrder is derived later. The check is still valid because we also check admin role.
     useEffect(() => {
         if (tabOrder[activeTab] === 2 && user?.role === 'admin') {
             fetchUsers();
         }
-    }, [activeTab, user?.role]);
+    }, [activeTab, user?.role, tabOrder]);
 
     // Initial data fetch and WebSocket setup
     useEffect(() => {
@@ -3183,6 +3185,9 @@ fetch('${baseUrl}/api/apps', {
     // Tab reordering handlers with drag and drop
     const [draggedTab, setDraggedTab] = useState(null);
 
+    // Admin-only tab IDs (API Keys = 3, Apps = 6)
+    const adminOnlyTabIds = [3, 6];
+
     const handleDragStart = (e, index) => {
         setDraggedTab(index);
         e.dataTransfer.effectAllowed = 'move';
@@ -3192,10 +3197,22 @@ fetch('${baseUrl}/api/apps', {
         e.preventDefault();
         if (draggedTab === null || draggedTab === index) return;
 
+        // For non-admin users, we need to work with visibleTabOrder indices
+        // but update the full tabOrder state
+        const currentVisibleOrder = user?.role === 'admin'
+            ? tabOrder
+            : tabOrder.filter(tabId => !adminOnlyTabIds.includes(tabId));
+
+        const draggedTabId = currentVisibleOrder[draggedTab];
+        const targetTabId = currentVisibleOrder[index];
+
+        // Find positions in the full tabOrder
+        const draggedFullIndex = tabOrder.indexOf(draggedTabId);
+        const targetFullIndex = tabOrder.indexOf(targetTabId);
+
         const newOrder = [...tabOrder];
-        const draggedItem = newOrder[draggedTab];
-        newOrder.splice(draggedTab, 1);
-        newOrder.splice(index, 0, draggedItem);
+        newOrder.splice(draggedFullIndex, 1);
+        newOrder.splice(targetFullIndex, 0, draggedTabId);
 
         setTabOrder(newOrder);
         setDraggedTab(index);
@@ -3229,11 +3246,17 @@ fetch('${baseUrl}/api/apps', {
         { id: 0, icon: <SearchIcon sx={{ fontSize: 18 }} />, label: 'Discover' },
         { id: 1, icon: <StorageIcon sx={{ fontSize: 18 }} />, label: 'My Models' },
         { id: 2, icon: <PeopleIcon sx={{ fontSize: 18 }} />, label: 'Users' },
-        { id: 3, icon: <VpnKeyIcon sx={{ fontSize: 18 }} />, label: 'API Keys' },
+        { id: 3, icon: <VpnKeyIcon sx={{ fontSize: 18 }} />, label: 'API Keys', adminOnly: true },
         { id: 4, icon: <MenuBookIcon sx={{ fontSize: 18 }} />, label: 'Docs' },
         { id: 5, icon: <TerminalIcon sx={{ fontSize: 18 }} />, label: 'Logs' },
-        { id: 6, icon: <AppsIcon sx={{ fontSize: 18 }} />, label: 'Apps' }
+        { id: 6, icon: <AppsIcon sx={{ fontSize: 18 }} />, label: 'Apps', adminOnly: true }
     ];
+
+    // Filter tabs based on user role - hide admin-only tabs for non-admin users
+    const isAdmin = user?.role === 'admin';
+    const visibleTabOrder = isAdmin
+        ? tabOrder
+        : tabOrder.filter(tabId => !tabDefinitions.find(t => t.id === tabId)?.adminOnly);
 
     // Size filter ranges (in billions)
     const SIZE_FILTERS = {
@@ -3958,7 +3981,7 @@ fetch('${baseUrl}/api/apps', {
                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                                 <Typography variant="h1" sx={{
-                                    background: 'linear-gradient(135deg, #a78bfa 0%, #22d3ee 100%)',
+                                    background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
                                     WebkitBackgroundClip: 'text',
                                     WebkitTextFillColor: 'transparent',
                                 }}>
@@ -4010,7 +4033,7 @@ fetch('${baseUrl}/api/apps', {
                                 onChange={handleTabChange}
                                 sx={{ flex: 1 }}
                             >
-                                {tabOrder.map((tabId, index) => {
+                                {visibleTabOrder.map((tabId, index) => {
                                     const tab = tabDefinitions.find(t => t.id === tabId);
                                     return (
                                         <Tab
@@ -4042,7 +4065,7 @@ fetch('${baseUrl}/api/apps', {
                     {/* Tab Panels */}
                     <Box sx={{ flex: 1, overflow: 'auto', p: 3 }}>
                         {/* Discover Tab */}
-                        {tabOrder[activeTab] === 0 && (
+                        {visibleTabOrder[activeTab] === 0 && (
                             <Grid container spacing={3}>
                                 {/* Search Section */}
                                 <Grid item xs={12}>
@@ -4166,7 +4189,7 @@ fetch('${baseUrl}/api/apps', {
 
                                                     // Embedding models
                                                     if (name.includes('embed') || tagSet.has('embeddings') || tagSet.has('feature-extraction')) {
-                                                        typeTags.push({ label: 'Embed', color: 'rgba(6,182,212,0.3)', textColor: '#06b6d4' });
+                                                        typeTags.push({ label: 'Embed', color: 'rgba(99,102,241,0.3)', textColor: '#6366f1' });
                                                     }
 
                                                     return typeTags;
@@ -4207,7 +4230,7 @@ fetch('${baseUrl}/api/apps', {
                                                                             transition: 'all 0.15s',
                                                                             '&:hover': {
                                                                                 borderColor: 'primary.main',
-                                                                                bgcolor: 'rgba(167, 139, 250, 0.03)',
+                                                                                bgcolor: 'rgba(99, 102, 241, 0.03)',
                                                                             },
                                                                         }}
                                                                         onClick={() => handleSelectModel(model.id)}
@@ -4462,7 +4485,7 @@ fetch('${baseUrl}/api/apps', {
                                                 />
                                                 <Box sx={{ mt: 2 }}>
                                                     {activeDownloads.map(download => (
-                                                        <Box key={download.downloadId} sx={{ mb: 2, p: 2, bgcolor: 'rgba(167, 139, 250, 0.05)', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
+                                                        <Box key={download.downloadId} sx={{ mb: 2, p: 2, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
                                                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
                                                                 <Box sx={{ flex: 1, overflow: 'hidden' }}>
                                                                     <Typography variant="body1" sx={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -4510,7 +4533,7 @@ fetch('${baseUrl}/api/apps', {
                         )}
 
                         {/* My Models Tab */}
-                        {tabOrder[activeTab] === 1 && (
+                        {visibleTabOrder[activeTab] === 1 && (
                             <Grid container spacing={3}>
                                 {/* Running Instances */}
                                 {instances.length > 0 && (
@@ -5491,7 +5514,7 @@ fetch('${baseUrl}/api/apps', {
                         )}
 
                         {/* Users Tab */}
-                        {tabOrder[activeTab] === 2 && (
+                        {visibleTabOrder[activeTab] === 2 && (
                             <Grid container spacing={3}>
                                 <Grid item xs={12}>
                                     <Card>
@@ -5742,8 +5765,8 @@ fetch('${baseUrl}/api/apps', {
                             </DialogActions>
                         </Dialog>
 
-                        {/* API Keys Tab */}
-                        {tabOrder[activeTab] === 3 && (
+                        {/* API Keys Tab (Admin Only) */}
+                        {visibleTabOrder[activeTab] === 3 && isAdmin && (
                             <Grid container spacing={3}>
                                 <Grid item xs={12}>
                                     <Card>
@@ -5923,7 +5946,7 @@ fetch('${baseUrl}/api/apps', {
 
                                             {/* Edit Key Dialog */}
                                             {editingKey && (
-                                                <Card variant="outlined" sx={{ mb: 3, p: 2, bgcolor: 'rgba(167, 139, 250, 0.05)', border: '1px solid rgba(167, 139, 250, 0.3)' }}>
+                                                <Card variant="outlined" sx={{ mb: 3, p: 2, bgcolor: 'rgba(99, 102, 241, 0.05)', border: '1px solid rgba(99, 102, 241, 0.3)' }}>
                                                     <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 600, color: 'primary.main' }}>
                                                         Edit API Key: {editingKey.name}
                                                     </Typography>
@@ -6194,7 +6217,7 @@ fetch('${baseUrl}/api/apps', {
                         )}
 
                         {/* Docs Tab */}
-                        {tabOrder[activeTab] === 4 && (
+                        {visibleTabOrder[activeTab] === 4 && (
                             <Box>
                                 <SectionHeader
                                     icon={<MenuBookIcon />}
@@ -6218,7 +6241,7 @@ fetch('${baseUrl}/api/apps', {
                                         {/* Condensed 3-step flow */}
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={4}>
-                                                <Box sx={{ p: 2, bgcolor: 'rgba(167, 139, 250, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(167, 139, 250, 0.15)' }}>
+                                                <Box sx={{ p: 2, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(99, 102, 241, 0.15)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
                                                         <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'primary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700 }}>1</Box>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Load Model</Typography>
@@ -6229,9 +6252,9 @@ fetch('${baseUrl}/api/apps', {
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={4}>
-                                                <Box sx={{ p: 2, bgcolor: 'rgba(34, 211, 238, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(34, 211, 238, 0.15)' }}>
+                                                <Box sx={{ p: 2, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(99, 102, 241, 0.15)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
-                                                        <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'secondary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, color: '#09090b' }}>2</Box>
+                                                        <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'secondary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, color: '#ffffff' }}>2</Box>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
                                                     </Box>
                                                     <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
@@ -6424,11 +6447,11 @@ fetch('${baseUrl}/api/apps', {
                                             </Box>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                    <Chip label="Linux/macOS" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(167,139,250,0.2)' }} />
+                                                    <Chip label="Linux/macOS" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.2)' }} />
                                                     <span>curl -sk {baseUrl}/api/cli/install | bash</span>
                                                 </Box>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
-                                                    <Chip label="Windows" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(34,211,238,0.2)' }} />
+                                                    <Chip label="Windows" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.2)' }} />
                                                     <span>iwr -useb {baseUrl}/api/cli/install.ps1 | iex</span>
                                                 </Box>
                                             </Box>
@@ -6469,11 +6492,11 @@ fetch('${baseUrl}/api/apps', {
 
                                         {/* Features - compact chips */}
                                         <Box sx={{ mt: 2, display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                                            <Chip label="Tab completion" size="small" sx={{ bgcolor: 'rgba(167,139,250,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Autonomous skills" size="small" sx={{ bgcolor: 'rgba(34,211,238,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Tab completion" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Autonomous skills" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
                                             <Chip label="Animated UI" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
                                             <Chip label="Context tracking" size="small" sx={{ bgcolor: 'rgba(251,191,36,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Multi-line paste" size="small" sx={{ bgcolor: 'rgba(167,139,250,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Multi-line paste" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
                                         </Box>
                                     </AccordionDetails>
                                 </Accordion>
@@ -6511,8 +6534,8 @@ fetch('${baseUrl}/api/apps', {
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="DuckDuckGo search" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(167,139,250,0.15)' }} />
-                                                        <Chip label="Content extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,211,238,0.15)' }} />
+                                                        <Chip label="DuckDuckGo search" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Content extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
                                                         <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                         <Chip label="Auto context injection" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
                                                     </Box>
@@ -6537,7 +6560,7 @@ fetch('${baseUrl}/api/apps', {
                                         <Grid container spacing={2}>
                                             {/* llama.cpp Settings */}
                                             <Grid item xs={12} lg={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(167, 139, 250, 0.05)', borderRadius: 2, border: '1px solid rgba(167, 139, 250, 0.1)' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.1)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                                                         <Chip label="llama.cpp" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'rgba(255, 255, 255, 0.15)', color: '#ffffff', fontWeight: 600 }} />
                                                         <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Maxwell 5.2+</Typography>
@@ -6560,7 +6583,7 @@ fetch('${baseUrl}/api/apps', {
 
                                             {/* vLLM Settings */}
                                             <Grid item xs={12} lg={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 2, border: '1px solid rgba(34, 211, 238, 0.1)' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.1)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                                                         <Chip label="vLLM" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'rgba(255, 255, 255, 0.15)', color: '#ffffff', fontWeight: 600 }} />
                                                         <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Pascal 6.0+</Typography>
@@ -6597,12 +6620,12 @@ fetch('${baseUrl}/api/apps', {
                                     </AccordionSummary>
                                     <AccordionDetails>
                                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(167, 139, 250, 0.08)', borderRadius: 2, border: '1px solid rgba(167, 139, 250, 0.15)' }}>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.15)' }}>
                                                 <Chip label="query" size="small" sx={{ mb: 1, bgcolor: 'primary.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
                                                 <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Chat, completions, web search, Playwright</Typography>
                                             </Box>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(34, 211, 238, 0.08)', borderRadius: 2, border: '1px solid rgba(34, 211, 238, 0.15)' }}>
-                                                <Chip label="models" size="small" sx={{ mb: 1, bgcolor: 'secondary.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                                                <Chip label="models" size="small" sx={{ mb: 1, bgcolor: 'secondary.main', color: '#ffffff', fontWeight: 600, fontSize: '0.7rem' }} />
                                                 <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>List, download, load/unload, configs</Typography>
                                             </Box>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.08)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.15)' }}>
@@ -6643,7 +6666,7 @@ fetch('${baseUrl}/api/apps', {
                                                 <TableBody>
                                                     {/* Query Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(167, 139, 250, 0.1)', py: 0.75 }}>
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(99, 102, 241, 0.1)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                                                 <Chip label="query" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'primary.main', color: '#09090b' }} />
                                                                 <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Query Endpoints</Typography>
@@ -6659,9 +6682,9 @@ fetch('${baseUrl}/api/apps', {
 
                                                     {/* Models Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(34, 211, 238, 0.1)', py: 0.75 }}>
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(99, 102, 241, 0.1)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <Chip label="models" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'secondary.main', color: '#09090b' }} />
+                                                                <Chip label="models" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'secondary.main', color: '#ffffff' }} />
                                                                 <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Model Management</Typography>
                                                             </Box>
                                                         </TableCell>
@@ -6794,7 +6817,7 @@ fetch('${baseUrl}/api/apps', {
                                         </TableContainer>
 
                                         {/* Build Options */}
-                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(34, 211, 238, 0.08)', borderRadius: 1.5, border: '1px solid rgba(34, 211, 238, 0.2)' }}>
+                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 1.5, border: '1px solid rgba(99, 102, 241, 0.2)' }}>
                                             <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, mb: 0.5, color: 'info.main' }}>Build Script Options</Typography>
                                             <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', fontFamily: 'monospace' }}>
                                                 ./build.sh --no-cache    # Force rebuild without Docker cache<br/>
@@ -6849,7 +6872,7 @@ fetch('${baseUrl}/api/apps', {
                         )}
 
                         {/* Logs Tab */}
-                        {tabOrder[activeTab] === 5 && (
+                        {visibleTabOrder[activeTab] === 5 && (
                             <Card sx={{ height: 'calc(100vh - 220px)' }}>
                                 <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                                     <SectionHeader
@@ -6921,8 +6944,8 @@ fetch('${baseUrl}/api/apps', {
                             </Card>
                         )}
 
-                        {/* Apps Tab */}
-                        {tabOrder[activeTab] === 6 && (
+                        {/* Apps Tab (Admin Only) */}
+                        {visibleTabOrder[activeTab] === 6 && isAdmin && (
                             <Box>
                                 <SectionHeader
                                     icon={<AppsIcon />}

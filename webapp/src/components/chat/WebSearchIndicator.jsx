@@ -16,7 +16,7 @@ export default function WebSearchIndicator({ searching, sites, query }) {
                 px: 2,
                 py: 1.5,
                 borderTop: '1px solid rgba(255, 255, 255, 0.1)',
-                backgroundColor: 'rgba(34, 211, 238, 0.05)',
+                backgroundColor: 'rgba(99, 102, 241, 0.05)',
             }}
         >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: sites.length > 0 ? 1 : 0 }}>
@@ -58,14 +58,14 @@ export default function WebSearchIndicator({ searching, sites, query }) {
                             sx={{
                                 height: 22,
                                 fontSize: '0.7rem',
-                                backgroundColor: 'rgba(34, 211, 238, 0.1)',
-                                borderColor: 'rgba(34, 211, 238, 0.2)',
+                                backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                                borderColor: 'rgba(99, 102, 241, 0.2)',
                                 color: 'secondary.light',
                                 '& .MuiChip-icon': {
                                     color: 'secondary.main',
                                 },
                                 '&:hover': {
-                                    backgroundColor: 'rgba(34, 211, 238, 0.2)',
+                                    backgroundColor: 'rgba(99, 102, 241, 0.2)',
                                 },
                             }}
                         />

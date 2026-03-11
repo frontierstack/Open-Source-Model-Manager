@@ -156,8 +156,8 @@ export default function ChatInput({
                             sx={{
                                 height: 22,
                                 fontSize: '0.75rem',
-                                backgroundColor: 'rgba(167, 139, 250, 0.1)',
-                                border: '1px solid rgba(167, 139, 250, 0.3)',
+                                backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                                border: '1px solid rgba(99, 102, 241, 0.3)',
                                 '& .MuiChip-label': {
                                     maxWidth: 120,
                                     overflow: 'hidden',
@@ -182,7 +182,7 @@ export default function ChatInput({
                     borderRadius: '10px',
                     backgroundColor: 'rgba(255, 255, 255, 0.03)',
                     border: isDragOver
-                        ? '2px dashed rgba(167, 139, 250, 0.5)'
+                        ? '2px dashed rgba(99, 102, 241, 0.5)'
                         : '1px solid rgba(255, 255, 255, 0.08)',
                     transition: 'all 0.2s',
                     position: 'relative',
@@ -220,9 +220,9 @@ export default function ChatInput({
                             sx={{
                                 p: 0.75,
                                 color: webSearchEnabled ? 'secondary.main' : 'text.secondary',
-                                backgroundColor: webSearchEnabled ? 'rgba(34, 211, 238, 0.1)' : 'transparent',
+                                backgroundColor: webSearchEnabled ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
                                 '&:hover': {
-                                    backgroundColor: webSearchEnabled ? 'rgba(34, 211, 238, 0.2)' : 'rgba(255, 255, 255, 0.08)',
+                                    backgroundColor: webSearchEnabled ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.08)',
                                 },
                             }}
                         >
@@ -343,7 +343,7 @@ export default function ChatInput({
                             sx={{
                                 height: 18,
                                 fontSize: '0.65rem',
-                                backgroundColor: 'rgba(34, 211, 238, 0.1)',
+                                backgroundColor: 'rgba(99, 102, 241, 0.1)',
                                 color: 'secondary.main',
                                 '& .MuiChip-icon': {
                                     color: 'secondary.main',

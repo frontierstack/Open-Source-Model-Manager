@@ -4,7 +4,7 @@ import Box from '@mui/material/Box';
 /**
  * ThinkingIndicator - Animated three-dot loading indicator
  */
-export default function ThinkingIndicator({ size = 8, color = '#a78bfa' }) {
+export default function ThinkingIndicator({ size = 8, color = '#6366f1' }) {
     return (
         <Box
             sx={{

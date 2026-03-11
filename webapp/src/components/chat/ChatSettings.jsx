@@ -398,8 +398,8 @@ function PresetButton({ label, onClick }) {
 
 function ThemeCard({ theme, selected, onClick }) {
     const themeColors = {
-        dark: { bg: '#18181b', accent: '#a78bfa' },
-        light: { bg: '#ffffff', accent: '#7c3aed' },
+        dark: { bg: '#18181b', accent: '#6366f1' },
+        light: { bg: '#ffffff', accent: '#4f46e5' },
         midnight: { bg: '#12122a', accent: '#6366f1' },
         ocean: { bg: '#132f4c', accent: '#0ea5e9' },
         forest: { bg: '#1a331a', accent: '#22c55e' },

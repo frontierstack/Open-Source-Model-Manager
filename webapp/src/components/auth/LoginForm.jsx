@@ -116,18 +116,18 @@ export function LoginForm({ onRegisterClick }) {
                 </form>
 
                 {onRegisterClick && (
-                    <Box sx={{ textAlign: 'center', mt: 2 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', mt: 2, gap: 0.5 }}>
                         <Typography variant="body2" color="text.secondary">
-                            Don't have an account?{' '}
-                            <Link
-                                component="button"
-                                variant="body2"
-                                onClick={onRegisterClick}
-                                sx={{ cursor: 'pointer' }}
-                            >
-                                Register
-                            </Link>
+                            Don't have an account?
                         </Typography>
+                        <Link
+                            component="button"
+                            variant="body2"
+                            onClick={onRegisterClick}
+                            sx={{ cursor: 'pointer', verticalAlign: 'baseline' }}
+                        >
+                            Register
+                        </Link>
                     </Box>
                 )}
             </Paper>

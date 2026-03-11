@@ -5,24 +5,24 @@ const themes = {
     dark: {
         background: { default: '#09090b', paper: '#18181b' },
         primary: { main: '#52525b', light: '#a1a1aa', dark: '#27272a' },
-        secondary: { main: '#22d3ee', light: '#67e8f9', dark: '#06b6d4' },
+        secondary: { main: '#6366f1', light: '#818cf8', dark: '#4f46e5' },
         success: { main: '#22c55e', light: '#4ade80' },
         warning: { main: '#f59e0b' },
         error: { main: '#ef4444' },
         text: { primary: '#fafafa', secondary: '#a1a1aa' },
         divider: 'rgba(255, 255, 255, 0.06)',
-        accent: '#52525b',
+        accent: '#6366f1',
     },
     light: {
         background: { default: '#ffffff', paper: '#ffffff' },
         primary: { main: '#18181b', light: '#52525b', dark: '#09090b' },
-        secondary: { main: '#06b6d4', light: '#22d3ee', dark: '#0891b2' },
+        secondary: { main: '#4f46e5', light: '#6366f1', dark: '#4338ca' },
         success: { main: '#16a34a', light: '#22c55e' },
         warning: { main: '#d97706' },
         error: { main: '#dc2626' },
         text: { primary: '#18181b', secondary: '#52525b' },
         divider: 'rgba(0, 0, 0, 0.08)',
-        accent: '#18181b',
+        accent: '#4f46e5',
     },
     midnight: {
         background: { default: '#0a0a1a', paper: '#12122a' },
@@ -188,7 +188,7 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                     },
                     contained: {
                         background: `linear-gradient(135deg, ${colors.secondary.main} 0%, ${colors.secondary.dark} 100%)`,
-                        color: isDark ? '#000000' : '#ffffff',
+                        color: '#ffffff',
                         '&:hover': {
                             background: `linear-gradient(135deg, ${colors.secondary.light} 0%, ${colors.secondary.main} 100%)`,
                             boxShadow: `0 4px 12px ${alpha(colors.secondary.main, 0.4)}`,
@@ -335,7 +335,7 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
 
 // Export theme options for settings UI
 export const themeOptions = [
-    { value: 'dark', label: 'Dark', description: 'Default dark theme with neutral accents' },
+    { value: 'dark', label: 'Dark', description: 'Default dark theme with indigo accents' },
     { value: 'light', label: 'Light', description: 'Clean pure white theme for daytime use' },
     { value: 'midnight', label: 'Midnight', description: 'Deep blue with indigo accents' },
     { value: 'ocean', label: 'Ocean', description: 'Calm blues and teals' },

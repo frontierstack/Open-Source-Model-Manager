@@ -156,7 +156,7 @@ export default function ChatSidebar({
                                 px: 1.5,
                                 minHeight: 40,
                                 '&.Mui-selected': {
-                                    backgroundColor: 'rgba(167, 139, 250, 0.1)',
+                                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
                                     borderLeft: '2px solid',
                                     borderColor: 'primary.main',
                                 },

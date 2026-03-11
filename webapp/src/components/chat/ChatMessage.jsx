@@ -150,8 +150,8 @@ export default function ChatMessage({
                                 px: 1,
                                 py: 0.5,
                                 borderRadius: '6px',
-                                backgroundColor: 'rgba(167, 139, 250, 0.2)',
-                                border: '1px solid rgba(167, 139, 250, 0.3)',
+                                backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                                border: '1px solid rgba(99, 102, 241, 0.3)',
                             }}
                         >
                             <Typography variant="caption" sx={{ color: 'primary.light', fontSize: '0.7rem' }}>
@@ -174,7 +174,7 @@ export default function ChatMessage({
                     px: 2,
                     py: 1.5,
                     background: isUser
-                        ? 'linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%)'
+                        ? 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)'
                         : 'rgba(255, 255, 255, 0.05)',
                     border: isUser
                         ? 'none'

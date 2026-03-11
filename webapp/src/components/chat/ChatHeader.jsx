@@ -90,8 +90,8 @@ export default function ChatHeader({
                                                 height: 18,
                                                 fontSize: '0.65rem',
                                                 backgroundColor: model.backend === 'vllm'
-                                                    ? 'rgba(34, 211, 238, 0.2)'
-                                                    : 'rgba(167, 139, 250, 0.2)',
+                                                    ? 'rgba(99, 102, 241, 0.2)'
+                                                    : 'rgba(99, 102, 241, 0.2)',
                                             }}
                                         />
                                     </Box>
@@ -114,11 +114,11 @@ export default function ChatHeader({
                         sx={{
                             color: webSearchEnabled ? 'secondary.main' : 'text.secondary',
                             backgroundColor: webSearchEnabled
-                                ? 'rgba(34, 211, 238, 0.1)'
+                                ? 'rgba(99, 102, 241, 0.1)'
                                 : 'transparent',
                             '&:hover': {
                                 backgroundColor: webSearchEnabled
-                                    ? 'rgba(34, 211, 238, 0.2)'
+                                    ? 'rgba(99, 102, 241, 0.2)'
                                     : 'rgba(255, 255, 255, 0.1)',
                             },
                         }}
