@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
+import StatusIndicator from './StatusIndicator';
 
 /**
  * ChatMessage - Individual chat message bubble (Tailwind)
@@ -17,6 +18,8 @@ export default function ChatMessage({
     streamingReasoning,
     responseTime,
     tokenCount,
+    processingStatus,
+    processingMessage,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
@@ -95,7 +98,13 @@ export default function ChatMessage({
 
                 {/* Content */}
                 {isStreaming && !displayContent ? (
-                    <ThinkingIndicator />
+                    <div className="flex items-center gap-2">
+                        {processingStatus ? (
+                            <StatusIndicator status={processingStatus} message={processingMessage} />
+                        ) : (
+                            <ThinkingIndicator />
+                        )}
+                    </div>
                 ) : (
                     <MessageContent content={displayContent} />
                 )}

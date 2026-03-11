@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-    Brain,
     Globe,
     FileSearch,
     Loader2,
@@ -21,7 +20,7 @@ export const StatusType = {
 };
 
 /**
- * StatusIndicator - Animated status display for various processing states
+ * StatusIndicator - Compact tag-style status display for response box
  */
 export default function StatusIndicator({ status, message }) {
     if (!status || status === StatusType.IDLE) {
@@ -32,21 +31,21 @@ export default function StatusIndicator({ status, message }) {
         switch (status) {
             case StatusType.THINKING:
                 return {
-                    icon: Brain,
+                    icon: Loader2,
                     label: message || 'Thinking',
                     color: 'text-purple-400',
                     bgColor: 'bg-purple-500/10',
-                    borderColor: 'border-purple-500/30',
-                    animation: 'animate-pulse-subtle',
+                    borderColor: 'border-purple-500/20',
+                    iconAnimation: 'animate-spin',
                 };
             case StatusType.SEARCHING:
                 return {
                     icon: Globe,
-                    label: message || 'Searching the web',
+                    label: message || 'Searching web',
                     color: 'text-blue-400',
                     bgColor: 'bg-blue-500/10',
-                    borderColor: 'border-blue-500/30',
-                    animation: 'animate-searching',
+                    borderColor: 'border-blue-500/20',
+                    iconAnimation: 'animate-pulse',
                 };
             case StatusType.PARSING:
                 return {
@@ -54,8 +53,8 @@ export default function StatusIndicator({ status, message }) {
                     label: message || 'Parsing files',
                     color: 'text-amber-400',
                     bgColor: 'bg-amber-500/10',
-                    borderColor: 'border-amber-500/30',
-                    animation: 'animate-pulse-subtle',
+                    borderColor: 'border-amber-500/20',
+                    iconAnimation: 'animate-pulse',
                 };
             case StatusType.PROCESSING:
                 return {
@@ -63,26 +62,26 @@ export default function StatusIndicator({ status, message }) {
                     label: message || 'Processing',
                     color: 'text-emerald-400',
                     bgColor: 'bg-emerald-500/10',
-                    borderColor: 'border-emerald-500/30',
-                    animation: 'animate-pulse-subtle',
+                    borderColor: 'border-emerald-500/20',
+                    iconAnimation: 'animate-pulse',
                 };
             case StatusType.GENERATING:
                 return {
                     icon: Sparkles,
-                    label: message || 'Generating response',
+                    label: message || 'Generating',
                     color: 'text-primary-400',
                     bgColor: 'bg-primary-500/10',
-                    borderColor: 'border-primary-500/30',
-                    animation: '',
+                    borderColor: 'border-primary-500/20',
+                    iconAnimation: 'animate-pulse',
                 };
             default:
                 return {
                     icon: Loader2,
                     label: message || 'Loading',
-                    color: 'text-dark-300',
+                    color: 'text-dark-400',
                     bgColor: 'bg-dark-800/50',
-                    borderColor: 'border-dark-700/50',
-                    animation: 'animate-spin',
+                    borderColor: 'border-dark-700/30',
+                    iconAnimation: 'animate-spin',
                 };
         }
     };
@@ -91,39 +90,14 @@ export default function StatusIndicator({ status, message }) {
     const Icon = config.icon;
 
     return (
-        <div
+        <span
             className={`
-                inline-flex items-center gap-2 px-3 py-1.5 rounded-full
-                ${config.bgColor} ${config.borderColor} border
-                transition-all duration-300 animate-fade-in
+                inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium
+                ${config.bgColor} ${config.borderColor} border ${config.color}
             `}
         >
-            <Icon className={`w-4 h-4 ${config.color} ${config.animation}`} />
-            <span className={`text-xs font-medium ${config.color}`}>
-                {config.label}
-            </span>
-            <div className="flex gap-0.5">
-                <span className={`w-1 h-1 rounded-full ${config.bgColor.replace('/10', '/60')} animate-processing-dot`} />
-                <span className={`w-1 h-1 rounded-full ${config.bgColor.replace('/10', '/60')} animate-processing-dot`} />
-                <span className={`w-1 h-1 rounded-full ${config.bgColor.replace('/10', '/60')} animate-processing-dot`} />
-            </div>
-        </div>
-    );
-}
-
-/**
- * MultiStatusIndicator - Shows multiple concurrent status indicators
- */
-export function MultiStatusIndicator({ statuses = [] }) {
-    if (!statuses || statuses.length === 0) {
-        return null;
-    }
-
-    return (
-        <div className="flex flex-wrap gap-2 justify-center">
-            {statuses.map((s, idx) => (
-                <StatusIndicator key={idx} status={s.type} message={s.message} />
-            ))}
-        </div>
+            <Icon className={`w-3 h-3 ${config.iconAnimation}`} />
+            <span>{config.label}</span>
+        </span>
     );
 }

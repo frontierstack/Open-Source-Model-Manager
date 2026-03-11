@@ -88,14 +88,7 @@ export default function ChatMessages({
                 />
             ))}
 
-            {/* Processing status indicator */}
-            {processingStatus && !streamingContent && (
-                <div className="flex justify-center py-4">
-                    <StatusIndicator status={processingStatus} message={processingMessage} />
-                </div>
-            )}
-
-            {/* Streaming message */}
+            {/* Streaming message with status indicator */}
             {isStreaming && (
                 <ChatMessage
                     role="assistant"
@@ -104,6 +97,8 @@ export default function ChatMessages({
                     isStreaming={true}
                     streamingContent={streamingContent}
                     streamingReasoning={streamingReasoning}
+                    processingStatus={processingStatus}
+                    processingMessage={processingMessage}
                 />
             )}
 
