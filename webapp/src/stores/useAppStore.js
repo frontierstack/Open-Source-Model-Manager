@@ -32,7 +32,7 @@ export const useAppStore = create(
                 preferences: {
                     theme: 'dark',
                     fontFamily: 'default',
-                    fontSize: 'medium',
+                    fontSize: 14, // Now numeric (10-24px) instead of 'small'/'medium'/'large'
                     docsAccordionOrder: [0, 1, 2, 3, 4, 5]
                 },
 
@@ -114,7 +114,21 @@ export const useAppStore = create(
                 partialize: (state) => ({
                     tabOrder: state.tabOrder,
                     preferences: state.preferences
-                })
+                }),
+                migrate: (persistedState, version) => {
+                    // Migrate old string fontSize values to numeric
+                    if (persistedState?.preferences?.fontSize) {
+                        const oldFontSize = persistedState.preferences.fontSize;
+                        if (typeof oldFontSize === 'string') {
+                            persistedState.preferences.fontSize =
+                                oldFontSize === 'small' ? 12 :
+                                oldFontSize === 'large' ? 16 :
+                                14; // medium or any other value defaults to 14
+                        }
+                    }
+                    return persistedState;
+                },
+                version: 1
             }
         ),
         { name: 'app-store' }

@@ -42,6 +42,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import AddIcon from '@mui/icons-material/Add';
+import EmailIcon from '@mui/icons-material/Email';
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
@@ -353,7 +354,7 @@ const App = () => {
     const [usersLoading, setUsersLoading] = useState(false);
     const [selectedUser, setSelectedUser] = useState(null);
     const [userDialogOpen, setUserDialogOpen] = useState(false);
-    const [userDialogMode, setUserDialogMode] = useState('create'); // 'create', 'edit', 'resetPassword'
+    const [userDialogMode, setUserDialogMode] = useState('create'); // 'create', 'edit', 'resetPassword', 'invite'
     const [newUserData, setNewUserData] = useState({ username: '', email: '', password: '', role: 'user' });
 
     // Backend selection (llamacpp works with older GPUs like Maxwell 5.2+)
@@ -3872,6 +3873,25 @@ fetch('${baseUrl}/api/apps', {
         .catch(error => showSnackbar(error.message, 'error'));
     };
 
+    const handleInviteUser = () => {
+        fetch('/api/users/invite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ email: newUserData.email, role: newUserData.role }),
+        })
+        .then(response => {
+            if (!response.ok) return response.json().then(err => { throw new Error(err.error); });
+            return response.json();
+        })
+        .then((data) => {
+            showSnackbar(data.message || 'User invited successfully', 'success');
+            handleCloseUserDialog();
+            fetchUsers();
+        })
+        .catch(error => showSnackbar(error.message, 'error'));
+    };
+
     const handleToggleUserStatus = (userId, disabled) => {
         fetch(`/api/users/${userId}`, {
             method: 'PUT',
@@ -3929,7 +3949,8 @@ fetch('${baseUrl}/api/apps', {
                     {/* Header */}
                     <Box sx={{
                         px: 3,
-                        py: 2,
+                        py: 3,
+                        minHeight: '72px',
                         borderBottom: '1px solid',
                         borderColor: 'divider',
                         bgcolor: 'background.paper',
@@ -3946,33 +3967,37 @@ fetch('${baseUrl}/api/apps', {
                             </Box>
                             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
                                 <Chip
-                                    icon={wsConnected ? <CheckCircleIcon sx={{ fontSize: 14 }} /> : <WarningIcon sx={{ fontSize: 14 }} />}
+                                    icon={wsConnected ? <CheckCircleIcon sx={{ fontSize: 18 }} /> : <WarningIcon sx={{ fontSize: 18 }} />}
                                     label={wsConnected ? "Connected" : "Disconnected"}
-                                    size="small"
+                                    size="medium"
                                     color={wsConnected ? "success" : "error"}
                                     variant="outlined"
-                                    sx={{ '& .MuiChip-icon': { ml: 0.5 } }}
+                                    sx={{ height: 32, fontSize: '0.875rem', '& .MuiChip-icon': { ml: 0.5 } }}
                                 />
                                 {instances.length > 0 && (
                                     <Chip
-                                        icon={<MemoryIcon sx={{ fontSize: 14 }} />}
+                                        icon={<MemoryIcon sx={{ fontSize: 18 }} />}
                                         label={`${instances.length} Active`}
-                                        size="small"
+                                        size="medium"
                                         color="secondary"
                                         variant="outlined"
+                                        sx={{ height: 32, fontSize: '0.875rem' }}
                                     />
                                 )}
                                 <Chip
-                                    icon={<AccountCircleIcon sx={{ fontSize: 14 }} />}
+                                    icon={<AccountCircleIcon sx={{ fontSize: 18, color: 'text.primary' }} />}
                                     label={user?.username || 'User'}
-                                    size="small"
-                                    color="primary"
+                                    size="medium"
                                     variant="outlined"
                                     onClick={handleUserMenuOpen}
                                     sx={{
+                                        height: 32,
+                                        fontSize: '0.875rem',
+                                        borderColor: 'divider',
+                                        color: 'text.primary',
                                         '& .MuiChip-icon': { ml: 0.5 },
                                         cursor: 'pointer',
-                                        '&:hover': { bgcolor: 'rgba(167, 139, 250, 0.08)' }
+                                        '&:hover': { bgcolor: (theme) => alpha(theme.palette.text.primary, 0.08) }
                                     }}
                                 />
                             </Box>
@@ -4520,7 +4545,12 @@ fetch('${baseUrl}/api/apps', {
                                                                                     <Chip
                                                                                         label={instance.backend === 'llamacpp' ? 'llama.cpp' : 'vLLM'}
                                                                                         size="small"
-                                                                                        color={instance.backend === 'llamacpp' ? 'primary' : 'secondary'}
+                                                                                        sx={{
+                                                                                            bgcolor: 'rgba(255, 255, 255, 0.1)',
+                                                                                            color: '#ffffff',
+                                                                                            fontWeight: 600,
+                                                                                            border: '1px solid rgba(255, 255, 255, 0.2)'
+                                                                                        }}
                                                                                     />
                                                                                 </Tooltip>
                                                                                 <Tooltip title="Context size">
@@ -5474,11 +5504,15 @@ fetch('${baseUrl}/api/apps', {
                                                 />
                                                 {user?.role === 'admin' && (
                                                     <Button
-                                                        variant="contained"
-                                                        startIcon={<AddIcon />}
-                                                        onClick={() => handleOpenUserDialog('create')}
+                                                        variant="outlined"
+                                                        startIcon={<EmailIcon />}
+                                                        onClick={() => {
+                                                            setUserDialogMode('invite');
+                                                            setNewUserData({ username: '', email: '', password: '', role: 'user' });
+                                                            setUserDialogOpen(true);
+                                                        }}
                                                     >
-                                                        Add User
+                                                        Invite User
                                                     </Button>
                                                 )}
                                             </Box>
@@ -5611,6 +5645,7 @@ fetch('${baseUrl}/api/apps', {
                             <DialogTitle>
                                 {userDialogMode === 'create' ? 'Create New User' :
                                  userDialogMode === 'edit' ? `Edit User: ${selectedUser?.username}` :
+                                 userDialogMode === 'invite' ? 'Invite User by Email' :
                                  `Reset Password: ${selectedUser?.username}`}
                             </DialogTitle>
                             <DialogContent>
@@ -5645,6 +5680,31 @@ fetch('${baseUrl}/api/apps', {
                                             </FormControl>
                                         </>
                                     )}
+                                    {userDialogMode === 'invite' && (
+                                        <>
+                                            <TextField
+                                                autoFocus
+                                                label="Email Address"
+                                                type="email"
+                                                value={newUserData.email}
+                                                onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })}
+                                                fullWidth
+                                                required
+                                                helperText="User will receive an email to complete registration"
+                                            />
+                                            <FormControl fullWidth>
+                                                <InputLabel>Role</InputLabel>
+                                                <Select
+                                                    value={newUserData.role}
+                                                    label="Role"
+                                                    onChange={(e) => setNewUserData({ ...newUserData, role: e.target.value })}
+                                                >
+                                                    <MenuItem value="user">User</MenuItem>
+                                                    <MenuItem value="admin">Admin</MenuItem>
+                                                </Select>
+                                            </FormControl>
+                                        </>
+                                    )}
                                     {(userDialogMode === 'create' || userDialogMode === 'resetPassword') && (
                                         <TextField
                                             label={userDialogMode === 'create' ? 'Password' : 'New Password'}
@@ -5664,16 +5724,19 @@ fetch('${baseUrl}/api/apps', {
                                     onClick={
                                         userDialogMode === 'create' ? handleCreateUser :
                                         userDialogMode === 'edit' ? handleUpdateUser :
+                                        userDialogMode === 'invite' ? handleInviteUser :
                                         handleResetPassword
                                     }
                                     disabled={
                                         userDialogMode === 'create' ? (!newUserData.username || !newUserData.email || !newUserData.password || newUserData.password.length < 8) :
                                         userDialogMode === 'edit' ? !newUserData.email :
+                                        userDialogMode === 'invite' ? !newUserData.email :
                                         !newUserData.password || newUserData.password.length < 8
                                     }
                                 >
                                     {userDialogMode === 'create' ? 'Create' :
                                      userDialogMode === 'edit' ? 'Save' :
+                                     userDialogMode === 'invite' ? 'Send Invite' :
                                      'Reset Password'}
                                 </Button>
                             </DialogActions>
@@ -5727,6 +5790,9 @@ fetch('${baseUrl}/api/apps', {
                                                                     label="Permissions"
                                                                 >
                                                                     <MenuItem value="query">Query Models</MenuItem>
+                                                                    <MenuItem value="query_web">Query Web</MenuItem>
+                                                                    <MenuItem value="agents">Manage Agents</MenuItem>
+                                                                    <MenuItem value="skills">Manage Skills</MenuItem>
                                                                     <MenuItem value="models">Manage Models</MenuItem>
                                                                     <MenuItem value="instances">Manage Instances</MenuItem>
                                                                     <MenuItem value="admin">Admin Access</MenuItem>
@@ -5882,6 +5948,9 @@ fetch('${baseUrl}/api/apps', {
                                                                     label="Permissions"
                                                                 >
                                                                     <MenuItem value="query">Query Models</MenuItem>
+                                                                    <MenuItem value="query_web">Query Web</MenuItem>
+                                                                    <MenuItem value="agents">Manage Agents</MenuItem>
+                                                                    <MenuItem value="skills">Manage Skills</MenuItem>
                                                                     <MenuItem value="models">Manage Models</MenuItem>
                                                                     <MenuItem value="instances">Manage Instances</MenuItem>
                                                                     <MenuItem value="admin">Admin Access</MenuItem>
@@ -6470,7 +6539,7 @@ fetch('${baseUrl}/api/apps', {
                                             <Grid item xs={12} lg={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(167, 139, 250, 0.05)', borderRadius: 2, border: '1px solid rgba(167, 139, 250, 0.1)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                        <Chip label="llama.cpp" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'primary.main', color: '#09090b', fontWeight: 600 }} />
+                                                        <Chip label="llama.cpp" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'rgba(255, 255, 255, 0.15)', color: '#ffffff', fontWeight: 600 }} />
                                                         <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Maxwell 5.2+</Typography>
                                                     </Box>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
@@ -6493,7 +6562,7 @@ fetch('${baseUrl}/api/apps', {
                                             <Grid item xs={12} lg={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(34, 211, 238, 0.05)', borderRadius: 2, border: '1px solid rgba(34, 211, 238, 0.1)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                        <Chip label="vLLM" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'secondary.main', color: '#09090b', fontWeight: 600 }} />
+                                                        <Chip label="vLLM" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'rgba(255, 255, 255, 0.15)', color: '#ffffff', fontWeight: 600 }} />
                                                         <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Pascal 6.0+</Typography>
                                                     </Box>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>

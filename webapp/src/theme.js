@@ -4,25 +4,25 @@ import { createTheme, alpha } from '@mui/material/styles';
 const themes = {
     dark: {
         background: { default: '#09090b', paper: '#18181b' },
-        primary: { main: '#a78bfa', light: '#c4b5fd', dark: '#7c3aed' },
+        primary: { main: '#52525b', light: '#a1a1aa', dark: '#27272a' },
         secondary: { main: '#22d3ee', light: '#67e8f9', dark: '#06b6d4' },
         success: { main: '#22c55e', light: '#4ade80' },
         warning: { main: '#f59e0b' },
         error: { main: '#ef4444' },
         text: { primary: '#fafafa', secondary: '#a1a1aa' },
         divider: 'rgba(255, 255, 255, 0.06)',
-        accent: '#a78bfa',
+        accent: '#52525b',
     },
     light: {
-        background: { default: '#fafafa', paper: '#ffffff' },
-        primary: { main: '#7c3aed', light: '#a78bfa', dark: '#5b21b6' },
+        background: { default: '#ffffff', paper: '#ffffff' },
+        primary: { main: '#18181b', light: '#52525b', dark: '#09090b' },
         secondary: { main: '#06b6d4', light: '#22d3ee', dark: '#0891b2' },
         success: { main: '#16a34a', light: '#22c55e' },
         warning: { main: '#d97706' },
         error: { main: '#dc2626' },
         text: { primary: '#18181b', secondary: '#52525b' },
         divider: 'rgba(0, 0, 0, 0.08)',
-        accent: '#7c3aed',
+        accent: '#18181b',
     },
     midnight: {
         background: { default: '#0a0a1a', paper: '#12122a' },
@@ -108,36 +108,14 @@ const fontConfigs = {
     },
 };
 
-// Font size configurations
-const fontSizes = {
-    small: {
-        body1: { fontSize: '0.8125rem' },
-        body2: { fontSize: '0.75rem' },
-        caption: { fontSize: '0.6875rem' },
-        h5: { fontSize: '0.9375rem' },
-        h6: { fontSize: '0.8125rem' },
-    },
-    medium: {
-        body1: { fontSize: '0.875rem' },
-        body2: { fontSize: '0.8125rem' },
-        caption: { fontSize: '0.75rem' },
-        h5: { fontSize: '1rem' },
-        h6: { fontSize: '0.875rem' },
-    },
-    large: {
-        body1: { fontSize: '1rem' },
-        body2: { fontSize: '0.9375rem' },
-        caption: { fontSize: '0.8125rem' },
-        h5: { fontSize: '1.125rem' },
-        h6: { fontSize: '1rem' },
-    },
-};
+// Font size is now numeric (pixels) instead of preset strings
 
 // Create theme function
-export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontSize = 'medium') => {
+export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontSize = 14) => {
     const colors = themes[themeName] || themes.dark;
     const fonts = fontConfigs[fontFamily] || fontConfigs.default;
-    const sizes = fontSizes[fontSize] || fontSizes.medium;
+    // fontSize is now numeric pixels (10-24), default 14
+    const baseFontSize = typeof fontSize === 'number' ? fontSize : 14;
     const isDark = themeName !== 'light';
 
     return createTheme({
@@ -154,6 +132,7 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
         },
         typography: {
             fontFamily: fonts.fontFamily,
+            fontSize: baseFontSize,
             h1: {
                 fontWeight: 700,
                 fontSize: '2rem',
@@ -172,15 +151,21 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
             h5: {
                 fontWeight: 600,
                 letterSpacing: '-0.01em',
-                ...sizes.h5,
+                fontSize: `${(baseFontSize * 1.125) / 16}rem`,
             },
             h6: {
                 fontWeight: 600,
-                ...sizes.h6,
+                fontSize: `${baseFontSize / 16}rem`,
             },
-            body1: sizes.body1,
-            body2: sizes.body2,
-            caption: sizes.caption,
+            body1: {
+                fontSize: `${baseFontSize / 16}rem`,
+            },
+            body2: {
+                fontSize: `${(baseFontSize * 0.875) / 16}rem`,
+            },
+            caption: {
+                fontSize: `${(baseFontSize * 0.75) / 16}rem`,
+            },
         },
         shape: {
             borderRadius: 8,
@@ -303,13 +288,26 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                         fontSize: '0.8125rem',
                         minHeight: 40,
                         padding: '8px 16px',
+                        color: colors.text.secondary,
+                        transition: 'all 0.2s ease',
+                        '&:hover': {
+                            color: colors.primary.light,
+                            backgroundColor: alpha(colors.primary.main, 0.08),
+                        },
+                        '&.Mui-selected': {
+                            color: colors.primary.light,
+                            fontWeight: 600,
+                        },
                     },
                 },
             },
             MuiTabs: {
                 styleOverrides: {
                     indicator: {
-                        height: 2,
+                        height: 3,
+                        backgroundColor: colors.primary.main,
+                        borderRadius: '3px 3px 0 0',
+                        boxShadow: `0 0 8px ${alpha(colors.primary.main, 0.4)}`,
                     },
                 },
             },
@@ -329,8 +327,8 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
 
 // Export theme options for settings UI
 export const themeOptions = [
-    { value: 'dark', label: 'Dark', description: 'Default dark theme with purple accents' },
-    { value: 'light', label: 'Light', description: 'Clean light theme for daytime use' },
+    { value: 'dark', label: 'Dark', description: 'Default dark theme with neutral accents' },
+    { value: 'light', label: 'Light', description: 'Clean pure white theme for daytime use' },
     { value: 'midnight', label: 'Midnight', description: 'Deep blue with indigo accents' },
     { value: 'ocean', label: 'Ocean', description: 'Calm blues and teals' },
     { value: 'forest', label: 'Forest', description: 'Natural greens' },
@@ -346,11 +344,7 @@ export const fontOptions = [
     { value: 'serif', label: 'Serif', description: 'Traditional serif font' },
 ];
 
-export const fontSizeOptions = [
-    { value: 'small', label: 'Small', description: 'Compact text' },
-    { value: 'medium', label: 'Medium (Default)', description: 'Standard size' },
-    { value: 'large', label: 'Large', description: 'Larger text for readability' },
-];
+// Font size is now a numeric input (10-24px) instead of preset options
 
 // Legacy export for backwards compatibility
-export const darkTheme = createAppTheme('dark', 'default', 'medium');
+export const darkTheme = createAppTheme('dark', 'default', 14);

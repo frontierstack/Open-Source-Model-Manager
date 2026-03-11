@@ -53,7 +53,7 @@ export default function ChatMessages({
             sx={{
                 flexGrow: 1,
                 overflow: 'auto',
-                px: 3,
+                px: 4,
                 py: 2,
                 display: 'flex',
                 flexDirection: 'column',

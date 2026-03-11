@@ -137,6 +137,7 @@ export default function ChatMessage({
                 alignItems: isUser ? 'flex-end' : 'flex-start',
                 mb: 1.5,
                 maxWidth: '100%',
+                px: isUser ? 0 : 4,
             }}
         >
             {/* File attachments for user messages */}
@@ -164,14 +165,14 @@ export default function ChatMessage({
             {/* Message bubble */}
             <Box
                 sx={{
-                    maxWidth: { xs: '95%', sm: '85%' },
+                    maxWidth: { xs: '95%', sm: '90%', md: '80%' },
                     minWidth: '60px',
                     position: 'relative',
                     borderRadius: isUser
                         ? '14px 14px 4px 14px'
                         : '14px 14px 14px 4px',
-                    px: 1.5,
-                    py: 1,
+                    px: 2,
+                    py: 1.5,
                     background: isUser
                         ? 'linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%)'
                         : 'rgba(255, 255, 255, 0.05)',

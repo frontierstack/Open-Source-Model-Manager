@@ -39,7 +39,7 @@ app.use(helmet({
         directives: {
             defaultSrc: ["'self'"],
             scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],  // Required for React
-            styleSrc: ["'self'", "'unsafe-inline'"],  // Required for MUI
+            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],  // Required for MUI and Google Fonts
             imgSrc: ["'self'", "data:", "https:"],
             connectSrc: ["'self'", "wss:", "ws:"],  // WebSocket connections
             fontSrc: ["'self'", "https://fonts.gstatic.com"],
@@ -6036,7 +6036,25 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             });
         }
 
-        return res.status(400).json({ error: 'Unsupported file type' });
+        // Catch-all: Try to decode as text first, fallback to binary
+        try {
+            const decoded = Buffer.from(content, 'base64').toString('utf8');
+            return res.json({
+                type: 'text',
+                filename,
+                content: decoded,
+                charCount: decoded.length
+            });
+        } catch (decodeError) {
+            // If not text, return as binary data
+            return res.json({
+                type: 'file',
+                filename,
+                dataUrl: `data:${mimeType || 'application/octet-stream'};base64,${content}`,
+                mimeType: mimeType || 'application/octet-stream',
+                size: Buffer.from(content, 'base64').length
+            });
+        }
     } catch (error) {
         console.error('File upload error:', error);
         res.status(500).json({ error: 'Failed to process file' });

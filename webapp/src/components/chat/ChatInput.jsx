@@ -33,11 +33,9 @@ export default function ChatInput({
     const fileInputRef = useRef(null);
     const textFieldRef = useRef(null);
 
-    // Supported file types
+    // Accept all file types (no restrictions)
     const supportedTypes = {
-        text: ['.txt', '.md', '.json', '.yaml', '.yml', '.xml', '.csv', '.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.html', '.css', '.scss', '.sh', '.sql', '.log'],
-        image: ['.png', '.jpg', '.jpeg', '.gif', '.webp'],
-        pdf: ['.pdf'],
+        all: ['*']
     };
 
     const handleSend = () => {
@@ -60,13 +58,7 @@ export default function ChatInput({
         if (!files || files.length === 0) return;
 
         for (const file of Array.from(files)) {
-            const extension = '.' + file.name.split('.').pop().toLowerCase();
-            const allSupported = [...supportedTypes.text, ...supportedTypes.image, ...supportedTypes.pdf];
-
-            if (!allSupported.includes(extension)) {
-                continue;
-            }
-
+            // Accept all file types
             const reader = new FileReader();
             reader.onload = async (e) => {
                 const base64 = e.target.result.split(',')[1];
@@ -201,7 +193,7 @@ export default function ChatInput({
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept={[...supportedTypes.text, ...supportedTypes.image, ...supportedTypes.pdf].join(',')}
+                    accept="*/*"
                     style={{ display: 'none' }}
                     onChange={handleFileInputChange}
                 />
@@ -254,9 +246,9 @@ export default function ChatInput({
                     InputProps={{
                         disableUnderline: true,
                         sx: {
-                            fontSize: '0.875rem',
-                            lineHeight: 1.4,
-                            minHeight: 28,
+                            fontSize: '0.9375rem',
+                            lineHeight: 1.5,
+                            minHeight: 32,
                             '& textarea': {
                                 '&::placeholder': {
                                     color: 'text.secondary',
@@ -267,7 +259,7 @@ export default function ChatInput({
                     }}
                     sx={{
                         '& .MuiInputBase-root': {
-                            padding: '2px 4px',
+                            padding: '4px 6px',
                         },
                     }}
                 />

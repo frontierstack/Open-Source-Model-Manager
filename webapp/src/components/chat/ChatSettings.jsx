@@ -21,7 +21,7 @@ import SaveIcon from '@mui/icons-material/Save';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { useAppStore } from '../../stores/useAppStore';
-import { themeOptions, fontOptions, fontSizeOptions } from '../../theme';
+import { themeOptions, fontOptions } from '../../theme';
 
 /**
  * ChatSettings - Settings drawer for chat configuration and appearance
@@ -342,36 +342,29 @@ export default function ChatSettings({
                         <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 500 }}>
                             Font Size
                         </Typography>
-                        <Box sx={{ display: 'flex', gap: 1 }}>
-                            {fontSizeOptions.map((size) => (
-                                <Box
-                                    key={size.value}
-                                    onClick={() => setFontSize(size.value)}
-                                    sx={{
-                                        flex: 1,
-                                        p: 1.5,
-                                        borderRadius: 1,
-                                        border: '1px solid',
-                                        borderColor: preferences.fontSize === size.value
-                                            ? 'primary.main'
-                                            : 'rgba(255, 255, 255, 0.1)',
-                                        backgroundColor: preferences.fontSize === size.value
-                                            ? 'rgba(167, 139, 250, 0.1)'
-                                            : 'transparent',
-                                        cursor: 'pointer',
-                                        textAlign: 'center',
-                                        transition: 'all 0.2s',
-                                        '&:hover': {
-                                            borderColor: 'primary.light',
-                                        },
-                                    }}
-                                >
-                                    <Typography variant="body2" fontWeight={500}>
-                                        {size.label}
-                                    </Typography>
-                                </Box>
-                            ))}
-                        </Box>
+                        <TextField
+                            type="number"
+                            size="small"
+                            fullWidth
+                            value={preferences.fontSize}
+                            onChange={(e) => {
+                                const val = parseInt(e.target.value);
+                                if (!isNaN(val) && val >= 10 && val <= 24) {
+                                    setFontSize(val);
+                                }
+                            }}
+                            inputProps={{ min: 10, max: 24, step: 1 }}
+                            helperText="Range: 10-24px (default: 14px)"
+                            sx={{
+                                '& input::-webkit-outer-spin-button, & input::-webkit-inner-spin-button': {
+                                    WebkitAppearance: 'none',
+                                    margin: 0,
+                                },
+                                '& input[type=number]': {
+                                    MozAppearance: 'textfield',
+                                },
+                            }}
+                        />
                     </Box>
                 </Box>
             )}
