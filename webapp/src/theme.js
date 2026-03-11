@@ -187,18 +187,19 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                         },
                     },
                     contained: {
-                        background: `linear-gradient(135deg, ${colors.primary.main} 0%, ${colors.primary.dark} 100%)`,
+                        background: `linear-gradient(135deg, ${colors.secondary.main} 0%, ${colors.secondary.dark} 100%)`,
+                        color: isDark ? '#000000' : '#ffffff',
                         '&:hover': {
-                            background: `linear-gradient(135deg, ${colors.primary.light} 0%, ${colors.primary.main} 100%)`,
-                            boxShadow: `0 4px 12px ${alpha(colors.primary.main, 0.3)}`,
+                            background: `linear-gradient(135deg, ${colors.secondary.light} 0%, ${colors.secondary.main} 100%)`,
+                            boxShadow: `0 4px 12px ${alpha(colors.secondary.main, 0.4)}`,
                         },
                     },
                     outlined: {
-                        borderColor: alpha(colors.primary.main, 0.3),
-                        color: colors.primary.light,
+                        borderColor: alpha(colors.secondary.main, 0.5),
+                        color: colors.secondary.light,
                         '&:hover': {
-                            borderColor: alpha(colors.primary.main, 0.6),
-                            backgroundColor: alpha(colors.primary.main, 0.08),
+                            borderColor: colors.secondary.main,
+                            backgroundColor: alpha(colors.secondary.main, 0.1),
                         },
                     },
                 },
@@ -221,7 +222,7 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                         boxShadow: `0 4px 16px ${alpha('#000000', isDark ? 0.4 : 0.1)}`,
                         transition: 'all 0.2s ease',
                         '&:hover': {
-                            borderColor: alpha(colors.primary.main, 0.3),
+                            borderColor: alpha(colors.secondary.main, 0.3),
                             boxShadow: `0 8px 24px ${alpha('#000000', isDark ? 0.5 : 0.15)}`,
                         },
                     },
@@ -237,10 +238,10 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                                 borderColor: alpha(isDark ? '#ffffff' : '#000000', 0.08),
                             },
                             '&:hover fieldset': {
-                                borderColor: alpha(isDark ? '#ffffff' : '#000000', 0.15),
+                                borderColor: alpha(colors.secondary.main, 0.3),
                             },
                             '&.Mui-focused fieldset': {
-                                borderColor: colors.primary.main,
+                                borderColor: colors.secondary.main,
                                 borderWidth: 1,
                             },
                         },
@@ -257,12 +258,13 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                         backdropFilter: 'blur(8px)',
                     },
                     filled: {
-                        backgroundColor: alpha(colors.primary.main, 0.15),
-                        color: colors.primary.light,
+                        backgroundColor: alpha(colors.secondary.main, 0.2),
+                        color: colors.secondary.light,
                     },
                     outlined: {
-                        borderColor: alpha(isDark ? '#ffffff' : '#000000', 0.15),
-                        backgroundColor: alpha(isDark ? '#ffffff' : '#000000', 0.03),
+                        borderColor: alpha(colors.secondary.main, 0.3),
+                        color: colors.secondary.light,
+                        backgroundColor: alpha(colors.secondary.main, 0.05),
                     },
                 },
             },
@@ -288,14 +290,17 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                         fontSize: '0.8125rem',
                         minHeight: 40,
                         padding: '8px 16px',
-                        color: colors.text.secondary,
+                        color: colors.text.primary,
+                        opacity: 0.7,
                         transition: 'all 0.2s ease',
                         '&:hover': {
-                            color: colors.primary.light,
-                            backgroundColor: alpha(colors.primary.main, 0.08),
+                            opacity: 1,
+                            color: colors.secondary.light,
+                            backgroundColor: alpha(colors.secondary.main, 0.08),
                         },
                         '&.Mui-selected': {
-                            color: colors.primary.light,
+                            opacity: 1,
+                            color: colors.secondary.light,
                             fontWeight: 600,
                         },
                     },
@@ -305,9 +310,9 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                 styleOverrides: {
                     indicator: {
                         height: 3,
-                        backgroundColor: colors.primary.main,
+                        backgroundColor: colors.secondary.main,
                         borderRadius: '3px 3px 0 0',
-                        boxShadow: `0 0 8px ${alpha(colors.primary.main, 0.4)}`,
+                        boxShadow: `0 0 8px ${alpha(colors.secondary.main, 0.5)}`,
                     },
                 },
             },
@@ -315,8 +320,11 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                 styleOverrides: {
                     root: {
                         '&.Mui-selected': {
-                            backgroundColor: alpha(colors.primary.main, 0.1),
-                            borderLeft: `2px solid ${colors.primary.main}`,
+                            backgroundColor: alpha(colors.secondary.main, 0.1),
+                            borderLeft: `2px solid ${colors.secondary.main}`,
+                        },
+                        '&:hover': {
+                            backgroundColor: alpha(colors.secondary.main, 0.08),
                         },
                     },
                 },
