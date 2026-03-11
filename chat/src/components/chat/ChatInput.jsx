@@ -56,6 +56,7 @@ export default function ChatInput({
     attachments = [],
     onAddAttachment,
     onRemoveAttachment,
+    onClearAllAttachments,
     systemPrompts = [],
     selectedSystemPromptId,
     onSystemPromptSelect,
@@ -367,39 +368,60 @@ export default function ChatInput({
                 <div className="max-w-3xl mx-auto">
                     {/* Attachment preview cards */}
                     {(attachments.length > 0 || uploadingFiles.length > 0) && (
-                        <div className="flex flex-wrap gap-1.5 mb-2" role="list">
-                            {/* Uploading files */}
-                            {uploadingFiles.map((file) => (
-                                <div
-                                    key={file.id}
-                                    className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-dark-800/60 border border-dark-700/50 animate-pulse"
-                                    role="listitem"
-                                >
-                                    <FileIcon className="w-3 h-3 text-dark-400 animate-spin" />
-                                    <span className="text-dark-300 truncate max-w-[100px] text-[11px]">
-                                        {file.filename}
-                                    </span>
-                                </div>
-                            ))}
-
-                            {/* Attached files */}
-                            {attachments.map((att, index) => (
-                                <div
-                                    key={att.id || index}
-                                    className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] ${getFileTypeColor(att.filename, att.type)}`}
-                                    role="listitem"
-                                >
-                                    {getFileIcon(att.filename, att.type)}
-                                    <span className="truncate max-w-[100px]">{att.filename}</span>
+                        <div className="mb-2">
+                            <div className="flex items-center justify-between mb-1">
+                                <span className="text-[10px] text-dark-500 font-medium">
+                                    {attachments.length} file{attachments.length !== 1 ? 's' : ''} attached
+                                    {attachments.length > 0 && (
+                                        <span className="ml-1 text-dark-600">
+                                            ({(attachments.reduce((sum, a) => sum + (a.charCount || 0), 0) / 1000).toFixed(1)}k chars)
+                                        </span>
+                                    )}
+                                </span>
+                                {attachments.length > 1 && onClearAllAttachments && (
                                     <button
-                                        onClick={() => onRemoveAttachment(index)}
-                                        className="p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-white/10 transition-opacity"
-                                        aria-label={`Remove ${att.filename}`}
+                                        onClick={onClearAllAttachments}
+                                        className="text-[10px] text-red-400 hover:text-red-300 transition-colors"
                                     >
-                                        <X className="w-3 h-3" />
+                                        Clear all
                                     </button>
-                                </div>
-                            ))}
+                                )}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5" role="list">
+                                {/* Uploading files */}
+                                {uploadingFiles.map((file) => (
+                                    <div
+                                        key={file.id}
+                                        className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-dark-800/60 border border-dark-700/50 animate-pulse"
+                                        role="listitem"
+                                    >
+                                        <FileIcon className="w-3 h-3 text-dark-400 animate-spin" />
+                                        <span className="text-dark-300 truncate max-w-[100px] text-[11px]">
+                                            {file.filename}
+                                        </span>
+                                    </div>
+                                ))}
+
+                                {/* Attached files */}
+                                {attachments.map((att, index) => (
+                                    <div
+                                        key={att.id || index}
+                                        className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] ${getFileTypeColor(att.filename, att.type)}`}
+                                        role="listitem"
+                                        title={att.charCount ? `${att.charCount.toLocaleString()} characters${att.saved ? ` (${att.saved} saved by optimization)` : ''}` : att.filename}
+                                    >
+                                        {getFileIcon(att.filename, att.type)}
+                                        <span className="truncate max-w-[100px]">{att.filename}</span>
+                                        <button
+                                            onClick={() => onRemoveAttachment(index)}
+                                            className="p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-white/10 transition-opacity"
+                                            aria-label={`Remove ${att.filename}`}
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     )}
 

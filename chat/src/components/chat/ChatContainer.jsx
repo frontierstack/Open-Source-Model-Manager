@@ -31,6 +31,8 @@ export default function ChatContainer({
         streamingReasoning,
         attachments,
         settings,
+        processingStatus,
+        processingMessage,
         setConversations,
         setActiveConversation,
         addConversation,
@@ -44,6 +46,8 @@ export default function ChatContainer({
         appendStreamingContent,
         appendStreamingReasoning,
         clearStreaming,
+        setProcessingStatus,
+        clearProcessingStatus,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -482,12 +486,23 @@ export default function ChatContainer({
         setStreamingContent('');
         setStreamingReasoning('');
         setIsLoading(true);
+        setProcessingStatus('processing', attachedFiles?.length > 0 ? 'Processing files' : 'Preparing request');
 
         // Prepare messages for API (use fullContent for the last message to include attachments)
-        const apiMessages = updatedMessages.map((m, idx) => ({
-            role: m.role,
-            content: idx === updatedMessages.length - 1 ? fullContent : m.content,
-        }));
+        // Also include search context from previous messages if they had web search results
+        const apiMessages = updatedMessages.map((m, idx) => {
+            let msgContent = idx === updatedMessages.length - 1 ? fullContent : m.content;
+
+            // If this is a previous user message with search context, include it
+            if (m.role === 'user' && m.searchContext && idx !== updatedMessages.length - 1) {
+                msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
+            }
+
+            return {
+                role: m.role,
+                content: msgContent,
+            };
+        });
 
         // Add system prompt if selected
         const selectedSystemPrompt = systemPrompts.find(p => p.id === settings.selectedSystemPromptId);
@@ -500,9 +515,11 @@ export default function ChatContainer({
 
         // Handle web search
         let searchResults = null;
+        let searchContextSummary = null;
         if (settings.webSearchEnabled) {
             try {
                 setIsLoading(true);
+                setProcessingStatus('searching', 'Searching the web');
                 const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=3`, {
                     credentials: 'include',
                 });
@@ -511,6 +528,12 @@ export default function ChatContainer({
                     const searchData = await searchResponse.json();
                     if (searchData.results && searchData.results.length > 0) {
                         searchResults = searchData.results;
+
+                        // Create a summary of search results for memory persistence
+                        searchContextSummary = searchData.results
+                            .slice(0, 3)
+                            .map((r, i) => `${i + 1}. "${r.title}" - ${r.snippet?.slice(0, 100) || ''}`)
+                            .join('; ');
 
                         // Format search results for the model
                         const searchContext = searchData.results
@@ -535,6 +558,16 @@ export default function ChatContainer({
                             `The following web search results are provided for context. Use them to answer the user's question if relevant.\n\n` +
                             `--- Web Search Results ---\n${searchContext}\n--- End of Search Results ---\n\n` +
                             `User question: ${content}`;
+
+                        // Update the user message in store with search context for memory
+                        const updatedUserMessage = {
+                            ...userMessage,
+                            searchContext: searchContextSummary,
+                            hadWebSearch: true,
+                        };
+                        const messagesWithContext = [...currentMessages, updatedUserMessage];
+                        setMessages(messagesWithContext);
+                        saveMessages(conversationId, messagesWithContext);
                     }
                 } else {
                     console.warn('Web search returned non-OK status:', searchResponse.status);
@@ -552,6 +585,8 @@ export default function ChatContainer({
         const startTime = Date.now();
 
         try {
+            setProcessingStatus('thinking', 'Model is thinking');
+
             const requestBody = {
                 model: settings.model,
                 messages: apiMessages,
@@ -574,6 +609,7 @@ export default function ChatContainer({
             });
 
             setIsLoading(false);
+            setProcessingStatus('generating', 'Generating response');
 
             if (!response.ok) {
                 // Try to parse error body
@@ -620,7 +656,10 @@ export default function ChatContainer({
 
                             // Handle error in stream
                             if (parsed.error) {
-                                throw new Error(parsed.error.message || parsed.error);
+                                const errMsg = typeof parsed.error === 'object'
+                                    ? parsed.error.message || JSON.stringify(parsed.error)
+                                    : parsed.error;
+                                throw new Error(errMsg);
                             }
 
                             const delta = parsed.choices?.[0]?.delta;
@@ -818,6 +857,8 @@ export default function ChatContainer({
                     isStreaming={isStreaming}
                     streamingContent={streamingContent}
                     streamingReasoning={streamingReasoning}
+                    processingStatus={processingStatus}
+                    processingMessage={processingMessage}
                 />
 
                 {/* Input */}
@@ -829,6 +870,7 @@ export default function ChatContainer({
                     attachments={attachments}
                     onAddAttachment={addAttachment}
                     onRemoveAttachment={removeAttachment}
+                    onClearAllAttachments={clearAttachments}
                     systemPrompts={systemPrompts}
                     selectedSystemPromptId={settings.selectedSystemPromptId}
                     onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}

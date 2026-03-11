@@ -69,7 +69,7 @@ export default function ChatHeader({
                     >
                         <div className="flex items-center gap-2">
                             <Circle
-                                className={`w-2 h-2 ${selectedModelData?.status === 'running' ? 'fill-green-400 text-green-400' : 'fill-dark-500 text-dark-500'}`}
+                                className={`w-2 h-2 ${selectedModelData?.status === 'running' ? 'fill-green-400 text-green-400 animate-pulse-glow' : 'fill-dark-500 text-dark-500'}`}
                             />
                             <span className="text-xs font-medium text-dark-100 max-w-[140px] truncate">
                                 {selectedModel || 'Select Model'}
@@ -109,7 +109,7 @@ export default function ChatHeader({
                                             style={selectedModel === model.name ? { backgroundColor: 'rgba(var(--primary-rgb), 0.1)' } : {}}
                                         >
                                             <div className="flex items-center gap-2 min-w-0">
-                                                <Circle className="w-1.5 h-1.5 flex-shrink-0 fill-green-400 text-green-400" />
+                                                <Circle className="w-1.5 h-1.5 flex-shrink-0 fill-green-400 text-green-400 animate-pulse-glow" />
                                                 <span className={`text-xs truncate ${selectedModel === model.name ? 'font-medium text-dark-100' : 'text-dark-300'}`}>
                                                     {model.name}
                                                 </span>

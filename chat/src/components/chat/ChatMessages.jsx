@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MessageSquare, Sparkles } from 'lucide-react';
 import ChatMessage from './ChatMessage';
+import StatusIndicator from './StatusIndicator';
 
 /**
  * ChatMessages - Scrollable message list with auto-scroll (Tailwind)
@@ -10,6 +11,8 @@ export default function ChatMessages({
     isStreaming,
     streamingContent,
     streamingReasoning,
+    processingStatus,
+    processingMessage,
 }) {
     const messagesEndRef = useRef(null);
     const containerRef = useRef(null);
@@ -84,6 +87,13 @@ export default function ChatMessages({
                     tokenCount={message.tokenCount}
                 />
             ))}
+
+            {/* Processing status indicator */}
+            {processingStatus && !streamingContent && (
+                <div className="flex justify-center py-4">
+                    <StatusIndicator status={processingStatus} message={processingMessage} />
+                </div>
+            )}
 
             {/* Streaming message */}
             {isStreaming && (

@@ -5970,6 +5970,65 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
     }
 });
 
+// Smart content optimizer - removes unnecessary whitespace to save tokens
+function optimizeContent(text, options = {}) {
+    if (!text || typeof text !== 'string') return text;
+
+    const {
+        preserveCodeBlocks = true,
+        maxConsecutiveNewlines = 2,
+        trimLines = true,
+        removeEmptyLines = false,
+        compressWhitespace = true
+    } = options;
+
+    let result = text;
+
+    // Preserve code blocks by replacing them with placeholders
+    const codeBlocks = [];
+    if (preserveCodeBlocks) {
+        result = result.replace(/```[\s\S]*?```|`[^`\n]+`/g, (match) => {
+            codeBlocks.push(match);
+            return `__CODE_BLOCK_${codeBlocks.length - 1}__`;
+        });
+    }
+
+    // Normalize line endings
+    result = result.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // Trim trailing whitespace from each line
+    if (trimLines) {
+        result = result.split('\n').map(line => line.trimEnd()).join('\n');
+    }
+
+    // Compress multiple spaces to single space (within lines)
+    if (compressWhitespace) {
+        result = result.split('\n').map(line => {
+            // Don't compress leading whitespace (indentation)
+            const leadingSpaces = line.match(/^(\s*)/)[1];
+            const rest = line.slice(leadingSpaces.length);
+            return leadingSpaces + rest.replace(/  +/g, ' ');
+        }).join('\n');
+    }
+
+    // Remove empty lines or limit consecutive newlines
+    if (removeEmptyLines) {
+        result = result.split('\n').filter(line => line.trim() !== '').join('\n');
+    } else if (maxConsecutiveNewlines > 0) {
+        const pattern = new RegExp(`\n{${maxConsecutiveNewlines + 1},}`, 'g');
+        result = result.replace(pattern, '\n'.repeat(maxConsecutiveNewlines));
+    }
+
+    // Restore code blocks
+    if (preserveCodeBlocks) {
+        codeBlocks.forEach((block, i) => {
+            result = result.replace(`__CODE_BLOCK_${i}__`, block);
+        });
+    }
+
+    return result.trim();
+}
+
 // File upload endpoint for chat context
 app.post('/api/chat/upload', requireAuth, async (req, res) => {
     // Check permission
@@ -5979,11 +6038,14 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
     try {
         // Handle base64-encoded file content
-        const { filename, content, mimeType } = req.body;
+        const { filename, content, mimeType, optimize = true } = req.body;
 
         if (!content) {
             return res.status(400).json({ error: 'File content is required' });
         }
+
+        // Helper to optionally optimize content
+        const maybeOptimize = (text) => optimize ? optimizeContent(text) : text;
 
         // For text-based files, decode and return content
         const textTypes = [
@@ -5995,12 +6057,17 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
         if (isText) {
             try {
-                const decoded = Buffer.from(content, 'base64').toString('utf8');
+                let decoded = Buffer.from(content, 'base64').toString('utf8');
+                const originalLength = decoded.length;
+                decoded = maybeOptimize(decoded);
+
                 return res.json({
                     type: 'text',
                     filename,
                     content: decoded,
-                    charCount: decoded.length
+                    charCount: decoded.length,
+                    originalCharCount: originalLength,
+                    saved: originalLength - decoded.length
                 });
             } catch (e) {
                 return res.status(400).json({ error: 'Failed to decode text content' });
@@ -6013,16 +6080,122 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const pdfParse = require('pdf-parse');
                 const buffer = Buffer.from(content, 'base64');
                 const data = await pdfParse(buffer);
+                const originalLength = data.text.length;
+                const optimized = maybeOptimize(data.text);
+
                 return res.json({
                     type: 'pdf',
                     filename,
-                    content: data.text,
+                    content: optimized,
                     pageCount: data.numpages,
-                    charCount: data.text.length
+                    charCount: optimized.length,
+                    originalCharCount: originalLength,
+                    saved: originalLength - optimized.length
                 });
             } catch (e) {
                 console.error('PDF parsing error:', e);
                 return res.status(400).json({ error: 'Failed to parse PDF' });
+            }
+        }
+
+        // For .msg (Outlook) and .eml email files
+        const ext = filename?.toLowerCase()?.split('.').pop();
+        if (ext === 'msg' || ext === 'eml' || mimeType === 'message/rfc822' || mimeType === 'application/vnd.ms-outlook') {
+            try {
+                const { simpleParser } = require('mailparser');
+                const buffer = Buffer.from(content, 'base64');
+                const parsed = await simpleParser(buffer);
+
+                // Build email content string
+                let emailContent = '';
+                if (parsed.subject) emailContent += `Subject: ${parsed.subject}\n`;
+                if (parsed.from?.text) emailContent += `From: ${parsed.from.text}\n`;
+                if (parsed.to?.text) emailContent += `To: ${parsed.to.text}\n`;
+                if (parsed.cc?.text) emailContent += `CC: ${parsed.cc.text}\n`;
+                if (parsed.date) emailContent += `Date: ${parsed.date.toISOString()}\n`;
+                emailContent += '\n---\n\n';
+                emailContent += parsed.text || parsed.textAsHtml?.replace(/<[^>]*>/g, '') || '';
+
+                // Include attachments info if present
+                if (parsed.attachments?.length > 0) {
+                    emailContent += '\n\n---\nAttachments:\n';
+                    parsed.attachments.forEach(att => {
+                        emailContent += `- ${att.filename || 'unnamed'} (${att.contentType}, ${att.size} bytes)\n`;
+                    });
+                }
+
+                const originalLength = emailContent.length;
+                const optimized = maybeOptimize(emailContent);
+
+                return res.json({
+                    type: 'email',
+                    filename,
+                    content: optimized,
+                    charCount: optimized.length,
+                    originalCharCount: originalLength,
+                    saved: originalLength - optimized.length,
+                    subject: parsed.subject,
+                    from: parsed.from?.text,
+                    date: parsed.date?.toISOString()
+                });
+            } catch (e) {
+                console.error('Email parsing error:', e);
+                // Fall through to try as raw text
+            }
+        }
+
+        // For Word documents (.docx)
+        if (ext === 'docx' || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+            try {
+                const mammoth = require('mammoth');
+                const buffer = Buffer.from(content, 'base64');
+                const result = await mammoth.extractRawText({ buffer });
+                const originalLength = result.value.length;
+                const optimized = maybeOptimize(result.value);
+
+                return res.json({
+                    type: 'document',
+                    filename,
+                    content: optimized,
+                    charCount: optimized.length,
+                    originalCharCount: originalLength,
+                    saved: originalLength - optimized.length
+                });
+            } catch (e) {
+                console.error('DOCX parsing error:', e);
+                // Fall through to try as raw text
+            }
+        }
+
+        // For Excel files (.xlsx)
+        if (ext === 'xlsx' || ext === 'xls' || mimeType?.includes('spreadsheet')) {
+            try {
+                const XLSX = require('xlsx');
+                const buffer = Buffer.from(content, 'base64');
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                let textContent = '';
+
+                workbook.SheetNames.forEach(sheetName => {
+                    const sheet = workbook.Sheets[sheetName];
+                    textContent += `--- ${sheetName} ---\n`;
+                    textContent += XLSX.utils.sheet_to_csv(sheet) + '\n\n';
+                });
+
+                const originalLength = textContent.length;
+                const optimized = maybeOptimize(textContent);
+
+                return res.json({
+                    type: 'spreadsheet',
+                    filename,
+                    content: optimized,
+                    charCount: optimized.length,
+                    originalCharCount: originalLength,
+                    saved: originalLength - optimized.length,
+                    sheets: workbook.SheetNames.length
+                });
+            } catch (e) {
+                console.error('Excel parsing error:', e);
+                // Fall through to try as raw text
             }
         }
 
@@ -6038,12 +6211,17 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
         // Catch-all: Try to decode as text first, fallback to binary
         try {
-            const decoded = Buffer.from(content, 'base64').toString('utf8');
+            let decoded = Buffer.from(content, 'base64').toString('utf8');
+            const originalLength = decoded.length;
+            decoded = maybeOptimize(decoded);
+
             return res.json({
                 type: 'text',
                 filename,
                 content: decoded,
-                charCount: decoded.length
+                charCount: decoded.length,
+                originalCharCount: originalLength,
+                saved: originalLength - decoded.length
             });
         } catch (decodeError) {
             // If not text, return as binary data
@@ -6570,17 +6748,53 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Chat stream error:', error.message);
+        console.error('Chat stream error:', error.message, error.response?.data || '');
 
-        // Check for specific error types
-        const errorMessage = error.response?.data?.error?.message || error.message || '';
+        // Build detailed error message for debugging and user feedback
+        let errorMessage = 'Failed to get response from model';
+        let errorDetails = '';
+
+        // Extract error details from various sources
+        if (error.response?.data?.error?.message) {
+            errorDetails = error.response.data.error.message;
+        } else if (error.response?.data?.error) {
+            errorDetails = typeof error.response.data.error === 'string'
+                ? error.response.data.error
+                : JSON.stringify(error.response.data.error);
+        } else if (error.response?.data) {
+            errorDetails = typeof error.response.data === 'string'
+                ? error.response.data
+                : JSON.stringify(error.response.data);
+        } else if (error.message) {
+            errorDetails = error.message;
+        }
+
+        // Categorize error types for better messages
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+            errorMessage = 'Model service is not responding. It may be starting up or has crashed.';
+        } else if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
+            errorMessage = 'Model service timed out. The request may be too large.';
+        } else if (errorDetails.toLowerCase().includes('context') || errorDetails.toLowerCase().includes('token')) {
+            errorMessage = 'Context window exceeded. Try reducing message length or clearing history.';
+        } else if (errorDetails.toLowerCase().includes('memory') || errorDetails.toLowerCase().includes('oom') || errorDetails.toLowerCase().includes('cuda')) {
+            errorMessage = 'Model ran out of memory. Try reducing context size or using a smaller model.';
+        } else if (errorDetails.toLowerCase().includes('parse') || errorDetails.toLowerCase().includes('decode') || errorDetails.toLowerCase().includes('encoding')) {
+            errorMessage = 'Failed to process input. The file may contain unsupported characters.';
+        } else if (error.response?.status === 502 || error.response?.status === 503) {
+            errorMessage = 'Model backend unavailable. Please wait for it to finish loading.';
+        } else if (errorDetails) {
+            // Use the detailed error if available
+            errorMessage = errorDetails.length > 200 ? errorDetails.substring(0, 200) + '...' : errorDetails;
+        }
 
         if (!res.writableEnded) {
-            // Send error as SSE event
+            // Send error as SSE event with details
             const errorEvent = {
-                error: errorMessage.includes('context') ?
-                    'Not enough context window' :
-                    'Failed to get response from model',
+                error: {
+                    message: errorMessage,
+                    details: errorDetails.length > 500 ? errorDetails.substring(0, 500) : errorDetails,
+                    code: error.code || error.response?.status || 'UNKNOWN'
+                },
                 done: true
             };
             res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);

@@ -2174,6 +2174,77 @@
     }
 }
 
+/* Pulsing glow animation for model status indicator */
+@keyframes pulseGlow {
+    0%, 100% {
+        opacity: 1;
+        filter: drop-shadow(0 0 2px rgba(74, 222, 128, 0.6));
+    }
+    50% {
+        opacity: 0.7;
+        filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.9));
+    }
+}
+
+.animate-pulse-glow {
+    animation: pulseGlow 2s ease-in-out infinite;
+}
+
+/* Status indicator animations */
+@keyframes statusPulse {
+    0%, 100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+    50% {
+        transform: scale(1.15);
+        opacity: 0.8;
+    }
+}
+
+.animate-status-pulse {
+    animation: statusPulse 1.5s ease-in-out infinite;
+}
+
+/* Searching animation */
+@keyframes searching {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.animate-searching {
+    animation: searching 2s linear infinite;
+}
+
+/* Processing dots animation */
+@keyframes processingDots {
+    0%, 20% {
+        opacity: 0.3;
+    }
+    50% {
+        opacity: 1;
+    }
+    80%, 100% {
+        opacity: 0.3;
+    }
+}
+
+.animate-processing-dot {
+    animation: processingDots 1.4s ease-in-out infinite;
+}
+
+.animate-processing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.animate-processing-dot:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
 @keyframes skeleton-loading {
     0% {
         background-position: 200% 0;

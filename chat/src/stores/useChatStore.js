@@ -46,6 +46,10 @@ export const useChatStore = create(
         streamingContent: '',
         streamingReasoning: '',
 
+        // Processing status for UI indicators
+        processingStatus: null, // null, 'thinking', 'searching', 'parsing', 'processing', 'generating'
+        processingMessage: null,
+
         // Attachments
         attachments: [],
 
@@ -229,7 +233,21 @@ export const useChatStore = create(
         clearStreaming: () => set({
             streamingContent: '',
             streamingReasoning: '',
-            isStreaming: false
+            isStreaming: false,
+            processingStatus: null,
+            processingMessage: null,
+        }),
+
+        // ==================== Processing Status Actions ====================
+
+        setProcessingStatus: (status, message = null) => set({
+            processingStatus: status,
+            processingMessage: message,
+        }),
+
+        clearProcessingStatus: () => set({
+            processingStatus: null,
+            processingMessage: null,
         }),
 
         // ==================== Attachment Actions ====================
