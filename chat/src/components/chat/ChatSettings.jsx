@@ -126,19 +126,14 @@ export default function ChatSettings({
     const themeOptions = [
         { value: 'dark', label: 'Dark', icon: Moon, description: 'Default dark theme' },
         { value: 'light', label: 'Light', icon: Sun, description: 'Clean white theme' },
-        { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Purple accents' },
         { value: 'obsidian', label: 'Obsidian', icon: Moon, description: 'Pure black OLED' },
         { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Deep blue theme' },
         { value: 'forest', label: 'Forest', icon: Sparkles, description: 'Natural greens' },
         { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm orange tones' },
         { value: 'rose', label: 'Rose', icon: Sparkles, description: 'Soft pink theme' },
-        { value: 'nord', label: 'Nord', icon: Moon, description: 'Arctic color palette' },
-        { value: 'dracula', label: 'Dracula', icon: Moon, description: 'Popular dark theme' },
+        { value: 'nord', label: 'Nord', icon: Moon, description: 'Arctic palette' },
         { value: 'solarized', label: 'Solarized', icon: Sun, description: 'Solarized Dark' },
-        { value: 'monokai', label: 'Monokai', icon: Code, description: 'Code editor theme' },
         { value: 'gruvbox', label: 'Gruvbox', icon: Moon, description: 'Retro groove' },
-        { value: 'tokyo', label: 'Tokyo Night', icon: Moon, description: 'Storm colors' },
-        { value: 'catppuccin', label: 'Catppuccin', icon: Sparkles, description: 'Pastel dark theme' },
         { value: 'matrix', label: 'Matrix', icon: Code, description: 'Hacker terminal' },
         { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon vibes' },
     ];
@@ -200,33 +195,33 @@ export default function ChatSettings({
             />
 
             {/* Modal */}
-            <div className="fixed inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[640px] md:max-h-[85vh] bg-dark-900 border border-white/10 rounded-2xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden animate-fade-in">
+            <div className="fixed inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[560px] md:max-h-[85vh] bg-dark-900 border border-white/10 rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden animate-fade-in">
                 {/* Header */}
-                <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
-                    <h2 className="text-lg font-semibold text-dark-100">Settings</h2>
+                <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5">
+                    <h2 className="text-sm font-semibold text-dark-100">Settings</h2>
                     <button
                         onClick={onClose}
-                        className="p-2 rounded-lg hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
+                        className="p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
                     >
-                        <X className="w-5 h-5" />
+                        <X className="w-4 h-4" />
                     </button>
                 </div>
 
                 {/* Tabs */}
-                <div className="flex border-b border-white/5 px-2">
+                <div className="flex border-b border-white/5 px-1">
                     {tabs.map((tab) => {
                         const Icon = tab.icon;
                         return (
                             <button
                                 key={tab.id}
                                 onClick={() => setActiveTab(tab.id)}
-                                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
                                     activeTab === tab.id
                                         ? 'text-primary-400 border-primary-500'
                                         : 'text-dark-400 border-transparent hover:text-dark-200 hover:border-white/10'
                                 }`}
                             >
-                                <Icon className="w-4 h-4" />
+                                <Icon className="w-3.5 h-3.5" />
                                 <span className="hidden sm:inline">{tab.label}</span>
                             </button>
                         );
@@ -234,20 +229,20 @@ export default function ChatSettings({
                 </div>
 
                 {/* Tab Content */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
                     {/* Chat Settings Tab */}
                     {activeTab === 'chat' && (
                         <>
                             {/* System Prompt Selector */}
                             <div>
-                                <label className="block text-sm font-medium text-dark-200 mb-2">
+                                <label className="block text-xs font-medium text-dark-200 mb-1.5">
                                     Active System Prompt
                                 </label>
                                 <div className="relative">
                                     <select
                                         value={systemPromptId || ''}
                                         onChange={(e) => onUpdateSettings({ systemPromptId: e.target.value || null })}
-                                        className="w-full px-4 py-3 bg-dark-800/80 border border-white/10 rounded-xl text-dark-200 appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
+                                        className="w-full px-3 py-2 bg-dark-800/80 border border-white/10 rounded-lg text-dark-200 text-xs appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
                                     >
                                         <option value="">None (default behavior)</option>
                                         {promptsList.map((prompt) => (
@@ -256,7 +251,7 @@ export default function ChatSettings({
                                             </option>
                                         ))}
                                     </select>
-                                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
+                                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400 pointer-events-none" />
                                 </div>
                             </div>
 
@@ -264,10 +259,10 @@ export default function ChatSettings({
 
                             {/* Quick Presets */}
                             <div>
-                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                <label className="block text-xs font-medium text-dark-200 mb-2">
                                     Quick Presets
                                 </label>
-                                <div className="grid grid-cols-2 gap-3">
+                                <div className="grid grid-cols-2 gap-2">
                                     {presets.map((preset) => {
                                         const Icon = preset.icon;
                                         const isActive = temperature === preset.temperature && maxTokens === preset.maxTokens;
@@ -279,18 +274,18 @@ export default function ChatSettings({
                                                     maxTokens: preset.maxTokens,
                                                     topP: preset.topP,
                                                 })}
-                                                className={`flex items-start gap-3 p-4 rounded-xl border transition-all duration-200 text-left ${
+                                                className={`flex items-start gap-2 p-2.5 rounded-lg border transition-all duration-200 text-left ${
                                                     isActive
                                                         ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
                                                         : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
                                                 }`}
                                             >
-                                                <div className={`p-2 rounded-lg ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
-                                                    <Icon className="w-4 h-4" />
+                                                <div className={`p-1.5 rounded-md ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
+                                                    <Icon className="w-3.5 h-3.5" />
                                                 </div>
                                                 <div>
-                                                    <div className="text-sm font-medium">{preset.label}</div>
-                                                    <div className="text-xs text-dark-500 mt-0.5">{preset.description}</div>
+                                                    <div className="text-xs font-medium">{preset.label}</div>
+                                                    <div className="text-[10px] text-dark-500 mt-0.5">{preset.description}</div>
                                                 </div>
                                             </button>
                                         );
@@ -302,9 +297,9 @@ export default function ChatSettings({
 
                             {/* Temperature */}
                             <div>
-                                <div className="flex justify-between items-center mb-3">
-                                    <label className="text-sm font-medium text-dark-200">Temperature</label>
-                                    <span className="text-sm font-mono text-primary-400 bg-primary-500/10 px-2 py-0.5 rounded">
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="text-xs font-medium text-dark-200">Temperature</label>
+                                    <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
                                         {temperature.toFixed(2)}
                                     </span>
                                 </div>
@@ -315,10 +310,10 @@ export default function ChatSettings({
                                     min={0}
                                     max={2}
                                     step={0.01}
-                                    className="w-full h-2 bg-dark-800 rounded-full appearance-none cursor-pointer
+                                    className="w-full h-1.5 bg-dark-800 rounded-full appearance-none cursor-pointer
                                                [&::-webkit-slider-thumb]:appearance-none
-                                               [&::-webkit-slider-thumb]:w-5
-                                               [&::-webkit-slider-thumb]:h-5
+                                               [&::-webkit-slider-thumb]:w-4
+                                               [&::-webkit-slider-thumb]:h-4
                                                [&::-webkit-slider-thumb]:rounded-full
                                                [&::-webkit-slider-thumb]:bg-primary-500
                                                [&::-webkit-slider-thumb]:shadow-lg
@@ -329,7 +324,7 @@ export default function ChatSettings({
                                                [&::-webkit-slider-thumb]:transition-transform
                                                [&::-webkit-slider-thumb]:hover:scale-110"
                                 />
-                                <div className="flex justify-between text-xs text-dark-500 mt-2">
+                                <div className="flex justify-between text-[10px] text-dark-500 mt-1.5">
                                     <span>Precise</span>
                                     <span>Creative</span>
                                 </div>
@@ -337,9 +332,9 @@ export default function ChatSettings({
 
                             {/* Top P */}
                             <div>
-                                <div className="flex justify-between items-center mb-3">
-                                    <label className="text-sm font-medium text-dark-200">Top P</label>
-                                    <span className="text-sm font-mono text-primary-400 bg-primary-500/10 px-2 py-0.5 rounded">
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="text-xs font-medium text-dark-200">Top P</label>
+                                    <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
                                         {topP.toFixed(2)}
                                     </span>
                                 </div>
@@ -350,10 +345,10 @@ export default function ChatSettings({
                                     min={0}
                                     max={1}
                                     step={0.01}
-                                    className="w-full h-2 bg-dark-800 rounded-full appearance-none cursor-pointer
+                                    className="w-full h-1.5 bg-dark-800 rounded-full appearance-none cursor-pointer
                                                [&::-webkit-slider-thumb]:appearance-none
-                                               [&::-webkit-slider-thumb]:w-5
-                                               [&::-webkit-slider-thumb]:h-5
+                                               [&::-webkit-slider-thumb]:w-4
+                                               [&::-webkit-slider-thumb]:h-4
                                                [&::-webkit-slider-thumb]:rounded-full
                                                [&::-webkit-slider-thumb]:bg-primary-500
                                                [&::-webkit-slider-thumb]:shadow-lg
@@ -373,18 +368,18 @@ export default function ChatSettings({
                             {!isCreatingPrompt && !editingPrompt && (
                                 <button
                                     onClick={() => setIsCreatingPrompt(true)}
-                                    className="flex items-center gap-2 w-full px-4 py-3 rounded-xl bg-primary-500/10 text-primary-400 border border-primary-500/20 hover:bg-primary-500/20 transition-all"
+                                    className="flex items-center gap-1.5 w-full px-3 py-2 rounded-lg bg-primary-500/10 text-primary-400 border border-primary-500/20 hover:bg-primary-500/20 transition-all"
                                 >
-                                    <Plus className="w-4 h-4" />
-                                    <span className="text-sm font-medium">Create New Prompt</span>
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span className="text-xs font-medium">Create New Prompt</span>
                                 </button>
                             )}
 
                             {/* Prompt Editor */}
                             {(isCreatingPrompt || editingPrompt) && (
-                                <div className="space-y-4 p-4 bg-dark-800/50 rounded-xl border border-white/10">
+                                <div className="space-y-3 p-3 bg-dark-800/50 rounded-lg border border-white/10">
                                     <div>
-                                        <label className="block text-sm font-medium text-dark-200 mb-2">
+                                        <label className="block text-xs font-medium text-dark-200 mb-1.5">
                                             Prompt Name
                                         </label>
                                         <input
@@ -392,29 +387,29 @@ export default function ChatSettings({
                                             value={newPromptName}
                                             onChange={(e) => setNewPromptName(e.target.value)}
                                             placeholder="e.g., Code Assistant, Creative Writer..."
-                                            className="w-full px-4 py-2.5 bg-dark-800 border border-white/10 rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20"
+                                            className="w-full px-3 py-2 bg-dark-800 border border-white/10 rounded-md text-dark-200 text-xs placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20"
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-dark-200 mb-2">
+                                        <label className="block text-xs font-medium text-dark-200 mb-1.5">
                                             Prompt Content
                                         </label>
                                         <textarea
                                             value={newPromptContent}
                                             onChange={(e) => setNewPromptContent(e.target.value)}
                                             placeholder="Enter the system prompt content..."
-                                            rows={6}
-                                            className="w-full px-4 py-3 bg-dark-800 border border-white/10 rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 resize-none"
+                                            rows={5}
+                                            className="w-full px-3 py-2 bg-dark-800 border border-white/10 rounded-md text-dark-200 text-xs placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 resize-none"
                                         />
                                     </div>
                                     <div className="flex gap-2">
                                         <button
                                             onClick={handleSavePrompt}
                                             disabled={!newPromptName.trim()}
-                                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-500 text-white font-medium text-sm hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary-500 text-white font-medium text-xs hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                         >
-                                            <Save className="w-4 h-4" />
-                                            Save Prompt
+                                            <Save className="w-3.5 h-3.5" />
+                                            Save
                                         </button>
                                         <button
                                             onClick={() => {
@@ -423,7 +418,7 @@ export default function ChatSettings({
                                                 setNewPromptName('');
                                                 setNewPromptContent('');
                                             }}
-                                            className="px-4 py-2 rounded-lg bg-dark-700 text-dark-300 font-medium text-sm hover:bg-dark-600 transition-colors"
+                                            className="px-3 py-1.5 rounded-md bg-dark-700 text-dark-300 font-medium text-xs hover:bg-dark-600 transition-colors"
                                         >
                                             Cancel
                                         </button>
@@ -433,20 +428,20 @@ export default function ChatSettings({
 
                             {/* Prompts List */}
                             {!isCreatingPrompt && !editingPrompt && (
-                                <div className="space-y-2">
+                                <div className="space-y-1.5">
                                     {promptsList.length === 0 ? (
-                                        <div className="text-center py-8">
-                                            <div className="w-12 h-12 rounded-full bg-dark-800 flex items-center justify-center mx-auto mb-3">
-                                                <MessageSquare className="w-5 h-5 text-dark-500" />
+                                        <div className="text-center py-6">
+                                            <div className="w-10 h-10 rounded-full bg-dark-800 flex items-center justify-center mx-auto mb-2">
+                                                <MessageSquare className="w-4 h-4 text-dark-500" />
                                             </div>
-                                            <p className="text-sm text-dark-400">No system prompts yet</p>
-                                            <p className="text-xs text-dark-500 mt-1">Create one to customize AI behavior</p>
+                                            <p className="text-xs text-dark-400">No system prompts yet</p>
+                                            <p className="text-[10px] text-dark-500 mt-0.5">Create one to customize AI behavior</p>
                                         </div>
                                     ) : (
                                         promptsList.map((prompt) => (
                                             <div
                                                 key={prompt.id}
-                                                className={`group flex items-start justify-between p-4 rounded-xl border transition-all ${
+                                                className={`group flex items-start justify-between p-2.5 rounded-lg border transition-all ${
                                                     systemPromptId === prompt.id
                                                         ? 'bg-primary-500/10 border-primary-500/30'
                                                         : 'bg-dark-800/50 border-white/5 hover:border-white/10'
@@ -456,38 +451,38 @@ export default function ChatSettings({
                                                     className="flex-1 min-w-0 cursor-pointer"
                                                     onClick={() => onUpdateSettings({ systemPromptId: prompt.id })}
                                                 >
-                                                    <div className="flex items-center gap-2">
-                                                        <span className={`text-sm font-medium ${
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className={`text-xs font-medium ${
                                                             systemPromptId === prompt.id ? 'text-primary-300' : 'text-dark-200'
                                                         }`}>
                                                             {prompt.name || prompt.id}
                                                         </span>
                                                         {systemPromptId === prompt.id && (
-                                                            <span className="text-xs bg-primary-500/20 text-primary-400 px-2 py-0.5 rounded">
+                                                            <span className="text-[10px] bg-primary-500/20 text-primary-400 px-1.5 py-0.5 rounded">
                                                                 Active
                                                             </span>
                                                         )}
                                                     </div>
                                                     {prompt.content && (
-                                                        <p className="text-xs text-dark-500 mt-1 truncate">
-                                                            {prompt.content.substring(0, 100)}...
+                                                        <p className="text-[10px] text-dark-500 mt-0.5 truncate">
+                                                            {prompt.content.substring(0, 80)}...
                                                         </p>
                                                     )}
                                                 </div>
-                                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-3">
+                                                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
                                                     <button
                                                         onClick={() => handleStartEdit(prompt)}
-                                                        className="p-2 rounded-lg hover:bg-white/10 text-dark-400 hover:text-dark-200"
+                                                        className="p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200"
                                                         title="Edit"
                                                     >
-                                                        <Edit3 className="w-4 h-4" />
+                                                        <Edit3 className="w-3.5 h-3.5" />
                                                     </button>
                                                     <button
                                                         onClick={() => handleDeletePrompt(prompt.id)}
-                                                        className="p-2 rounded-lg hover:bg-red-500/20 text-dark-400 hover:text-red-400"
+                                                        className="p-1.5 rounded-md hover:bg-red-500/20 text-dark-400 hover:text-red-400"
                                                         title="Delete"
                                                     >
-                                                        <Trash2 className="w-4 h-4" />
+                                                        <Trash2 className="w-3.5 h-3.5" />
                                                     </button>
                                                 </div>
                                             </div>
@@ -502,10 +497,10 @@ export default function ChatSettings({
                     {activeTab === 'appearance' && (
                         <>
                             <div>
-                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                <label className="block text-xs font-medium text-dark-200 mb-2">
                                     Theme
                                 </label>
-                                <div className="grid grid-cols-3 gap-3">
+                                <div className="grid grid-cols-4 gap-2">
                                     {themeOptions.map((option) => {
                                         const Icon = option.icon;
                                         const isActive = currentTheme === option.value;
@@ -513,21 +508,20 @@ export default function ChatSettings({
                                             <button
                                                 key={option.value}
                                                 onClick={() => onThemeChange?.(option.value)}
-                                                className={`flex flex-col items-center gap-3 p-4 rounded-xl border transition-all duration-200 ${
+                                                className={`flex flex-col items-center gap-1.5 p-2 rounded-lg border transition-all duration-200 ${
                                                     isActive
                                                         ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
                                                         : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
                                                 }`}
                                             >
-                                                <div className={`p-3 rounded-xl ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
-                                                    <Icon className="w-6 h-6" />
+                                                <div className={`p-1.5 rounded-md ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
+                                                    <Icon className="w-4 h-4" />
                                                 </div>
                                                 <div className="text-center">
-                                                    <div className="text-sm font-medium flex items-center gap-1.5 justify-center">
+                                                    <div className="text-[10px] font-medium flex items-center gap-1 justify-center">
                                                         {option.label}
-                                                        {isActive && <Check className="w-3.5 h-3.5" />}
+                                                        {isActive && <Check className="w-2.5 h-2.5" />}
                                                     </div>
-                                                    <div className="text-[10px] text-dark-500 mt-0.5">{option.description}</div>
                                                 </div>
                                             </button>
                                         );
@@ -539,34 +533,34 @@ export default function ChatSettings({
 
                             {/* Font Size */}
                             <div>
-                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                <label className="block text-xs font-medium text-dark-200 mb-2">
                                     Font Size
                                 </label>
-                                <div className="grid grid-cols-3 gap-3">
+                                <div className="grid grid-cols-3 gap-2">
                                     {fontSizeOptions.map((option) => {
                                         const isActive = fontSize === option.value;
                                         return (
                                             <button
                                                 key={option.value}
                                                 onClick={() => onUpdateSettings({ fontSize: option.value })}
-                                                className={`flex flex-col items-center gap-2 p-3 rounded-xl border transition-all duration-200 ${
+                                                className={`flex flex-col items-center gap-1 p-2 rounded-lg border transition-all duration-200 ${
                                                     isActive
                                                         ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
                                                         : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
                                                 }`}
                                             >
                                                 <span className={`font-medium ${
-                                                    option.value === 'small' ? 'text-xs' :
-                                                    option.value === 'large' ? 'text-lg' : 'text-sm'
+                                                    option.value === 'small' ? 'text-[10px]' :
+                                                    option.value === 'large' ? 'text-sm' : 'text-xs'
                                                 }`}>
                                                     Aa
                                                 </span>
                                                 <div className="text-center">
-                                                    <div className="text-xs font-medium flex items-center gap-1 justify-center">
+                                                    <div className="text-[10px] font-medium flex items-center gap-0.5 justify-center">
                                                         {option.label}
-                                                        {isActive && <Check className="w-3 h-3" />}
+                                                        {isActive && <Check className="w-2.5 h-2.5" />}
                                                     </div>
-                                                    <div className="text-[10px] text-dark-500 mt-0.5">
+                                                    <div className="text-[9px] text-dark-500">
                                                         {option.description}
                                                     </div>
                                                 </div>
@@ -578,14 +572,14 @@ export default function ChatSettings({
 
                             {/* Font Family */}
                             <div>
-                                <label className="block text-sm font-medium text-dark-200 mb-2">
+                                <label className="block text-xs font-medium text-dark-200 mb-1.5">
                                     Font Family
                                 </label>
                                 <div className="relative">
                                     <select
                                         value={fontFamily}
                                         onChange={(e) => onUpdateSettings({ fontFamily: e.target.value })}
-                                        className="w-full px-3 py-2 bg-dark-800/80 border border-white/10 rounded-lg text-dark-200 text-sm appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
+                                        className="w-full px-3 py-1.5 bg-dark-800/80 border border-white/10 rounded-md text-dark-200 text-xs appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
                                     >
                                         {fontFamilyOptions.map((option) => (
                                             <option key={option.value} value={option.value}>
@@ -593,7 +587,7 @@ export default function ChatSettings({
                                             </option>
                                         ))}
                                     </select>
-                                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
+                                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400 pointer-events-none" />
                                 </div>
                             </div>
 
@@ -601,39 +595,39 @@ export default function ChatSettings({
 
                             {/* Theme Preview */}
                             <div>
-                                <label className="block text-sm font-medium text-dark-200 mb-3">
+                                <label className="block text-xs font-medium text-dark-200 mb-2">
                                     Preview
                                 </label>
-                                <div className={`p-4 rounded-xl border ${
+                                <div className={`p-3 rounded-lg border ${
                                     currentTheme === 'light'
                                         ? 'bg-white border-gray-200'
                                         : 'bg-dark-800 border-white/10'
                                 }`}>
-                                    <div className="flex items-start gap-3 mb-3">
-                                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                                    <div className="flex items-start gap-2 mb-2">
+                                        <div className={`w-6 h-6 rounded-md flex items-center justify-center ${
                                             currentTheme === 'light' ? 'bg-gray-100' : 'bg-dark-700'
                                         }`}>
-                                            <MessageSquare className={`w-4 h-4 ${
+                                            <MessageSquare className={`w-3 h-3 ${
                                                 currentTheme === 'light' ? 'text-gray-500' : 'text-dark-400'
                                             }`} />
                                         </div>
-                                        <div className={`flex-1 p-3 rounded-lg ${
+                                        <div className={`flex-1 p-2 rounded-md ${
                                             currentTheme === 'light' ? 'bg-gray-100' : 'bg-dark-700'
                                         }`}>
-                                            <p className={`text-sm ${
+                                            <p className={`text-xs ${
                                                 currentTheme === 'light' ? 'text-gray-700' : 'text-dark-300'
                                             }`}>
-                                                This is how messages will appear in {currentTheme === 'system' ? 'your system' : currentTheme} mode.
+                                                Messages in {currentTheme === 'system' ? 'system' : currentTheme} mode.
                                             </p>
                                         </div>
                                     </div>
-                                    <div className="flex items-start gap-3 flex-row-reverse">
-                                        <div className="w-8 h-8 rounded-lg bg-primary-500 flex items-center justify-center">
-                                            <span className="text-xs font-bold text-white">U</span>
+                                    <div className="flex items-start gap-2 flex-row-reverse">
+                                        <div className="w-6 h-6 rounded-md bg-primary-500 flex items-center justify-center">
+                                            <span className="text-[10px] font-bold text-white">U</span>
                                         </div>
-                                        <div className="flex-1 p-3 rounded-lg bg-primary-500/20">
-                                            <p className="text-sm text-primary-300">
-                                                Your messages will look like this.
+                                        <div className="flex-1 p-2 rounded-md bg-primary-500/20">
+                                            <p className="text-xs text-primary-300">
+                                                Your messages look like this.
                                             </p>
                                         </div>
                                     </div>

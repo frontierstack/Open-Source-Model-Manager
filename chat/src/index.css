@@ -823,55 +823,67 @@
    ============================================ */
 .theme-light {
     --primary-rgb: 37, 99, 235;
-    --bg-primary: #ffffff;
-    --bg-secondary: #f8fafc;
-    --bg-tertiary: #f1f5f9;
+
+    /* Clean, warm white backgrounds with subtle depth */
+    --bg-primary: #fafafa;
+    --bg-secondary: #f5f5f5;
+    --bg-tertiary: #eeeeee;
     --bg-elevated: #ffffff;
-    --bg-hover: rgba(0, 0, 0, 0.04);
-    --bg-active: rgba(0, 0, 0, 0.08);
+    --bg-hover: rgba(0, 0, 0, 0.03);
+    --bg-active: rgba(0, 0, 0, 0.06);
 
     --surface-primary: #ffffff;
-    --surface-secondary: #f8fafc;
-    --surface-glass: rgba(255, 255, 255, 0.98);
+    --surface-secondary: #f5f5f5;
+    --surface-glass: rgba(255, 255, 255, 0.95);
 
-    --text-primary: #0f172a;
-    --text-secondary: #334155;
-    --text-tertiary: #64748b;
-    --text-muted: #94a3b8;
+    /* High contrast readable text */
+    --text-primary: #171717;
+    --text-secondary: #404040;
+    --text-tertiary: #737373;
+    --text-muted: #a3a3a3;
 
-    --border-primary: #e2e8f0;
-    --border-secondary: #f1f5f9;
-    --border-hover: #cbd5e1;
+    /* Subtle, refined borders */
+    --border-primary: #e5e5e5;
+    --border-secondary: #f0f0f0;
+    --border-hover: #d4d4d4;
     --border-focus: #2563eb;
 
+    /* Blue accent colors */
     --accent-primary: #2563eb;
     --accent-secondary: #1d4ed8;
     --accent-hover: #3b82f6;
-    --accent-muted: rgba(37, 99, 235, 0.1);
+    --accent-muted: rgba(37, 99, 235, 0.08);
 
+    /* User messages with refined gradient */
     --user-msg-from: #2563eb;
-    --user-msg-to: #1d4ed8;
+    --user-msg-to: #1e40af;
     --user-msg-hover-from: #3b82f6;
     --user-msg-hover-to: #2563eb;
 
-    --assistant-bg: #f8fafc;
-    --assistant-border: #e2e8f0;
+    /* Assistant message styling */
+    --assistant-bg: #ffffff;
+    --assistant-border: #e5e5e5;
 
-    --scrollbar-thumb: rgba(0, 0, 0, 0.2);
-    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
+    /* Minimal scrollbar */
+    --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
 
-    --code-bg: #f8fafc;
-    --code-header-bg: #f1f5f9;
-    --code-border: #e2e8f0;
+    /* Code block styling - subtle distinction */
+    --code-bg: #f5f5f5;
+    --code-header-bg: #eeeeee;
+    --code-border: #e5e5e5;
 
+    /* Input styling */
     --input-bg: #ffffff;
-    --input-border: #e2e8f0;
+    --input-border: #e5e5e5;
     --input-focus-border: #2563eb;
-    --input-focus-ring: rgba(37, 99, 235, 0.2);
+    --input-focus-ring: rgba(37, 99, 235, 0.15);
 
-    --shadow-accent: rgba(37, 99, 235, 0.15);
-    --shadow-accent-hover: rgba(37, 99, 235, 0.25);
+    /* Shadows */
+    --shadow-accent: rgba(37, 99, 235, 0.12);
+    --shadow-accent-hover: rgba(37, 99, 235, 0.2);
 
+    /* Status colors */
     --success: #16a34a;
     --warning: #d97706;
     --error: #dc2626;
@@ -882,7 +894,7 @@
 .theme-light .bg-dark-950,
 .theme-light .bg-dark-900,
 .theme-light .bg-dark-850 {
-    background-color: #ffffff !important;
+    background-color: #fafafa !important;
 }
 
 .theme-light .bg-dark-800,
@@ -890,84 +902,84 @@
 .theme-light .bg-dark-800\/60,
 .theme-light .bg-dark-800\/50,
 .theme-light .bg-dark-800\/70 {
-    background-color: #f8fafc !important;
+    background-color: #f5f5f5 !important;
 }
 
 .theme-light .bg-dark-700,
 .theme-light .bg-dark-700\/50 {
-    background-color: #f1f5f9 !important;
+    background-color: #eeeeee !important;
 }
 
 .theme-light .text-dark-100 {
-    color: #0f172a !important;
+    color: #171717 !important;
 }
 
 .theme-light .text-dark-200 {
-    color: #1e293b !important;
+    color: #262626 !important;
 }
 
 .theme-light .text-dark-300 {
-    color: #334155 !important;
+    color: #404040 !important;
 }
 
 .theme-light .text-dark-400 {
-    color: #64748b !important;
+    color: #737373 !important;
 }
 
 .theme-light .text-dark-500 {
-    color: #94a3b8 !important;
+    color: #a3a3a3 !important;
 }
 
 .theme-light .border-dark-700,
 .theme-light .border-dark-700\/50,
 .theme-light .border-dark-700\/60 {
-    border-color: #e2e8f0 !important;
+    border-color: #e5e5e5 !important;
 }
 
 .theme-light .border-white\/10,
 .theme-light .border-white\/5 {
-    border-color: #e2e8f0 !important;
+    border-color: #e5e5e5 !important;
 }
 
 .theme-light .divide-white\/5 > * + * {
-    border-color: #e2e8f0 !important;
+    border-color: #e5e5e5 !important;
 }
 
 .theme-light .from-dark-950,
 .theme-light .via-dark-950,
 .theme-light .via-dark-950\/95 {
-    --tw-gradient-from: #ffffff !important;
-    --tw-gradient-via: #ffffff !important;
+    --tw-gradient-from: #fafafa !important;
+    --tw-gradient-via: #fafafa !important;
 }
 
 .theme-light .shadow-dark-950\/30,
 .theme-light .shadow-dark-950\/50 {
-    --tw-shadow-color: rgba(0, 0, 0, 0.1) !important;
+    --tw-shadow-color: rgba(0, 0, 0, 0.08) !important;
 }
 
 .theme-light .placeholder-dark-500::placeholder {
-    color: #94a3b8 !important;
+    color: #a3a3a3 !important;
 }
 
 .theme-light select option {
     background-color: #ffffff;
-    color: #0f172a;
+    color: #171717;
 }
 
 .theme-light .hover\\:bg-white\\/10:hover {
-    background-color: rgba(0, 0, 0, 0.05) !important;
+    background-color: rgba(0, 0, 0, 0.04) !important;
 }
 
 .theme-light .hover\\:bg-dark-700\\/50:hover,
 .theme-light .hover\\:bg-dark-700:hover,
 .theme-light .hover\\:bg-dark-800:hover {
-    background-color: #f1f5f9 !important;
+    background-color: #eeeeee !important;
 }
 
 .theme-light .bg-primary-500\/15,
 .theme-light .bg-primary-500\/10,
 .theme-light .bg-primary-500\/20 {
-    background-color: rgba(37, 99, 235, 0.1) !important;
+    background-color: rgba(37, 99, 235, 0.08) !important;
 }
 
 .theme-light .text-primary-300,
@@ -983,21 +995,21 @@
 
 /* Light theme table overrides */
 .theme-light .markdown-content table {
-    border: 1px solid #e2e8f0;
+    border: 1px solid #e5e5e5;
 }
 
 .theme-light .markdown-content thead {
-    background-color: #f1f5f9;
+    background-color: #eeeeee;
 }
 
 .theme-light .markdown-content th {
-    color: #0f172a;
-    border-bottom-color: #e2e8f0;
+    color: #171717;
+    border-bottom-color: #e5e5e5;
 }
 
 .theme-light .markdown-content td {
-    color: #334155;
-    border-bottom-color: #f1f5f9;
+    color: #404040;
+    border-bottom-color: #f0f0f0;
 }
 
 .theme-light .markdown-content tr:hover td {
@@ -1007,16 +1019,29 @@
 /* Light theme code block overrides */
 .theme-light .code-block,
 .theme-light pre {
-    background-color: #f8fafc !important;
-    border-color: #e2e8f0 !important;
+    background-color: #f5f5f5 !important;
+    border-color: #e5e5e5 !important;
 }
 
 .theme-light .code-header {
-    background-color: #f1f5f9 !important;
+    background-color: #eeeeee !important;
 }
 
 .theme-light .code-content {
-    color: #0f172a;
+    color: #171717;
+}
+
+/* Light theme additional refinements */
+.theme-light .ring-primary-500\/20 {
+    --tw-ring-color: rgba(37, 99, 235, 0.12) !important;
+}
+
+.theme-light .shadow-lg {
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03) !important;
+}
+
+.theme-light .shadow-2xl {
+    box-shadow: 0 8px 16px -4px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04) !important;
 }
 
 /* ============================================
@@ -1222,79 +1247,123 @@
         -moz-osx-font-smoothing: grayscale;
     }
 
-    /* Font Size Classes - applies to entire app */
+    /* Font Size Classes - applies to entire app including all elements */
     body.font-size-small {
-        font-size: 13px;
+        font-size: 13px !important;
     }
-    body.font-size-small .markdown-content {
-        font-size: 0.8125rem;
+    body.font-size-small *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-size: inherit;
     }
-    body.font-size-small .input-chat {
-        font-size: 0.8125rem;
+    body.font-size-small .markdown-content,
+    body.font-size-small .input-chat,
+    body.font-size-small button,
+    body.font-size-small input,
+    body.font-size-small select,
+    body.font-size-small textarea,
+    body.font-size-small label,
+    body.font-size-small p,
+    body.font-size-small span:not(.code-content *),
+    body.font-size-small div:not(.code-content) {
+        font-size: 0.8125rem !important;
     }
+    body.font-size-small h1 { font-size: 1.5rem !important; }
+    body.font-size-small h2 { font-size: 1.25rem !important; }
+    body.font-size-small h3 { font-size: 1.1rem !important; }
 
     body.font-size-medium {
-        font-size: 15px;
+        font-size: 15px !important;
     }
-    body.font-size-medium .markdown-content {
-        font-size: 0.9375rem;
+    body.font-size-medium .markdown-content,
+    body.font-size-medium .input-chat,
+    body.font-size-medium button,
+    body.font-size-medium input,
+    body.font-size-medium select,
+    body.font-size-medium textarea,
+    body.font-size-medium label,
+    body.font-size-medium p,
+    body.font-size-medium span:not(.code-content *),
+    body.font-size-medium div:not(.code-content) {
+        font-size: 0.9375rem !important;
     }
-    body.font-size-medium .input-chat {
-        font-size: 0.9375rem;
-    }
+    body.font-size-medium h1 { font-size: 1.75rem !important; }
+    body.font-size-medium h2 { font-size: 1.5rem !important; }
+    body.font-size-medium h3 { font-size: 1.25rem !important; }
 
     body.font-size-large {
-        font-size: 17px;
+        font-size: 17px !important;
     }
-    body.font-size-large .markdown-content {
-        font-size: 1.0625rem;
+    body.font-size-large .markdown-content,
+    body.font-size-large .input-chat,
+    body.font-size-large button,
+    body.font-size-large input,
+    body.font-size-large select,
+    body.font-size-large textarea,
+    body.font-size-large label,
+    body.font-size-large p,
+    body.font-size-large span:not(.code-content *),
+    body.font-size-large div:not(.code-content) {
+        font-size: 1.0625rem !important;
     }
-    body.font-size-large .input-chat {
-        font-size: 1.0625rem;
-    }
+    body.font-size-large h1 { font-size: 2rem !important; }
+    body.font-size-large h2 { font-size: 1.75rem !important; }
+    body.font-size-large h3 { font-size: 1.5rem !important; }
 
-    /* Font Family Classes */
-    body.font-family-system {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    /* Font Family Classes - applies to all elements */
+    body.font-family-system,
+    body.font-family-system *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
     }
-    body.font-family-inter {
-        font-family: "Inter", -apple-system, sans-serif;
+    body.font-family-inter,
+    body.font-family-inter *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Inter", -apple-system, sans-serif !important;
     }
-    body.font-family-roboto {
-        font-family: "Roboto", -apple-system, sans-serif;
+    body.font-family-roboto,
+    body.font-family-roboto *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Roboto", -apple-system, sans-serif !important;
     }
-    body.font-family-opensans {
-        font-family: "Open Sans", -apple-system, sans-serif;
+    body.font-family-opensans,
+    body.font-family-opensans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Open Sans", -apple-system, sans-serif !important;
     }
-    body.font-family-lato {
-        font-family: "Lato", -apple-system, sans-serif;
+    body.font-family-lato,
+    body.font-family-lato *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Lato", -apple-system, sans-serif !important;
     }
-    body.font-family-poppins {
-        font-family: "Poppins", -apple-system, sans-serif;
+    body.font-family-poppins,
+    body.font-family-poppins *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Poppins", -apple-system, sans-serif !important;
     }
-    body.font-family-nunito {
-        font-family: "Nunito", -apple-system, sans-serif;
+    body.font-family-nunito,
+    body.font-family-nunito *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Nunito", -apple-system, sans-serif !important;
     }
-    body.font-family-sourcesans {
-        font-family: "Source Sans Pro", -apple-system, sans-serif;
+    body.font-family-sourcesans,
+    body.font-family-sourcesans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Source Sans Pro", -apple-system, sans-serif !important;
     }
-    body.font-family-merriweather {
-        font-family: "Merriweather", Georgia, serif;
+    body.font-family-merriweather,
+    body.font-family-merriweather *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Merriweather", Georgia, serif !important;
     }
-    body.font-family-playfair {
-        font-family: "Playfair Display", Georgia, serif;
+    body.font-family-playfair,
+    body.font-family-playfair *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Playfair Display", Georgia, serif !important;
     }
-    body.font-family-georgia {
-        font-family: Georgia, "Times New Roman", serif;
+    body.font-family-georgia,
+    body.font-family-georgia *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: Georgia, "Times New Roman", serif !important;
     }
-    body.font-family-jetbrains {
-        font-family: "JetBrains Mono", "Fira Code", monospace;
+    body.font-family-jetbrains,
+    body.font-family-jetbrains *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "JetBrains Mono", "Fira Code", monospace !important;
     }
-    body.font-family-firacode {
-        font-family: "Fira Code", "JetBrains Mono", monospace;
+    body.font-family-firacode,
+    body.font-family-firacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Fira Code", "JetBrains Mono", monospace !important;
     }
-    body.font-family-consolas {
-        font-family: Consolas, "Courier New", monospace;
+    body.font-family-consolas,
+    body.font-family-consolas *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: Consolas, "Courier New", monospace !important;
     }
 
     /* Selection styling */
