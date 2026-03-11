@@ -6163,7 +6163,12 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
                 // Extract links from body content (both plain text and HTML)
                 const bodyText = fileData.body || '';
-                const bodyHtml = fileData.bodyHTML || fileData.htmlBody || '';
+                // msgreader uses 'bodyHtml' (string) or 'html' (Uint8Array)
+                let bodyHtml = fileData.bodyHtml || '';
+                if (!bodyHtml && fileData.html) {
+                    // Convert Uint8Array to string
+                    bodyHtml = Buffer.from(fileData.html).toString('utf-8');
+                }
                 const links = extractLinksFromText(bodyHtml || bodyText);
 
                 // Add links section if any found
