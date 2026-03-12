@@ -6643,7 +6643,27 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const disableThinking = targetInstance.config?.disableThinking || false;
 
         // Estimate token count (rough estimate: 1 token ≈ 4 characters)
-        const estimateTokens = (text) => Math.ceil(text.length / 4);
+        // Handles both string content and array content (vision format)
+        const estimateTokens = (content) => {
+            if (typeof content === 'string') {
+                return Math.ceil(content.length / 4);
+            }
+            if (Array.isArray(content)) {
+                // Vision format: array of { type: 'text', text: '...' } and { type: 'image_url', ... }
+                let tokens = 0;
+                for (const part of content) {
+                    if (part.type === 'text' && part.text) {
+                        tokens += Math.ceil(part.text.length / 4);
+                    } else if (part.type === 'image_url') {
+                        // Images use ~85 tokens for low-res, ~1000+ for high-res
+                        // Use conservative estimate of 500 tokens per image
+                        tokens += 500;
+                    }
+                }
+                return tokens;
+            }
+            return 0;
+        };
 
         // Build messages array based on input format
         let chatMessages = [];
@@ -6656,7 +6676,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             if (disableThinking) {
                 for (let i = chatMessages.length - 1; i >= 0; i--) {
                     if (chatMessages[i].role === 'user') {
-                        chatMessages[i].content = `/no_think\n${chatMessages[i].content}`;
+                        const content = chatMessages[i].content;
+                        if (typeof content === 'string') {
+                            chatMessages[i].content = `/no_think\n${content}`;
+                        } else if (Array.isArray(content)) {
+                            // Vision format: prepend to the first text part
+                            const textPartIdx = content.findIndex(p => p.type === 'text');
+                            if (textPartIdx !== -1) {
+                                content[textPartIdx].text = `/no_think\n${content[textPartIdx].text}`;
+                            }
+                        }
                         break;
                     }
                 }
@@ -6681,7 +6710,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Calculate total tokens from all messages
         let totalInputTokens = 0;
         for (const msg of chatMessages) {
-            totalInputTokens += estimateTokens(msg.content || '');
+            totalInputTokens += estimateTokens(msg.content);
         }
 
         // Reserve space for response (default 20% of context or effectiveMaxTokens if specified)

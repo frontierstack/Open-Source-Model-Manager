@@ -7,6 +7,45 @@ import ChatInput from './ChatInput';
 import ChatSettings from './ChatSettings';
 
 /**
+ * Parse <think> tags from content and separate thinking from response
+ * Handles both complete and partial (streaming) content
+ */
+function parseThinkTags(content) {
+    if (!content) return { content: '', reasoning: '' };
+
+    // Check for <think> tags (case insensitive)
+    const thinkOpenRegex = /<think>/gi;
+    const thinkCloseRegex = /<\/think>/gi;
+
+    let reasoning = '';
+    let cleanContent = content;
+
+    // Find all complete <think>...</think> blocks
+    const completeThinkRegex = /<think>([\s\S]*?)<\/think>/gi;
+    let match;
+    while ((match = completeThinkRegex.exec(content)) !== null) {
+        reasoning += match[1];
+        cleanContent = cleanContent.replace(match[0], '');
+    }
+
+    // Handle unclosed <think> tag (content is still streaming)
+    const lastOpenIdx = cleanContent.lastIndexOf('<think>');
+    const lastCloseIdx = cleanContent.lastIndexOf('</think>');
+
+    if (lastOpenIdx > lastCloseIdx) {
+        // There's an unclosed <think> tag - everything after it is reasoning
+        const partialReasoning = cleanContent.substring(lastOpenIdx + 7);
+        reasoning += partialReasoning;
+        cleanContent = cleanContent.substring(0, lastOpenIdx);
+    }
+
+    // Clean up extra whitespace
+    cleanContent = cleanContent.replace(/^\s+/, '').replace(/\s+$/, '');
+
+    return { content: cleanContent, reasoning };
+}
+
+/**
  * ChatContainer - Main chat interface container with Tailwind styling
  */
 export default function ChatContainer({
@@ -498,6 +537,31 @@ export default function ChatContainer({
                 msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
             }
 
+            // For the current message with image attachments, use OpenAI vision format
+            const isLastMessage = idx === updatedMessages.length - 1;
+            const imageAttachments = isLastMessage && attachedFiles
+                ? attachedFiles.filter(att => att.type === 'image' && att.dataUrl)
+                : [];
+
+            if (imageAttachments.length > 0) {
+                // OpenAI vision format: content is an array of text and image_url objects
+                const contentArray = [
+                    { type: 'text', text: msgContent }
+                ];
+
+                imageAttachments.forEach(img => {
+                    contentArray.push({
+                        type: 'image_url',
+                        image_url: { url: img.dataUrl }
+                    });
+                });
+
+                return {
+                    role: m.role,
+                    content: contentArray,
+                };
+            }
+
             return {
                 role: m.role,
                 content: msgContent,
@@ -666,10 +730,17 @@ export default function ChatContainer({
 
                             if (delta?.content) {
                                 assistantContent += delta.content;
-                                setStreamingContent(assistantContent);
+                                // Parse <think> tags from content and separate reasoning
+                                const thinkParsed = parseThinkTags(assistantContent);
+                                setStreamingContent(thinkParsed.content);
+                                if (thinkParsed.reasoning) {
+                                    assistantReasoning = thinkParsed.reasoning;
+                                    setStreamingReasoning(assistantReasoning);
+                                }
                                 tokenCount++; // Approximate token count by chunks
                             }
 
+                            // Handle explicit reasoning field from model API
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
                                 setStreamingReasoning(assistantReasoning);
@@ -716,11 +787,17 @@ export default function ChatContainer({
 
             // Add assistant message with response time and token count
             const responseTime = Date.now() - startTime;
+
+            // Final parse of think tags to ensure clean separation
+            const finalParsed = parseThinkTags(assistantContent);
+            const finalContent = finalParsed.content;
+            const finalReasoning = finalParsed.reasoning || assistantReasoning || undefined;
+
             const assistantMessage = {
                 id: crypto.randomUUID(),
                 role: 'assistant',
-                content: assistantContent,
-                reasoning: assistantReasoning || undefined,
+                content: finalContent,
+                reasoning: finalReasoning,
                 timestamp: new Date().toISOString(),
                 searchResults: searchResults ? searchResults.length : undefined,
                 responseTime,

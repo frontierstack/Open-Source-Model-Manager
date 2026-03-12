@@ -2721,17 +2721,89 @@ async function executeFileOperationSkill(skillName, params) {
 
             case 'read_file': {
                 const filePath = params.filePath;
+                const startLine = params.startLine ? parseInt(params.startLine) : null;
+                const endLine = params.endLine ? parseInt(params.endLine) : null;
+                const chunkIndex = params.chunkIndex ? parseInt(params.chunkIndex) : null;
+                const chunkSize = params.chunkSize ? parseInt(params.chunkSize) : 500; // lines per chunk
+                const maxContentChars = params.maxContentChars ? parseInt(params.maxContentChars) : 100000; // ~25k tokens
 
                 if (!filePath) {
                     return { success: false, error: 'filePath is required' };
                 }
 
                 const content = await fs.readFile(filePath, 'utf8');
+                const lines = content.split('\n');
+                const totalLines = lines.length;
+                const totalChars = content.length;
+                const estimatedTokens = Math.ceil(totalChars / 4);
+
+                // If specific line range requested
+                if (startLine !== null || endLine !== null) {
+                    const start = Math.max(0, (startLine || 1) - 1);
+                    const end = Math.min(totalLines, endLine || totalLines);
+                    const selectedLines = lines.slice(start, end);
+                    return {
+                        success: true,
+                        filePath,
+                        content: selectedLines.join('\n'),
+                        lineRange: { start: start + 1, end: end },
+                        totalLines,
+                        totalChars: selectedLines.join('\n').length
+                    };
+                }
+
+                // If chunk index requested
+                if (chunkIndex !== null) {
+                    const totalChunks = Math.ceil(totalLines / chunkSize);
+                    if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+                        return { success: false, error: `Invalid chunkIndex. Valid range: 0-${totalChunks - 1}` };
+                    }
+                    const start = chunkIndex * chunkSize;
+                    const end = Math.min(start + chunkSize, totalLines);
+                    const chunkLines = lines.slice(start, end);
+                    return {
+                        success: true,
+                        filePath,
+                        content: chunkLines.join('\n'),
+                        chunkInfo: {
+                            currentChunk: chunkIndex,
+                            totalChunks,
+                            linesInChunk: chunkLines.length,
+                            lineRange: { start: start + 1, end: end }
+                        },
+                        totalLines,
+                        totalChars: chunkLines.join('\n').length
+                    };
+                }
+
+                // Check if content is too large for context window
+                if (totalChars > maxContentChars) {
+                    const totalChunks = Math.ceil(totalLines / chunkSize);
+                    // Return file info and first chunk preview
+                    const previewLines = lines.slice(0, Math.min(50, totalLines));
+                    return {
+                        success: true,
+                        filePath,
+                        warning: 'FILE_TOO_LARGE',
+                        message: `File has ${totalLines} lines (~${estimatedTokens} tokens). Use chunkIndex parameter to read in parts.`,
+                        preview: previewLines.join('\n') + (totalLines > 50 ? '\n... [truncated]' : ''),
+                        fileInfo: {
+                            totalLines,
+                            totalChars,
+                            estimatedTokens,
+                            totalChunks,
+                            chunkSize,
+                            suggestedApproach: `Read with chunkIndex=0 through chunkIndex=${totalChunks - 1} to process entire file`
+                        }
+                    };
+                }
 
                 return {
                     success: true,
                     filePath: filePath,
-                    content: content
+                    content: content,
+                    totalLines,
+                    totalChars
                 };
             }
 
@@ -4642,8 +4714,9 @@ async function executeImageSkill(skillName, params) {
     try {
         switch (skillName) {
             case 'ocr_image': {
-                const filePath = params.filePath || params.imagePath;
-                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+                // Support both imagePath (skill definition) and filePath (legacy)
+                const filePath = params.imagePath || params.filePath;
+                if (!filePath) return { success: false, error: 'imagePath parameter is required' };
 
                 try {
                     const { stdout } = await execPromise(`tesseract "${filePath}" stdout 2>/dev/null`, { timeout: 60000 });
@@ -4752,8 +4825,9 @@ async function executeEmailSkill(skillName, params) {
     try {
         switch (skillName) {
             case 'read_email_file': {
-                const filePath = params.filePath;
-                if (!filePath) return { success: false, error: 'filePath parameter is required' };
+                // Support both emailPath (skill definition) and filePath (legacy)
+                const filePath = params.emailPath || params.filePath;
+                if (!filePath) return { success: false, error: 'emailPath parameter is required' };
 
                 const content = await fs.readFile(filePath, 'utf8');
                 const headers = {};
