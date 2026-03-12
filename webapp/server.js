@@ -6110,8 +6110,11 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             }
         }
 
-        // For PDFs, extract text
-        if (mimeType === 'application/pdf') {
+        // Get file extension for fallback detection
+        const ext = filename?.toLowerCase()?.split('.').pop();
+
+        // For PDFs, extract text (check both mimeType and extension)
+        if (mimeType === 'application/pdf' || ext === 'pdf') {
             try {
                 const pdfParse = require('pdf-parse');
                 const buffer = Buffer.from(content, 'base64');
@@ -6130,12 +6133,11 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 });
             } catch (e) {
                 console.error('PDF parsing error:', e);
-                return res.status(400).json({ error: 'Failed to parse PDF' });
+                return res.status(400).json({ error: 'Failed to parse PDF: ' + e.message });
             }
         }
 
         // For .msg (Outlook binary format) files - requires msgreader
-        const ext = filename?.toLowerCase()?.split('.').pop();
         if (ext === 'msg' || mimeType === 'application/vnd.ms-outlook') {
             try {
                 const MsgReader = require('@kenjiuno/msgreader').default;
