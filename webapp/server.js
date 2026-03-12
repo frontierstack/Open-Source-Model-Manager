@@ -6134,7 +6134,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
     try {
         // Handle base64-encoded file content
-        const { filename, content, mimeType, optimize = true } = req.body;
+        const { filename, content, mimeType, optimize = true, maxChars = 80000 } = req.body;
 
         if (!content) {
             return res.status(400).json({ error: 'File content is required' });
@@ -6142,6 +6142,24 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
         // Helper to optionally optimize content
         const maybeOptimize = (text) => optimize ? optimizeContent(text) : text;
+
+        // Helper to chunk/truncate content that exceeds context limits
+        const applyChunking = (text, originalLength) => {
+            const estimatedTokens = Math.ceil(text.length / 4);
+            if (text.length <= maxChars && estimatedTokens <= 20000) {
+                return { content: text, truncated: false };
+            }
+            // Truncate to fit context, preserving beginning of document
+            const truncatedContent = text.substring(0, maxChars);
+            const truncatedTokens = Math.ceil(truncatedContent.length / 4);
+            return {
+                content: truncatedContent,
+                truncated: true,
+                warning: `Content truncated from ${originalLength.toLocaleString()} to ${maxChars.toLocaleString()} characters (~${truncatedTokens.toLocaleString()} tokens) to fit context window. Original had ~${estimatedTokens.toLocaleString()} tokens.`,
+                originalLength,
+                truncatedLength: truncatedContent.length
+            };
+        };
 
         // For text-based files, decode and return content
         const textTypes = [
@@ -6156,14 +6174,16 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 let decoded = Buffer.from(content, 'base64').toString('utf8');
                 const originalLength = decoded.length;
                 decoded = maybeOptimize(decoded);
+                const chunked = applyChunking(decoded, originalLength);
 
                 return res.json({
                     type: 'text',
                     filename,
-                    content: decoded,
-                    charCount: decoded.length,
+                    content: chunked.content,
+                    charCount: chunked.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - decoded.length
+                    saved: originalLength - chunked.content.length,
+                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
                 });
             } catch (e) {
                 return res.status(400).json({ error: 'Failed to decode text content' });
@@ -6181,15 +6201,17 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const data = await pdfParse(buffer);
                 const originalLength = data.text.length;
                 const optimized = maybeOptimize(data.text);
+                const chunked = applyChunking(optimized, originalLength);
 
                 return res.json({
                     type: 'pdf',
                     filename,
-                    content: optimized,
+                    content: chunked.content,
                     pageCount: data.numpages,
-                    charCount: optimized.length,
+                    charCount: chunked.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - optimized.length
+                    saved: originalLength - chunked.content.length,
+                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
                 });
             } catch (e) {
                 console.error('PDF parsing error:', e);
@@ -6254,18 +6276,20 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
                 const originalLength = emailContent.length;
                 const optimized = maybeOptimize(emailContent);
+                const chunked = applyChunking(optimized, originalLength);
 
                 return res.json({
                     type: 'email',
                     filename,
-                    content: optimized,
-                    charCount: optimized.length,
+                    content: chunked.content,
+                    charCount: chunked.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - optimized.length,
+                    saved: originalLength - chunked.content.length,
                     subject: fileData.subject,
                     from: fileData.senderEmail,
                     date: fileData.messageDeliveryTime,
-                    links: links
+                    links: links,
+                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
                 });
             } catch (e) {
                 console.error('MSG parsing error:', e);
@@ -6314,18 +6338,20 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
                 const originalLength = emailContent.length;
                 const optimized = maybeOptimize(emailContent);
+                const chunked = applyChunking(optimized, originalLength);
 
                 return res.json({
                     type: 'email',
                     filename,
-                    content: optimized,
-                    charCount: optimized.length,
+                    content: chunked.content,
+                    charCount: chunked.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - optimized.length,
+                    saved: originalLength - chunked.content.length,
                     subject: parsed.subject,
                     from: parsed.from?.text,
                     date: parsed.date?.toISOString(),
-                    links: links
+                    links: links,
+                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
                 });
             } catch (e) {
                 console.error('EML parsing error:', e);
@@ -6341,14 +6367,16 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const result = await mammoth.extractRawText({ buffer });
                 const originalLength = result.value.length;
                 const optimized = maybeOptimize(result.value);
+                const chunked = applyChunking(optimized, originalLength);
 
                 return res.json({
                     type: 'document',
                     filename,
-                    content: optimized,
-                    charCount: optimized.length,
+                    content: chunked.content,
+                    charCount: chunked.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - optimized.length
+                    saved: originalLength - chunked.content.length,
+                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
                 });
             } catch (e) {
                 console.error('DOCX parsing error:', e);
@@ -6372,15 +6400,17 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
                 const originalLength = textContent.length;
                 const optimized = maybeOptimize(textContent);
+                const chunked = applyChunking(optimized, originalLength);
 
                 return res.json({
                     type: 'spreadsheet',
                     filename,
-                    content: optimized,
-                    charCount: optimized.length,
+                    content: chunked.content,
+                    charCount: chunked.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - optimized.length,
-                    sheets: workbook.SheetNames.length
+                    saved: originalLength - chunked.content.length,
+                    sheets: workbook.SheetNames.length,
+                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
                 });
             } catch (e) {
                 console.error('Excel parsing error:', e);

@@ -249,6 +249,8 @@ export default function ChatInput({
                             dataUrl: data.dataUrl,
                             charCount: data.charCount,
                             pageCount: data.pageCount,
+                            truncated: data.truncated,
+                            warning: data.warning,
                         });
                     }
                 } catch (error) {
@@ -406,10 +408,11 @@ export default function ChatInput({
                                 {attachments.map((att, index) => (
                                     <div
                                         key={att.id || index}
-                                        className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] ${getFileTypeColor(att.filename, att.type)}`}
+                                        className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] ${att.truncated ? 'border-amber-500/50 bg-amber-500/10' : getFileTypeColor(att.filename, att.type)}`}
                                         role="listitem"
-                                        title={att.charCount ? `${att.charCount.toLocaleString()} characters${att.saved ? ` (${att.saved} saved by optimization)` : ''}` : att.filename}
+                                        title={att.truncated ? `⚠️ ${att.warning}` : (att.charCount ? `${att.charCount.toLocaleString()} characters${att.saved ? ` (${att.saved} saved by optimization)` : ''}` : att.filename)}
                                     >
+                                        {att.truncated && <span className="text-amber-400">⚠️</span>}
                                         {getFileIcon(att.filename, att.type)}
                                         <span className="truncate max-w-[100px]">{att.filename}</span>
                                         <button
