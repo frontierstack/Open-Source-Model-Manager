@@ -1796,6 +1796,8 @@
         color: var(--text-secondary);
         line-height: 1.65;
         font-weight: var(--font-weight-normal);
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
 
     .markdown-content p {
@@ -1819,6 +1821,7 @@
         color: var(--accent-primary);
         text-decoration: none;
         font-weight: var(--font-weight-medium);
+        word-break: break-all;
     }
 
     .markdown-content a:hover {

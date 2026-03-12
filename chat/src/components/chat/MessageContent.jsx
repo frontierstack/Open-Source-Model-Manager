@@ -10,7 +10,7 @@ export default function MessageContent({ content }) {
     if (!content) return null;
 
     return (
-        <div className="markdown-content">
+        <div className="markdown-content break-words overflow-wrap-anywhere">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -78,7 +78,7 @@ export default function MessageContent({ content }) {
                                 href={href}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="text-primary-400 hover:underline"
+                                className="text-primary-400 hover:underline break-all"
                             >
                                 {children}
                             </a>

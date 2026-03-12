@@ -817,6 +817,8 @@ body.font-size-large .markdown-content,
         color: var(--text-secondary);
         line-height: 1.65;
         font-weight: var(--font-weight-normal);
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
 .markdown-content p {
         margin-bottom: 0.75rem;
@@ -835,6 +837,7 @@ body.font-size-large .markdown-content,
         color: var(--accent-primary);
         text-decoration: none;
         font-weight: var(--font-weight-medium);
+        word-break: break-all;
     }
 .markdown-content a:hover {
         color: var(--accent-hover);
@@ -1556,6 +1559,12 @@ body.font-size-large .markdown-content,
 }
 .whitespace-pre-wrap{
   white-space: pre-wrap;
+}
+.break-words{
+  overflow-wrap: break-word;
+}
+.break-all{
+  word-break: break-all;
 }
 .rounded{
   border-radius: 0.25rem;
