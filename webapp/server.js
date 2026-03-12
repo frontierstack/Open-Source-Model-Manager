@@ -7090,7 +7090,6 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                         // Check for [DONE] marker
                         if (data === '[DONE]') {
-                            console.log(`[Stream Token Tracking] [DONE] marker received. promptTokens=${promptTokens}, completionTokens=${completionTokens}`);
 
                             // Send final event with both OpenAI-compatible format and done flag for Koda compatibility
                             const finalEvent = {
@@ -7156,7 +7155,6 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                         try {
                             const parsed = JSON.parse(data);
-                            console.log(`[Stream Debug] Parsed chunk:`, JSON.stringify(parsed, null, 2).substring(0, 200));
 
                             // Extract token from delta and forward in OpenAI-compatible format
                             if (parsed.choices && parsed.choices[0]?.delta) {
@@ -7193,7 +7191,6 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             if (parsed.timings) {
                                 promptTokens = (parsed.timings.prompt_n || 0) + (parsed.timings.cache_n || 0);
                                 completionTokens = parsed.timings.predicted_n || 0;
-                                console.log(`[Stream Token Tracking] Extracted from timings: promptTokens=${promptTokens}, completionTokens=${completionTokens}`);
                             }
                         } catch (e) {
                             // Skip invalid JSON chunks
