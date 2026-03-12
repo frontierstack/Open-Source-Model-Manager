@@ -111,6 +111,10 @@ const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 // Map structure: modelName -> { containerId, port, status, config, backend }
 const modelInstances = new Map();
 
+// Content continuation queue for processing large files in chunks
+// Map structure: conversationId -> { content: string, processedChunks: number, totalChunks: number, chunkSize: number }
+const contentContinuationQueue = new Map();
+
 // Global active backend state - determines which backend is used for loading models
 // Can be 'llamacpp' or 'vllm'
 let activeBackend = 'llamacpp'; // Default to llama.cpp for older GPU support
@@ -1558,9 +1562,14 @@ app.get('/api/models', requireAuth, async (req, res) => {
                 }
             }
 
-            // Get context size from instance config, or default to null
+            // Get context size from instance config, or use a default
+            // Models have varying native context sizes, but we show a reasonable default
             if (instance?.config?.contextSize) {
                 contextSize = instance.config.contextSize;
+            } else {
+                // Default context size for non-running models
+                // Most modern models support at least 4096, many support 8192+
+                contextSize = 4096;
             }
 
             // Check if it's a thinking/reasoning model
@@ -2408,6 +2417,40 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
         return null;
     };
 
+    // Helper to estimate context length from model name/tags
+    const estimateContextLength = (name, tags) => {
+        const nameLower = name.toLowerCase();
+        const allText = nameLower + ' ' + (tags || []).join(' ').toLowerCase();
+
+        // Check for explicit context length patterns in name
+        // e.g., "128k", "32k-context", "64k-ctx"
+        const ctxMatch = allText.match(/(\d+)k[-_]?(?:ctx|context|tokens?)?/);
+        if (ctxMatch) {
+            return parseInt(ctxMatch[1]) * 1024;
+        }
+
+        // Check for model family patterns with known context sizes
+        if (/llama[-_]?3\.?[12]|llama3\.?[12]/i.test(nameLower)) return 131072; // Llama 3.1/3.2: 128k
+        if (/llama[-_]?3|llama3/i.test(nameLower)) return 8192; // Llama 3: 8k
+        if (/llama[-_]?2|llama2/i.test(nameLower)) return 4096; // Llama 2: 4k
+        if (/mistral.*nemo/i.test(nameLower)) return 131072; // Mistral Nemo: 128k
+        if (/mistral.*large/i.test(nameLower)) return 131072; // Mistral Large: 128k
+        if (/mistral/i.test(nameLower)) return 32768; // Mistral 7B: 32k
+        if (/mixtral/i.test(nameLower)) return 32768; // Mixtral: 32k
+        if (/qwen2\.5|qwen-2\.5/i.test(nameLower)) return 131072; // Qwen 2.5: 128k
+        if (/qwen2|qwen-2/i.test(nameLower)) return 32768; // Qwen 2: 32k
+        if (/qwen/i.test(nameLower)) return 8192; // Qwen: 8k
+        if (/gemma[-_]?2/i.test(nameLower)) return 8192; // Gemma 2: 8k
+        if (/phi[-_]?3|phi3/i.test(nameLower)) return 131072; // Phi-3: 128k
+        if (/deepseek.*v3/i.test(nameLower)) return 65536; // DeepSeek V3: 64k
+        if (/deepseek/i.test(nameLower)) return 32768; // DeepSeek: 32k
+        if (/command[-_]?r/i.test(nameLower)) return 131072; // Command R: 128k
+        if (/yi[-_]?1\.5/i.test(nameLower)) return 32768; // Yi 1.5: 32k
+
+        // Default: unknown context length
+        return null;
+    };
+
     try {
         // Determine HuggingFace API sort parameter
         let hfSort = 'downloads';
@@ -2440,12 +2483,15 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
 
         let models = response.data.map(model => {
             const paramSize = extractParamSize(model.id);
+            const contextLength = estimateContextLength(model.id, model.tags);
             return {
                 id: model.id,
                 downloads: model.downloads,
                 likes: model.likes,
                 tags: model.tags,
                 paramSize: paramSize,  // Size in billions (null if unknown)
+                contextLength: contextLength,  // Estimated context length (null if unknown)
+                contextEstimated: contextLength !== null,  // Whether context was estimated
                 createdAt: model.createdAt
             };
         });
@@ -6134,7 +6180,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
     try {
         // Handle base64-encoded file content
-        const { filename, content, mimeType, optimize = true, maxChars = 80000 } = req.body;
+        const { filename, content, mimeType, optimize = true } = req.body;
 
         if (!content) {
             return res.status(400).json({ error: 'File content is required' });
@@ -6143,21 +6189,21 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // Helper to optionally optimize content
         const maybeOptimize = (text) => optimize ? optimizeContent(text) : text;
 
-        // Helper to chunk/truncate content that exceeds context limits
-        const applyChunking = (text, originalLength) => {
+        // Helper to prepare content with chunking metadata (no truncation at upload time)
+        // Truncation happens at chat time based on model's actual context window
+        const prepareContent = (text, originalLength) => {
             const estimatedTokens = Math.ceil(text.length / 4);
-            if (text.length <= maxChars && estimatedTokens <= 20000) {
-                return { content: text, truncated: false };
-            }
-            // Truncate to fit context, preserving beginning of document
-            const truncatedContent = text.substring(0, maxChars);
-            const truncatedTokens = Math.ceil(truncatedContent.length / 4);
+            const chunkSize = 20000; // chars per chunk (~5000 tokens)
+            const totalChunks = Math.ceil(text.length / chunkSize);
+
             return {
-                content: truncatedContent,
-                truncated: true,
-                warning: `Content truncated from ${originalLength.toLocaleString()} to ${maxChars.toLocaleString()} characters (~${truncatedTokens.toLocaleString()} tokens) to fit context window. Original had ~${estimatedTokens.toLocaleString()} tokens.`,
+                content: text,
                 originalLength,
-                truncatedLength: truncatedContent.length
+                estimatedTokens,
+                totalChunks,
+                chunkSize,
+                // Flag if this will likely need chunked processing
+                requiresChunking: estimatedTokens > 8000
             };
         };
 
@@ -6174,16 +6220,18 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 let decoded = Buffer.from(content, 'base64').toString('utf8');
                 const originalLength = decoded.length;
                 decoded = maybeOptimize(decoded);
-                const chunked = applyChunking(decoded, originalLength);
+                const prepared = prepareContent(decoded, originalLength);
 
                 return res.json({
                     type: 'text',
                     filename,
-                    content: chunked.content,
-                    charCount: chunked.content.length,
+                    content: prepared.content,
+                    charCount: prepared.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - chunked.content.length,
-                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
+                    saved: originalLength - prepared.content.length,
+                    estimatedTokens: prepared.estimatedTokens,
+                    requiresChunking: prepared.requiresChunking,
+                    totalChunks: prepared.totalChunks
                 });
             } catch (e) {
                 return res.status(400).json({ error: 'Failed to decode text content' });
@@ -6201,17 +6249,19 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const data = await pdfParse(buffer);
                 const originalLength = data.text.length;
                 const optimized = maybeOptimize(data.text);
-                const chunked = applyChunking(optimized, originalLength);
+                const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
                     type: 'pdf',
                     filename,
-                    content: chunked.content,
+                    content: prepared.content,
                     pageCount: data.numpages,
-                    charCount: chunked.content.length,
+                    charCount: prepared.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - chunked.content.length,
-                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
+                    saved: originalLength - prepared.content.length,
+                    estimatedTokens: prepared.estimatedTokens,
+                    requiresChunking: prepared.requiresChunking,
+                    totalChunks: prepared.totalChunks
                 });
             } catch (e) {
                 console.error('PDF parsing error:', e);
@@ -6276,20 +6326,22 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
                 const originalLength = emailContent.length;
                 const optimized = maybeOptimize(emailContent);
-                const chunked = applyChunking(optimized, originalLength);
+                const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
                     type: 'email',
                     filename,
-                    content: chunked.content,
-                    charCount: chunked.content.length,
+                    content: prepared.content,
+                    charCount: prepared.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - chunked.content.length,
+                    saved: originalLength - prepared.content.length,
                     subject: fileData.subject,
                     from: fileData.senderEmail,
                     date: fileData.messageDeliveryTime,
                     links: links,
-                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
+                    estimatedTokens: prepared.estimatedTokens,
+                    requiresChunking: prepared.requiresChunking,
+                    totalChunks: prepared.totalChunks
                 });
             } catch (e) {
                 console.error('MSG parsing error:', e);
@@ -6338,20 +6390,22 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
                 const originalLength = emailContent.length;
                 const optimized = maybeOptimize(emailContent);
-                const chunked = applyChunking(optimized, originalLength);
+                const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
                     type: 'email',
                     filename,
-                    content: chunked.content,
-                    charCount: chunked.content.length,
+                    content: prepared.content,
+                    charCount: prepared.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - chunked.content.length,
+                    saved: originalLength - prepared.content.length,
                     subject: parsed.subject,
                     from: parsed.from?.text,
                     date: parsed.date?.toISOString(),
                     links: links,
-                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
+                    estimatedTokens: prepared.estimatedTokens,
+                    requiresChunking: prepared.requiresChunking,
+                    totalChunks: prepared.totalChunks
                 });
             } catch (e) {
                 console.error('EML parsing error:', e);
@@ -6367,16 +6421,18 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const result = await mammoth.extractRawText({ buffer });
                 const originalLength = result.value.length;
                 const optimized = maybeOptimize(result.value);
-                const chunked = applyChunking(optimized, originalLength);
+                const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
                     type: 'document',
                     filename,
-                    content: chunked.content,
-                    charCount: chunked.content.length,
+                    content: prepared.content,
+                    charCount: prepared.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - chunked.content.length,
-                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
+                    saved: originalLength - prepared.content.length,
+                    estimatedTokens: prepared.estimatedTokens,
+                    requiresChunking: prepared.requiresChunking,
+                    totalChunks: prepared.totalChunks
                 });
             } catch (e) {
                 console.error('DOCX parsing error:', e);
@@ -6400,17 +6456,19 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
                 const originalLength = textContent.length;
                 const optimized = maybeOptimize(textContent);
-                const chunked = applyChunking(optimized, originalLength);
+                const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
                     type: 'spreadsheet',
                     filename,
-                    content: chunked.content,
-                    charCount: chunked.content.length,
+                    content: prepared.content,
+                    charCount: prepared.content.length,
                     originalCharCount: originalLength,
-                    saved: originalLength - chunked.content.length,
+                    saved: originalLength - prepared.content.length,
                     sheets: workbook.SheetNames.length,
-                    ...(chunked.truncated && { truncated: true, warning: chunked.warning })
+                    estimatedTokens: prepared.estimatedTokens,
+                    requiresChunking: prepared.requiresChunking,
+                    totalChunks: prepared.totalChunks
                 });
             } catch (e) {
                 console.error('Excel parsing error:', e);
@@ -6687,10 +6745,50 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     }
 });
 
+// Check continuation queue for a conversation
+app.get('/api/chat/continuation/:conversationId', requireAuth, (req, res) => {
+    const { conversationId } = req.params;
+    const continuation = contentContinuationQueue.get(conversationId);
+
+    if (!continuation) {
+        return res.json({ hasMore: false });
+    }
+
+    const remainingTokens = Math.ceil(continuation.content.length / 4);
+    const remainingChunks = continuation.totalChunks - continuation.processedChunks;
+
+    res.json({
+        hasMore: true,
+        remainingTokens,
+        remainingChunks,
+        processedChunks: continuation.processedChunks,
+        totalChunks: continuation.totalChunks,
+        contextSize: continuation.contextSize,
+        modelName: continuation.modelName
+    });
+});
+
+// Clear continuation queue for a conversation
+app.delete('/api/chat/continuation/:conversationId', requireAuth, (req, res) => {
+    const { conversationId } = req.params;
+    contentContinuationQueue.delete(conversationId);
+    res.json({ success: true });
+});
+
 // Streaming chat endpoint - Server-Sent Events (SSE)
 app.post('/api/chat/stream', requireAuth, async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
-    const { message, messages: inputMessages, model, temperature, maxTokens, max_tokens } = req.body;
+    const { message, messages: inputMessages, model, temperature, maxTokens, max_tokens, conversationId, continueProcessing } = req.body;
+
+    // Check for continuation request
+    if (continueProcessing && conversationId) {
+        const continuation = contentContinuationQueue.get(conversationId);
+        if (continuation) {
+            // Process continuation by injecting remaining content
+            console.log(`[Chat Stream] Processing continuation for conversation ${conversationId}`);
+            // The remaining content will be added to the message below
+        }
+    }
     const effectiveMaxTokens = maxTokens || max_tokens;
 
     // Validate that either message or messages is provided
@@ -6807,16 +6905,63 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const responseReserve = effectiveMaxTokens || Math.floor(contextSize * 0.2);
         const availableContextForInput = contextSize - responseReserve;
 
-        // Check if input exceeds available context
+        // Smart content chunking - truncate if exceeds context and queue remainder
+        let contentTruncated = false;
+        let remainingContent = null;
+        let truncationInfo = null;
+
         if (totalInputTokens > availableContextForInput) {
-            if (!contextShift) {
+            // Find the last user message (which typically contains the large content)
+            for (let i = chatMessages.length - 1; i >= 0; i--) {
+                if (chatMessages[i].role === 'user' && typeof chatMessages[i].content === 'string') {
+                    const content = chatMessages[i].content;
+                    const contentTokens = estimateTokens(content);
+
+                    // Calculate how much we need to trim
+                    const otherTokens = totalInputTokens - contentTokens;
+                    const availableForContent = availableContextForInput - otherTokens - 200; // Reserve 200 tokens for continuation notice
+
+                    if (availableForContent > 0 && contentTokens > availableForContent) {
+                        // Truncate at character level (4 chars per token estimate)
+                        const maxChars = availableForContent * 4;
+                        const truncatedContent = content.substring(0, maxChars);
+                        remainingContent = content.substring(maxChars);
+
+                        const remainingTokens = estimateTokens(remainingContent);
+                        const totalChunks = Math.ceil(contentTokens / availableForContent);
+
+                        // Update message with truncated content and continuation notice
+                        chatMessages[i].content = truncatedContent +
+                            `\n\n[CONTENT TRUNCATED - Processing chunk 1 of ${totalChunks}. ~${remainingTokens.toLocaleString()} tokens remaining. The model will be provided with a summary and the next chunk automatically.]`;
+
+                        contentTruncated = true;
+                        truncationInfo = {
+                            totalTokens: contentTokens,
+                            processedTokens: availableForContent,
+                            remainingTokens,
+                            totalChunks,
+                            currentChunk: 1
+                        };
+
+                        // Recalculate tokens
+                        totalInputTokens = 0;
+                        for (const msg of chatMessages) {
+                            totalInputTokens += estimateTokens(msg.content);
+                        }
+
+                        console.log(`[Chat Stream] Content chunked: Processing ${availableForContent} of ${contentTokens} tokens (chunk 1/${totalChunks})`);
+                    }
+                    break;
+                }
+            }
+
+            // If still over limit after truncation attempt, return error
+            if (totalInputTokens > availableContextForInput && !contextShift) {
                 return res.status(400).json({
                     success: false,
                     error: `Not enough context window: Input requires ~${totalInputTokens} tokens but only ${availableContextForInput} available (context: ${contextSize}, reserved for response: ${responseReserve}). Enable context shifting or reduce input size.`
                 });
             }
-            // Context shift warning - let the model handle truncation
-            console.log(`[Chat Stream] Context may be truncated: ${totalInputTokens} tokens requested, ${availableContextForInput} available`);
         }
 
         // Set up SSE headers
@@ -6880,9 +7025,31 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     total_tokens: promptTokens + completionTokens
                                 },
                                 model: targetModel,
-                                contextSize: contextSize
+                                contextSize: contextSize,
+                                // Include continuation info if content was truncated
+                                ...(contentTruncated && {
+                                    continuation: {
+                                        hasMore: true,
+                                        ...truncationInfo,
+                                        message: `Content was split into ${truncationInfo.totalChunks} chunks. Processed chunk ${truncationInfo.currentChunk}. ~${truncationInfo.remainingTokens.toLocaleString()} tokens remaining.`
+                                    }
+                                })
                             };
                             res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+
+                            // If there's remaining content, store it for continuation
+                            if (remainingContent && req.body.conversationId) {
+                                contentContinuationQueue.set(req.body.conversationId, {
+                                    content: remainingContent,
+                                    processedChunks: truncationInfo?.currentChunk || 1,
+                                    totalChunks: truncationInfo?.totalChunks || 1,
+                                    contextSize,
+                                    modelName: targetModel,
+                                    timestamp: Date.now()
+                                });
+                                console.log(`[Chat Stream] Queued ${remainingContent.length} chars for continuation (conversation: ${req.body.conversationId})`);
+                            }
+
                             res.write(`data: [DONE]\n\n`);
 
                             // Manually update token usage stats (streaming doesn't use res.send interceptor)

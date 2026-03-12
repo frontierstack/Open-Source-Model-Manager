@@ -751,6 +751,15 @@ export default function ChatContainer({
                                 tokenCount = parsed.usage.completion_tokens;
                             }
 
+                            // Handle continuation info (content was split due to context limits)
+                            if (parsed.continuation?.hasMore) {
+                                const cont = parsed.continuation;
+                                showSnackbar(
+                                    `📄 Processing chunk ${cont.currentChunk}/${cont.totalChunks}. ~${cont.remainingTokens?.toLocaleString()} tokens remaining.`,
+                                    'info'
+                                );
+                            }
+
                             // Handle finish reason
                             const finishReason = parsed.choices?.[0]?.finish_reason;
                             if (finishReason === 'length') {

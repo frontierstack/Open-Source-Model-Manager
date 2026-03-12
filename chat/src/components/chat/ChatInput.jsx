@@ -249,8 +249,9 @@ export default function ChatInput({
                             dataUrl: data.dataUrl,
                             charCount: data.charCount,
                             pageCount: data.pageCount,
-                            truncated: data.truncated,
-                            warning: data.warning,
+                            estimatedTokens: data.estimatedTokens,
+                            requiresChunking: data.requiresChunking,
+                            totalChunks: data.totalChunks,
                         });
                     }
                 } catch (error) {
@@ -408,11 +409,13 @@ export default function ChatInput({
                                 {attachments.map((att, index) => (
                                     <div
                                         key={att.id || index}
-                                        className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] ${att.truncated ? 'border-amber-500/50 bg-amber-500/10' : getFileTypeColor(att.filename, att.type)}`}
+                                        className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] ${att.requiresChunking ? 'border-blue-500/50 bg-blue-500/10' : getFileTypeColor(att.filename, att.type)}`}
                                         role="listitem"
-                                        title={att.truncated ? `⚠️ ${att.warning}` : (att.charCount ? `${att.charCount.toLocaleString()} characters${att.saved ? ` (${att.saved} saved by optimization)` : ''}` : att.filename)}
+                                        title={att.requiresChunking
+                                            ? `📄 Large file: ~${att.estimatedTokens?.toLocaleString()} tokens (${att.totalChunks} chunks). Will be processed automatically.`
+                                            : (att.charCount ? `${att.charCount.toLocaleString()} characters (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)${att.saved ? ` (${att.saved} saved)` : ''}` : att.filename)}
                                     >
-                                        {att.truncated && <span className="text-amber-400">⚠️</span>}
+                                        {att.requiresChunking && <span className="text-blue-400">📄</span>}
                                         {getFileIcon(att.filename, att.type)}
                                         <span className="truncate max-w-[100px]">{att.filename}</span>
                                         <button

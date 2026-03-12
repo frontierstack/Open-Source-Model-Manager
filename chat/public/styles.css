@@ -1614,14 +1614,14 @@ body.font-size-large .markdown-content,
 .border-amber-500\/30{
   border-color: rgb(245 158 11 / 0.3);
 }
-.border-amber-500\/50{
-  border-color: rgb(245 158 11 / 0.5);
-}
 .border-blue-500\/20{
   border-color: rgb(59 130 246 / 0.2);
 }
 .border-blue-500\/30{
   border-color: rgb(59 130 246 / 0.3);
+}
+.border-blue-500\/50{
+  border-color: rgb(59 130 246 / 0.5);
 }
 .border-dark-500{
   --tw-border-opacity: 1;

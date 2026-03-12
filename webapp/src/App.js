@@ -4291,6 +4291,19 @@ fetch('${baseUrl}/api/apps', {
                                                                                         />
                                                                                     </Tooltip>
                                                                                 )}
+                                                                                {model.contextLength && (
+                                                                                    <Tooltip title={model.contextEstimated ? "Estimated context length" : "Context length"} arrow>
+                                                                                        <Chip
+                                                                                            icon={<MemoryIcon sx={{ fontSize: 12 }} />}
+                                                                                            label={model.contextLength >= 1048576 ? `${(model.contextLength / 1048576).toFixed(0)}M` :
+                                                                                                   model.contextLength >= 1024 ? `${Math.round(model.contextLength / 1024)}K` :
+                                                                                                   model.contextLength}
+                                                                                            size="small"
+                                                                                            variant="outlined"
+                                                                                            sx={{ fontSize: '0.65rem', height: 22, borderStyle: model.contextEstimated ? 'dashed' : 'solid' }}
+                                                                                        />
+                                                                                    </Tooltip>
+                                                                                )}
                                                                             </Box>
                                                                         </CardContent>
                                                                     </Card>
