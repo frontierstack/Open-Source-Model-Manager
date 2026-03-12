@@ -4307,13 +4307,73 @@ async function executeLegacySkill(skillName, params) {
                 result = { success: true, message: `File ${skillName === 'create_file' ? 'created' : 'updated'}: ${filePath}` };
                 break;
 
-            case 'read_file':
+            case 'read_file': {
                 if (!params.filePath) {
-                    throw new Error('filePath required' );
+                    throw new Error('filePath required');
                 }
                 const fileContent = await fs.readFile(params.filePath, 'utf8');
-                result = { success: true, content: fileContent };
+                const lines = fileContent.split('\n');
+                const totalLines = lines.length;
+                const chunkSize = params.chunkSize ? parseInt(params.chunkSize) : 500;
+                const maxContentChars = params.maxContentChars ? parseInt(params.maxContentChars) : 100000;
+                const totalChunks = Math.ceil(totalLines / chunkSize);
+                const estimatedTokens = Math.ceil(fileContent.length / 4);
+
+                // Handle specific line ranges
+                if (params.startLine || params.endLine) {
+                    const start = params.startLine ? parseInt(params.startLine) - 1 : 0;
+                    const end = params.endLine ? parseInt(params.endLine) : totalLines;
+                    const selectedLines = lines.slice(start, end);
+                    result = {
+                        success: true,
+                        content: selectedLines.join('\n'),
+                        lineRange: { start: start + 1, end: Math.min(end, totalLines) },
+                        totalLines
+                    };
+                    break;
+                }
+
+                // Handle chunk-based reading
+                if (params.chunkIndex !== undefined) {
+                    const chunkIndex = parseInt(params.chunkIndex);
+                    if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+                        result = { success: false, error: `Invalid chunkIndex. Valid range: 0-${totalChunks - 1}` };
+                        break;
+                    }
+                    const start = chunkIndex * chunkSize;
+                    const end = Math.min(start + chunkSize, totalLines);
+                    const chunkContent = lines.slice(start, end).join('\n');
+                    result = {
+                        success: true,
+                        content: chunkContent,
+                        currentChunk: chunkIndex,
+                        totalChunks,
+                        linesInChunk: end - start,
+                        lineRange: { start: start + 1, end },
+                        totalLines
+                    };
+                    break;
+                }
+
+                // Check if file is too large
+                if (fileContent.length > maxContentChars || estimatedTokens > 20000) {
+                    result = {
+                        success: true,
+                        warning: 'FILE_TOO_LARGE',
+                        message: `File has ${totalLines} lines (~${estimatedTokens} tokens). Use chunkIndex parameter to read in parts.`,
+                        totalLines,
+                        totalChunks,
+                        chunkSize,
+                        estimatedTokens,
+                        filePath: params.filePath,
+                        suggestedApproach: `Read with chunkIndex=0 through chunkIndex=${totalChunks - 1} to process entire file`
+                    };
+                    break;
+                }
+
+                result = { success: true, content: fileContent, totalLines };
                 break;
+            }
 
             case 'delete_file':
                 if (!params.filePath) {
@@ -6928,9 +6988,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 ? error.response.data.error
                 : JSON.stringify(error.response.data.error);
         } else if (error.response?.data) {
-            errorDetails = typeof error.response.data === 'string'
-                ? error.response.data
-                : JSON.stringify(error.response.data);
+            try {
+                errorDetails = typeof error.response.data === 'string'
+                    ? error.response.data
+                    : JSON.stringify(error.response.data);
+            } catch (e) {
+                errorDetails = 'Error response could not be parsed';
+            }
         } else if (error.message) {
             errorDetails = error.message;
         }
