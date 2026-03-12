@@ -5878,9 +5878,14 @@ async function loadConversationsIndex(userId) {
     const indexPath = path.join(userDir, 'index.json');
     try {
         const data = await fs.readFile(indexPath, 'utf8');
+        if (!data || !data.trim()) return []; // Handle empty files
         return JSON.parse(data);
     } catch (error) {
         if (error.code === 'ENOENT') return [];
+        if (error instanceof SyntaxError) {
+            console.error(`Corrupted conversations index for user ${userId}, resetting to empty`);
+            return []; // Handle corrupted JSON
+        }
         throw error;
     }
 }
@@ -5898,9 +5903,14 @@ async function loadConversationMessages(userId, conversationId) {
     const messagesPath = path.join(userDir, `${conversationId}.json`);
     try {
         const data = await fs.readFile(messagesPath, 'utf8');
+        if (!data || !data.trim()) return []; // Handle empty files
         return JSON.parse(data);
     } catch (error) {
         if (error.code === 'ENOENT') return [];
+        if (error instanceof SyntaxError) {
+            console.error(`Corrupted conversation ${conversationId} for user ${userId}`);
+            return []; // Handle corrupted JSON
+        }
         throw error;
     }
 }
@@ -5961,7 +5971,14 @@ app.get('/api/conversations/:id', requireAuth, async (req, res) => {
         const conversation = conversations.find(c => c.id === id);
 
         if (!conversation) {
-            return res.status(404).json({ error: 'Conversation not found' });
+            // Return empty conversation instead of 404 - handles race conditions
+            // where frontend creates conversation ID before backend saves it
+            return res.json({
+                id,
+                title: 'New Conversation',
+                createdAt: new Date().toISOString(),
+                messages: []
+            });
         }
 
         const messages = await loadConversationMessages(userId, id);
@@ -6189,6 +6206,23 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // Helper to optionally optimize content
         const maybeOptimize = (text) => optimize ? optimizeContent(text) : text;
 
+        // Helper to sanitize content for model tokenizers
+        // Removes/replaces characters that can cause parsing errors
+        const sanitizeForModel = (text) => {
+            return text
+                // Remove NULL bytes and other control characters (except newline, tab, carriage return)
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+                // Replace non-breaking spaces and other problematic whitespace
+                .replace(/[\u00A0\u2000-\u200B\u2028\u2029\u202F\u205F\u3000]/g, ' ')
+                // Remove zero-width characters
+                .replace(/[\uFEFF\u200C\u200D]/g, '')
+                // Replace problematic Unicode characters that can cause tokenizer issues
+                .replace(/[\uFFFD\uFFFF]/g, '')
+                // Normalize common problematic sequences
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n');
+        };
+
         // Helper to prepare content with chunking metadata (no truncation at upload time)
         // Truncation happens at chat time based on model's actual context window
         const prepareContent = (text, originalLength) => {
@@ -6219,7 +6253,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             try {
                 let decoded = Buffer.from(content, 'base64').toString('utf8');
                 const originalLength = decoded.length;
-                decoded = maybeOptimize(decoded);
+                decoded = sanitizeForModel(maybeOptimize(decoded));
                 const prepared = prepareContent(decoded, originalLength);
 
                 return res.json({
@@ -6248,7 +6282,8 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const buffer = Buffer.from(content, 'base64');
                 const data = await pdfParse(buffer);
                 const originalLength = data.text.length;
-                const optimized = maybeOptimize(data.text);
+                // PDFs often contain problematic characters - sanitize after optimization
+                const optimized = sanitizeForModel(maybeOptimize(data.text));
                 const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
@@ -6314,7 +6349,13 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 }
 
                 emailContent += '\n---\n\n';
-                emailContent += bodyText;
+                // Convert HTML line breaks to newlines and strip remaining HTML tags
+                let cleanBodyText = bodyText
+                    .replace(/<br\s*\/?>/gi, '\n')
+                    .replace(/<\/p>/gi, '\n\n')
+                    .replace(/<\/div>/gi, '\n')
+                    .replace(/<[^>]+>/g, '');
+                emailContent += cleanBodyText;
 
                 // Include attachments info if present
                 if (fileData.attachments?.length > 0) {
@@ -6325,7 +6366,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 }
 
                 const originalLength = emailContent.length;
-                const optimized = maybeOptimize(emailContent);
+                const optimized = sanitizeForModel(maybeOptimize(emailContent));
                 const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
@@ -6378,7 +6419,13 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 }
 
                 emailContent += '\n---\n\n';
-                emailContent += bodyText || bodyHtml.replace(/<[^>]*>/g, '') || '';
+                // Convert HTML to clean text
+                let cleanBody = (bodyText || bodyHtml || '')
+                    .replace(/<br\s*\/?>/gi, '\n')
+                    .replace(/<\/p>/gi, '\n\n')
+                    .replace(/<\/div>/gi, '\n')
+                    .replace(/<[^>]+>/g, '');
+                emailContent += cleanBody;
 
                 // Include attachments info if present
                 if (parsed.attachments?.length > 0) {
@@ -6389,7 +6436,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 }
 
                 const originalLength = emailContent.length;
-                const optimized = maybeOptimize(emailContent);
+                const optimized = sanitizeForModel(maybeOptimize(emailContent));
                 const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
@@ -6420,7 +6467,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const buffer = Buffer.from(content, 'base64');
                 const result = await mammoth.extractRawText({ buffer });
                 const originalLength = result.value.length;
-                const optimized = maybeOptimize(result.value);
+                const optimized = sanitizeForModel(maybeOptimize(result.value));
                 const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
@@ -6455,7 +6502,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 });
 
                 const originalLength = textContent.length;
-                const optimized = maybeOptimize(textContent);
+                const optimized = sanitizeForModel(maybeOptimize(textContent));
                 const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
@@ -6488,7 +6535,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
         // Catch-all: Try to decode as text first, fallback to binary
         try {
-            let decoded = Buffer.from(content, 'base64').toString('utf8');
+            let decoded = sanitizeForModel(Buffer.from(content, 'base64').toString('utf8'));
             const originalLength = decoded.length;
             decoded = maybeOptimize(decoded);
 
@@ -6830,22 +6877,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
-        // Estimate token count (rough estimate: 1 token ≈ 4 characters)
-        // Handles both string content and array content (vision format)
+        // Estimate token count - use conservative estimate (1 token ≈ 3 chars)
+        // Real tokenizers often produce more tokens than the simple 4-char rule
+        // Adding 10% safety margin to account for tokenizer differences
+        const CHARS_PER_TOKEN = 3;  // More conservative than 4
+        const SAFETY_MARGIN = 1.1;  // 10% extra buffer
+
         const estimateTokens = (content) => {
             if (typeof content === 'string') {
-                return Math.ceil(content.length / 4);
+                return Math.ceil((content.length / CHARS_PER_TOKEN) * SAFETY_MARGIN);
             }
             if (Array.isArray(content)) {
                 // Vision format: array of { type: 'text', text: '...' } and { type: 'image_url', ... }
                 let tokens = 0;
                 for (const part of content) {
                     if (part.type === 'text' && part.text) {
-                        tokens += Math.ceil(part.text.length / 4);
+                        tokens += Math.ceil((part.text.length / CHARS_PER_TOKEN) * SAFETY_MARGIN);
                     } else if (part.type === 'image_url') {
                         // Images use ~85 tokens for low-res, ~1000+ for high-res
-                        // Use conservative estimate of 500 tokens per image
-                        tokens += 500;
+                        // Use conservative estimate of 1000 tokens per image
+                        tokens += 1000;
                     }
                 }
                 return tokens;
@@ -6913,26 +6964,53 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (totalInputTokens > availableContextForInput) {
             // Find the last user message (which typically contains the large content)
             for (let i = chatMessages.length - 1; i >= 0; i--) {
-                if (chatMessages[i].role === 'user' && typeof chatMessages[i].content === 'string') {
-                    const content = chatMessages[i].content;
-                    const contentTokens = estimateTokens(content);
+                if (chatMessages[i].role === 'user') {
+                    const msgContent = chatMessages[i].content;
+
+                    // Handle both string and array content formats (vision models use array)
+                    let textContent = '';
+                    let isArrayFormat = false;
+                    let textPartIdx = -1;
+
+                    if (typeof msgContent === 'string') {
+                        textContent = msgContent;
+                    } else if (Array.isArray(msgContent)) {
+                        // Vision format: find the text part
+                        isArrayFormat = true;
+                        textPartIdx = msgContent.findIndex(p => p.type === 'text');
+                        if (textPartIdx !== -1) {
+                            textContent = msgContent[textPartIdx].text || '';
+                        }
+                    }
+
+                    if (!textContent) break;
+
+                    // Use same estimation as estimateTokens for consistency
+                    const contentTokens = Math.ceil((textContent.length / CHARS_PER_TOKEN) * SAFETY_MARGIN);
 
                     // Calculate how much we need to trim
                     const otherTokens = totalInputTokens - contentTokens;
-                    const availableForContent = availableContextForInput - otherTokens - 200; // Reserve 200 tokens for continuation notice
+                    const availableForContent = availableContextForInput - otherTokens - 500; // Reserve 500 tokens for continuation notice + buffer
 
                     if (availableForContent > 0 && contentTokens > availableForContent) {
-                        // Truncate at character level (4 chars per token estimate)
-                        const maxChars = availableForContent * 4;
-                        const truncatedContent = content.substring(0, maxChars);
-                        remainingContent = content.substring(maxChars);
+                        // Truncate at character level using conservative estimate
+                        // Divide by safety margin to ensure we don't exceed limit
+                        const maxChars = Math.floor((availableForContent * CHARS_PER_TOKEN) / SAFETY_MARGIN);
+                        const truncatedContent = textContent.substring(0, maxChars);
+                        remainingContent = textContent.substring(maxChars);
 
                         const remainingTokens = estimateTokens(remainingContent);
                         const totalChunks = Math.ceil(contentTokens / availableForContent);
 
-                        // Update message with truncated content and continuation notice
-                        chatMessages[i].content = truncatedContent +
+                        const truncatedWithNotice = truncatedContent +
                             `\n\n[CONTENT TRUNCATED - Processing chunk 1 of ${totalChunks}. ~${remainingTokens.toLocaleString()} tokens remaining. The model will be provided with a summary and the next chunk automatically.]`;
+
+                        // Update message with truncated content (handle both formats)
+                        if (isArrayFormat && textPartIdx !== -1) {
+                            chatMessages[i].content[textPartIdx].text = truncatedWithNotice;
+                        } else {
+                            chatMessages[i].content = truncatedWithNotice;
+                        }
 
                         contentTruncated = true;
                         truncationInfo = {
@@ -7171,29 +7249,56 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Chat stream error:', error.message, error.response?.data || '');
-
         // Build detailed error message for debugging and user feedback
         let errorMessage = 'Failed to get response from model';
         let errorDetails = '';
 
-        // Extract error details from various sources
-        if (error.response?.data?.error?.message) {
+        // Handle stream response data (axios returns streams when responseType is 'stream')
+        if (error.response?.data && typeof error.response.data.on === 'function') {
+            // It's a stream - read it to get the error message
+            try {
+                const chunks = [];
+                for await (const chunk of error.response.data) {
+                    chunks.push(chunk);
+                }
+                const errorBody = Buffer.concat(chunks).toString('utf8');
+                console.error('Chat stream error:', error.message, '| Status:', error.response?.status, '| Response:', errorBody);
+
+                // Try to parse as JSON
+                try {
+                    const parsed = JSON.parse(errorBody);
+                    errorDetails = parsed.error?.message || parsed.error || errorBody;
+                } catch (e) {
+                    errorDetails = errorBody;
+                }
+            } catch (streamErr) {
+                console.error('Chat stream error:', error.message, '| Status:', error.response?.status, '| Could not read stream');
+                errorDetails = error.message;
+            }
+        }
+        // Extract error details from various sources (non-stream responses)
+        else if (error.response?.data?.error?.message) {
             errorDetails = error.response.data.error.message;
+            console.error('Chat stream error:', error.message, '| Status:', error.response?.status, '| Response:', errorDetails);
         } else if (error.response?.data?.error) {
             errorDetails = typeof error.response.data.error === 'string'
                 ? error.response.data.error
                 : JSON.stringify(error.response.data.error);
+            console.error('Chat stream error:', error.message, '| Status:', error.response?.status, '| Response:', errorDetails);
         } else if (error.response?.data) {
             try {
                 errorDetails = typeof error.response.data === 'string'
                     ? error.response.data
                     : JSON.stringify(error.response.data);
+                console.error('Chat stream error:', error.message, '| Status:', error.response?.status, '| Response:', errorDetails);
             } catch (e) {
                 errorDetails = 'Error response could not be parsed';
             }
         } else if (error.message) {
             errorDetails = error.message;
+            console.error('Chat stream error:', error.message, '| Status:', error.response?.status);
+        } else {
+            console.error('Chat stream error: Unknown error', '| Status:', error.response?.status);
         }
 
         // Categorize error types for better messages
