@@ -6877,11 +6877,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
-        // Estimate token count - use conservative estimate (1 token ≈ 3 chars)
-        // Real tokenizers often produce more tokens than the simple 4-char rule
-        // Adding 10% safety margin to account for tokenizer differences
-        const CHARS_PER_TOKEN = 3;  // More conservative than 4
-        const SAFETY_MARGIN = 1.1;  // 10% extra buffer
+        // Estimate token count (1 token ≈ 4 chars with small safety margin)
+        const CHARS_PER_TOKEN = 4;
+        const SAFETY_MARGIN = 1.05;  // 5% buffer for tokenizer variance
 
         const estimateTokens = (content) => {
             if (typeof content === 'string') {
@@ -6909,7 +6907,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
         if (inputMessages && Array.isArray(inputMessages) && inputMessages.length > 0) {
             // Use provided messages array (OpenAI compatible format)
-            chatMessages = inputMessages.map(msg => ({ ...msg }));
+            // Ensure system prompt is first and only appears once
+            const systemMessages = inputMessages.filter(msg => msg.role === 'system');
+            const nonSystemMessages = inputMessages.filter(msg => msg.role !== 'system');
+
+            // Add system prompt first (only the first one if multiple exist)
+            if (systemMessages.length > 0) {
+                chatMessages.push({ ...systemMessages[0] });
+            }
+
+            // Add remaining messages in order
+            chatMessages.push(...nonSystemMessages.map(msg => ({ ...msg })));
 
             // Apply thinking mode control to the last user message if disableThinking is enabled
             if (disableThinking) {
@@ -6990,7 +6998,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                     // Calculate how much we need to trim
                     const otherTokens = totalInputTokens - contentTokens;
-                    const availableForContent = availableContextForInput - otherTokens - 500; // Reserve 500 tokens for continuation notice + buffer
+                    const availableForContent = availableContextForInput - otherTokens - 200; // Reserve 200 tokens for continuation notice
 
                     if (availableForContent > 0 && contentTokens > availableForContent) {
                         // Truncate at character level using conservative estimate
