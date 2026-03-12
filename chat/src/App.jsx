@@ -437,11 +437,18 @@ function AppContent() {
                 llamacppArray.forEach(i => runningMap.set(i.name, { ...i, backend: 'llamacpp' }));
                 vllmArray.forEach(i => runningMap.set(i.name, { ...i, backend: 'vllm' }));
 
-                const merged = modelsArray.map(m => ({
-                    ...m,
-                    status: runningMap.has(m.name) ? 'running' : 'stopped',
-                    backend: runningMap.get(m.name)?.backend || m.backend || 'llamacpp',
-                }));
+                const merged = modelsArray.map(m => {
+                    const runningInfo = runningMap.get(m.name);
+                    // Get context size from running instance config (most accurate)
+                    const contextSize = runningInfo?.config?.contextSize || runningInfo?.contextSize || m.contextSize;
+                    return {
+                        ...m,
+                        status: runningInfo ? 'running' : 'stopped',
+                        backend: runningInfo?.backend || m.backend || 'llamacpp',
+                        // Include contextSize from running instance for accurate context tracking
+                        ...(contextSize && { contextSize }),
+                    };
+                });
                 setModels(merged);
             }
         } catch (error) {

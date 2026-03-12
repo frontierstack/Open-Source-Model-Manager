@@ -126,6 +126,8 @@ export default function ChatContainer({
                             status: 'running',
                             backend: 'llamacpp',
                             port: inst.port,
+                            // Include context size from config for accurate context tracking
+                            contextSize: inst.config?.contextSize || inst.contextSize,
                         });
                     });
                 }
@@ -140,6 +142,8 @@ export default function ChatContainer({
                             status: 'running',
                             backend: 'vllm',
                             port: inst.port,
+                            // Include context size from config for accurate context tracking
+                            contextSize: inst.config?.contextSize || inst.contextSize,
                         });
                     });
                 }
@@ -698,6 +702,7 @@ export default function ChatContainer({
             let assistantReasoning = '';
             let buffer = '';
             let tokenCount = 0;
+            let inStreamError = null; // Track errors that occur mid-stream
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -718,12 +723,15 @@ export default function ChatContainer({
                         try {
                             const parsed = JSON.parse(data);
 
-                            // Handle error in stream
+                            // Handle error in stream - store it but don't throw to preserve partial content
                             if (parsed.error) {
                                 const errMsg = typeof parsed.error === 'object'
                                     ? parsed.error.message || JSON.stringify(parsed.error)
                                     : parsed.error;
-                                throw new Error(errMsg);
+                                inStreamError = errMsg;
+                                // Don't throw - continue processing to preserve any partial content
+                                // The error will be handled after the loop
+                                continue;
                             }
 
                             const delta = parsed.choices?.[0]?.delta;
@@ -802,22 +810,60 @@ export default function ChatContainer({
             const finalContent = finalParsed.content;
             const finalReasoning = finalParsed.reasoning || assistantReasoning || undefined;
 
-            const assistantMessage = {
-                id: crypto.randomUUID(),
-                role: 'assistant',
-                content: finalContent,
-                reasoning: finalReasoning,
-                timestamp: new Date().toISOString(),
-                searchResults: searchResults ? searchResults.length : undefined,
-                responseTime,
-                tokenCount: tokenCount > 0 ? tokenCount : undefined,
-            };
-
             // Get current messages from store to ensure we have the latest state
             const currentMsgs = useChatStore.getState().messages;
-            const finalMessages = [...currentMsgs, assistantMessage];
-            addMessage(assistantMessage);
-            saveMessages(conversationId, finalMessages);
+            let finalMessages = [...currentMsgs];
+
+            // Handle in-stream error - save partial content if any, then show error
+            if (inStreamError) {
+                // If we have partial content, save it first
+                if (finalContent.trim()) {
+                    const partialMessage = {
+                        id: crypto.randomUUID(),
+                        role: 'assistant',
+                        content: finalContent,
+                        reasoning: finalReasoning,
+                        timestamp: new Date().toISOString(),
+                        searchResults: searchResults ? searchResults.length : undefined,
+                        responseTime,
+                        tokenCount: tokenCount > 0 ? tokenCount : undefined,
+                        isPartial: true, // Mark as partial response
+                    };
+                    addMessage(partialMessage);
+                    finalMessages = [...finalMessages, partialMessage];
+                }
+
+                // Add error message explaining why the stream stopped
+                const errorMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: `Error: ${inStreamError}`,
+                    isError: true,
+                    timestamp: new Date().toISOString(),
+                };
+                addMessage(errorMessage);
+                finalMessages = [...finalMessages, errorMessage];
+                saveMessages(conversationId, finalMessages);
+
+                // Show snackbar notification
+                showSnackbar(inStreamError, 'error');
+            } else {
+                // Normal completion - save the full response
+                const assistantMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: finalContent,
+                    reasoning: finalReasoning,
+                    timestamp: new Date().toISOString(),
+                    searchResults: searchResults ? searchResults.length : undefined,
+                    responseTime,
+                    tokenCount: tokenCount > 0 ? tokenCount : undefined,
+                };
+
+                finalMessages = [...finalMessages, assistantMessage];
+                addMessage(assistantMessage);
+                saveMessages(conversationId, finalMessages);
+            }
 
             // Update conversation title if it's the first message (user message only)
             if (currentMsgs.length === 1) {
