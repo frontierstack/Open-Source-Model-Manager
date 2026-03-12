@@ -9,6 +9,10 @@ import CodeBlock from './CodeBlock';
 export default function MessageContent({ content }) {
     if (!content) return null;
 
+    // Pre-process content to convert <br> tags to markdown line breaks
+    // ReactMarkdown doesn't render raw HTML by default
+    const processedContent = content.replace(/<br\s*\/?>/gi, '  \n');
+
     return (
         <div className="markdown-content break-words overflow-wrap-anywhere">
             <ReactMarkdown
@@ -179,7 +183,7 @@ export default function MessageContent({ content }) {
                     },
                 }}
             >
-                {content}
+                {processedContent}
             </ReactMarkdown>
         </div>
     );
