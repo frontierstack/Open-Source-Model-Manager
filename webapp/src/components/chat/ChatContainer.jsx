@@ -37,6 +37,7 @@ export default function ChatContainer({
         streamingReasoning,
         attachments,
         settings,
+        chunkingInfo,
         setConversations,
         setActiveConversation,
         addConversation,
@@ -50,6 +51,8 @@ export default function ChatContainer({
         appendStreamingContent,
         appendStreamingReasoning,
         clearStreaming,
+        setChunkingInfo,
+        clearChunkingInfo,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -294,23 +297,48 @@ export default function ChatContainer({
         }
 
         // Build message with attachments
-        let fullContent = content;
-        if (attachedFiles && attachedFiles.length > 0) {
-            const attachmentContext = attachedFiles
-                .filter(att => att.type !== 'image')
+        // Separate text-based attachments from images
+        const textAttachments = attachedFiles?.filter(att => att.type !== 'image') || [];
+        const imageAttachments = attachedFiles?.filter(att => att.type === 'image') || [];
+
+        // Build text content with embedded text attachments
+        let fullTextContent = content;
+        if (textAttachments.length > 0) {
+            const attachmentContext = textAttachments
                 .map(att => `--- ${att.filename} ---\n${att.content}\n`)
                 .join('\n');
-
-            if (attachmentContext) {
-                fullContent = `${attachmentContext}\n---\n\n${content}`;
-            }
+            fullTextContent = `${attachmentContext}\n---\n\n${content}`;
         }
 
-        // Add user message
+        // Build API content - use vision format if there are images, otherwise string
+        let apiContent;
+        if (imageAttachments.length > 0) {
+            // OpenAI vision format: array of content parts
+            apiContent = [];
+            // Add text part first
+            if (fullTextContent.trim()) {
+                apiContent.push({ type: 'text', text: fullTextContent });
+            }
+            // Add image parts
+            for (const img of imageAttachments) {
+                if (img.dataUrl) {
+                    apiContent.push({
+                        type: 'image_url',
+                        image_url: { url: img.dataUrl }
+                    });
+                }
+            }
+        } else {
+            // Regular text-only content
+            apiContent = fullTextContent;
+        }
+
+        // Add user message (store display content and API content separately)
         const userMessage = {
             id: crypto.randomUUID(),
             role: 'user',
-            content,
+            content, // Display content (original user input)
+            apiContent, // Full content for API (includes attachments)
             attachments: attachedFiles?.map(a => ({ filename: a.filename, type: a.type })),
             timestamp: new Date().toISOString(),
         };
@@ -324,10 +352,10 @@ export default function ChatContainer({
         setStreamingContent('');
         setStreamingReasoning('');
 
-        // Prepare messages for API
+        // Prepare messages for API - use apiContent if available, fallback to content
         const apiMessages = updatedMessages.map(m => ({
             role: m.role,
-            content: m.content,
+            content: m.apiContent || m.content,
         }));
 
         // Add system prompt if selected
@@ -375,6 +403,9 @@ export default function ChatContainer({
         // Create abort controller for cancellation
         abortControllerRef.current = new AbortController();
 
+        // Clear any previous chunking info
+        clearChunkingInfo();
+
         try {
             const response = await fetch('/api/chat/stream', {
                 method: 'POST',
@@ -386,18 +417,21 @@ export default function ChatContainer({
                     temperature: settings.temperature,
                     max_tokens: settings.maxTokens,
                     stream: true,
+                    conversationId, // Include for continuation support
                 }),
                 signal: abortControllerRef.current.signal,
             });
 
             if (!response.ok) {
-                throw new Error('Failed to send message');
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error || 'Failed to send message');
             }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let assistantContent = '';
             let assistantReasoning = '';
+            let continuationInfo = null;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -424,11 +458,31 @@ export default function ChatContainer({
                                 assistantReasoning += delta.reasoning;
                                 setStreamingReasoning(assistantReasoning);
                             }
+
+                            // Check for continuation info in final event
+                            if (parsed.done && parsed.continuation) {
+                                continuationInfo = parsed.continuation;
+                            }
                         } catch (e) {
                             // Ignore parse errors for partial chunks
                         }
                     }
                 }
+            }
+
+            // Store chunking info if content was truncated
+            if (continuationInfo && continuationInfo.hasMore) {
+                setChunkingInfo({
+                    hasMore: true,
+                    processedChunks: continuationInfo.currentChunk || 1,
+                    totalChunks: continuationInfo.totalChunks || 1,
+                    remainingTokens: continuationInfo.remainingTokens || 0,
+                    conversationId,
+                });
+                showSnackbar(
+                    `Large file chunked: Processed chunk ${continuationInfo.currentChunk} of ${continuationInfo.totalChunks}`,
+                    'info'
+                );
             }
 
             // Add assistant message
@@ -438,6 +492,7 @@ export default function ChatContainer({
                 content: assistantContent,
                 reasoning: assistantReasoning || undefined,
                 timestamp: new Date().toISOString(),
+                chunked: continuationInfo?.hasMore || false,
             };
 
             const finalMessages = [...updatedMessages, assistantMessage];
@@ -457,7 +512,13 @@ export default function ChatContainer({
                 showSnackbar('Generation stopped', 'info');
             } else {
                 console.error('Streaming error:', error);
-                showSnackbar('Failed to get response', 'error');
+                // Check for context window error
+                const errorMsg = error.message || 'Failed to get response';
+                if (errorMsg.includes('context window') || errorMsg.includes('Not enough context')) {
+                    showSnackbar(errorMsg, 'error');
+                } else {
+                    showSnackbar('Failed to get response', 'error');
+                }
             }
         } finally {
             clearStreaming();

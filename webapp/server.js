@@ -6275,28 +6275,111 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // Get file extension for fallback detection
         const ext = filename?.toLowerCase()?.split('.').pop();
 
-        // For PDFs, extract text (check both mimeType and extension)
+        // For PDFs, extract text with OCR fallback for scanned documents
         if (mimeType === 'application/pdf' || ext === 'pdf') {
             try {
                 const pdfParse = require('pdf-parse');
+                const { exec, execSync } = require('child_process');
+                const { promisify } = require('util');
+                const execAsync = promisify(exec);
+                const path = require('path');
+                const fs = require('fs');
+
                 const buffer = Buffer.from(content, 'base64');
                 const data = await pdfParse(buffer);
-                const originalLength = data.text.length;
+                const pageCount = data.numpages || 1;
+                let extractedText = data.text || '';
+
+                // Calculate text density (chars per page)
+                const charsPerPage = extractedText.trim().length / pageCount;
+                const needsOcr = charsPerPage < 100; // Less than 100 chars/page suggests scanned PDF
+
+                let ocrText = '';
+                let ocrPerformed = false;
+
+                if (needsOcr && pageCount <= 50) { // Limit OCR to 50 pages for performance
+                    try {
+                        // Create temp directory for PDF processing
+                        const tempDir = `/tmp/pdf_ocr_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                        fs.mkdirSync(tempDir, { recursive: true });
+
+                        const pdfPath = path.join(tempDir, 'input.pdf');
+                        fs.writeFileSync(pdfPath, buffer);
+
+                        // Convert PDF pages to images using pdftoppm (from poppler-utils)
+                        // Use PNG format for better OCR quality, 200 DPI for balance of speed/accuracy
+                        await execAsync(`pdftoppm -png -r 200 "${pdfPath}" "${tempDir}/page"`, {
+                            timeout: 120000 // 2 minute timeout
+                        });
+
+                        // Get list of generated images
+                        const imageFiles = fs.readdirSync(tempDir)
+                            .filter(f => f.startsWith('page') && f.endsWith('.png'))
+                            .sort();
+
+                        // Run OCR on each page
+                        const ocrResults = [];
+                        for (const imageFile of imageFiles) {
+                            const imagePath = path.join(tempDir, imageFile);
+                            try {
+                                // Use tesseract for OCR
+                                const { stdout } = await execAsync(`tesseract "${imagePath}" stdout -l eng --psm 1`, {
+                                    timeout: 30000 // 30 seconds per page
+                                });
+                                if (stdout.trim()) {
+                                    ocrResults.push(stdout.trim());
+                                }
+                            } catch (ocrErr) {
+                                console.warn(`OCR failed for ${imageFile}:`, ocrErr.message);
+                            }
+                        }
+
+                        // Cleanup temp directory
+                        try {
+                            fs.rmSync(tempDir, { recursive: true, force: true });
+                        } catch (cleanupErr) {
+                            console.warn('Failed to cleanup temp directory:', cleanupErr.message);
+                        }
+
+                        if (ocrResults.length > 0) {
+                            ocrText = ocrResults.join('\n\n--- Page Break ---\n\n');
+                            ocrPerformed = true;
+                        }
+                    } catch (ocrError) {
+                        console.warn('PDF OCR failed, using text extraction only:', ocrError.message);
+                    }
+                }
+
+                // Combine OCR text with regular extracted text
+                let finalText = extractedText;
+                if (ocrPerformed && ocrText.trim().length > extractedText.trim().length) {
+                    // OCR found more text than regular extraction
+                    finalText = ocrText;
+                } else if (ocrPerformed && ocrText.trim()) {
+                    // Append OCR text if it adds meaningful content
+                    const ocrUnique = ocrText.trim().length - extractedText.trim().length;
+                    if (ocrUnique > 500) {
+                        finalText = extractedText + '\n\n--- OCR Extracted Content ---\n\n' + ocrText;
+                    }
+                }
+
+                const originalLength = finalText.length;
                 // PDFs often contain problematic characters - sanitize after optimization
-                const optimized = sanitizeForModel(maybeOptimize(data.text));
+                const optimized = sanitizeForModel(maybeOptimize(finalText));
                 const prepared = prepareContent(optimized, originalLength);
 
                 return res.json({
                     type: 'pdf',
                     filename,
                     content: prepared.content,
-                    pageCount: data.numpages,
+                    pageCount: pageCount,
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
                     saved: originalLength - prepared.content.length,
                     estimatedTokens: prepared.estimatedTokens,
                     requiresChunking: prepared.requiresChunking,
-                    totalChunks: prepared.totalChunks
+                    totalChunks: prepared.totalChunks,
+                    ocrPerformed: ocrPerformed
                 });
             } catch (e) {
                 console.error('PDF parsing error:', e);

@@ -16,6 +16,9 @@ export const useChatStore = create(
         streamingReasoning: '',
         attachments: [],
 
+        // Chunking state for large files
+        chunkingInfo: null, // { hasMore, processedChunks, totalChunks, remainingTokens }
+
         // Settings
         settings: {
             model: null,
@@ -90,6 +93,10 @@ export const useChatStore = create(
             streamingReasoning: '',
             isStreaming: false
         }),
+
+        // Chunking Actions
+        setChunkingInfo: (chunkingInfo) => set({ chunkingInfo }),
+        clearChunkingInfo: () => set({ chunkingInfo: null }),
 
         // Attachment Actions
         setAttachments: (attachments) => set({ attachments }),

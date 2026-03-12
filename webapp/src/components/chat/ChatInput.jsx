@@ -13,6 +13,7 @@ import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import ImageIcon from '@mui/icons-material/Image';
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import LanguageIcon from '@mui/icons-material/Language';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 
 /**
  * ChatInput - Message input with file attachments and web search toggle
@@ -85,6 +86,10 @@ export default function ChatInput({
                             dataUrl: data.dataUrl,
                             charCount: data.charCount,
                             pageCount: data.pageCount,
+                            estimatedTokens: data.estimatedTokens,
+                            requiresChunking: data.requiresChunking,
+                            totalChunks: data.totalChunks,
+                            ocrPerformed: data.ocrPerformed,
                         });
                     }
                 } catch (error) {
@@ -145,27 +150,59 @@ export default function ChatInput({
             {/* Attachments preview */}
             {attachments.length > 0 && (
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
-                    {attachments.map((att, index) => (
-                        <Chip
-                            key={att.id || index}
-                            icon={getFileIcon(att.type)}
-                            label={`${att.filename}${att.charCount ? ` (${(att.charCount / 1000).toFixed(1)}k)` : ''}`}
-                            size="small"
-                            onDelete={() => onRemoveAttachment(index)}
-                            deleteIcon={<CloseIcon sx={{ fontSize: 14 }} />}
-                            sx={{
-                                height: 22,
-                                fontSize: '0.75rem',
-                                backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                                border: '1px solid rgba(99, 102, 241, 0.3)',
-                                '& .MuiChip-label': {
-                                    maxWidth: 120,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                },
-                            }}
-                        />
-                    ))}
+                    {attachments.map((att, index) => {
+                        // Build label with size info
+                        let label = att.filename;
+                        if (att.charCount) {
+                            const sizeStr = att.charCount >= 1000
+                                ? `${(att.charCount / 1000).toFixed(1)}k`
+                                : `${att.charCount}`;
+                            label += ` (${sizeStr})`;
+                        }
+                        if (att.requiresChunking) {
+                            label += ` [${att.totalChunks} chunks]`;
+                        }
+                        if (att.ocrPerformed) {
+                            label += ' [OCR]';
+                        }
+
+                        const isLarge = att.requiresChunking || (att.estimatedTokens && att.estimatedTokens > 8000);
+
+                        return (
+                            <Tooltip
+                                key={att.id || index}
+                                title={isLarge
+                                    ? `Large file (~${att.estimatedTokens?.toLocaleString() || '?'} tokens). Will be chunked to fit context window.`
+                                    : att.ocrPerformed
+                                        ? 'Text extracted via OCR from scanned document'
+                                        : ''
+                                }
+                            >
+                                <Chip
+                                    icon={isLarge ? <WarningAmberIcon sx={{ fontSize: 14, color: 'warning.main' }} /> : getFileIcon(att.type)}
+                                    label={label}
+                                    size="small"
+                                    onDelete={() => onRemoveAttachment(index)}
+                                    deleteIcon={<CloseIcon sx={{ fontSize: 14 }} />}
+                                    sx={{
+                                        height: 22,
+                                        fontSize: '0.75rem',
+                                        backgroundColor: isLarge
+                                            ? 'rgba(245, 158, 11, 0.1)'
+                                            : 'rgba(99, 102, 241, 0.1)',
+                                        border: isLarge
+                                            ? '1px solid rgba(245, 158, 11, 0.3)'
+                                            : '1px solid rgba(99, 102, 241, 0.3)',
+                                        '& .MuiChip-label': {
+                                            maxWidth: 180,
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                        },
+                                    }}
+                                />
+                            </Tooltip>
+                        );
+                    })}
                 </Box>
             )}
 
