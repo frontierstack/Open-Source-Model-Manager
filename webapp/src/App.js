@@ -3114,105 +3114,1642 @@ fetch('${baseUrl}/api/apps', {
 })
 .then(res => res.json())
 .then(apps => apps.forEach(a => console.log(\`- \${a.name}: \${a.status?.status || 'unknown'}\`)));`
-            }
-        };
-
-        // Generate a generic example if no specific one exists
-        const generateGenericExample = (ep, language) => {
-            // Determine HTTP method from endpoint name pattern
-            const isGet = ep.includes('/list') || ep.endsWith('s') && !ep.includes('/create') && !ep.includes('/execute') && !ep.includes('/update') && !ep.includes('/delete') || ep === '/api/auth/me' || ep === '/api/auth/has-users' || ep.includes('/stats') || ep.includes('/status');
-            const isDelete = ep.includes('/delete') || ep.endsWith('/:id/delete') || ep.endsWith('/:downloadId');
-            const isPost = ep.includes('/create') || ep.includes('/execute') || ep.includes('/start') || ep.includes('/stop') || ep.includes('/restart') || ep.includes('/login') || ep.includes('/register') || ep.includes('/logout') || ep.includes('/upload') || ep.includes('/pull') || ep.includes('/load') || ep.includes('/clear') || ep.includes('/reset') || ep.includes('/messages') || ep.includes('/revoke') || ep.includes('/recommend') || ep.includes('/regenerate');
-            const isPut = ep.includes('/update') || ep === '/api/auth/password' || ep.includes('/disable') || ep.includes('/enable');
-
-            const method = isDelete ? 'DELETE' : isPut ? 'PUT' : isPost ? 'POST' : 'GET';
-            const endpoint_path = ep.replace(/:(\w+)/g, '{$1}');
-
-            if (language === 'curl') {
-                const bodyPart = method !== 'GET' && method !== 'DELETE' ? ` \\
-  -d '{"key": "value"}'` : '';
-                return `# ${method} ${endpoint_path}
-curl -k -X ${method} ${baseUrl}${endpoint_path} \\
+            },
+            // ============================================================================
+            // CHAT UPLOAD
+            // ============================================================================
+            '/api/chat/upload': {
+                curl: `# Upload a file for chat (images, PDFs, text files)
+curl -k -X POST ${baseUrl}/api/chat/upload \\
   -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json"${bodyPart}
+  -F "file=@/path/to/document.pdf"
 
 # OR API Key + Secret Authentication
-curl -k -X ${method} ${baseUrl}${endpoint_path} \\
+curl -k -X POST ${baseUrl}/api/chat/upload \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret" \\
-  -H "Content-Type: application/json"${bodyPart}`;
-            } else if (language === 'python') {
-                const requestMethod = method.toLowerCase();
-                const jsonPart = method !== 'GET' && method !== 'DELETE' ? ",\n    json={'key': 'value'}" : '';
-                return `import requests
+  -F "file=@/path/to/image.png"`,
+                python: `import requests
 
 # Bearer Token Authentication
-response = requests.${requestMethod}(
-    '${baseUrl}${endpoint_path}',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    }${jsonPart},
+with open('/path/to/document.pdf', 'rb') as f:
+    response = requests.post(
+        '${baseUrl}/api/chat/upload',
+        headers={'Authorization': 'Bearer your_bearer_token'},
+        files={'file': f},
+        verify=False
+    )
+
+# OR API Key + Secret Authentication
+with open('/path/to/image.png', 'rb') as f:
+    response = requests.post(
+        '${baseUrl}/api/chat/upload',
+        headers={
+            'X-API-Key': 'your_api_key',
+            'X-API-Secret': 'your_api_secret'
+        },
+        files={'file': f},
+        verify=False
+    )
+
+result = response.json()
+print(f"Uploaded: {result['filename']}, Type: {result['type']}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+# Upload file
+$filePath = "C:\\path\\to\\document.pdf"
+$fileBytes = [System.IO.File]::ReadAllBytes($filePath)
+$fileName = [System.IO.Path]::GetFileName($filePath)
+
+$boundary = [System.Guid]::NewGuid().ToString()
+$contentType = "multipart/form-data; boundary=$boundary"
+
+$body = @"
+--$boundary
+Content-Disposition: form-data; name="file"; filename="$fileName"
+Content-Type: application/octet-stream
+
+$([System.Text.Encoding]::UTF8.GetString($fileBytes))
+--$boundary--
+"@
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/chat/upload" -Method Post -Headers $headers -ContentType $contentType -Body $body
+Write-Output "Uploaded: $($response.filename)"`,
+                javascript: `// Bearer Token Authentication
+const formData = new FormData();
+formData.append('file', fileInput.files[0]);
+
+fetch('${baseUrl}/api/chat/upload', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_bearer_token' },
+  body: formData
+})
+.then(res => res.json())
+.then(data => console.log('Uploaded:', data.filename, 'Type:', data.type))
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/chat/upload', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  },
+  body: formData
+})
+.then(res => res.json())
+.then(data => console.log('Uploaded:', data.filename))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // CHAT CONTINUATION
+            // ============================================================================
+            '/api/chat/continuation/:conversationId': {
+                curl: `# Get continuation queue for a conversation (chunked content)
+curl -k -X GET ${baseUrl}/api/chat/continuation/conv_abc123 \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/chat/continuation/conv_abc123 \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+conversation_id = "conv_abc123"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/chat/continuation/{conversation_id}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
 
 # OR API Key + Secret Authentication
-response = requests.${requestMethod}(
-    '${baseUrl}${endpoint_path}',
+response = requests.get(
+    f'${baseUrl}/api/chat/continuation/{conversation_id}',
     headers={
         'X-API-Key': 'your_api_key',
-        'X-API-Secret': 'your_api_secret',
-        'Content-Type': 'application/json'
-    }${jsonPart},
+        'X-API-Secret': 'your_api_secret'
+    },
     verify=False
 )
 
 result = response.json()
-print(result)`;
-            } else if (language === 'powershell') {
-                const bodyPart = method !== 'GET' && method !== 'DELETE' ? `
-$body = @{ key = "value" } | ConvertTo-Json
-` : '';
-                const bodyParam = method !== 'GET' && method !== 'DELETE' ? ' -Body $body' : '';
-                return `$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-${bodyPart}
-$response = Invoke-RestMethod -Uri "${baseUrl}${endpoint_path}" -Method ${method} -Headers $headers${bodyParam}
-$response | ConvertTo-Json`;
-            } else if (language === 'javascript') {
-                const bodyPart = method !== 'GET' && method !== 'DELETE' ? `,
-  body: JSON.stringify({ key: 'value' })` : '';
-                return `// Bearer Token Authentication
-fetch('${baseUrl}${endpoint_path}', {
-  method: '${method}',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  }${bodyPart}
+if result.get('hasContinuation'):
+    print(f"Remaining: {result['remainingTokens']} tokens")
+    print(f"Chunk {result['processedChunks']}/{result['totalChunks']}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$conversationId = "conv_abc123"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/chat/continuation/$conversationId" -Headers $headers
+if ($response.hasContinuation) {
+    Write-Output "Remaining: $($response.remainingTokens) tokens"
+    Write-Output "Chunk $($response.processedChunks)/$($response.totalChunks)"
+}`,
+                javascript: `const conversationId = 'conv_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/chat/continuation/\${conversationId}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
-.then(data => console.log(data))
+.then(data => {
+  if (data.hasContinuation) {
+    console.log('Remaining:', data.remainingTokens, 'tokens');
+    console.log(\`Chunk \${data.processedChunks}/\${data.totalChunks}\`);
+  }
+})
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // AUTH - LOGOUT
+            // ============================================================================
+            '/api/auth/logout': {
+                curl: `# Logout current user
+curl -k -X POST ${baseUrl}/api/auth/logout \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/auth/logout \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/auth/logout',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    '${baseUrl}/api/auth/logout',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print("Logged out successfully" if response.ok else "Logout failed")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/logout" -Method Post -Headers $headers
+Write-Output "Logged out successfully"`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/auth/logout', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(() => console.log('Logged out successfully'))
 .catch(err => console.error(err));
 
 // OR API Key + Secret Authentication
-fetch('${baseUrl}${endpoint_path}', {
-  method: '${method}',
+fetch('${baseUrl}/api/auth/logout', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  }
+})
+.then(() => console.log('Logged out'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // AUTH - GET CURRENT USER
+            // ============================================================================
+            '/api/auth/me': {
+                curl: `# Get current authenticated user info
+curl -k -X GET ${baseUrl}/api/auth/me \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/auth/me \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/auth/me',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/auth/me',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+user = response.json().get('user')
+print(f"User: {user['username']}, Role: {user['role']}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/me" -Headers $headers
+Write-Output "User: $($response.user.username), Role: $($response.user.role)"`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/auth/me', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => console.log('User:', data.user.username, 'Role:', data.user.role))
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/auth/me', {
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  }
+})
+.then(res => res.json())
+.then(data => console.log('User:', data.user))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // AUTH - CHANGE PASSWORD
+            // ============================================================================
+            '/api/auth/password': {
+                curl: `# Change current user's password
+curl -k -X PUT ${baseUrl}/api/auth/password \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "currentPassword": "oldPassword123",
+    "newPassword": "newSecurePassword456"
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X PUT ${baseUrl}/api/auth/password \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "currentPassword": "oldPassword123",
+    "newPassword": "newSecurePassword456"
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.put(
+    '${baseUrl}/api/auth/password',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'currentPassword': 'oldPassword123',
+        'newPassword': 'newSecurePassword456'
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.put(
+    '${baseUrl}/api/auth/password',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'currentPassword': 'oldPassword123',
+        'newPassword': 'newSecurePassword456'
+    },
+    verify=False
+)
+
+print("Password changed" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    currentPassword = "oldPassword123"
+    newPassword = "newSecurePassword456"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/password" -Method Put -Headers $headers -Body $body
+Write-Output "Password changed successfully"`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/auth/password', {
+  method: 'PUT',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    currentPassword: 'oldPassword123',
+    newPassword: 'newSecurePassword456'
+  })
+})
+.then(res => res.json())
+.then(() => console.log('Password changed successfully'))
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/auth/password', {
+  method: 'PUT',
   headers: {
     'X-API-Key': 'your_api_key',
     'X-API-Secret': 'your_api_secret',
     'Content-Type': 'application/json'
-  }${bodyPart}
+  },
+  body: JSON.stringify({
+    currentPassword: 'oldPassword123',
+    newPassword: 'newSecurePassword456'
+  })
+})
+.then(() => console.log('Password changed'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // MODEL CONFIGS
+            // ============================================================================
+            '/api/model-configs/:modelName': {
+                curl: `# Get model configuration
+curl -k -X GET "${baseUrl}/api/model-configs/llama-7b" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET "${baseUrl}/api/model-configs/llama-7b" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+model_name = "llama-7b"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/model-configs/{model_name}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/model-configs/{model_name}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+config = response.json()
+print(f"Context Size: {config.get('contextSize')}")
+print(f"GPU Layers: {config.get('gpuLayers')}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$modelName = "llama-7b"
+
+$config = Invoke-RestMethod -Uri "${baseUrl}/api/model-configs/$modelName" -Headers $headers
+Write-Output "Context Size: $($config.contextSize)"
+Write-Output "GPU Layers: $($config.gpuLayers)"`,
+                javascript: `const modelName = 'llama-7b';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/model-configs/\${modelName}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
-.then(data => console.log(data))
-.catch(err => console.error(err));`;
+.then(config => {
+  console.log('Context Size:', config.contextSize);
+  console.log('GPU Layers:', config.gpuLayers);
+})
+.catch(err => console.error(err));`
+            },
+            '/api/model-configs/:modelName/update': {
+                curl: `# Update model configuration
+curl -k -X PUT "${baseUrl}/api/model-configs/llama-7b" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contextSize": 8192,
+    "gpuLayers": 35,
+    "temperature": 0.7
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X PUT "${baseUrl}/api/model-configs/llama-7b" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contextSize": 8192,
+    "gpuLayers": 35
+  }'`,
+                python: `import requests
+
+model_name = "llama-7b"
+
+# Bearer Token Authentication
+response = requests.put(
+    f'${baseUrl}/api/model-configs/{model_name}',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'contextSize': 8192,
+        'gpuLayers': 35,
+        'temperature': 0.7
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.put(
+    f'${baseUrl}/api/model-configs/{model_name}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'contextSize': 8192,
+        'gpuLayers': 35
+    },
+    verify=False
+)
+
+print("Config updated" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+$modelName = "llama-7b"
+
+$body = @{
+    contextSize = 8192
+    gpuLayers = 35
+    temperature = 0.7
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/model-configs/$modelName" -Method Put -Headers $headers -Body $body
+Write-Output "Config updated successfully"`,
+                javascript: `const modelName = 'llama-7b';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/model-configs/\${modelName}\`, {
+  method: 'PUT',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    contextSize: 8192,
+    gpuLayers: 35,
+    temperature: 0.7
+  })
+})
+.then(res => res.json())
+.then(() => console.log('Config updated'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // HUGGINGFACE FILES
+            // ============================================================================
+            '/api/huggingface/files/:owner/:repo': {
+                curl: `# List files in a HuggingFace repository
+curl -k -X GET "${baseUrl}/api/huggingface/files/TheBloke/Llama-2-7B-GGUF" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET "${baseUrl}/api/huggingface/files/TheBloke/Llama-2-7B-GGUF" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+owner = "TheBloke"
+repo = "Llama-2-7B-GGUF"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/huggingface/files/{owner}/{repo}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/huggingface/files/{owner}/{repo}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+files = response.json()
+for f in files:
+    print(f"- {f['path']}: {f.get('size', 0) / 1e9:.2f} GB")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$owner = "TheBloke"
+$repo = "Llama-2-7B-GGUF"
+
+$files = Invoke-RestMethod -Uri "${baseUrl}/api/huggingface/files/$owner/$repo" -Headers $headers
+$files | ForEach-Object { Write-Output "- $($_.path): $([math]::Round($_.size / 1GB, 2)) GB" }`,
+                javascript: `const owner = 'TheBloke';
+const repo = 'Llama-2-7B-GGUF';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/huggingface/files/\${owner}/\${repo}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(files => files.forEach(f =>
+  console.log(\`- \${f.path}: \${(f.size / 1e9).toFixed(2)} GB\`)
+))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // DOWNLOADS
+            // ============================================================================
+            '/api/downloads': {
+                curl: `# List active downloads
+curl -k -X GET ${baseUrl}/api/downloads \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/downloads \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/downloads',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/downloads',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+downloads = response.json()
+for d in downloads:
+    print(f"- {d['filename']}: {d['progress']}% ({d['status']})")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+$downloads = Invoke-RestMethod -Uri "${baseUrl}/api/downloads" -Headers $headers
+$downloads | ForEach-Object {
+    Write-Output "- $($_.filename): $($_.progress)% ($($_.status))"
+}`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/downloads', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(downloads => downloads.forEach(d =>
+  console.log(\`- \${d.filename}: \${d.progress}% (\${d.status})\`)
+))
+.catch(err => console.error(err));`
+            },
+            '/api/downloads/:downloadId': {
+                curl: `# Cancel a download
+curl -k -X DELETE "${baseUrl}/api/downloads/dl_abc123" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X DELETE "${baseUrl}/api/downloads/dl_abc123" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+download_id = "dl_abc123"
+
+# Bearer Token Authentication
+response = requests.delete(
+    f'${baseUrl}/api/downloads/{download_id}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.delete(
+    f'${baseUrl}/api/downloads/{download_id}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print("Download cancelled" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$downloadId = "dl_abc123"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/downloads/$downloadId" -Method Delete -Headers $headers
+Write-Output "Download cancelled"`,
+                javascript: `const downloadId = 'dl_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/downloads/\${downloadId}\`, {
+  method: 'DELETE',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(() => console.log('Download cancelled'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // VLLM SLOTS
+            // ============================================================================
+            '/api/vllm/instances/:name/slots': {
+                curl: `# Get KV cache slots for a vLLM instance
+curl -k -X GET "${baseUrl}/api/vllm/instances/llama-7b/slots" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET "${baseUrl}/api/vllm/instances/llama-7b/slots" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+model_name = "llama-7b"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/vllm/instances/{model_name}/slots',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/vllm/instances/{model_name}/slots',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+slots = response.json()
+print(f"Used: {slots.get('used')}, Total: {slots.get('total')}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$modelName = "llama-7b"
+
+$slots = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/$modelName/slots" -Headers $headers
+Write-Output "Used: $($slots.used), Total: $($slots.total)"`,
+                javascript: `const modelName = 'llama-7b';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/vllm/instances/\${modelName}/slots\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(slots => console.log('Used:', slots.used, 'Total:', slots.total))
+.catch(err => console.error(err));`
+            },
+            '/api/vllm/instances/:name/slots/clear': {
+                curl: `# Clear KV cache for a vLLM instance
+curl -k -X POST "${baseUrl}/api/vllm/instances/llama-7b/slots/clear" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X POST "${baseUrl}/api/vllm/instances/llama-7b/slots/clear" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+model_name = "llama-7b"
+
+# Bearer Token Authentication
+response = requests.post(
+    f'${baseUrl}/api/vllm/instances/{model_name}/slots/clear',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    f'${baseUrl}/api/vllm/instances/{model_name}/slots/clear',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print("KV cache cleared" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$modelName = "llama-7b"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/$modelName/slots/clear" -Method Post -Headers $headers
+Write-Output "KV cache cleared"`,
+                javascript: `const modelName = 'llama-7b';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/vllm/instances/\${modelName}/slots/clear\`, {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(() => console.log('KV cache cleared'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // SYSTEM PROMPTS
+            // ============================================================================
+            '/api/system-prompts': {
+                curl: `# List all system prompts
+curl -k -X GET ${baseUrl}/api/system-prompts \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/system-prompts \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/system-prompts',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/system-prompts',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+prompts = response.json()
+for model, prompt in prompts.items():
+    print(f"- {model}: {prompt[:50]}...")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+$prompts = Invoke-RestMethod -Uri "${baseUrl}/api/system-prompts" -Headers $headers
+$prompts.PSObject.Properties | ForEach-Object {
+    Write-Output "- $($_.Name): $($_.Value.Substring(0, [Math]::Min(50, $_.Value.Length)))..."
+}`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/system-prompts', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(prompts => {
+  Object.entries(prompts).forEach(([model, prompt]) =>
+    console.log(\`- \${model}: \${prompt.substring(0, 50)}...\`)
+  );
+})
+.catch(err => console.error(err));`
+            },
+            '/api/system-prompts/:modelName': {
+                curl: `# Get system prompt for a specific model
+curl -k -X GET "${baseUrl}/api/system-prompts/llama-7b" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET "${baseUrl}/api/system-prompts/llama-7b" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+model_name = "llama-7b"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/system-prompts/{model_name}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/system-prompts/{model_name}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+result = response.json()
+print(f"System Prompt: {result.get('systemPrompt')}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$modelName = "llama-7b"
+
+$result = Invoke-RestMethod -Uri "${baseUrl}/api/system-prompts/$modelName" -Headers $headers
+Write-Output "System Prompt: $($result.systemPrompt)"`,
+                javascript: `const modelName = 'llama-7b';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/system-prompts/\${modelName}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(result => console.log('System Prompt:', result.systemPrompt))
+.catch(err => console.error(err));`
+            },
+            '/api/system-prompts/:modelName/update': {
+                curl: `# Update system prompt for a model
+curl -k -X PUT "${baseUrl}/api/system-prompts/llama-7b" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "systemPrompt": "You are a helpful AI assistant. Be concise and accurate."
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X PUT "${baseUrl}/api/system-prompts/llama-7b" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "systemPrompt": "You are a helpful AI assistant."
+  }'`,
+                python: `import requests
+
+model_name = "llama-7b"
+
+# Bearer Token Authentication
+response = requests.put(
+    f'${baseUrl}/api/system-prompts/{model_name}',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'systemPrompt': 'You are a helpful AI assistant. Be concise and accurate.'
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.put(
+    f'${baseUrl}/api/system-prompts/{model_name}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'systemPrompt': 'You are a helpful AI assistant.'
+    },
+    verify=False
+)
+
+print("System prompt updated" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+$modelName = "llama-7b"
+
+$body = @{
+    systemPrompt = "You are a helpful AI assistant. Be concise and accurate."
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/system-prompts/$modelName" -Method Put -Headers $headers -Body $body
+Write-Output "System prompt updated"`,
+                javascript: `const modelName = 'llama-7b';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/system-prompts/\${modelName}\`, {
+  method: 'PUT',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    systemPrompt: 'You are a helpful AI assistant. Be concise and accurate.'
+  })
+})
+.then(res => res.json())
+.then(() => console.log('System prompt updated'))
+.catch(err => console.error(err));`
+            },
+            '/api/system-prompts/:modelName/delete': {
+                curl: `# Delete system prompt for a model
+curl -k -X DELETE "${baseUrl}/api/system-prompts/llama-7b" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X DELETE "${baseUrl}/api/system-prompts/llama-7b" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+model_name = "llama-7b"
+
+# Bearer Token Authentication
+response = requests.delete(
+    f'${baseUrl}/api/system-prompts/{model_name}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.delete(
+    f'${baseUrl}/api/system-prompts/{model_name}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print("System prompt deleted" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$modelName = "llama-7b"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/system-prompts/$modelName" -Method Delete -Headers $headers
+Write-Output "System prompt deleted"`,
+                javascript: `const modelName = 'llama-7b';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/system-prompts/\${modelName}\`, {
+  method: 'DELETE',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(() => console.log('System prompt deleted'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // SYSTEM RESET
+            // ============================================================================
+            '/api/system/reset': {
+                curl: `# Reset system (Admin only) - stops all instances, clears caches
+curl -k -X POST ${baseUrl}/api/system/reset \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "stopInstances": true,
+    "clearCache": true
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/system/reset \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "stopInstances": true,
+    "clearCache": true
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/system/reset',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'stopInstances': True,
+        'clearCache': True
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    '${baseUrl}/api/system/reset',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'stopInstances': True,
+        'clearCache': True
+    },
+    verify=False
+)
+
+print("System reset complete" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    stopInstances = $true
+    clearCache = $true
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/system/reset" -Method Post -Headers $headers -Body $body
+Write-Output "System reset complete"`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/system/reset', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    stopInstances: true,
+    clearCache: true
+  })
+})
+.then(res => res.json())
+.then(() => console.log('System reset complete'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // PLAYWRIGHT STATUS
+            // ============================================================================
+            '/api/playwright/status': {
+                curl: `# Get Playwright browser status
+curl -k -X GET ${baseUrl}/api/playwright/status \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/playwright/status \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/playwright/status',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/playwright/status',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+status = response.json()
+print(f"Browser: {status.get('browser')}, Active: {status.get('active')}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+$status = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/status" -Headers $headers
+Write-Output "Browser: $($status.browser), Active: $($status.active)"`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/playwright/status', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(status => console.log('Browser:', status.browser, 'Active:', status.active))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // CONVERSATIONS
+            // ============================================================================
+            '/api/conversations': {
+                curl: `# List all conversations
+curl -k -X GET ${baseUrl}/api/conversations \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/conversations \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/conversations',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/conversations',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+conversations = response.json()
+for conv in conversations:
+    print(f"- {conv['id']}: {conv.get('title', 'Untitled')} ({len(conv.get('messages', []))} messages)")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+$conversations = Invoke-RestMethod -Uri "${baseUrl}/api/conversations" -Headers $headers
+$conversations | ForEach-Object {
+    Write-Output "- $($_.id): $($_.title) ($($_.messages.Count) messages)"
+}`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/conversations', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(convs => convs.forEach(c =>
+  console.log(\`- \${c.id}: \${c.title || 'Untitled'} (\${c.messages?.length || 0} messages)\`)
+))
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/create': {
+                curl: `# Create a new conversation
+curl -k -X POST ${baseUrl}/api/conversations \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "title": "New Conversation",
+    "model": "llama-7b"
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/conversations \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "title": "New Conversation",
+    "model": "llama-7b"
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/conversations',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'title': 'New Conversation',
+        'model': 'llama-7b'
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    '${baseUrl}/api/conversations',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'title': 'New Conversation',
+        'model': 'llama-7b'
+    },
+    verify=False
+)
+
+conv = response.json()
+print(f"Created conversation: {conv['id']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    title = "New Conversation"
+    model = "llama-7b"
+} | ConvertTo-Json
+
+$conv = Invoke-RestMethod -Uri "${baseUrl}/api/conversations" -Method Post -Headers $headers -Body $body
+Write-Output "Created conversation: $($conv.id)"`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/conversations', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    title: 'New Conversation',
+    model: 'llama-7b'
+  })
+})
+.then(res => res.json())
+.then(conv => console.log('Created conversation:', conv.id))
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id': {
+                curl: `# Get a specific conversation
+curl -k -X GET "${baseUrl}/api/conversations/conv_abc123" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET "${baseUrl}/api/conversations/conv_abc123" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+conversation_id = "conv_abc123"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/conversations/{conversation_id}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/conversations/{conversation_id}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+conv = response.json()
+print(f"Title: {conv.get('title')}")
+print(f"Messages: {len(conv.get('messages', []))}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$conversationId = "conv_abc123"
+
+$conv = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId" -Headers $headers
+Write-Output "Title: $($conv.title)"
+Write-Output "Messages: $($conv.messages.Count)"`,
+                javascript: `const conversationId = 'conv_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(conv => {
+  console.log('Title:', conv.title);
+  console.log('Messages:', conv.messages?.length || 0);
+})
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id/update': {
+                curl: `# Update a conversation
+curl -k -X PUT "${baseUrl}/api/conversations/conv_abc123" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "title": "Updated Title"
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X PUT "${baseUrl}/api/conversations/conv_abc123" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "title": "Updated Title"
+  }'`,
+                python: `import requests
+
+conversation_id = "conv_abc123"
+
+# Bearer Token Authentication
+response = requests.put(
+    f'${baseUrl}/api/conversations/{conversation_id}',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'title': 'Updated Title'
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.put(
+    f'${baseUrl}/api/conversations/{conversation_id}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'title': 'Updated Title'
+    },
+    verify=False
+)
+
+print("Conversation updated" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+$conversationId = "conv_abc123"
+
+$body = @{ title = "Updated Title" } | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId" -Method Put -Headers $headers -Body $body
+Write-Output "Conversation updated"`,
+                javascript: `const conversationId = 'conv_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}\`, {
+  method: 'PUT',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ title: 'Updated Title' })
+})
+.then(res => res.json())
+.then(() => console.log('Conversation updated'))
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id/delete': {
+                curl: `# Delete a conversation
+curl -k -X DELETE "${baseUrl}/api/conversations/conv_abc123" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X DELETE "${baseUrl}/api/conversations/conv_abc123" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+conversation_id = "conv_abc123"
+
+# Bearer Token Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print("Conversation deleted" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$conversationId = "conv_abc123"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId" -Method Delete -Headers $headers
+Write-Output "Conversation deleted"`,
+                javascript: `const conversationId = 'conv_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}\`, {
+  method: 'DELETE',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(() => console.log('Conversation deleted'))
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id/messages': {
+                curl: `# Add a message to a conversation
+curl -k -X POST "${baseUrl}/api/conversations/conv_abc123/messages" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "role": "user",
+    "content": "Hello, how are you?"
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST "${baseUrl}/api/conversations/conv_abc123/messages" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "role": "user",
+    "content": "Hello, how are you?"
+  }'`,
+                python: `import requests
+
+conversation_id = "conv_abc123"
+
+# Bearer Token Authentication
+response = requests.post(
+    f'${baseUrl}/api/conversations/{conversation_id}/messages',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'role': 'user',
+        'content': 'Hello, how are you?'
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    f'${baseUrl}/api/conversations/{conversation_id}/messages',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'role': 'user',
+        'content': 'Hello, how are you?'
+    },
+    verify=False
+)
+
+print("Message added" if response.ok else f"Error: {response.json()}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+$conversationId = "conv_abc123"
+
+$body = @{
+    role = "user"
+    content = "Hello, how are you?"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/messages" -Method Post -Headers $headers -Body $body
+Write-Output "Message added"`,
+                javascript: `const conversationId = 'conv_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}/messages\`, {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    role: 'user',
+    content: 'Hello, how are you?'
+  })
+})
+.then(res => res.json())
+.then(() => console.log('Message added'))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // APPS - START/STOP/RESTART
+            // ============================================================================
+            '/api/apps/:name/start': {
+                curl: `# Start an app
+curl -k -X POST "${baseUrl}/api/apps/my-app/start" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X POST "${baseUrl}/api/apps/my-app/start" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+app_name = "my-app"
+
+# Bearer Token Authentication
+response = requests.post(
+    f'${baseUrl}/api/apps/{app_name}/start',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    f'${baseUrl}/api/apps/{app_name}/start',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print(f"App started: {response.json()}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$appName = "my-app"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/$appName/start" -Method Post -Headers $headers
+Write-Output "App started: $($response | ConvertTo-Json)"`,
+                javascript: `const appName = 'my-app';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/apps/\${appName}/start\`, {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => console.log('App started:', data))
+.catch(err => console.error(err));`
+            },
+            '/api/apps/:name/stop': {
+                curl: `# Stop an app
+curl -k -X POST "${baseUrl}/api/apps/my-app/stop" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X POST "${baseUrl}/api/apps/my-app/stop" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+app_name = "my-app"
+
+# Bearer Token Authentication
+response = requests.post(
+    f'${baseUrl}/api/apps/{app_name}/stop',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    f'${baseUrl}/api/apps/{app_name}/stop',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print(f"App stopped: {response.json()}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$appName = "my-app"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/$appName/stop" -Method Post -Headers $headers
+Write-Output "App stopped"`,
+                javascript: `const appName = 'my-app';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/apps/\${appName}/stop\`, {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => console.log('App stopped:', data))
+.catch(err => console.error(err));`
+            },
+            '/api/apps/:name/restart': {
+                curl: `# Restart an app
+curl -k -X POST "${baseUrl}/api/apps/my-app/restart" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X POST "${baseUrl}/api/apps/my-app/restart" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+app_name = "my-app"
+
+# Bearer Token Authentication
+response = requests.post(
+    f'${baseUrl}/api/apps/{app_name}/restart',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    f'${baseUrl}/api/apps/{app_name}/restart',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print(f"App restarted: {response.json()}")`,
+                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$appName = "my-app"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/$appName/restart" -Method Post -Headers $headers
+Write-Output "App restarted"`,
+                javascript: `const appName = 'my-app';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => console.log('App restarted:', data))
+.catch(err => console.error(err));`
             }
-            return 'Select an endpoint and language';
         };
 
-        const code = examples[endpoint]?.[lang] || generateGenericExample(endpoint, lang);
+        const code = examples[endpoint]?.[lang] || `// No specific example available for ${endpoint}
+// Follow the pattern shown in similar endpoints with the appropriate HTTP method`;
 
         // Filter code based on selected auth type
         if (code && apiBuilderAuthType) {
