@@ -762,8 +762,22 @@ export default function ChatContainer({
                             // Handle continuation info (content was split due to context limits)
                             if (parsed.continuation?.hasMore) {
                                 const cont = parsed.continuation;
+                                const processedTokens = cont.processedTokens?.toLocaleString() || '0';
+                                const totalTokens = (cont.processedTokens + cont.remainingTokens)?.toLocaleString() || '?';
+                                const remainingTokens = cont.remainingTokens?.toLocaleString() || '0';
+                                const percentComplete = cont.processedTokens && cont.remainingTokens
+                                    ? Math.round((cont.processedTokens / (cont.processedTokens + cont.remainingTokens)) * 100)
+                                    : Math.round((cont.currentChunk / cont.totalChunks) * 100);
+
+                                // Update status indicator with detailed chunk info
+                                setProcessingStatus(
+                                    'chunking',
+                                    `Chunk ${cont.currentChunk}/${cont.totalChunks} (${percentComplete}% complete)`
+                                );
+
+                                // Show detailed snackbar with token info
                                 showSnackbar(
-                                    `📄 Processing chunk ${cont.currentChunk}/${cont.totalChunks}. ~${cont.remainingTokens?.toLocaleString()} tokens remaining.`,
+                                    `Processing chunk ${cont.currentChunk} of ${cont.totalChunks} | ${processedTokens} tokens processed | ${remainingTokens} tokens remaining`,
                                     'info'
                                 );
                             }

@@ -26,14 +26,15 @@ export async function login(username, password) {
 
 /**
  * Register new user
+ * Note: Does NOT auto-login - user should be redirected to sign-in page
  */
 export async function register(username, email, password) {
     try {
         const response = await api.auth.register({ username, email, password });
 
         if (response.success && response.user) {
-            useAuthStore.getState().setUser(response.user);
-            return { success: true, user: response.user };
+            // Don't auto-login - return success so UI can show message and redirect to login
+            return { success: true, user: response.user, isFirstUser: response.isFirstUser };
         }
 
         return { success: false, error: 'Registration failed' };

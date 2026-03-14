@@ -472,15 +472,23 @@ export default function ChatContainer({
 
             // Store chunking info if content was truncated
             if (continuationInfo && continuationInfo.hasMore) {
+                const processedTokens = continuationInfo.processedTokens?.toLocaleString() || '0';
+                const remainingTokens = continuationInfo.remainingTokens?.toLocaleString() || '0';
+                const percentComplete = continuationInfo.processedTokens && continuationInfo.remainingTokens
+                    ? Math.round((continuationInfo.processedTokens / (continuationInfo.processedTokens + continuationInfo.remainingTokens)) * 100)
+                    : Math.round((continuationInfo.currentChunk / continuationInfo.totalChunks) * 100);
+
                 setChunkingInfo({
                     hasMore: true,
                     processedChunks: continuationInfo.currentChunk || 1,
                     totalChunks: continuationInfo.totalChunks || 1,
                     remainingTokens: continuationInfo.remainingTokens || 0,
+                    processedTokens: continuationInfo.processedTokens || 0,
+                    percentComplete,
                     conversationId,
                 });
                 showSnackbar(
-                    `Large file chunked: Processed chunk ${continuationInfo.currentChunk} of ${continuationInfo.totalChunks}`,
+                    `Processing chunk ${continuationInfo.currentChunk} of ${continuationInfo.totalChunks} (${percentComplete}% complete) | ${processedTokens} tokens processed | ${remainingTokens} tokens remaining`,
                     'info'
                 );
             }

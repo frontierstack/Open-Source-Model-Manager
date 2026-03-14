@@ -4,7 +4,8 @@ import {
     FileSearch,
     Loader2,
     Sparkles,
-    Zap
+    Zap,
+    Layers
 } from 'lucide-react';
 
 /**
@@ -17,6 +18,7 @@ export const StatusType = {
     PARSING: 'parsing',
     PROCESSING: 'processing',
     GENERATING: 'generating',
+    CHUNKING: 'chunking',
 };
 
 /**
@@ -72,6 +74,15 @@ export default function StatusIndicator({ status, message }) {
                     color: 'text-primary-400',
                     bgColor: 'bg-primary-500/10',
                     borderColor: 'border-primary-500/20',
+                    iconAnimation: 'animate-pulse',
+                };
+            case StatusType.CHUNKING:
+                return {
+                    icon: Layers,
+                    label: message || 'Processing chunks',
+                    color: 'text-cyan-400',
+                    bgColor: 'bg-cyan-500/10',
+                    borderColor: 'border-cyan-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             default:

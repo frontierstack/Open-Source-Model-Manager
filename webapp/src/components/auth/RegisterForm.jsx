@@ -17,6 +17,7 @@ export function RegisterForm({ onLoginClick }) {
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [error, setError] = useState('');
+    const [success, setSuccess] = useState(false);
     const [loading, setLoading] = useState(false);
 
     const handleSubmit = async (e) => {
@@ -52,8 +53,14 @@ export function RegisterForm({ onLoginClick }) {
             const result = await register(username, email, password);
 
             if (result.success) {
-                // Success - AuthGuard will redirect
-                console.log('Registration successful');
+                // Show success message
+                setSuccess(true);
+                // Redirect to sign in page after a brief delay
+                setTimeout(() => {
+                    if (onLoginClick) {
+                        onLoginClick();
+                    }
+                }, 2000);
             } else {
                 setError(result.error || 'Registration failed');
             }
@@ -99,6 +106,12 @@ export function RegisterForm({ onLoginClick }) {
                     </Alert>
                 )}
 
+                {success && (
+                    <Alert severity="success">
+                        Account created successfully! Redirecting to sign in...
+                    </Alert>
+                )}
+
                 <form onSubmit={handleSubmit}>
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <TextField
@@ -108,7 +121,7 @@ export function RegisterForm({ onLoginClick }) {
                             value={username}
                             onChange={(e) => setUsername(e.target.value)}
                             autoFocus
-                            disabled={loading}
+                            disabled={loading || success}
                         />
 
                         <TextField
@@ -118,7 +131,7 @@ export function RegisterForm({ onLoginClick }) {
                             fullWidth
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
-                            disabled={loading}
+                            disabled={loading || success}
                         />
 
                         <TextField
@@ -129,7 +142,7 @@ export function RegisterForm({ onLoginClick }) {
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             helperText="Minimum 8 characters"
-                            disabled={loading}
+                            disabled={loading || success}
                         />
 
                         <TextField
@@ -139,7 +152,7 @@ export function RegisterForm({ onLoginClick }) {
                             fullWidth
                             value={confirmPassword}
                             onChange={(e) => setConfirmPassword(e.target.value)}
-                            disabled={loading}
+                            disabled={loading || success}
                         />
 
                         <Button
@@ -147,7 +160,7 @@ export function RegisterForm({ onLoginClick }) {
                             variant="contained"
                             fullWidth
                             size="large"
-                            disabled={loading}
+                            disabled={loading || success}
                             sx={{ mt: 1 }}
                         >
                             {loading ? <CircularProgress size={24} /> : 'Register'}

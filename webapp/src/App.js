@@ -3117,7 +3117,102 @@ fetch('${baseUrl}/api/apps', {
             }
         };
 
-        const code = examples[endpoint]?.[lang] || 'Select an endpoint and language';
+        // Generate a generic example if no specific one exists
+        const generateGenericExample = (ep, language) => {
+            // Determine HTTP method from endpoint name pattern
+            const isGet = ep.includes('/list') || ep.endsWith('s') && !ep.includes('/create') && !ep.includes('/execute') && !ep.includes('/update') && !ep.includes('/delete') || ep === '/api/auth/me' || ep === '/api/auth/has-users' || ep.includes('/stats') || ep.includes('/status');
+            const isDelete = ep.includes('/delete') || ep.endsWith('/:id/delete') || ep.endsWith('/:downloadId');
+            const isPost = ep.includes('/create') || ep.includes('/execute') || ep.includes('/start') || ep.includes('/stop') || ep.includes('/restart') || ep.includes('/login') || ep.includes('/register') || ep.includes('/logout') || ep.includes('/upload') || ep.includes('/pull') || ep.includes('/load') || ep.includes('/clear') || ep.includes('/reset') || ep.includes('/messages') || ep.includes('/revoke') || ep.includes('/recommend') || ep.includes('/regenerate');
+            const isPut = ep.includes('/update') || ep === '/api/auth/password' || ep.includes('/disable') || ep.includes('/enable');
+
+            const method = isDelete ? 'DELETE' : isPut ? 'PUT' : isPost ? 'POST' : 'GET';
+            const endpoint_path = ep.replace(/:(\w+)/g, '{$1}');
+
+            if (language === 'curl') {
+                const bodyPart = method !== 'GET' && method !== 'DELETE' ? ` \\
+  -d '{"key": "value"}'` : '';
+                return `# ${method} ${endpoint_path}
+curl -k -X ${method} ${baseUrl}${endpoint_path} \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json"${bodyPart}
+
+# OR API Key + Secret Authentication
+curl -k -X ${method} ${baseUrl}${endpoint_path} \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json"${bodyPart}`;
+            } else if (language === 'python') {
+                const requestMethod = method.toLowerCase();
+                const jsonPart = method !== 'GET' && method !== 'DELETE' ? ",\n    json={'key': 'value'}" : '';
+                return `import requests
+
+# Bearer Token Authentication
+response = requests.${requestMethod}(
+    '${baseUrl}${endpoint_path}',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    }${jsonPart},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.${requestMethod}(
+    '${baseUrl}${endpoint_path}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    }${jsonPart},
+    verify=False
+)
+
+result = response.json()
+print(result)`;
+            } else if (language === 'powershell') {
+                const bodyPart = method !== 'GET' && method !== 'DELETE' ? `
+$body = @{ key = "value" } | ConvertTo-Json
+` : '';
+                const bodyParam = method !== 'GET' && method !== 'DELETE' ? ' -Body $body' : '';
+                return `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+${bodyPart}
+$response = Invoke-RestMethod -Uri "${baseUrl}${endpoint_path}" -Method ${method} -Headers $headers${bodyParam}
+$response | ConvertTo-Json`;
+            } else if (language === 'javascript') {
+                const bodyPart = method !== 'GET' && method !== 'DELETE' ? `,
+  body: JSON.stringify({ key: 'value' })` : '';
+                return `// Bearer Token Authentication
+fetch('${baseUrl}${endpoint_path}', {
+  method: '${method}',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  }${bodyPart}
+})
+.then(res => res.json())
+.then(data => console.log(data))
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}${endpoint_path}', {
+  method: '${method}',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret',
+    'Content-Type': 'application/json'
+  }${bodyPart}
+})
+.then(res => res.json())
+.then(data => console.log(data))
+.catch(err => console.error(err));`;
+            }
+            return 'Select an endpoint and language';
+        };
+
+        const code = examples[endpoint]?.[lang] || generateGenericExample(endpoint, lang);
 
         // Filter code based on selected auth type
         if (code && apiBuilderAuthType) {
@@ -6347,51 +6442,112 @@ fetch('${baseUrl}/api/apps', {
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Chat & Completion ───</MenuItem>
                                                             <MenuItem value="/api/chat">POST /api/chat - Simple Chat</MenuItem>
                                                             <MenuItem value="/api/chat/stream">POST /api/chat/stream - Streaming Chat (SSE)</MenuItem>
+                                                            <MenuItem value="/api/chat/upload">POST /api/chat/upload - Upload File for Chat</MenuItem>
                                                             <MenuItem value="/api/complete">POST /api/complete - Text Completion</MenuItem>
+                                                            <MenuItem value="/api/chat/continuation/:conversationId">GET /api/chat/continuation/:id - Get Continuation Queue</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Authentication ───</MenuItem>
                                                             <MenuItem value="/api/auth/has-users">GET /api/auth/has-users - Check If Users Exist</MenuItem>
                                                             <MenuItem value="/api/auth/register">POST /api/auth/register - Register User</MenuItem>
                                                             <MenuItem value="/api/auth/login">POST /api/auth/login - Login</MenuItem>
+                                                            <MenuItem value="/api/auth/logout">POST /api/auth/logout - Logout</MenuItem>
+                                                            <MenuItem value="/api/auth/me">GET /api/auth/me - Get Current User</MenuItem>
+                                                            <MenuItem value="/api/auth/password">PUT /api/auth/password - Change Password</MenuItem>
                                                             <MenuItem value="/api/auth/reset-password">POST /api/auth/reset-password - Reset Password (Self-Service)</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Models ───</MenuItem>
                                                             <MenuItem value="/api/models">GET /api/models - List Models</MenuItem>
                                                             <MenuItem value="/api/models/pull">POST /api/models/pull - Download Model</MenuItem>
                                                             <MenuItem value="/api/models/:name/load">POST /api/models/:name/load - Load Model</MenuItem>
                                                             <MenuItem value="/api/models/:name">DELETE /api/models/:name - Delete Model</MenuItem>
+                                                            <MenuItem value="/api/model-configs/:modelName">GET /api/model-configs/:name - Get Model Config</MenuItem>
+                                                            <MenuItem value="/api/model-configs/:modelName/update">PUT /api/model-configs/:name - Update Model Config</MenuItem>
                                                             <MenuItem value="/api/huggingface/search">GET /api/huggingface/search - Search HuggingFace</MenuItem>
+                                                            <MenuItem value="/api/huggingface/files/:owner/:repo">GET /api/huggingface/files/:owner/:repo - List HuggingFace Files</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Downloads ───</MenuItem>
+                                                            <MenuItem value="/api/downloads">GET /api/downloads - List Active Downloads</MenuItem>
+                                                            <MenuItem value="/api/downloads/:downloadId">DELETE /api/downloads/:id - Cancel Download</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Instances ───</MenuItem>
                                                             <MenuItem value="/api/vllm/instances">GET /api/vllm/instances - List vLLM Instances</MenuItem>
                                                             <MenuItem value="/api/vllm/instances/:name">DELETE /api/vllm/instances/:name - Stop vLLM Instance</MenuItem>
+                                                            <MenuItem value="/api/vllm/instances/:name/slots">GET /api/vllm/instances/:name/slots - Get KV Cache Slots</MenuItem>
+                                                            <MenuItem value="/api/vllm/instances/:name/slots/clear">POST /api/vllm/instances/:name/slots/clear - Clear KV Cache</MenuItem>
                                                             <MenuItem value="/api/llamacpp/instances">GET /api/llamacpp/instances - List llama.cpp Instances</MenuItem>
                                                             <MenuItem value="/api/llamacpp/instances/:name">DELETE /api/llamacpp/instances/:name - Stop llama.cpp Instance</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── System Prompts ───</MenuItem>
+                                                            <MenuItem value="/api/system-prompts">GET /api/system-prompts - List System Prompts</MenuItem>
+                                                            <MenuItem value="/api/system-prompts/:modelName">GET /api/system-prompts/:name - Get System Prompt</MenuItem>
+                                                            <MenuItem value="/api/system-prompts/:modelName/update">PUT /api/system-prompts/:name - Update System Prompt</MenuItem>
+                                                            <MenuItem value="/api/system-prompts/:modelName/delete">DELETE /api/system-prompts/:name - Delete System Prompt</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Backend & System ───</MenuItem>
                                                             <MenuItem value="/api/backend/active">GET/POST /api/backend/active - Get/Set Backend</MenuItem>
                                                             <MenuItem value="/api/system/resources">GET /api/system/resources - System Hardware Info</MenuItem>
                                                             <MenuItem value="/api/system/optimal-settings">POST /api/system/optimal-settings - Calculate Settings</MenuItem>
+                                                            <MenuItem value="/api/system/reset">POST /api/system/reset - System Reset (Admin)</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Search & Web Scraping ───</MenuItem>
                                                             <MenuItem value="/api/search">GET /api/search - Web Search</MenuItem>
                                                             <MenuItem value="/api/playwright/fetch">POST /api/playwright/fetch - Fetch Webpage (Playwright)</MenuItem>
                                                             <MenuItem value="/api/playwright/interact">POST /api/playwright/interact - Interact with Page</MenuItem>
+                                                            <MenuItem value="/api/playwright/status">GET /api/playwright/status - Playwright Status</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Conversations ───</MenuItem>
+                                                            <MenuItem value="/api/conversations">GET /api/conversations - List Conversations</MenuItem>
+                                                            <MenuItem value="/api/conversations/create">POST /api/conversations - Create Conversation</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id">GET /api/conversations/:id - Get Conversation</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/update">PUT /api/conversations/:id - Update Conversation</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/delete">DELETE /api/conversations/:id - Delete Conversation</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/messages">POST /api/conversations/:id/messages - Add Message</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>
-                                                            <MenuItem value="/api/apps">GET/POST /api/apps - List/Control Apps</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Agents System ───</MenuItem>
-                                                            <MenuItem value="/api/agents">GET/POST /api/agents - List/Create Agents</MenuItem>
-                                                            <MenuItem value="/api/skills">GET /api/skills - List/Execute Skills</MenuItem>
-                                                            <MenuItem value="/api/tasks">GET/POST /api/tasks - List/Create Tasks</MenuItem>
+                                                            <MenuItem value="/api/apps">GET /api/apps - List Apps</MenuItem>
+                                                            <MenuItem value="/api/apps/:name/start">POST /api/apps/:name/start - Start App</MenuItem>
+                                                            <MenuItem value="/api/apps/:name/stop">POST /api/apps/:name/stop - Stop App</MenuItem>
+                                                            <MenuItem value="/api/apps/:name/restart">POST /api/apps/:name/restart - Restart App</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Agents ───</MenuItem>
+                                                            <MenuItem value="/api/agents">GET /api/agents - List Agents</MenuItem>
+                                                            <MenuItem value="/api/agents/create">POST /api/agents - Create Agent</MenuItem>
+                                                            <MenuItem value="/api/agents/:id">GET /api/agents/:id - Get Agent</MenuItem>
+                                                            <MenuItem value="/api/agents/:id/update">PUT /api/agents/:id - Update Agent</MenuItem>
+                                                            <MenuItem value="/api/agents/:id/delete">DELETE /api/agents/:id - Delete Agent</MenuItem>
+                                                            <MenuItem value="/api/agents/:id/regenerate-key">POST /api/agents/:id/regenerate-key - Regenerate Agent Key</MenuItem>
+                                                            <MenuItem value="/api/agent-permissions">GET/PUT /api/agent-permissions - Manage Agent Permissions</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Skills ───</MenuItem>
+                                                            <MenuItem value="/api/skills">GET /api/skills - List Skills</MenuItem>
+                                                            <MenuItem value="/api/skills/create">POST /api/skills - Create Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:id">GET /api/skills/:id - Get Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:id/update">PUT /api/skills/:id - Update Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:id/delete">DELETE /api/skills/:id - Delete Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:skillName/execute">POST /api/skills/:name/execute - Execute Skill</MenuItem>
+                                                            <MenuItem value="/api/agents/skills/available">GET /api/agents/skills/available - Available Skills</MenuItem>
+                                                            <MenuItem value="/api/agents/skills/discover">GET /api/agents/skills/discover - Discover Skills</MenuItem>
+                                                            <MenuItem value="/api/agents/skills/recommend">POST /api/agents/skills/recommend - Recommend Skills</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Tasks ───</MenuItem>
+                                                            <MenuItem value="/api/tasks">GET /api/tasks - List Tasks</MenuItem>
+                                                            <MenuItem value="/api/tasks/create">POST /api/tasks - Create Task</MenuItem>
+                                                            <MenuItem value="/api/tasks/:id">GET /api/tasks/:id - Get Task</MenuItem>
+                                                            <MenuItem value="/api/tasks/:id/update">PUT /api/tasks/:id - Update Task</MenuItem>
+                                                            <MenuItem value="/api/tasks/:id/delete">DELETE /api/tasks/:id - Delete Task</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── File Operations ───</MenuItem>
                                                             <MenuItem value="/api/agent/file/read">POST /api/agent/file/read - Read File</MenuItem>
                                                             <MenuItem value="/api/agent/file/write">POST /api/agent/file/write - Write File</MenuItem>
+                                                            <MenuItem value="/api/agent/file/delete">POST /api/agent/file/delete - Delete File</MenuItem>
                                                             <MenuItem value="/api/agent/file/list">POST /api/agent/file/list - List Directory</MenuItem>
+                                                            <MenuItem value="/api/agent/file/move">POST /api/agent/file/move - Move/Rename File</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── User Management (Admin) ───</MenuItem>
                                                             <MenuItem value="/api/users">GET /api/users - List Users</MenuItem>
+                                                            <MenuItem value="/api/users/create">POST /api/users - Create User</MenuItem>
                                                             <MenuItem value="/api/users/invite">POST /api/users/invite - Invite User by Email</MenuItem>
                                                             <MenuItem value="/api/users/:id">PUT /api/users/:id - Update User</MenuItem>
                                                             <MenuItem value="/api/users/:id/disable">PUT /api/users/:id/disable - Disable User</MenuItem>
                                                             <MenuItem value="/api/users/:id/enable">PUT /api/users/:id/enable - Enable User</MenuItem>
                                                             <MenuItem value="/api/users/:id/delete">DELETE /api/users/:id - Delete User</MenuItem>
                                                             <MenuItem value="/api/users/:username/reset-password">POST /api/users/:username/reset-password - Admin Reset Password</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Admin ───</MenuItem>
-                                                            <MenuItem value="/api/api-keys">GET/POST /api/api-keys - Manage API Keys</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── API Keys (Admin) ───</MenuItem>
+                                                            <MenuItem value="/api/api-keys">GET /api/api-keys - List API Keys</MenuItem>
+                                                            <MenuItem value="/api/api-keys/create">POST /api/api-keys - Create API Key</MenuItem>
+                                                            <MenuItem value="/api/api-keys/:id">PUT /api/api-keys/:id - Update API Key</MenuItem>
+                                                            <MenuItem value="/api/api-keys/:id/revoke">POST /api/api-keys/:id/revoke - Revoke API Key</MenuItem>
+                                                            <MenuItem value="/api/api-keys/:id/delete">DELETE /api/api-keys/:id - Delete API Key</MenuItem>
+                                                            <MenuItem value="/api/api-keys/:id/clear-usage">POST /api/api-keys/:id/clear-usage - Clear Usage Stats</MenuItem>
+                                                            <MenuItem value="/api/api-keys/:id/stats">GET /api/api-keys/:id/stats - Get Key Stats</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Documentation ───</MenuItem>
+                                                            <MenuItem value="/api/docs">GET /api/docs - Get API Documentation</MenuItem>
                                                         </Select>
                                                     </FormControl>
                                                 </Grid>

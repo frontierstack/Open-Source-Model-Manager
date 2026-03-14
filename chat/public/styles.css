@@ -1632,6 +1632,9 @@ body.font-size-large .markdown-content,
 .border-blue-500\/50{
   border-color: rgb(59 130 246 / 0.5);
 }
+.border-cyan-500\/20{
+  border-color: rgb(6 182 212 / 0.2);
+}
 .border-dark-500{
   --tw-border-opacity: 1;
   border-color: rgb(113 113 122 / var(--tw-border-opacity, 1));
@@ -1725,6 +1728,9 @@ body.font-size-large .markdown-content,
 }
 .bg-blue-500\/20{
   background-color: rgb(59 130 246 / 0.2);
+}
+.bg-cyan-500\/10{
+  background-color: rgb(6 182 212 / 0.1);
 }
 .bg-dark-700{
   --tw-bg-opacity: 1;
@@ -2109,6 +2115,10 @@ body.font-size-large .markdown-content,
 .text-blue-400{
   --tw-text-opacity: 1;
   color: rgb(96 165 250 / var(--tw-text-opacity, 1));
+}
+.text-cyan-400{
+  --tw-text-opacity: 1;
+  color: rgb(34 211 238 / var(--tw-text-opacity, 1));
 }
 .text-dark-100{
   --tw-text-opacity: 1;
