@@ -2814,6 +2814,32 @@ async function executeFileOperationSkill(skillName, params) {
                     return { success: false, error: 'filePath is required' };
                 }
 
+                // Check if file exists first
+                try {
+                    await fs.access(filePath);
+                } catch (e) {
+                    return { success: false, error: `File not found: ${filePath}` };
+                }
+
+                // Prompt for confirmation before deleting
+                log(colorize(`\n⚠️  DELETE FILE: ${filePath}`, 'yellow'));
+                const confirmation = await promptConfirmation('Are you sure you want to delete this file?');
+
+                if (confirmation === 'no') {
+                    return {
+                        success: false,
+                        filePath: filePath,
+                        message: 'Delete cancelled by user'
+                    };
+                } else if (confirmation === 'skip') {
+                    return {
+                        success: true,
+                        filePath: filePath,
+                        message: 'Delete skipped by user',
+                        skipped: true
+                    };
+                }
+
                 await fs.unlink(filePath);
 
                 return {
@@ -2848,9 +2874,34 @@ async function executeFileOperationSkill(skillName, params) {
                 }
 
                 // Check if path exists and is a directory
-                const stats = await fs.stat(dirPath);
+                let stats;
+                try {
+                    stats = await fs.stat(dirPath);
+                } catch (e) {
+                    return { success: false, error: `Directory not found: ${dirPath}` };
+                }
                 if (!stats.isDirectory()) {
                     return { success: false, error: `Path is a file, not a directory. Use delete_file instead: ${dirPath}` };
+                }
+
+                // Prompt for confirmation before deleting
+                log(colorize(`\n⚠️  DELETE DIRECTORY: ${dirPath}`, 'yellow'));
+                log(colorize('This will recursively delete all contents!', 'red'));
+                const confirmation = await promptConfirmation('Are you sure you want to delete this directory?');
+
+                if (confirmation === 'no') {
+                    return {
+                        success: false,
+                        dirPath: dirPath,
+                        message: 'Delete cancelled by user'
+                    };
+                } else if (confirmation === 'skip') {
+                    return {
+                        success: true,
+                        dirPath: dirPath,
+                        message: 'Delete skipped by user',
+                        skipped: true
+                    };
                 }
 
                 // Delete directory recursively
@@ -4827,7 +4878,7 @@ async function executeEmailSkill(skillName, params) {
             case 'read_email_file': {
                 // Support both emailPath (skill definition) and filePath (legacy)
                 const filePath = params.emailPath || params.filePath;
-                if (!filePath) return { success: false, error: 'emailPath parameter is required' };
+                if (!filePath) return { success: false, error: 'emailPath or filePath parameter is required' };
 
                 const content = await fs.readFile(filePath, 'utf8');
                 const headers = {};

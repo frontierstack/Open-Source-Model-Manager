@@ -100,6 +100,15 @@ function requireAuth(options = {}) {
         try {
             // Method 1: Check session authentication (Passport.js)
             if (req.isAuthenticated && req.isAuthenticated()) {
+                // Check if user account has been disabled
+                if (req.user.status === 'disabled') {
+                    // Destroy session and reject request
+                    req.logout((err) => {
+                        if (err) console.error('Error during logout:', err);
+                    });
+                    return res.status(403).json({ error: 'Account is disabled' });
+                }
+
                 req.userId = req.user.id;
                 req.authMethod = 'session';
                 req.authUser = req.user;

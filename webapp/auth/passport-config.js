@@ -55,9 +55,16 @@ function initialize(passport) {
 
     // Deserialize user from session
     // Retrieve full user object from ID stored in session
+    // Also checks if user has been disabled - boots them out if so
     passport.deserializeUser(async (id, done) => {
         try {
             const user = await getUserById(id);
+
+            // If user not found or has been disabled, invalidate session
+            if (!user || user.status === 'disabled') {
+                return done(null, false);
+            }
+
             done(null, user);
         } catch (error) {
             done(error);
