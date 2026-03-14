@@ -24,7 +24,7 @@ function initialize(passport) {
             }
 
             // Check if user is disabled
-            if (user.status === 'disabled') {
+            if (user.disabled === true) {
                 return done(null, false, { message: 'Account is disabled' });
             }
 
@@ -61,7 +61,7 @@ function initialize(passport) {
             const user = await getUserById(id);
 
             // If user not found or has been disabled, invalidate session
-            if (!user || user.status === 'disabled') {
+            if (!user || user.disabled === true) {
                 return done(null, false);
             }
 

@@ -3303,7 +3303,7 @@ async function requireAuth(req, res, next) {
     // Priority 1: Check for session authentication (Passport.js)
     if (req.isAuthenticated && req.isAuthenticated()) {
         // Check if user account has been disabled
-        if (req.user.status === 'disabled') {
+        if (req.user.disabled === true) {
             // Destroy session and reject request
             req.logout((err) => {
                 if (err) console.error('Error during logout:', err);
