@@ -34,6 +34,14 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **Multi-User Support** — Authentication with session management
 - **OpenAI-Compatible API** — Drop-in replacement for OpenAI endpoints
 - **Production-Ready** — Comprehensive error handling prevents crashes
+- **Thinking Model Support** — Parse and display reasoning from models like DeepSeek R1, Qwen QwQ
+- **Vision Model Support** — Send images to vision-capable models (LLaVA, Qwen-VL)
+
+### Web Scraping & Search
+
+- **[Scrapling](https://github.com/D4Vinci/Scrapling) Integration** — CAPTCHA-evading web scraping with StealthyFetcher
+- **Multi-Engine Fallback** — DuckDuckGo → Scrapling → Brave Search → Playwright
+- **Robust Content Fetching** — Scrapling → Playwright → axios fallback chain
 
 ### Koda — AI Agent System
 
@@ -55,7 +63,8 @@ Your autonomous AI project assistant with direct skill execution:
 **Key Features:**
 - Autonomous skill execution (55+ built-in skills)
 - Multi-agent collaboration for complex tasks
-- Email parsing (.eml and .msg Outlook format)
+- Email parsing (.eml and .msg) with nested attachment extraction
+- OCR for images and scanned documents
 - AES-256 encrypted credentials
 - Cross-platform (Linux, macOS, Windows)
 
@@ -351,6 +360,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [vLLM](https://github.com/vllm-project/vllm) — High-throughput serving
 - [HuggingFace](https://huggingface.co/) — Model hosting
 - [Material-UI](https://mui.com/) — React components
+- [Scrapling](https://github.com/D4Vinci/Scrapling) — CAPTCHA-evading web scraping
+- [Playwright](https://playwright.dev/) — Browser automation
 
 ---
 
