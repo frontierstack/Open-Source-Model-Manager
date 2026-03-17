@@ -730,6 +730,7 @@ export default function ChatContainer({
                 top_p: settings.topP,
                 max_tokens: settings.maxTokens,
                 stream: true,
+                conversationId: conversationId, // Include for background streaming support
             };
 
             // Include search results metadata if available
