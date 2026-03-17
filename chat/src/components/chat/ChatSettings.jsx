@@ -195,7 +195,7 @@ export default function ChatSettings({
             />
 
             {/* Modal */}
-            <div className="fixed inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[560px] md:max-h-[85vh] bg-dark-900 border border-white/10 rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden animate-fade-in">
+            <div className="fixed inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-[720px] md:max-h-[90vh] bg-dark-900 border border-white/10 rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden animate-fade-in">
                 {/* Header */}
                 <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5">
                     <h2 className="text-sm font-semibold text-dark-100">Settings</h2>
@@ -422,8 +422,8 @@ export default function ChatSettings({
                                             value={newPromptContent}
                                             onChange={(e) => setNewPromptContent(e.target.value)}
                                             placeholder="Enter the system prompt content..."
-                                            rows={5}
-                                            className="w-full px-3 py-2 bg-dark-800 border border-white/10 rounded-md text-dark-200 text-xs placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 resize-none"
+                                            rows={10}
+                                            className="w-full px-3 py-2 bg-dark-800 border border-white/10 rounded-md text-dark-200 text-xs placeholder-dark-500 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 resize-y min-h-[120px] max-h-[400px]"
                                         />
                                     </div>
                                     <div className="flex gap-2">

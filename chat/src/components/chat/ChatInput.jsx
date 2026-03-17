@@ -600,8 +600,8 @@ export default function ChatInput({
                             disabled={disabled}
                             rows={1}
                             className="flex-1 bg-transparent text-dark-100 placeholder:text-dark-500
-                                       resize-none focus:outline-none py-2 px-1 text-sm
-                                       max-h-[160px] min-h-[36px] leading-relaxed"
+                                       resize-y focus:outline-none py-2 px-1 text-sm
+                                       max-h-[400px] min-h-[36px] leading-relaxed"
                             style={{ height: 'auto' }}
                             aria-label="Message input"
                         />
