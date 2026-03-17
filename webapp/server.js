@@ -6197,6 +6197,142 @@ function extractLinksFromText(text) {
     return links;
 }
 
+/**
+ * Helper function to extract text content from email attachments recursively
+ * Handles nested emails (.eml, .msg), PDFs, and text documents
+ * @param {Array} attachments - Array of attachment objects from mailparser or msgreader
+ * @param {number} depth - Current recursion depth (max 3 levels to prevent infinite loops)
+ * @returns {Promise<string>} - Extracted text from all attachments
+ */
+async function extractEmailAttachmentContent(attachments, depth = 0) {
+    if (!attachments || !Array.isArray(attachments) || depth > 3) {
+        return '';
+    }
+
+    const { simpleParser } = require('mailparser');
+    const pdfParse = require('pdf-parse');
+    const mammoth = require('mammoth');
+
+    let extractedContent = '';
+
+    for (const att of attachments) {
+        try {
+            const filename = att.filename || att.fileName || att.name || 'attachment';
+            const ext = filename.toLowerCase().split('.').pop();
+            const contentType = att.contentType || att.mimeType || '';
+            const content = att.content || (att.dataBuffer ? Buffer.from(att.dataBuffer) : null);
+
+            if (!content) continue;
+
+            // Handle nested email attachments (.eml)
+            if (ext === 'eml' || contentType === 'message/rfc822') {
+                try {
+                    const parsed = await simpleParser(content);
+                    extractedContent += `\n\n=== Nested Email: ${parsed.subject || 'Untitled'} ===\n`;
+                    if (parsed.from?.text) extractedContent += `From: ${parsed.from.text}\n`;
+                    if (parsed.to?.text) extractedContent += `To: ${parsed.to.text}\n`;
+                    if (parsed.date) extractedContent += `Date: ${parsed.date.toISOString()}\n`;
+                    extractedContent += '\n';
+
+                    // Get body text
+                    const body = parsed.text || parsed.html?.replace(/<[^>]+>/g, '') || '';
+                    extractedContent += body.substring(0, 10000); // Limit nested body
+
+                    // Recursively parse nested email's attachments
+                    if (parsed.attachments?.length > 0) {
+                        const nestedContent = await extractEmailAttachmentContent(parsed.attachments, depth + 1);
+                        if (nestedContent) {
+                            extractedContent += nestedContent;
+                        }
+                    }
+                    extractedContent += '\n=== End Nested Email ===\n';
+                } catch (emlErr) {
+                    console.warn('Failed to parse nested EML:', emlErr.message);
+                }
+            }
+            // Handle nested .msg files
+            else if (ext === 'msg' || contentType === 'application/vnd.ms-outlook') {
+                try {
+                    const MsgReader = require('@kenjiuno/msgreader').default;
+                    const msgReader = new MsgReader(content);
+                    const fileData = msgReader.getFileData();
+
+                    extractedContent += `\n\n=== Nested Email (MSG): ${fileData.subject || 'Untitled'} ===\n`;
+                    if (fileData.senderEmail) extractedContent += `From: ${fileData.senderEmail}\n`;
+                    extractedContent += '\n';
+
+                    const body = fileData.body || '';
+                    extractedContent += body.substring(0, 10000);
+
+                    // Handle MSG attachments
+                    if (fileData.attachments?.length > 0) {
+                        for (const msgAtt of fileData.attachments) {
+                            const attContent = msgReader.getAttachment(msgAtt);
+                            if (attContent?.content) {
+                                const nestedContent = await extractEmailAttachmentContent([{
+                                    filename: msgAtt.fileName,
+                                    content: Buffer.from(attContent.content),
+                                    contentType: msgAtt.contentType
+                                }], depth + 1);
+                                if (nestedContent) {
+                                    extractedContent += nestedContent;
+                                }
+                            }
+                        }
+                    }
+                    extractedContent += '\n=== End Nested Email (MSG) ===\n';
+                } catch (msgErr) {
+                    console.warn('Failed to parse nested MSG:', msgErr.message);
+                }
+            }
+            // Handle PDF attachments
+            else if (ext === 'pdf' || contentType === 'application/pdf') {
+                try {
+                    const data = await pdfParse(content);
+                    if (data.text?.trim()) {
+                        extractedContent += `\n\n=== PDF Attachment: ${filename} ===\n`;
+                        extractedContent += data.text.substring(0, 20000); // Limit PDF content
+                        extractedContent += '\n=== End PDF ===\n';
+                    }
+                } catch (pdfErr) {
+                    console.warn('Failed to parse PDF attachment:', pdfErr.message);
+                }
+            }
+            // Handle Word documents
+            else if (ext === 'docx' || contentType.includes('wordprocessingml')) {
+                try {
+                    const result = await mammoth.extractRawText({ buffer: content });
+                    if (result.value?.trim()) {
+                        extractedContent += `\n\n=== Document Attachment: ${filename} ===\n`;
+                        extractedContent += result.value.substring(0, 20000);
+                        extractedContent += '\n=== End Document ===\n';
+                    }
+                } catch (docErr) {
+                    console.warn('Failed to parse DOCX attachment:', docErr.message);
+                }
+            }
+            // Handle text files
+            else if (ext === 'txt' || ext === 'csv' || ext === 'json' || ext === 'xml' ||
+                     ext === 'md' || ext === 'log' || contentType.startsWith('text/')) {
+                try {
+                    const textContent = content.toString('utf-8');
+                    if (textContent?.trim()) {
+                        extractedContent += `\n\n=== Text Attachment: ${filename} ===\n`;
+                        extractedContent += textContent.substring(0, 20000);
+                        extractedContent += '\n=== End Text ===\n';
+                    }
+                } catch (txtErr) {
+                    console.warn('Failed to parse text attachment:', txtErr.message);
+                }
+            }
+        } catch (attErr) {
+            console.warn('Failed to process attachment:', attErr.message);
+        }
+    }
+
+    return extractedContent;
+}
+
 // File upload endpoint for chat context
 app.post('/api/chat/upload', requireAuth, async (req, res) => {
     // Check permission
@@ -6449,12 +6585,33 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     .replace(/<[^>]+>/g, '');
                 emailContent += cleanBodyText;
 
-                // Include attachments info if present
+                // Include attachments info and extract content from attachments
                 if (fileData.attachments?.length > 0) {
                     emailContent += '\n\n---\nAttachments:\n';
                     fileData.attachments.forEach(att => {
                         emailContent += `- ${att.fileName || att.name || 'unnamed'} (${att.contentLength || 'unknown size'} bytes)\n`;
                     });
+
+                    // Extract content from attachments (nested emails, PDFs, etc.)
+                    try {
+                        const attachmentsWithContent = [];
+                        for (const att of fileData.attachments) {
+                            const attContent = msgReader.getAttachment(att);
+                            if (attContent?.content) {
+                                attachmentsWithContent.push({
+                                    filename: att.fileName,
+                                    content: Buffer.from(attContent.content),
+                                    contentType: att.contentType || ''
+                                });
+                            }
+                        }
+                        const attachmentText = await extractEmailAttachmentContent(attachmentsWithContent);
+                        if (attachmentText) {
+                            emailContent += '\n\n--- Attachment Contents ---' + attachmentText;
+                        }
+                    } catch (attErr) {
+                        console.warn('Failed to extract MSG attachments:', attErr.message);
+                    }
                 }
 
                 const originalLength = emailContent.length;
@@ -6474,7 +6631,8 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     links: links,
                     estimatedTokens: prepared.estimatedTokens,
                     requiresChunking: prepared.requiresChunking,
-                    totalChunks: prepared.totalChunks
+                    totalChunks: prepared.totalChunks,
+                    hasAttachments: fileData.attachments?.length > 0
                 });
             } catch (e) {
                 console.error('MSG parsing error:', e);
@@ -6519,12 +6677,22 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     .replace(/<[^>]+>/g, '');
                 emailContent += cleanBody;
 
-                // Include attachments info if present
+                // Include attachments info and extract content from attachments
                 if (parsed.attachments?.length > 0) {
                     emailContent += '\n\n---\nAttachments:\n';
                     parsed.attachments.forEach(att => {
                         emailContent += `- ${att.filename || 'unnamed'} (${att.contentType}, ${att.size} bytes)\n`;
                     });
+
+                    // Extract content from attachments (nested emails, PDFs, etc.)
+                    try {
+                        const attachmentText = await extractEmailAttachmentContent(parsed.attachments);
+                        if (attachmentText) {
+                            emailContent += '\n\n--- Attachment Contents ---' + attachmentText;
+                        }
+                    } catch (attErr) {
+                        console.warn('Failed to extract EML attachments:', attErr.message);
+                    }
                 }
 
                 const originalLength = emailContent.length;
@@ -6544,7 +6712,8 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     links: links,
                     estimatedTokens: prepared.estimatedTokens,
                     requiresChunking: prepared.requiresChunking,
-                    totalChunks: prepared.totalChunks
+                    totalChunks: prepared.totalChunks,
+                    hasAttachments: parsed.attachments?.length > 0
                 });
             } catch (e) {
                 console.error('EML parsing error:', e);
