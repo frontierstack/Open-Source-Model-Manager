@@ -133,6 +133,10 @@ const modelInstances = new Map();
 // Map structure: conversationId -> { content: string, processedChunks: number, totalChunks: number, chunkSize: number }
 const contentContinuationQueue = new Map();
 
+// Active streaming jobs - allows background processing when client disconnects
+// Map structure: conversationId -> { userId, content, startTime, model, clientConnected, abortController }
+const activeStreamingJobs = new Map();
+
 // Global active backend state - determines which backend is used for loading models
 // Can be 'llamacpp' or 'vllm'
 let activeBackend = 'llamacpp'; // Default to llama.cpp for older GPU support
@@ -6173,6 +6177,30 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
     }
 });
 
+// Check streaming status for a conversation
+app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const job = activeStreamingJobs.get(id);
+
+        if (!job) {
+            return res.json({ streaming: false });
+        }
+
+        res.json({
+            streaming: true,
+            content: job.content,
+            reasoning: job.reasoning || '',
+            startTime: job.startTime,
+            model: job.model,
+            clientConnected: job.clientConnected
+        });
+    } catch (error) {
+        console.error('Error checking streaming status:', error);
+        res.status(500).json({ error: 'Failed to check streaming status' });
+    }
+});
+
 // Smart content optimizer - removes unnecessary whitespace to save tokens
 function optimizeContent(text, options = {}) {
     if (!text || typeof text !== 'string') return text;
@@ -7409,12 +7437,30 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         });
 
         let fullResponse = '';
+        let fullReasoning = '';
         let tokenCount = 0;
         let promptTokens = 0;
         let completionTokens = 0;
+        let clientConnected = true;
+
+        // Track this streaming job for background processing
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const streamingConversationId = conversationId || req.body.conversationId;
+
+        if (streamingConversationId) {
+            activeStreamingJobs.set(streamingConversationId, {
+                userId,
+                content: '',
+                reasoning: '',
+                startTime: Date.now(),
+                model: targetModel,
+                clientConnected: true,
+                inputMessages: inputMessages // Save for reconstructing message on completion
+            });
+        }
 
         // Process the stream
-        response.data.on('data', (chunk) => {
+        response.data.on('data', async (chunk) => {
             try {
                 const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
 
@@ -7425,65 +7471,108 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // Check for [DONE] marker
                         if (data === '[DONE]') {
 
-                            // Send final event with both OpenAI-compatible format and done flag for Koda compatibility
-                            const finalEvent = {
-                                done: true,  // For Koda CLI compatibility
-                                choices: [{
-                                    delta: {},
-                                    index: 0,
-                                    finish_reason: 'stop'
-                                }],
-                                tokens: {
-                                    prompt_tokens: promptTokens,
-                                    completion_tokens: completionTokens,
-                                    total_tokens: promptTokens + completionTokens
-                                },
-                                usage: {
-                                    prompt_tokens: promptTokens,
-                                    completion_tokens: completionTokens,
-                                    total_tokens: promptTokens + completionTokens
-                                },
-                                model: targetModel,
-                                contextSize: contextSize,
-                                // Include continuation info if content was truncated
-                                ...(contentTruncated && {
-                                    continuation: {
-                                        hasMore: true,
-                                        ...truncationInfo,
-                                        message: `Content was split into ${truncationInfo.totalChunks} chunks. Processed chunk ${truncationInfo.currentChunk}. ~${truncationInfo.remainingTokens.toLocaleString()} tokens remaining.`
-                                    }
-                                })
-                            };
-                            res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
-
-                            // If there's remaining content, store it for continuation
-                            if (remainingContent && req.body.conversationId) {
-                                contentContinuationQueue.set(req.body.conversationId, {
-                                    content: remainingContent,
-                                    processedChunks: truncationInfo?.currentChunk || 1,
-                                    totalChunks: truncationInfo?.totalChunks || 1,
-                                    contextSize,
-                                    modelName: targetModel,
-                                    timestamp: Date.now()
-                                });
-                                console.log(`[Chat Stream] Queued ${remainingContent.length} chars for continuation (conversation: ${req.body.conversationId})`);
-                            }
-
-                            res.write(`data: [DONE]\n\n`);
-
-                            // Manually update token usage stats (streaming doesn't use res.send interceptor)
-                            if (req.apiKeyData) {
-                                const stats = apiKeyUsageStats.get(req.apiKeyData.id);
-                                if (stats && stats.requests.length > 0) {
-                                    const totalTokens = promptTokens + completionTokens;
-                                    const lastReq = stats.requests[stats.requests.length - 1];
-                                    lastReq.tokens = totalTokens;
-                                    stats.tokenCount += totalTokens;
-                                    apiKeyUsageStats.set(req.apiKeyData.id, stats);
+                            // Save response to conversation if client disconnected (background completion)
+                            if (!clientConnected && streamingConversationId && fullResponse) {
+                                try {
+                                    // Load existing messages and add the assistant response
+                                    const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
+                                    const assistantMessage = {
+                                        id: crypto.randomUUID(),
+                                        role: 'assistant',
+                                        content: fullResponse,
+                                        reasoning: fullReasoning || undefined,
+                                        timestamp: new Date().toISOString(),
+                                        responseTime: Date.now() - activeStreamingJobs.get(streamingConversationId)?.startTime,
+                                        tokenCount: completionTokens,
+                                        backgroundCompleted: true // Mark that this was completed in background
+                                    };
+                                    conversationMsgs.push(assistantMessage);
+                                    await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
+                                    console.log(`[Chat Stream] Background response saved to conversation ${streamingConversationId}`);
+                                } catch (saveErr) {
+                                    console.error(`[Chat Stream] Failed to save background response:`, saveErr);
                                 }
                             }
 
-                            res.end();
+                            // Clean up the streaming job
+                            if (streamingConversationId) {
+                                activeStreamingJobs.delete(streamingConversationId);
+                            }
+
+                            // Only send to client if still connected
+                            if (clientConnected) {
+                                // Send final event with both OpenAI-compatible format and done flag for Koda compatibility
+                                const finalEvent = {
+                                    done: true,  // For Koda CLI compatibility
+                                    choices: [{
+                                        delta: {},
+                                        index: 0,
+                                        finish_reason: 'stop'
+                                    }],
+                                    tokens: {
+                                        prompt_tokens: promptTokens,
+                                        completion_tokens: completionTokens,
+                                        total_tokens: promptTokens + completionTokens
+                                    },
+                                    usage: {
+                                        prompt_tokens: promptTokens,
+                                        completion_tokens: completionTokens,
+                                        total_tokens: promptTokens + completionTokens
+                                    },
+                                    model: targetModel,
+                                    contextSize: contextSize,
+                                    // Include continuation info if content was truncated
+                                    ...(contentTruncated && {
+                                        continuation: {
+                                            hasMore: true,
+                                            ...truncationInfo,
+                                            message: `Content was split into ${truncationInfo.totalChunks} chunks. Processed chunk ${truncationInfo.currentChunk}. ~${truncationInfo.remainingTokens.toLocaleString()} tokens remaining.`
+                                        }
+                                    })
+                                };
+                                try {
+                                    res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+                                } catch (writeErr) {
+                                    // Client disconnected
+                                }
+
+                                // If there's remaining content, store it for continuation
+                                if (remainingContent && req.body.conversationId) {
+                                    contentContinuationQueue.set(req.body.conversationId, {
+                                        content: remainingContent,
+                                        processedChunks: truncationInfo?.currentChunk || 1,
+                                        totalChunks: truncationInfo?.totalChunks || 1,
+                                        contextSize,
+                                        modelName: targetModel,
+                                        timestamp: Date.now()
+                                    });
+                                    console.log(`[Chat Stream] Queued ${remainingContent.length} chars for continuation (conversation: ${req.body.conversationId})`);
+                                }
+
+                                try {
+                                    res.write(`data: [DONE]\n\n`);
+                                } catch (writeErr) {
+                                    // Client disconnected
+                                }
+
+                                // Manually update token usage stats (streaming doesn't use res.send interceptor)
+                                if (req.apiKeyData) {
+                                    const stats = apiKeyUsageStats.get(req.apiKeyData.id);
+                                    if (stats && stats.requests.length > 0) {
+                                        const totalTokens = promptTokens + completionTokens;
+                                        const lastReq = stats.requests[stats.requests.length - 1];
+                                        lastReq.tokens = totalTokens;
+                                        stats.tokenCount += totalTokens;
+                                        apiKeyUsageStats.set(req.apiKeyData.id, stats);
+                                    }
+                                }
+
+                                try {
+                                    res.end();
+                                } catch (endErr) {
+                                    // Client disconnected
+                                }
+                            }
                             return;
                         }
 
@@ -7498,21 +7587,39 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                                 if (content || reasoning) {
                                     if (content) fullResponse += content;
+                                    if (reasoning) fullReasoning += reasoning;
                                     tokenCount++;
                                     completionTokens++;
 
-                                    // Send in both OpenAI-compatible and simple token format for client compatibility
-                                    const event = {
-                                        token: content || undefined,  // Simple format for Koda CLI
-                                        choices: [{
-                                            delta: {
-                                                content: content || undefined,
-                                                reasoning: reasoning || undefined
-                                            },
-                                            index: 0
-                                        }]
-                                    };
-                                    res.write(`data: ${JSON.stringify(event)}\n\n`);
+                                    // Update the streaming job with latest content
+                                    if (streamingConversationId) {
+                                        const job = activeStreamingJobs.get(streamingConversationId);
+                                        if (job) {
+                                            job.content = fullResponse;
+                                            job.reasoning = fullReasoning;
+                                        }
+                                    }
+
+                                    // Only send to client if still connected
+                                    if (clientConnected) {
+                                        // Send in both OpenAI-compatible and simple token format for client compatibility
+                                        const event = {
+                                            token: content || undefined,  // Simple format for Koda CLI
+                                            choices: [{
+                                                delta: {
+                                                    content: content || undefined,
+                                                    reasoning: reasoning || undefined
+                                                },
+                                                index: 0
+                                            }]
+                                        };
+                                        try {
+                                            res.write(`data: ${JSON.stringify(event)}\n\n`);
+                                        } catch (writeErr) {
+                                            // Client disconnected during write
+                                            clientConnected = false;
+                                        }
+                                    }
                                 }
                             }
 
@@ -7536,9 +7643,36 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         });
 
-        response.data.on('end', () => {
-            // If stream ended without [DONE] marker, send final event
-            if (!res.writableEnded) {
+        response.data.on('end', async () => {
+            // Save response to conversation if client disconnected (background completion)
+            if (!clientConnected && streamingConversationId && fullResponse) {
+                try {
+                    const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
+                    const assistantMessage = {
+                        id: crypto.randomUUID(),
+                        role: 'assistant',
+                        content: fullResponse,
+                        reasoning: fullReasoning || undefined,
+                        timestamp: new Date().toISOString(),
+                        responseTime: Date.now() - (activeStreamingJobs.get(streamingConversationId)?.startTime || Date.now()),
+                        tokenCount: completionTokens,
+                        backgroundCompleted: true
+                    };
+                    conversationMsgs.push(assistantMessage);
+                    await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
+                    console.log(`[Chat Stream] Background response saved to conversation ${streamingConversationId} (end event)`);
+                } catch (saveErr) {
+                    console.error(`[Chat Stream] Failed to save background response:`, saveErr);
+                }
+            }
+
+            // Clean up the streaming job
+            if (streamingConversationId) {
+                activeStreamingJobs.delete(streamingConversationId);
+            }
+
+            // If stream ended without [DONE] marker, send final event (only if client connected)
+            if (clientConnected && !res.writableEnded) {
                 const finalEvent = {
                     done: true,
                     tokens: {
@@ -7550,7 +7684,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     response: fullResponse,
                     contextSize: contextSize  // Include context window size for client tracking
                 };
-                res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+                try {
+                    res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+                } catch (writeErr) {
+                    // Client disconnected
+                }
 
                 // Manually update token usage stats (streaming doesn't use res.send interceptor)
                 if (req.apiKeyData) {
@@ -7564,7 +7702,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     }
                 }
 
-                res.end();
+                try {
+                    res.end();
+                } catch (endErr) {
+                    // Client disconnected
+                }
             }
         });
 
@@ -7580,10 +7722,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         });
 
-        // Handle client disconnect
+        // Handle client disconnect - DON'T destroy stream, let it continue in background
         req.on('close', () => {
-            if (response.data) {
-                response.data.destroy();
+            clientConnected = false;
+            // Update the job to mark client as disconnected
+            if (streamingConversationId) {
+                const job = activeStreamingJobs.get(streamingConversationId);
+                if (job) {
+                    job.clientConnected = false;
+                    console.log(`[Chat Stream] Client disconnected for conversation ${streamingConversationId}, continuing in background...`);
+                }
             }
         });
 

@@ -187,9 +187,73 @@ export default function ChatContainer({
             if (response.ok) {
                 const data = await response.json();
                 setMessages(data.messages || []);
+
+                // Check if there's active streaming for this conversation
+                checkActiveStreaming(conversationId);
             }
         } catch (error) {
             console.error('Failed to load messages:', error);
+        }
+    };
+
+    // Check for active background streaming on a conversation
+    const checkActiveStreaming = async (conversationId) => {
+        try {
+            const response = await fetch(`/api/conversations/${conversationId}/streaming`, { credentials: 'include' });
+            if (response.ok) {
+                const data = await response.json();
+                if (data.streaming) {
+                    // There's active streaming - show the content and start polling
+                    setStreaming(true);
+                    setStreamingContent(data.content || '');
+                    setStreamingReasoning(data.reasoning || '');
+                    setIsLoading(true);
+                    setProcessingStatus('thinking', 'Generating in background...');
+
+                    // Start polling for updates
+                    const pollInterval = setInterval(async () => {
+                        try {
+                            const pollResponse = await fetch(`/api/conversations/${conversationId}/streaming`, { credentials: 'include' });
+                            if (pollResponse.ok) {
+                                const pollData = await pollResponse.json();
+                                if (pollData.streaming) {
+                                    // Still streaming - update content
+                                    setStreamingContent(pollData.content || '');
+                                    setStreamingReasoning(pollData.reasoning || '');
+                                } else {
+                                    // Streaming finished - reload messages and clear streaming state
+                                    clearInterval(pollInterval);
+                                    clearStreaming();
+                                    setIsLoading(false);
+                                    clearProcessingStatus();
+                                    // Reload messages to get the completed response
+                                    const msgResponse = await fetch(`/api/conversations/${conversationId}`, { credentials: 'include' });
+                                    if (msgResponse.ok) {
+                                        const msgData = await msgResponse.json();
+                                        setMessages(msgData.messages || []);
+                                    }
+                                    showSnackbar('Background response completed', 'success');
+                                }
+                            }
+                        } catch (pollError) {
+                            console.error('Failed to poll streaming status:', pollError);
+                            clearInterval(pollInterval);
+                            clearStreaming();
+                            setIsLoading(false);
+                        }
+                    }, 500); // Poll every 500ms
+
+                    // Store the interval ID so we can clear it if user navigates away
+                    streamingConversationRef.current = conversationId;
+
+                    // Clear interval after 5 minutes max (safety limit)
+                    setTimeout(() => {
+                        clearInterval(pollInterval);
+                    }, 5 * 60 * 1000);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to check streaming status:', error);
         }
     };
 
