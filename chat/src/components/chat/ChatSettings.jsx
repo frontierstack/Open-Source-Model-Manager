@@ -60,20 +60,42 @@ export default function ChatSettings({
     ];
 
     const fontFamilyOptions = [
-        { value: 'system', label: 'System Default' },
-        { value: 'inter', label: 'Inter' },
-        { value: 'roboto', label: 'Roboto' },
-        { value: 'opensans', label: 'Open Sans' },
-        { value: 'lato', label: 'Lato' },
-        { value: 'poppins', label: 'Poppins' },
-        { value: 'nunito', label: 'Nunito' },
-        { value: 'sourcesans', label: 'Source Sans Pro' },
-        { value: 'merriweather', label: 'Merriweather' },
-        { value: 'playfair', label: 'Playfair Display' },
-        { value: 'georgia', label: 'Georgia' },
-        { value: 'jetbrains', label: 'JetBrains Mono' },
-        { value: 'firacode', label: 'Fira Code' },
-        { value: 'consolas', label: 'Consolas' },
+        // Sans-Serif - Modern
+        { value: 'system', label: 'System Default', category: 'sans' },
+        { value: 'inter', label: 'Inter', category: 'sans' },
+        { value: 'roboto', label: 'Roboto', category: 'sans' },
+        { value: 'opensans', label: 'Open Sans', category: 'sans' },
+        { value: 'lato', label: 'Lato', category: 'sans' },
+        { value: 'poppins', label: 'Poppins', category: 'sans' },
+        { value: 'nunito', label: 'Nunito', category: 'sans' },
+        { value: 'sourcesans', label: 'Source Sans Pro', category: 'sans' },
+        { value: 'dmsans', label: 'DM Sans', category: 'sans' },
+        { value: 'worksans', label: 'Work Sans', category: 'sans' },
+        { value: 'plusjakarta', label: 'Plus Jakarta Sans', category: 'sans' },
+        { value: 'lexend', label: 'Lexend', category: 'sans' },
+        { value: 'outfit', label: 'Outfit', category: 'sans' },
+        { value: 'spacegrotesk', label: 'Space Grotesk', category: 'sans' },
+        { value: 'ibmplex', label: 'IBM Plex Sans', category: 'sans' },
+        { value: 'manrope', label: 'Manrope', category: 'sans' },
+        { value: 'urbanist', label: 'Urbanist', category: 'sans' },
+        { value: 'sora', label: 'Sora', category: 'sans' },
+        // Serif
+        { value: 'merriweather', label: 'Merriweather', category: 'serif' },
+        { value: 'playfair', label: 'Playfair Display', category: 'serif' },
+        { value: 'georgia', label: 'Georgia', category: 'serif' },
+        { value: 'crimsonpro', label: 'Crimson Pro', category: 'serif' },
+        { value: 'librebaskerville', label: 'Libre Baskerville', category: 'serif' },
+        { value: 'lora', label: 'Lora', category: 'serif' },
+        { value: 'sourceserpro', label: 'Source Serif Pro', category: 'serif' },
+        // Monospace
+        { value: 'jetbrains', label: 'JetBrains Mono', category: 'mono' },
+        { value: 'firacode', label: 'Fira Code', category: 'mono' },
+        { value: 'consolas', label: 'Consolas', category: 'mono' },
+        { value: 'spacemono', label: 'Space Mono', category: 'mono' },
+        { value: 'ubuntumono', label: 'Ubuntu Mono', category: 'mono' },
+        { value: 'anonymouspro', label: 'Anonymous Pro', category: 'mono' },
+        { value: 'cascadiacode', label: 'Cascadia Code', category: 'mono' },
+        { value: 'victormono', label: 'Victor Mono', category: 'mono' },
     ];
 
     // Reset state when modal closes
@@ -124,18 +146,33 @@ export default function ChatSettings({
     ];
 
     const themeOptions = [
+        // Standard
         { value: 'dark', label: 'Dark', icon: Moon, description: 'Default dark theme' },
         { value: 'light', label: 'Light', icon: Sun, description: 'Clean white theme' },
         { value: 'obsidian', label: 'Obsidian', icon: Moon, description: 'Pure black OLED' },
+        // Nature
         { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Deep blue theme' },
         { value: 'forest', label: 'Forest', icon: Sparkles, description: 'Natural greens' },
         { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm orange tones' },
         { value: 'rose', label: 'Rose', icon: Sparkles, description: 'Soft pink theme' },
+        { value: 'aurora', label: 'Aurora', icon: Sparkles, description: 'Northern lights' },
+        { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Deep night blue' },
+        // Classic Dev
         { value: 'nord', label: 'Nord', icon: Moon, description: 'Arctic palette' },
         { value: 'solarized', label: 'Solarized', icon: Sun, description: 'Solarized Dark' },
         { value: 'gruvbox', label: 'Gruvbox', icon: Moon, description: 'Retro groove' },
+        { value: 'dracula', label: 'Dracula', icon: Moon, description: 'Dark purple' },
+        { value: 'monokai', label: 'Monokai', icon: Code, description: 'Sublime classic' },
+        { value: 'onedark', label: 'One Dark', icon: Moon, description: 'Atom inspired' },
+        { value: 'tokyo', label: 'Tokyo Night', icon: Moon, description: 'Neon city' },
+        { value: 'catppuccin', label: 'Catppuccin', icon: Sparkles, description: 'Pastel colors' },
+        { value: 'palenight', label: 'Palenight', icon: Moon, description: 'Material dark' },
+        // Vibrant
         { value: 'matrix', label: 'Matrix', icon: Code, description: 'Hacker terminal' },
         { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon vibes' },
+        { value: 'synthwave', label: 'Synthwave', icon: Zap, description: '80s retro' },
+        { value: 'vaporwave', label: 'Vaporwave', icon: Sparkles, description: 'Aesthetic pink' },
+        { value: 'neonoir', label: 'Neo Noir', icon: Moon, description: 'Dark neon' },
     ];
 
     const currentTheme = theme || 'system';

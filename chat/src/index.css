@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Open+Sans:wght@300;400;600&family=Lato:wght@300;400;700&family=Poppins:wght@300;400;500;600&family=Nunito:wght@300;400;600&family=Source+Sans+Pro:wght@300;400;600&family=Merriweather:wght@300;400;700&family=Playfair+Display:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Fira+Code:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Anonymous+Pro:wght@400;700&family=Crimson+Pro:wght@300;400;600&family=DM+Sans:wght@300;400;500;600&family=Fira+Code:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Lato:wght@300;400;700&family=Lexend:wght@300;400;500;600&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;600&family=Manrope:wght@300;400;500;600&family=Merriweather:wght@300;400;700&family=Nunito:wght@300;400;600&family=Open+Sans:wght@300;400;600&family=Outfit:wght@300;400;500;600&family=Playfair+Display:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Poppins:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Sora:wght@300;400;500;600&family=Source+Sans+Pro:wght@300;400;600&family=Source+Serif+Pro:wght@300;400;600&family=Space+Grotesk:wght@300;400;500;600&family=Space+Mono:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Urbanist:wght@300;400;500;600&family=Victor+Mono:wght@400;500&family=Work+Sans:wght@300;400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -1272,6 +1272,390 @@
 }
 
 /* ============================================
+   Theme: Aurora
+   Northern lights inspired theme
+   ============================================ */
+.theme-aurora {
+    --primary-rgb: 147, 112, 219;
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #21262d;
+    --bg-elevated: #131920;
+    --bg-hover: rgba(147, 112, 219, 0.08);
+    --bg-active: rgba(147, 112, 219, 0.12);
+
+    --surface-primary: rgba(22, 27, 34, 0.9);
+    --surface-secondary: rgba(33, 38, 45, 0.8);
+    --surface-glass: rgba(13, 17, 23, 0.95);
+
+    --text-primary: #e6edf3;
+    --text-secondary: #b8c9db;
+    --text-tertiary: #7d8590;
+    --text-muted: #484f58;
+
+    --border-primary: rgba(147, 112, 219, 0.15);
+    --border-secondary: rgba(147, 112, 219, 0.08);
+    --border-hover: rgba(147, 112, 219, 0.25);
+    --border-focus: rgba(147, 112, 219, 0.5);
+
+    --accent-primary: #9370db;
+    --accent-secondary: #58a6ff;
+    --accent-hover: #a78bfa;
+    --accent-muted: rgba(147, 112, 219, 0.15);
+
+    /* User message - aurora purple/blue */
+    --user-msg-from: #2d2850;
+    --user-msg-to: #1e1a3d;
+    --user-msg-hover-from: #3a3362;
+    --user-msg-hover-to: #2d2850;
+    --user-msg-text: #e0d8f8;
+
+    --assistant-bg: rgba(22, 27, 34, 0.8);
+    --assistant-border: rgba(147, 112, 219, 0.12);
+    --assistant-text: #e6edf3;
+
+    --scrollbar-thumb: rgba(147, 112, 219, 0.2);
+    --scrollbar-thumb-hover: rgba(147, 112, 219, 0.35);
+
+    --code-bg: #0a0d12;
+    --code-header-bg: rgba(22, 27, 34, 0.7);
+    --code-border: rgba(147, 112, 219, 0.1);
+
+    --input-bg: rgba(19, 25, 32, 0.8);
+    --input-border: rgba(147, 112, 219, 0.2);
+    --input-focus-border: rgba(147, 112, 219, 0.5);
+    --input-focus-ring: rgba(147, 112, 219, 0.15);
+
+    --shadow-accent: rgba(147, 112, 219, 0.3);
+    --shadow-accent-hover: rgba(88, 166, 255, 0.4);
+
+    --success: #3fb950;
+    --warning: #d29922;
+    --error: #f85149;
+    --info: #58a6ff;
+}
+
+/* ============================================
+   Theme: One Dark
+   Atom One Dark theme
+   ============================================ */
+.theme-onedark {
+    --primary-rgb: 97, 175, 239;
+    --bg-primary: #282c34;
+    --bg-secondary: #2c323c;
+    --bg-tertiary: #3e4451;
+    --bg-elevated: #2e343e;
+    --bg-hover: rgba(97, 175, 239, 0.08);
+    --bg-active: rgba(97, 175, 239, 0.12);
+
+    --surface-primary: rgba(44, 50, 60, 0.9);
+    --surface-secondary: rgba(62, 68, 81, 0.8);
+    --surface-glass: rgba(40, 44, 52, 0.95);
+
+    --text-primary: #abb2bf;
+    --text-secondary: #9da5b4;
+    --text-tertiary: #5c6370;
+    --text-muted: #4b5263;
+
+    --border-primary: rgba(97, 175, 239, 0.12);
+    --border-secondary: rgba(97, 175, 239, 0.06);
+    --border-hover: rgba(97, 175, 239, 0.2);
+    --border-focus: rgba(97, 175, 239, 0.5);
+
+    --accent-primary: #61afef;
+    --accent-secondary: #c678dd;
+    --accent-hover: #56b6c2;
+    --accent-muted: rgba(97, 175, 239, 0.15);
+
+    /* User message - one dark blue */
+    --user-msg-from: #2a3a50;
+    --user-msg-to: #1e2d3f;
+    --user-msg-hover-from: #354a62;
+    --user-msg-hover-to: #2a3a50;
+    --user-msg-text: #d0e4f8;
+
+    --assistant-bg: rgba(44, 50, 60, 0.8);
+    --assistant-border: rgba(97, 175, 239, 0.1);
+    --assistant-text: #abb2bf;
+
+    --scrollbar-thumb: rgba(97, 175, 239, 0.15);
+    --scrollbar-thumb-hover: rgba(97, 175, 239, 0.25);
+
+    --code-bg: #21252b;
+    --code-header-bg: rgba(44, 50, 60, 0.7);
+    --code-border: rgba(97, 175, 239, 0.08);
+
+    --input-bg: rgba(46, 52, 62, 0.8);
+    --input-border: rgba(97, 175, 239, 0.15);
+    --input-focus-border: rgba(97, 175, 239, 0.5);
+    --input-focus-ring: rgba(97, 175, 239, 0.15);
+
+    --shadow-accent: rgba(97, 175, 239, 0.25);
+    --shadow-accent-hover: rgba(198, 120, 221, 0.35);
+
+    --success: #98c379;
+    --warning: #e5c07b;
+    --error: #e06c75;
+    --info: #61afef;
+}
+
+/* ============================================
+   Theme: Palenight
+   Material Palenight theme
+   ============================================ */
+.theme-palenight {
+    --primary-rgb: 199, 146, 234;
+    --bg-primary: #292d3e;
+    --bg-secondary: #343a50;
+    --bg-tertiary: #444862;
+    --bg-elevated: #303445;
+    --bg-hover: rgba(199, 146, 234, 0.08);
+    --bg-active: rgba(199, 146, 234, 0.12);
+
+    --surface-primary: rgba(52, 58, 80, 0.9);
+    --surface-secondary: rgba(68, 72, 98, 0.8);
+    --surface-glass: rgba(41, 45, 62, 0.95);
+
+    --text-primary: #a6accd;
+    --text-secondary: #8087a2;
+    --text-tertiary: #676e95;
+    --text-muted: #4e5579;
+
+    --border-primary: rgba(199, 146, 234, 0.12);
+    --border-secondary: rgba(199, 146, 234, 0.06);
+    --border-hover: rgba(199, 146, 234, 0.2);
+    --border-focus: rgba(199, 146, 234, 0.5);
+
+    --accent-primary: #c792ea;
+    --accent-secondary: #82aaff;
+    --accent-hover: #89ddff;
+    --accent-muted: rgba(199, 146, 234, 0.15);
+
+    /* User message - palenight purple */
+    --user-msg-from: #3a3560;
+    --user-msg-to: #2c2850;
+    --user-msg-hover-from: #4a4572;
+    --user-msg-hover-to: #3a3560;
+    --user-msg-text: #e0d8f0;
+
+    --assistant-bg: rgba(52, 58, 80, 0.8);
+    --assistant-border: rgba(199, 146, 234, 0.1);
+    --assistant-text: #a6accd;
+
+    --scrollbar-thumb: rgba(199, 146, 234, 0.15);
+    --scrollbar-thumb-hover: rgba(199, 146, 234, 0.25);
+
+    --code-bg: #232635;
+    --code-header-bg: rgba(52, 58, 80, 0.7);
+    --code-border: rgba(199, 146, 234, 0.08);
+
+    --input-bg: rgba(48, 52, 69, 0.8);
+    --input-border: rgba(199, 146, 234, 0.15);
+    --input-focus-border: rgba(199, 146, 234, 0.5);
+    --input-focus-ring: rgba(199, 146, 234, 0.15);
+
+    --shadow-accent: rgba(199, 146, 234, 0.25);
+    --shadow-accent-hover: rgba(130, 170, 255, 0.35);
+
+    --success: #c3e88d;
+    --warning: #ffcb6b;
+    --error: #f07178;
+    --info: #82aaff;
+}
+
+/* ============================================
+   Theme: Synthwave
+   80s retro synthwave theme
+   ============================================ */
+.theme-synthwave {
+    --primary-rgb: 255, 110, 199;
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #262640;
+    --bg-tertiary: #333355;
+    --bg-elevated: #1f1f35;
+    --bg-hover: rgba(255, 110, 199, 0.1);
+    --bg-active: rgba(255, 110, 199, 0.15);
+
+    --surface-primary: rgba(38, 38, 64, 0.9);
+    --surface-secondary: rgba(51, 51, 85, 0.8);
+    --surface-glass: rgba(26, 26, 46, 0.95);
+
+    --text-primary: #f5f5f5;
+    --text-secondary: #ff6ec7;
+    --text-tertiary: #c97dff;
+    --text-muted: #6a6a8e;
+
+    --border-primary: rgba(255, 110, 199, 0.2);
+    --border-secondary: rgba(255, 110, 199, 0.1);
+    --border-hover: rgba(255, 110, 199, 0.35);
+    --border-focus: rgba(0, 255, 255, 0.5);
+
+    --accent-primary: #ff6ec7;
+    --accent-secondary: #00ffff;
+    --accent-hover: #ff9de6;
+    --accent-muted: rgba(255, 110, 199, 0.2);
+
+    /* User message - synthwave magenta */
+    --user-msg-from: #4a1a40;
+    --user-msg-to: #3a1030;
+    --user-msg-hover-from: #5c2252;
+    --user-msg-hover-to: #4a1a40;
+    --user-msg-text: #ffe0f8;
+
+    --assistant-bg: rgba(38, 38, 64, 0.8);
+    --assistant-border: rgba(0, 255, 255, 0.15);
+    --assistant-text: #e8e8e8;
+
+    --scrollbar-thumb: rgba(255, 110, 199, 0.25);
+    --scrollbar-thumb-hover: rgba(255, 110, 199, 0.4);
+
+    --code-bg: #12121f;
+    --code-header-bg: rgba(38, 38, 64, 0.7);
+    --code-border: rgba(0, 255, 255, 0.12);
+
+    --input-bg: rgba(31, 31, 53, 0.8);
+    --input-border: rgba(255, 110, 199, 0.25);
+    --input-focus-border: rgba(0, 255, 255, 0.5);
+    --input-focus-ring: rgba(0, 255, 255, 0.2);
+
+    --shadow-accent: rgba(255, 110, 199, 0.35);
+    --shadow-accent-hover: rgba(0, 255, 255, 0.4);
+
+    --success: #00ff88;
+    --warning: #ffff00;
+    --error: #ff3860;
+    --info: #00ffff;
+}
+
+/* ============================================
+   Theme: Vaporwave
+   Aesthetic vaporwave theme
+   ============================================ */
+.theme-vaporwave {
+    --primary-rgb: 255, 113, 206;
+    --bg-primary: #1a1033;
+    --bg-secondary: #251848;
+    --bg-tertiary: #32205c;
+    --bg-elevated: #1e1440;
+    --bg-hover: rgba(255, 113, 206, 0.1);
+    --bg-active: rgba(255, 113, 206, 0.15);
+
+    --surface-primary: rgba(37, 24, 72, 0.9);
+    --surface-secondary: rgba(50, 32, 92, 0.8);
+    --surface-glass: rgba(26, 16, 51, 0.95);
+
+    --text-primary: #f8f0ff;
+    --text-secondary: #ff71ce;
+    --text-tertiary: #b967ff;
+    --text-muted: #5a4a7a;
+
+    --border-primary: rgba(255, 113, 206, 0.2);
+    --border-secondary: rgba(255, 113, 206, 0.1);
+    --border-hover: rgba(255, 113, 206, 0.35);
+    --border-focus: rgba(1, 205, 254, 0.5);
+
+    --accent-primary: #ff71ce;
+    --accent-secondary: #01cdfe;
+    --accent-hover: #b967ff;
+    --accent-muted: rgba(255, 113, 206, 0.2);
+
+    /* User message - vaporwave pink */
+    --user-msg-from: #4a1850;
+    --user-msg-to: #3a1040;
+    --user-msg-hover-from: #5c2262;
+    --user-msg-hover-to: #4a1850;
+    --user-msg-text: #ffe0f8;
+
+    --assistant-bg: rgba(37, 24, 72, 0.8);
+    --assistant-border: rgba(1, 205, 254, 0.15);
+    --assistant-text: #f0e8f8;
+
+    --scrollbar-thumb: rgba(255, 113, 206, 0.25);
+    --scrollbar-thumb-hover: rgba(255, 113, 206, 0.4);
+
+    --code-bg: #120a25;
+    --code-header-bg: rgba(37, 24, 72, 0.7);
+    --code-border: rgba(1, 205, 254, 0.12);
+
+    --input-bg: rgba(30, 20, 64, 0.8);
+    --input-border: rgba(255, 113, 206, 0.25);
+    --input-focus-border: rgba(1, 205, 254, 0.5);
+    --input-focus-ring: rgba(1, 205, 254, 0.2);
+
+    --shadow-accent: rgba(255, 113, 206, 0.35);
+    --shadow-accent-hover: rgba(1, 205, 254, 0.4);
+
+    --success: #05ffa1;
+    --warning: #fffb96;
+    --error: #ff3860;
+    --info: #01cdfe;
+}
+
+/* ============================================
+   Theme: Neo Noir
+   Dark neon noir theme
+   ============================================ */
+.theme-neonoir {
+    --primary-rgb: 255, 65, 108;
+    --bg-primary: #0f0f14;
+    --bg-secondary: #18181f;
+    --bg-tertiary: #22222c;
+    --bg-elevated: #141419;
+    --bg-hover: rgba(255, 65, 108, 0.08);
+    --bg-active: rgba(255, 65, 108, 0.12);
+
+    --surface-primary: rgba(24, 24, 31, 0.9);
+    --surface-secondary: rgba(34, 34, 44, 0.8);
+    --surface-glass: rgba(15, 15, 20, 0.95);
+
+    --text-primary: #e8e8ec;
+    --text-secondary: #ff416c;
+    --text-tertiary: #8a8a9a;
+    --text-muted: #4a4a5a;
+
+    --border-primary: rgba(255, 65, 108, 0.15);
+    --border-secondary: rgba(255, 65, 108, 0.08);
+    --border-hover: rgba(255, 65, 108, 0.25);
+    --border-focus: rgba(255, 65, 108, 0.5);
+
+    --accent-primary: #ff416c;
+    --accent-secondary: #ff4b2b;
+    --accent-hover: #ff6b8a;
+    --accent-muted: rgba(255, 65, 108, 0.15);
+
+    /* User message - neon red */
+    --user-msg-from: #3a1525;
+    --user-msg-to: #2a0d1a;
+    --user-msg-hover-from: #4c1d32;
+    --user-msg-hover-to: #3a1525;
+    --user-msg-text: #ffd0dc;
+
+    --assistant-bg: rgba(24, 24, 31, 0.8);
+    --assistant-border: rgba(255, 65, 108, 0.12);
+    --assistant-text: #d8d8e0;
+
+    --scrollbar-thumb: rgba(255, 65, 108, 0.2);
+    --scrollbar-thumb-hover: rgba(255, 65, 108, 0.35);
+
+    --code-bg: #0a0a0e;
+    --code-header-bg: rgba(24, 24, 31, 0.7);
+    --code-border: rgba(255, 65, 108, 0.1);
+
+    --input-bg: rgba(20, 20, 25, 0.8);
+    --input-border: rgba(255, 65, 108, 0.2);
+    --input-focus-border: rgba(255, 65, 108, 0.5);
+    --input-focus-ring: rgba(255, 65, 108, 0.15);
+
+    --shadow-accent: rgba(255, 65, 108, 0.3);
+    --shadow-accent-hover: rgba(255, 75, 43, 0.4);
+
+    --success: #00ff88;
+    --warning: #ffc107;
+    --error: #ff416c;
+    --info: #00bfff;
+}
+
+/* ============================================
    Base Styles
    ============================================ */
 @layer base {
@@ -1413,6 +1797,88 @@
     body.font-family-consolas,
     body.font-family-consolas *:not(code):not(pre):not(.code-content):not(.code-header) {
         font-family: Consolas, "Courier New", monospace !important;
+    }
+
+    /* New Sans-Serif Fonts */
+    body.font-family-dmsans,
+    body.font-family-dmsans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "DM Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-worksans,
+    body.font-family-worksans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Work Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-plusjakarta,
+    body.font-family-plusjakarta *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Plus Jakarta Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-lexend,
+    body.font-family-lexend *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Lexend", -apple-system, sans-serif !important;
+    }
+    body.font-family-outfit,
+    body.font-family-outfit *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Outfit", -apple-system, sans-serif !important;
+    }
+    body.font-family-spacegrotesk,
+    body.font-family-spacegrotesk *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Space Grotesk", -apple-system, sans-serif !important;
+    }
+    body.font-family-ibmplex,
+    body.font-family-ibmplex *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "IBM Plex Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-manrope,
+    body.font-family-manrope *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Manrope", -apple-system, sans-serif !important;
+    }
+    body.font-family-urbanist,
+    body.font-family-urbanist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Urbanist", -apple-system, sans-serif !important;
+    }
+    body.font-family-sora,
+    body.font-family-sora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Sora", -apple-system, sans-serif !important;
+    }
+
+    /* New Serif Fonts */
+    body.font-family-crimsonpro,
+    body.font-family-crimsonpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Crimson Pro", Georgia, serif !important;
+    }
+    body.font-family-librebaskerville,
+    body.font-family-librebaskerville *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Libre Baskerville", Georgia, serif !important;
+    }
+    body.font-family-lora,
+    body.font-family-lora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Lora", Georgia, serif !important;
+    }
+    body.font-family-sourceserpro,
+    body.font-family-sourceserpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Source Serif Pro", Georgia, serif !important;
+    }
+
+    /* New Monospace Fonts */
+    body.font-family-spacemono,
+    body.font-family-spacemono *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Space Mono", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-ubuntumono,
+    body.font-family-ubuntumono *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Ubuntu Mono", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-anonymouspro,
+    body.font-family-anonymouspro *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Anonymous Pro", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-cascadiacode,
+    body.font-family-cascadiacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Cascadia Code", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-victormono,
+    body.font-family-victormono *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Victor Mono", "JetBrains Mono", monospace !important;
     }
 
     /* Selection styling */

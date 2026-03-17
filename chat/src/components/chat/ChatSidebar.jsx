@@ -294,15 +294,15 @@ export default function ChatSidebar({
             <div className={`p-2 ${collapsed ? 'px-1.5' : 'px-3'}`}>
                 <button
                     onClick={handleNewConversation}
-                    className={`flex items-center gap-2 rounded-xl font-medium transition-all duration-200 ${
+                    className={`flex items-center gap-2 rounded-lg font-medium transition-all duration-200 ${
                         collapsed
-                            ? 'justify-center w-11 h-11 mx-auto bg-gradient-to-br from-primary-500/20 to-primary-600/10 hover:from-primary-500/30 hover:to-primary-600/20 border border-primary-500/20 hover:border-primary-500/30'
+                            ? 'justify-center w-8 h-8 mx-auto bg-gradient-to-br from-primary-500/20 to-primary-600/10 hover:from-primary-500/30 hover:to-primary-600/20 border border-primary-500/20 hover:border-primary-500/30'
                             : 'w-full px-3 py-2.5 bg-gradient-to-r from-primary-500/15 to-primary-600/10 hover:from-primary-500/25 hover:to-primary-600/15 border border-primary-500/20 hover:border-primary-500/30'
                     }`}
                     style={{ color: 'var(--accent-primary)' }}
                     title="New Chat"
                 >
-                    <Plus className={`flex-shrink-0 ${collapsed ? 'w-5 h-5' : 'w-4 h-4'}`} />
+                    <Plus className={`flex-shrink-0 ${collapsed ? 'w-4 h-4' : 'w-4 h-4'}`} />
                     {!collapsed && <span className="text-sm">New Chat</span>}
                 </button>
             </div>
