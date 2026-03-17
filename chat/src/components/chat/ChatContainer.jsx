@@ -58,6 +58,7 @@ export default function ChatContainer({
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [runningInstances, setRunningInstances] = useState([]);
+    const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
     const abortControllerRef = useRef(null);
 
     // Chat store
@@ -1164,6 +1165,8 @@ export default function ChatContainer({
                 onDeleteConversation={handleDeleteConversation}
                 onRenameConversation={handleRenameConversation}
                 onToggleFavorite={handleToggleFavorite}
+                isMobileOpen={mobileSidebarOpen}
+                onMobileClose={() => setMobileSidebarOpen(false)}
             />
 
             {/* Main chat area */}
@@ -1178,6 +1181,7 @@ export default function ChatContainer({
                     isLoading={isLoading}
                     user={user}
                     onLogout={onLogout}
+                    onMobileMenuClick={() => setMobileSidebarOpen(true)}
                 />
 
                 {/* Messages */}

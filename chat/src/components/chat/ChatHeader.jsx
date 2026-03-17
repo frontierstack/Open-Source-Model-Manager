@@ -6,7 +6,8 @@ import {
     LogOut,
     Circle,
     Loader2,
-    Check
+    Check,
+    Menu
 } from 'lucide-react';
 
 /**
@@ -21,6 +22,7 @@ export default function ChatHeader({
     isLoading,
     user,
     onLogout,
+    onMobileMenuClick,
 }) {
     const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
     const [userDropdownOpen, setUserDropdownOpen] = useState(false);
@@ -57,10 +59,54 @@ export default function ChatHeader({
         return backend;
     };
 
+    // Get status color and animation based on model status
+    const getStatusStyles = (status) => {
+        switch (status) {
+            case 'running':
+                return {
+                    color: 'fill-green-400 text-green-400',
+                    animation: 'animate-pulse-glow',
+                    label: 'Running'
+                };
+            case 'loading':
+            case 'starting':
+                return {
+                    color: 'fill-amber-400 text-amber-400',
+                    animation: 'animate-pulse',
+                    label: status === 'loading' ? 'Loading' : 'Starting'
+                };
+            case 'unhealthy':
+            case 'error':
+                return {
+                    color: 'fill-red-400 text-red-400',
+                    animation: '',
+                    label: 'Error'
+                };
+            default:
+                return {
+                    color: 'fill-dark-500 text-dark-500',
+                    animation: '',
+                    label: 'Not loaded'
+                };
+        }
+    };
+
+    const selectedModelStatus = getStatusStyles(selectedModelData?.status);
+
     return (
         <header className="flex items-center justify-between px-2 py-1.5 border-b border-white/5 bg-dark-900/80 backdrop-blur-xl sticky top-0 z-30">
-            {/* Left side - Model selector */}
+            {/* Left side - Mobile menu + Model selector */}
             <div className="flex items-center gap-1.5">
+                {/* Mobile Menu Button */}
+                {onMobileMenuClick && (
+                    <button
+                        onClick={onMobileMenuClick}
+                        className="p-2 rounded-lg text-dark-400 hover:text-dark-200 hover:bg-white/5 transition-all md:hidden"
+                        title="Menu"
+                    >
+                        <Menu className="w-5 h-5" />
+                    </button>
+                )}
                 {/* Model Dropdown */}
                 <div className="relative" ref={modelDropdownRef}>
                     <button
@@ -69,7 +115,8 @@ export default function ChatHeader({
                     >
                         <div className="flex items-center gap-2">
                             <Circle
-                                className={`w-2 h-2 ${selectedModelData?.status === 'running' ? 'fill-green-400 text-green-400 animate-pulse-glow' : 'fill-dark-500 text-dark-500'}`}
+                                className={`w-2 h-2 ${selectedModelStatus.color} ${selectedModelStatus.animation}`}
+                                title={selectedModelStatus.label}
                             />
                             <span className="text-xs font-medium text-dark-100 max-w-[140px] truncate">
                                 {selectedModel || 'Select Model'}
@@ -95,30 +142,48 @@ export default function ChatHeader({
                             {runningModels.length === 0 ? (
                                 <div className="px-3 py-3 text-center">
                                     <p className="text-xs text-dark-400">No models running</p>
+                                    <p className="text-[10px] text-dark-500 mt-1">Load a model from the main app</p>
                                 </div>
                             ) : (
                                 <div className="max-h-48 overflow-y-auto">
-                                    {runningModels.map(model => (
-                                        <button
-                                            key={model.name}
-                                            onClick={() => {
-                                                onModelChange(model.name);
-                                                setModelDropdownOpen(false);
-                                            }}
-                                            className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-white/5 transition-all"
-                                            style={selectedModel === model.name ? { backgroundColor: 'rgba(var(--primary-rgb), 0.1)' } : {}}
-                                        >
-                                            <div className="flex items-center gap-2 min-w-0">
-                                                <Circle className="w-1.5 h-1.5 flex-shrink-0 fill-green-400 text-green-400 animate-pulse-glow" />
-                                                <span className={`text-xs truncate ${selectedModel === model.name ? 'font-medium text-dark-100' : 'text-dark-300'}`}>
-                                                    {model.name}
-                                                </span>
-                                            </div>
-                                            {selectedModel === model.name && (
-                                                <Check className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} />
-                                            )}
-                                        </button>
-                                    ))}
+                                    {runningModels.map(model => {
+                                        const modelStatus = getStatusStyles(model.status);
+                                        return (
+                                            <button
+                                                key={model.name}
+                                                onClick={() => {
+                                                    onModelChange(model.name);
+                                                    setModelDropdownOpen(false);
+                                                }}
+                                                className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-white/5 transition-all"
+                                                style={selectedModel === model.name ? { backgroundColor: 'rgba(var(--primary-rgb), 0.1)' } : {}}
+                                            >
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <Circle
+                                                        className={`w-1.5 h-1.5 flex-shrink-0 ${modelStatus.color} ${modelStatus.animation}`}
+                                                        title={modelStatus.label}
+                                                    />
+                                                    <span className={`text-xs truncate ${selectedModel === model.name ? 'font-medium text-dark-100' : 'text-dark-300'}`}>
+                                                        {model.name}
+                                                    </span>
+                                                    {model.status && model.status !== 'running' && (
+                                                        <span className={`text-[9px] px-1 py-0.5 rounded ${
+                                                            model.status === 'loading' || model.status === 'starting'
+                                                                ? 'bg-amber-500/20 text-amber-400'
+                                                                : model.status === 'unhealthy'
+                                                                    ? 'bg-red-500/20 text-red-400'
+                                                                    : 'bg-dark-700 text-dark-400'
+                                                        }`}>
+                                                            {modelStatus.label}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {selectedModel === model.name && (
+                                                    <Check className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} />
+                                                )}
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>

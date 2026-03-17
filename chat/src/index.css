@@ -2291,6 +2291,38 @@
 /* ============================================
    Responsive Utilities
    ============================================ */
+
+/* Small mobile (up to 480px) */
+@media (max-width: 480px) {
+    :root {
+        --radius-2xl: 0.5rem;
+    }
+
+    /* Header adjustments */
+    header {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+
+    /* Model dropdown - smaller on tiny screens */
+    header button span.truncate {
+        max-width: 100px !important;
+    }
+
+    /* Messages - full width on mobile */
+    .message-user,
+    .message-assistant {
+        max-width: 95% !important;
+        padding: 0.75rem 1rem;
+    }
+
+    /* Input area */
+    .input-chat {
+        font-size: 16px !important; /* Prevent zoom on iOS */
+    }
+}
+
+/* Tablet and small desktop (up to 768px) */
 @media (max-width: 768px) {
     :root {
         --radius-2xl: 0.625rem;
@@ -2304,6 +2336,7 @@
     .message-user,
     .message-assistant {
         border-radius: var(--radius-md);
+        max-width: 90%;
     }
 
     .message-user {
@@ -2328,7 +2361,45 @@
 
     .input-chat {
         padding: 0.5rem 0.75rem;
-        min-height: 40px;
+        min-height: 44px; /* Better touch target */
+        font-size: 16px !important; /* Prevent zoom on iOS */
+    }
+
+    /* Touch-friendly button sizing */
+    .btn-icon {
+        width: 2.5rem;
+        height: 2.5rem;
+    }
+
+    /* Better dropdown positioning on mobile */
+    .dropdown-menu {
+        max-width: calc(100vw - 1rem);
+        max-height: 60vh;
+    }
+
+    /* User menu - prevent overflow */
+    header .relative > div[class*="absolute"] {
+        right: 0;
+        left: auto;
+    }
+}
+
+/* Large mobile / small tablet (640px to 768px) */
+@media (min-width: 640px) and (max-width: 768px) {
+    .message-user,
+    .message-assistant {
+        max-width: 85%;
+    }
+}
+
+/* Safe area insets for notched devices */
+@supports (padding: env(safe-area-inset-bottom)) {
+    .input-area {
+        padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    }
+
+    header {
+        padding-top: calc(0.375rem + env(safe-area-inset-top));
     }
 }
 
