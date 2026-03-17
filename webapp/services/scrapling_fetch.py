@@ -51,9 +51,9 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
             result['content'] = text_content[:50000] if text_content else ''  # Limit content size
 
             # Get title
-            title_elem = page.css('title')
-            if title_elem:
-                result['title'] = title_elem.get() or ''
+            title_elems = page.css('title')
+            if title_elems and len(title_elems) > 0:
+                result['title'] = title_elems[0].text or ''
 
             # Extract links if requested
             if extract_links:
@@ -68,13 +68,14 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
         except Exception as stealth_err:
             # Fall back to basic Fetcher if StealthyFetcher fails
             try:
-                page = Fetcher.fetch(url, timeout=timeout // 1000)
+                fetcher = Fetcher()
+                page = fetcher.get(url, timeout=timeout // 1000)
                 text_content = page.get_all_text(separator='\n', strip=True)
                 result['content'] = text_content[:50000] if text_content else ''
 
-                title_elem = page.css('title')
-                if title_elem:
-                    result['title'] = title_elem.get() or ''
+                title_elems = page.css('title')
+                if title_elems and len(title_elems) > 0:
+                    result['title'] = title_elems[0].text or ''
 
             except Exception as fetch_err:
                 result['success'] = False
@@ -115,23 +116,37 @@ def search_and_fetch(query: str, max_results: int = 5) -> dict:
     """
     try:
         from scrapling.fetchers import Fetcher
+        import urllib.parse
 
         # Use DuckDuckGo HTML search
-        search_url = f'https://html.duckduckgo.com/html/?q={query}'
+        encoded_query = urllib.parse.quote_plus(query)
+        search_url = f'https://html.duckduckgo.com/html/?q={encoded_query}'
 
-        page = Fetcher.fetch(search_url, timeout=15)
+        fetcher = Fetcher()
+        page = fetcher.get(search_url, timeout=15)
 
         results = []
         for result in page.css('.result'):
-            title_elem = result.css('.result__title a')
-            snippet_elem = result.css('.result__snippet')
+            title_elems = result.css('.result__title a')
+            snippet_elems = result.css('.result__snippet')
 
-            if title_elem:
+            if title_elems and len(title_elems) > 0:
+                title_elem = title_elems[0]
                 title = title_elem.text or ''
-                url = title_elem.attrib.get('href', '')
-                snippet = snippet_elem.text if snippet_elem else ''
+                raw_url = title_elem.attrib.get('href', '')
+                snippet = snippet_elems[0].text if snippet_elems and len(snippet_elems) > 0 else ''
 
-                if url and title:
+                # Decode DDG redirect URL
+                url = raw_url
+                if '//duckduckgo.com/l/' in raw_url and 'uddg=' in raw_url:
+                    try:
+                        uddg_start = raw_url.index('uddg=') + 5
+                        uddg_end = raw_url.index('&', uddg_start) if '&' in raw_url[uddg_start:] else len(raw_url)
+                        url = urllib.parse.unquote(raw_url[uddg_start:uddg_end])
+                    except:
+                        pass
+
+                if url and title and url.startswith('http'):
                     results.append({
                         'title': title[:200],
                         'url': url,

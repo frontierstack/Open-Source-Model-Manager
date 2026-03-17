@@ -55,8 +55,11 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     PyPDF2 \
     # HTML to PDF conversion (html_to_pdf skill)
     weasyprint \
-    # Web scraping with captcha evasion (Scrapling)
-    scrapling
+    # Web scraping with captcha evasion (Scrapling with all dependencies)
+    "scrapling[all]"
+
+# Install Playwright browsers for Python (shares with Node.js)
+RUN python3 -m playwright install chromium
 
 RUN npm install
 
