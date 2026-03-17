@@ -44,6 +44,7 @@ export default function ChatSettings({
 
     const {
         temperature = 0.7,
+        topP = 1.0,
         maxTokens = 2048,
         systemPromptId = null,
     } = settings;
@@ -242,7 +243,34 @@ export default function ChatSettings({
                             }}
                         />
                         <Typography variant="caption" color="text.secondary">
-                            Lower values make responses more focused and deterministic
+                            Controls randomness. Lower values (0.1-0.3) are more focused; higher values (0.7-1.5) are more creative.
+                        </Typography>
+                    </Box>
+
+                    {/* Top P */}
+                    <Box>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                            <Typography variant="body2">Top P</Typography>
+                            <Typography variant="body2" color="text.secondary">
+                                {topP.toFixed(2)}
+                            </Typography>
+                        </Box>
+                        <Slider
+                            value={topP}
+                            onChange={(_, value) => onUpdateSettings({ topP: value })}
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            valueLabelDisplay="auto"
+                            sx={{
+                                '& .MuiSlider-thumb': {
+                                    width: 16,
+                                    height: 16,
+                                },
+                            }}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                            Nucleus sampling. Considers tokens comprising the top P probability mass. Lower values reduce randomness.
                         </Typography>
                     </Box>
 
@@ -272,19 +300,19 @@ export default function ChatSettings({
                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
                             <PresetButton
                                 label="Precise"
-                                onClick={() => onUpdateSettings({ temperature: 0.2, maxTokens: 1024 })}
+                                onClick={() => onUpdateSettings({ temperature: 0.2, topP: 0.9, maxTokens: 1024 })}
                             />
                             <PresetButton
                                 label="Balanced"
-                                onClick={() => onUpdateSettings({ temperature: 0.7, maxTokens: 2048 })}
+                                onClick={() => onUpdateSettings({ temperature: 0.7, topP: 1.0, maxTokens: 2048 })}
                             />
                             <PresetButton
                                 label="Creative"
-                                onClick={() => onUpdateSettings({ temperature: 1.0, maxTokens: 4096 })}
+                                onClick={() => onUpdateSettings({ temperature: 1.0, topP: 1.0, maxTokens: 4096 })}
                             />
                             <PresetButton
                                 label="Code"
-                                onClick={() => onUpdateSettings({ temperature: 0.1, maxTokens: 4096 })}
+                                onClick={() => onUpdateSettings({ temperature: 0.1, topP: 0.95, maxTokens: 4096 })}
                             />
                         </Box>
                     </Box>

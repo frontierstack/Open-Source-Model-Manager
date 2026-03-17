@@ -23,6 +23,7 @@ export const useChatStore = create(
         settings: {
             model: null,
             temperature: 0.7,
+            topP: 1.0,
             maxTokens: 2048,
             webSearchEnabled: false,
             systemPromptId: null,

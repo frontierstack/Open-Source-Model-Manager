@@ -298,7 +298,17 @@ export default function ChatSettings({
                             {/* Temperature */}
                             <div>
                                 <div className="flex justify-between items-center mb-2">
-                                    <label className="text-xs font-medium text-dark-200">Temperature</label>
+                                    <label className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                        Temperature
+                                        <span className="group relative">
+                                            <svg className="w-3.5 h-3.5 text-dark-500 hover:text-dark-300 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                            <span className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1.5 text-[10px] leading-tight text-dark-100 bg-dark-800 border border-dark-700 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
+                                                Controls randomness. Lower values (0.1-0.3) are<br/>more focused and deterministic. Higher values<br/>(0.7-1.5) are more creative and varied.
+                                            </span>
+                                        </span>
+                                    </label>
                                     <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
                                         {temperature.toFixed(2)}
                                     </span>
@@ -333,7 +343,17 @@ export default function ChatSettings({
                             {/* Top P */}
                             <div>
                                 <div className="flex justify-between items-center mb-2">
-                                    <label className="text-xs font-medium text-dark-200">Top P</label>
+                                    <label className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                        Top P
+                                        <span className="group relative">
+                                            <svg className="w-3.5 h-3.5 text-dark-500 hover:text-dark-300 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                            <span className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1.5 text-[10px] leading-tight text-dark-100 bg-dark-800 border border-dark-700 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
+                                                Nucleus sampling. Considers tokens comprising<br/>the top P probability mass. 1.0 = all tokens.<br/>Lower values (0.5-0.9) reduce randomness.
+                                            </span>
+                                        </span>
+                                    </label>
                                     <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
                                         {topP.toFixed(2)}
                                     </span>
@@ -357,6 +377,10 @@ export default function ChatSettings({
                                                [&::-webkit-slider-thumb]:border-2
                                                [&::-webkit-slider-thumb]:border-dark-900"
                                 />
+                                <div className="flex justify-between text-[10px] text-dark-500 mt-1.5">
+                                    <span>Focused</span>
+                                    <span>Diverse</span>
+                                </div>
                             </div>
                         </>
                     )}

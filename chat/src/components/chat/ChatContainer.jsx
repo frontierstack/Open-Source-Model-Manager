@@ -659,6 +659,7 @@ export default function ChatContainer({
                 model: settings.model,
                 messages: apiMessages,
                 temperature: settings.temperature,
+                top_p: settings.topP,
                 max_tokens: settings.maxTokens,
                 stream: true,
             };

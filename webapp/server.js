@@ -6917,7 +6917,8 @@ app.delete('/api/chat/continuation/:conversationId', requireAuth, (req, res) => 
 // Streaming chat endpoint - Server-Sent Events (SSE)
 app.post('/api/chat/stream', requireAuth, async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
-    const { message, messages: inputMessages, model, temperature, maxTokens, max_tokens, conversationId, continueProcessing } = req.body;
+    const { message, messages: inputMessages, model, temperature, top_p, topP, maxTokens, max_tokens, conversationId, continueProcessing } = req.body;
+    const effectiveTopP = top_p !== undefined ? top_p : (topP !== undefined ? topP : 1.0);
 
     // Check for continuation request
     if (continueProcessing && conversationId) {
@@ -7151,6 +7152,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const requestBody = {
             messages: chatMessages,
             temperature: temperature || 0.7,
+            top_p: effectiveTopP,
             stream: true // Enable streaming from the model
         };
 
