@@ -704,6 +704,7 @@ export default function ChatContainer({
             let buffer = '';
             let tokenCount = 0;
             let inStreamError = null; // Track errors that occur mid-stream
+            let lastFinishReason = null; // Track if response was cut off
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -785,8 +786,11 @@ export default function ChatContainer({
 
                             // Handle finish reason
                             const finishReason = parsed.choices?.[0]?.finish_reason;
-                            if (finishReason === 'length') {
-                                showSnackbar('Response was cut off due to length limit', 'warning');
+                            if (finishReason) {
+                                lastFinishReason = finishReason;
+                                if (finishReason === 'length') {
+                                    showSnackbar('Response was cut off due to length limit. Click "Continue" to resume.', 'warning');
+                                }
                             }
                         } catch (e) {
                             // Only log if it's not a JSON parse error for partial data
@@ -864,6 +868,9 @@ export default function ChatContainer({
                 showSnackbar(inStreamError, 'error');
             } else {
                 // Normal completion - save the full response
+                // Check if response was cut off due to length limit
+                const needsContinuation = lastFinishReason === 'length';
+
                 const assistantMessage = {
                     id: crypto.randomUUID(),
                     role: 'assistant',
@@ -873,6 +880,8 @@ export default function ChatContainer({
                     searchResults: searchResults ? searchResults.length : undefined,
                     responseTime,
                     tokenCount: tokenCount > 0 ? tokenCount : undefined,
+                    needsContinuation, // Mark if response was cut off
+                    isPartial: needsContinuation, // Also mark as partial for UI
                 };
 
                 finalMessages = [...finalMessages, assistantMessage];
@@ -917,6 +926,179 @@ export default function ChatContainer({
     const handleStopGeneration = () => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
+        }
+    };
+
+    /**
+     * Continue a response that was cut off due to length limits
+     * Sends a continuation request to the model asking it to continue from where it left off
+     */
+    const handleContinueResponse = async (messageId, messageContent) => {
+        if (isLoading || !settings.model) return;
+
+        const conversationId = activeConversationId;
+        if (!conversationId) return;
+
+        // Create a continuation prompt that asks the model to continue
+        const continuationPrompt = "Continue from where you left off. Do not repeat what you already said, just continue directly:";
+
+        // Get current messages and find the message to continue
+        const currentMsgs = useChatStore.getState().messages;
+
+        // Build messages array with the continuation prompt
+        const apiMessages = currentMsgs.map(msg => ({
+            role: msg.role,
+            content: msg.content
+        }));
+
+        // Add continuation prompt
+        apiMessages.push({
+            role: 'user',
+            content: continuationPrompt
+        });
+
+        // Add the user's continuation request to UI
+        const continuationUserMessage = {
+            id: crypto.randomUUID(),
+            role: 'user',
+            content: continuationPrompt,
+            timestamp: new Date().toISOString(),
+            isContinuation: true,
+        };
+        addMessage(continuationUserMessage);
+
+        // Start streaming
+        setIsLoading(true);
+        setStreaming(true);
+        setStreamingContent('');
+        setStreamingReasoning('');
+        setProcessingStatus('thinking', 'Continuing response...');
+        abortControllerRef.current = new AbortController();
+
+        const startTime = Date.now();
+
+        try {
+            const requestBody = {
+                model: settings.model,
+                messages: apiMessages,
+                temperature: settings.temperature,
+                top_p: settings.topP,
+                max_tokens: settings.maxTokens,
+                stream: true,
+            };
+
+            const response = await fetch('/api/chat/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(requestBody),
+                signal: abortControllerRef.current.signal,
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error || `HTTP ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let assistantContent = '';
+            let assistantReasoning = '';
+            let buffer = '';
+            let tokenCount = 0;
+            let lastFinishReason = null;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6).trim();
+                        if (data === '[DONE]') continue;
+                        if (!data) continue;
+
+                        try {
+                            const parsed = JSON.parse(data);
+                            if (parsed.error) continue;
+
+                            const delta = parsed.choices?.[0]?.delta;
+                            if (delta?.content) {
+                                assistantContent += delta.content;
+                                const thinkParsed = parseThinkTags(assistantContent);
+                                setStreamingContent(thinkParsed.content);
+                                if (thinkParsed.reasoning) {
+                                    assistantReasoning = thinkParsed.reasoning;
+                                    setStreamingReasoning(assistantReasoning);
+                                }
+                                tokenCount++;
+                            }
+
+                            if (delta?.reasoning) {
+                                assistantReasoning += delta.reasoning;
+                                setStreamingReasoning(assistantReasoning);
+                            }
+
+                            const finishReason = parsed.choices?.[0]?.finish_reason;
+                            if (finishReason) {
+                                lastFinishReason = finishReason;
+                                if (finishReason === 'length') {
+                                    showSnackbar('Response was cut off again. Click "Continue" to resume.', 'warning');
+                                }
+                            }
+                        } catch (e) {
+                            // Ignore parse errors
+                        }
+                    }
+                }
+            }
+
+            const responseTime = Date.now() - startTime;
+            const finalParsed = parseThinkTags(assistantContent);
+            const finalContent = finalParsed.content;
+            const finalReasoning = finalParsed.reasoning || assistantReasoning || undefined;
+            const needsContinuation = lastFinishReason === 'length';
+
+            const assistantMessage = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: finalContent,
+                reasoning: finalReasoning,
+                timestamp: new Date().toISOString(),
+                responseTime,
+                tokenCount: tokenCount > 0 ? tokenCount : undefined,
+                needsContinuation,
+                isPartial: needsContinuation,
+                isContinuation: true,
+            };
+
+            const updatedMsgs = [...useChatStore.getState().messages, assistantMessage];
+            addMessage(assistantMessage);
+            saveMessages(conversationId, updatedMsgs);
+
+            // Mark the original message as no longer needing continuation
+            if (!needsContinuation) {
+                const msgs = useChatStore.getState().messages;
+                const updatedMessages = msgs.map(m =>
+                    m.id === messageId ? { ...m, needsContinuation: false, isPartial: false } : m
+                );
+                useChatStore.getState().setMessages(updatedMessages);
+                saveMessages(conversationId, updatedMessages);
+            }
+
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('Continue error:', error);
+                showSnackbar(error.message || 'Failed to continue response', 'error');
+            }
+        } finally {
+            setIsLoading(false);
+            clearStreaming();
+            abortControllerRef.current = null;
         }
     };
 
@@ -1006,6 +1188,8 @@ export default function ChatContainer({
                     streamingReasoning={streamingReasoning}
                     processingStatus={processingStatus}
                     processingMessage={processingMessage}
+                    onContinue={handleContinueResponse}
+                    isLoading={isLoading}
                 />
 
                 {/* Input */}

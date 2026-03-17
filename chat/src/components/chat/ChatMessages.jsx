@@ -13,6 +13,8 @@ export default function ChatMessages({
     streamingReasoning,
     processingStatus,
     processingMessage,
+    onContinue,
+    isLoading,
 }) {
     const messagesEndRef = useRef(null);
     const containerRef = useRef(null);
@@ -77,6 +79,7 @@ export default function ChatMessages({
             {messages.map((message, index) => (
                 <ChatMessage
                     key={message.id || index}
+                    id={message.id}
                     role={message.role}
                     content={message.content}
                     reasoning={message.reasoning}
@@ -85,6 +88,10 @@ export default function ChatMessages({
                     isStreaming={false}
                     responseTime={message.responseTime}
                     tokenCount={message.tokenCount}
+                    needsContinuation={message.needsContinuation}
+                    isPartial={message.isPartial}
+                    onContinue={onContinue}
+                    isLoading={isLoading}
                 />
             ))}
 

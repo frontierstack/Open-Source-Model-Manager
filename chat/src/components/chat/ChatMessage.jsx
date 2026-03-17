@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import StatusIndicator from './StatusIndicator';
@@ -8,6 +8,7 @@ import StatusIndicator from './StatusIndicator';
  * ChatMessage - Individual chat message bubble (Tailwind)
  */
 export default function ChatMessage({
+    id,
     role,
     content,
     reasoning,
@@ -20,6 +21,10 @@ export default function ChatMessage({
     tokenCount,
     processingStatus,
     processingMessage,
+    needsContinuation,
+    isPartial,
+    onContinue,
+    isLoading,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
@@ -109,9 +114,37 @@ export default function ChatMessage({
                     <MessageContent content={displayContent} />
                 )}
 
-                {/* Actions (copy button) - always visible for assistant messages */}
+                {/* Partial/interrupted response indicator */}
+                {!isUser && !isStreaming && (needsContinuation || isPartial) && (
+                    <div className="flex items-center gap-2 mt-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                        <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                        <span className="text-xs text-amber-300">
+                            Response was cut off due to length limit
+                        </span>
+                    </div>
+                )}
+
+                {/* Actions (copy button + continue button) - always visible for assistant messages */}
                 {!isUser && displayContent && !isStreaming && (
-                    <div className="flex items-center justify-end mt-2 pt-2 border-t border-white/5">
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5">
+                        <div className="flex items-center gap-2">
+                            {/* Continue button for partial responses */}
+                            {(needsContinuation || isPartial) && onContinue && (
+                                <button
+                                    onClick={() => onContinue(id, content)}
+                                    disabled={isLoading}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                                        isLoading
+                                            ? 'text-dark-500 bg-dark-800 cursor-not-allowed'
+                                            : 'text-primary-300 bg-primary-500/20 hover:bg-primary-500/30 border border-primary-500/30'
+                                    }`}
+                                    title="Continue generating from where it left off"
+                                >
+                                    <PlayCircle className={`w-4 h-4 ${isLoading ? 'animate-pulse' : ''}`} />
+                                    <span>{isLoading ? 'Continuing...' : 'Continue'}</span>
+                                </button>
+                            )}
+                        </div>
                         <button
                             onClick={handleCopy}
                             className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
