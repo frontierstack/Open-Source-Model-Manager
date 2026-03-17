@@ -70,6 +70,8 @@ export const useChatStore = create(
             maxTokens: 2048,
             webSearchEnabled: false,
             selectedSystemPromptId: null,
+            fontSize: 'medium',
+            fontFamily: 'system',
             ...loadFromStorage(STORAGE_KEYS.SETTINGS, {})
         },
 

@@ -2353,3 +2353,63 @@
         border: 1px solid #ccc;
     }
 }
+
+/* ============================================
+   Font Family Overrides (highest priority - outside @layer)
+   ============================================ */
+html body.font-family-system,
+html body.font-family-system *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+}
+html body.font-family-inter,
+html body.font-family-inter *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Inter", -apple-system, sans-serif !important;
+}
+html body.font-family-roboto,
+html body.font-family-roboto *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Roboto", -apple-system, sans-serif !important;
+}
+html body.font-family-opensans,
+html body.font-family-opensans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Open Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-lato,
+html body.font-family-lato *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Lato", -apple-system, sans-serif !important;
+}
+html body.font-family-poppins,
+html body.font-family-poppins *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Poppins", -apple-system, sans-serif !important;
+}
+html body.font-family-nunito,
+html body.font-family-nunito *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Nunito", -apple-system, sans-serif !important;
+}
+html body.font-family-sourcesans,
+html body.font-family-sourcesans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Source Sans Pro", -apple-system, sans-serif !important;
+}
+html body.font-family-merriweather,
+html body.font-family-merriweather *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Merriweather", Georgia, serif !important;
+}
+html body.font-family-playfair,
+html body.font-family-playfair *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Playfair Display", Georgia, serif !important;
+}
+html body.font-family-georgia,
+html body.font-family-georgia *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: Georgia, "Times New Roman", serif !important;
+}
+html body.font-family-jetbrains,
+html body.font-family-jetbrains *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "JetBrains Mono", "Fira Code", monospace !important;
+}
+html body.font-family-firacode,
+html body.font-family-firacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Fira Code", "JetBrains Mono", monospace !important;
+}
+html body.font-family-consolas,
+html body.font-family-consolas *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: Consolas, "Courier New", monospace !important;
+}
