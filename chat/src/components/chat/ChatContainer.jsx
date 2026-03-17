@@ -60,6 +60,7 @@ export default function ChatContainer({
     const [runningInstances, setRunningInstances] = useState([]);
     const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
     const abortControllerRef = useRef(null);
+    const streamingConversationRef = useRef(null); // Track which conversation is being streamed to
 
     // Chat store
     const {
@@ -273,13 +274,16 @@ export default function ChatContainer({
     };
 
     const handleNewConversation = async () => {
-        // Stop any ongoing generation
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
+        // Don't abort ongoing generation - let it complete in background
+        // Only clear streaming UI if we're switching away from the streaming conversation
+        if (streamingConversationRef.current && streamingConversationRef.current !== activeConversationId) {
+            // Stream is for a different conversation, UI is already clear
+        } else if (streamingConversationRef.current) {
+            // Stream is for current conversation, clear UI but don't abort
+            clearStreaming();
         }
 
-        // Clear current state immediately for responsive UI
-        clearStreaming();
+        // Clear attachments and messages for the new conversation
         clearAttachments();
         setMessages([]);
         setActiveConversation(null);
@@ -308,10 +312,8 @@ export default function ChatContainer({
 
     const handleSelectConversation = (conversationId) => {
         if (conversationId !== activeConversationId) {
-            // Stop any ongoing generation
-            if (abortControllerRef.current) {
-                abortControllerRef.current.abort();
-            }
+            // Don't abort ongoing generation - let it complete in background
+            // Clear streaming UI since we're switching to a different conversation
             clearStreaming();
             clearAttachments();
             setActiveConversation(conversationId);
@@ -525,7 +527,8 @@ export default function ChatContainer({
         // Save user message immediately so it persists on refresh
         saveMessages(conversationId, updatedMessages);
 
-        // Start streaming
+        // Start streaming - track which conversation this stream belongs to
+        streamingConversationRef.current = conversationId;
         setStreaming(true);
         setStreamingContent('');
         setStreamingReasoning('');
@@ -743,10 +746,16 @@ export default function ChatContainer({
                                 assistantContent += delta.content;
                                 // Parse <think> tags from content and separate reasoning
                                 const thinkParsed = parseThinkTags(assistantContent);
-                                setStreamingContent(thinkParsed.content);
-                                if (thinkParsed.reasoning) {
+                                // Only update UI if we're still viewing the same conversation
+                                const currentActiveId = useChatStore.getState().activeConversationId;
+                                if (currentActiveId === conversationId) {
+                                    setStreamingContent(thinkParsed.content);
+                                    if (thinkParsed.reasoning) {
+                                        assistantReasoning = thinkParsed.reasoning;
+                                        setStreamingReasoning(assistantReasoning);
+                                    }
+                                } else if (thinkParsed.reasoning) {
                                     assistantReasoning = thinkParsed.reasoning;
-                                    setStreamingReasoning(assistantReasoning);
                                 }
                                 tokenCount++; // Approximate token count by chunks
                             }
@@ -754,7 +763,11 @@ export default function ChatContainer({
                             // Handle explicit reasoning field from model API
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
-                                setStreamingReasoning(assistantReasoning);
+                                // Only update UI if we're still viewing the same conversation
+                                const currentActiveId = useChatStore.getState().activeConversationId;
+                                if (currentActiveId === conversationId) {
+                                    setStreamingReasoning(assistantReasoning);
+                                }
                             }
 
                             // Get actual token count from usage if available
@@ -830,9 +843,13 @@ export default function ChatContainer({
             const finalContent = finalParsed.content;
             const finalReasoning = finalParsed.reasoning || assistantReasoning || undefined;
 
-            // Get current messages from store to ensure we have the latest state
-            const currentMsgs = useChatStore.getState().messages;
-            let finalMessages = [...currentMsgs];
+            // Check if user switched to a different conversation
+            const currentActiveId = useChatStore.getState().activeConversationId;
+            const userSwitchedConversation = currentActiveId !== conversationId;
+
+            // Use the messages we had at the start (updatedMessages) since the user may have switched
+            // This ensures we save to the correct conversation
+            let finalMessages = [...updatedMessages];
 
             // Handle in-stream error - save partial content if any, then show error
             if (inStreamError) {
@@ -849,7 +866,10 @@ export default function ChatContainer({
                         tokenCount: tokenCount > 0 ? tokenCount : undefined,
                         isPartial: true, // Mark as partial response
                     };
-                    addMessage(partialMessage);
+                    // Only update local store if still on same conversation
+                    if (!userSwitchedConversation) {
+                        addMessage(partialMessage);
+                    }
                     finalMessages = [...finalMessages, partialMessage];
                 }
 
@@ -861,7 +881,10 @@ export default function ChatContainer({
                     isError: true,
                     timestamp: new Date().toISOString(),
                 };
-                addMessage(errorMessage);
+                // Only update local store if still on same conversation
+                if (!userSwitchedConversation) {
+                    addMessage(errorMessage);
+                }
                 finalMessages = [...finalMessages, errorMessage];
                 saveMessages(conversationId, finalMessages);
 
@@ -886,12 +909,20 @@ export default function ChatContainer({
                 };
 
                 finalMessages = [...finalMessages, assistantMessage];
-                addMessage(assistantMessage);
+                // Only update local store if still on same conversation
+                if (!userSwitchedConversation) {
+                    addMessage(assistantMessage);
+                }
                 saveMessages(conversationId, finalMessages);
+
+                // Show notification that response completed in background
+                if (userSwitchedConversation) {
+                    showSnackbar('Response completed in background', 'success');
+                }
             }
 
             // Update conversation title if it's the first message (user message only)
-            if (currentMsgs.length === 1) {
+            if (updatedMessages.length === 1) {
                 handleRenameConversation(
                     conversationId,
                     content.slice(0, 50) + (content.length > 50 ? '...' : '')
@@ -907,19 +938,28 @@ export default function ChatContainer({
                 console.error('Chat error:', error);
                 showSnackbar(message, 'error');
 
-                // Add error message to chat for context
-                const errorMessage = {
-                    id: crypto.randomUUID(),
-                    role: 'assistant',
-                    content: `Error: ${message}`,
-                    isError: true,
-                    timestamp: new Date().toISOString(),
-                };
-                addMessage(errorMessage);
+                // Add error message to chat for context - only if still on same conversation
+                const currentActiveId = useChatStore.getState().activeConversationId;
+                if (currentActiveId === conversationId) {
+                    const errorMessage = {
+                        id: crypto.randomUUID(),
+                        role: 'assistant',
+                        content: `Error: ${message}`,
+                        isError: true,
+                        timestamp: new Date().toISOString(),
+                    };
+                    addMessage(errorMessage);
+                }
             }
         } finally {
-            setIsLoading(false);
-            clearStreaming();
+            // Only clear loading/streaming UI if we're still on the same conversation
+            const currentActiveId = useChatStore.getState().activeConversationId;
+            if (currentActiveId === conversationId) {
+                setIsLoading(false);
+                clearStreaming();
+                clearProcessingStatus();
+            }
+            streamingConversationRef.current = null;
             abortControllerRef.current = null;
         }
     };
@@ -968,13 +1008,17 @@ export default function ChatContainer({
         };
         addMessage(continuationUserMessage);
 
-        // Start streaming
+        // Start streaming - track which conversation this stream belongs to
+        streamingConversationRef.current = conversationId;
         setIsLoading(true);
         setStreaming(true);
         setStreamingContent('');
         setStreamingReasoning('');
         setProcessingStatus('thinking', 'Continuing response...');
         abortControllerRef.current = new AbortController();
+
+        // Capture messages at start for proper saving even if user switches
+        const messagesAtStart = [...currentMsgs, continuationUserMessage];
 
         const startTime = Date.now();
 
@@ -1031,17 +1075,26 @@ export default function ChatContainer({
                             if (delta?.content) {
                                 assistantContent += delta.content;
                                 const thinkParsed = parseThinkTags(assistantContent);
-                                setStreamingContent(thinkParsed.content);
-                                if (thinkParsed.reasoning) {
+                                // Only update UI if still on same conversation
+                                const currentActiveId = useChatStore.getState().activeConversationId;
+                                if (currentActiveId === conversationId) {
+                                    setStreamingContent(thinkParsed.content);
+                                    if (thinkParsed.reasoning) {
+                                        assistantReasoning = thinkParsed.reasoning;
+                                        setStreamingReasoning(assistantReasoning);
+                                    }
+                                } else if (thinkParsed.reasoning) {
                                     assistantReasoning = thinkParsed.reasoning;
-                                    setStreamingReasoning(assistantReasoning);
                                 }
                                 tokenCount++;
                             }
 
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
-                                setStreamingReasoning(assistantReasoning);
+                                const currentActiveId = useChatStore.getState().activeConversationId;
+                                if (currentActiveId === conversationId) {
+                                    setStreamingReasoning(assistantReasoning);
+                                }
                             }
 
                             const finishReason = parsed.choices?.[0]?.finish_reason;
@@ -1064,6 +1117,10 @@ export default function ChatContainer({
             const finalReasoning = finalParsed.reasoning || assistantReasoning || undefined;
             const needsContinuation = lastFinishReason === 'length';
 
+            // Check if user switched conversations
+            const currentActiveId = useChatStore.getState().activeConversationId;
+            const userSwitchedConversation = currentActiveId !== conversationId;
+
             const assistantMessage = {
                 id: crypto.randomUUID(),
                 role: 'assistant',
@@ -1077,12 +1134,21 @@ export default function ChatContainer({
                 isContinuation: true,
             };
 
-            const updatedMsgs = [...useChatStore.getState().messages, assistantMessage];
-            addMessage(assistantMessage);
+            // Use messages captured at start for proper saving
+            const updatedMsgs = [...messagesAtStart, assistantMessage];
+            // Only update local store if still on same conversation
+            if (!userSwitchedConversation) {
+                addMessage(assistantMessage);
+            }
             saveMessages(conversationId, updatedMsgs);
 
+            // Show notification if completed in background
+            if (userSwitchedConversation) {
+                showSnackbar('Response completed in background', 'success');
+            }
+
             // Mark the original message as no longer needing continuation
-            if (!needsContinuation) {
+            if (!needsContinuation && !userSwitchedConversation) {
                 const msgs = useChatStore.getState().messages;
                 const updatedMessages = msgs.map(m =>
                     m.id === messageId ? { ...m, needsContinuation: false, isPartial: false } : m
@@ -1097,8 +1163,14 @@ export default function ChatContainer({
                 showSnackbar(error.message || 'Failed to continue response', 'error');
             }
         } finally {
-            setIsLoading(false);
-            clearStreaming();
+            // Only clear loading/streaming UI if still on same conversation
+            const currentActiveId = useChatStore.getState().activeConversationId;
+            if (currentActiveId === conversationId) {
+                setIsLoading(false);
+                clearStreaming();
+                clearProcessingStatus();
+            }
+            streamingConversationRef.current = null;
             abortControllerRef.current = null;
         }
     };
