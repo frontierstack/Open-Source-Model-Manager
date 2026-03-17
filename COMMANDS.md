@@ -419,9 +419,10 @@ koda
 - Works in standalone, agent, and collab modes
 - 55+ built-in skills including:
   - File operations (create, read, update, delete, list)
-  - Email parsing (.eml and .msg Outlook format)
+  - Email parsing (.eml and .msg) with nested attachment extraction
   - PDF generation and reading
-  - Web scraping with Playwright
+  - Web scraping with Scrapling (CAPTCHA evasion) and Playwright
+  - OCR for images and scanned documents (Tesseract)
   - Git operations (status, diff, log)
   - System info and process management
   - And more...
@@ -429,9 +430,16 @@ koda
 **Web-Dependent Skills:**
 The following skills require `/web` mode to be enabled:
 - `threat_intel` - Query threat intelligence sources
-- `web_search` - Search the web
+- `web_search` - Search the web (uses Scrapling for CAPTCHA evasion)
 - `playwright_fetch` - Fetch JS-rendered pages
 - `playwright_interact` - Interact with web pages
+
+**Web Search Fallback Chain:**
+When performing web searches, the system uses a multi-engine fallback:
+1. **DuckDuckGo** (primary) - Fast, no authentication required
+2. **Scrapling** - CAPTCHA-evading fallback using StealthyFetcher
+3. **Brave Search** - Secondary fallback with less aggressive bot detection
+4. **Playwright** - Final fallback for JS-rendered content
 
 ---
 
