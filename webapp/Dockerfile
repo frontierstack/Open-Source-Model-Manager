@@ -54,7 +54,9 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     # PDF reading (read_pdf skill)
     PyPDF2 \
     # HTML to PDF conversion (html_to_pdf skill)
-    weasyprint
+    weasyprint \
+    # Web scraping with captcha evasion (Scrapling)
+    scrapling
 
 RUN npm install
 

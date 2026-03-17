@@ -31,6 +31,24 @@ try {
     console.log('Playwright service not available - using axios fallback:', error.message);
 }
 
+// Scrapling service for captcha-evading web scraping
+let scraplingService = null;
+let scraplingEnabled = false;
+
+try {
+    scraplingService = require('./services/scraplingService');
+    scraplingService.isScraplingAvailable().then(available => {
+        scraplingEnabled = available;
+        if (available) {
+            console.log('Scrapling service loaded - captcha evasion enabled');
+        } else {
+            console.log('Scrapling Python module not available - using fallback');
+        }
+    });
+} catch (error) {
+    console.log('Scrapling service not available:', error.message);
+}
+
 const app = express();
 
 // Security: HTTP headers via helmet
@@ -5307,9 +5325,38 @@ app.get('/api/search', requireAuth, async (req, res) => {
                 throw new Error('NO_RESULTS');
             }
         } catch (ddgError) {
-            // Fall back to Brave Search (no auth required, less aggressive bot detection)
-            console.log(`DuckDuckGo failed (${ddgError.message}), falling back to Brave Search`);
-            searchSource = 'brave';
+            // Try Scrapling first (anti-bot capabilities for CAPTCHA evasion)
+            console.log(`DuckDuckGo failed (${ddgError.message}), trying Scrapling...`);
+
+            let scraplingSucceeded = false;
+            if (scraplingService) {
+            try {
+                const scraplingResult = await scraplingService.search(enhancedQuery, parseInt(limit));
+                if (scraplingResult.success && scraplingResult.results && scraplingResult.results.length > 0) {
+                    searchSource = 'scrapling';
+                    scraplingSucceeded = true;
+                    for (const r of scraplingResult.results) {
+                        if (r.url && !seenUrls.has(r.url)) {
+                            seenUrls.add(r.url);
+                            results.push({
+                                title: r.title || 'No title',
+                                url: r.url,
+                                snippet: r.snippet || 'No description available',
+                                content: null
+                            });
+                        }
+                    }
+                    console.log(`Scrapling returned ${results.length} results`);
+                }
+            } catch (scraplingError) {
+                console.log(`Scrapling failed (${scraplingError.message})`);
+            }
+            } // End of scraplingService check
+
+            // Fall back to Brave Search if Scrapling didn't work
+            if (!scraplingSucceeded || results.length === 0) {
+                console.log(`Falling back to Brave Search`);
+                searchSource = 'brave';
 
             try {
                 const braveUrl = `https://search.brave.com/search?q=${encodeURIComponent(enhancedQuery)}`;
@@ -5414,8 +5461,9 @@ app.get('/api/search', requireAuth, async (req, res) => {
                 }
             } catch (braveError) {
                 console.error('Brave search also failed:', braveError.message);
-                // Continue with empty results if both fail
+                // Continue with empty results if all methods fail
             }
+            } // End of Scrapling fallback conditional
         }
 
         // Optionally fetch actual content from top URLs (in parallel)
@@ -5611,6 +5659,29 @@ async function fetchUrlContentAxios(url, timeout = 8000) {
 async function fetchUrlContent(url, options = {}) {
     const timeout = options.timeout || 12000;
 
+    // Try Scrapling first if available (best CAPTCHA evasion)
+    if (scraplingService) {
+        try {
+            const scraplingResult = await scraplingService.fetchUrl(url, {
+                timeout,
+                extractLinks: options.includeLinks || false
+            });
+
+            if (scraplingResult.success && scraplingResult.content) {
+                return {
+                    success: true,
+                    url,
+                    content: scraplingResult.content.slice(0, options.maxLength || 6000),
+                    title: scraplingResult.title || '',
+                    links: scraplingResult.links || [],
+                    source: 'scrapling'
+                };
+            }
+        } catch (scraplingError) {
+            console.log(`Scrapling fetch failed for ${url}: ${scraplingError.message}`);
+        }
+    }
+
     // Use Playwright if available (handles JS-rendered pages, avoids bot detection)
     if (playwrightEnabled && playwrightService) {
         try {
@@ -5622,7 +5693,7 @@ async function fetchUrlContent(url, options = {}) {
             });
 
             if (result.success) {
-                return result;
+                return { ...result, source: 'playwright' };
             }
 
             // If Playwright fails, fall back to axios for simple HTML pages
