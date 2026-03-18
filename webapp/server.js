@@ -149,9 +149,9 @@ const CHUNKING_CONFIG = {
     // Minimum tokens to trigger chunking (below this, use simple truncation)
     minTokensForChunking: 2000,
     // Overlap between chunks (tokens) - preserves context at boundaries
-    overlapTokens: 500,
-    // Maximum concurrent chunk requests
-    maxParallelChunks: 4,
+    overlapTokens: 300,  // Reduced for faster processing
+    // Maximum concurrent chunk requests (increased for speed)
+    maxParallelChunks: 8,
     // Tokens reserved for synthesis prompt
     synthesisPromptReserve: 500,
     // Characters per token estimate
@@ -161,8 +161,174 @@ const CHUNKING_CONFIG = {
     // Per-chunk timeout in milliseconds (5 minutes)
     chunkTimeout: 300000,
     // Maximum retry attempts per chunk
-    maxRetries: 3
+    maxRetries: 3,
+    // Enable content condensation before chunking
+    enableCondensation: true,
+    // Target compression ratio for condensation (0.3 = keep 30% of content)
+    condensationRatio: 0.4,
+    // Minimum sentences to keep even with condensation
+    minSentencesToKeep: 50
 };
+
+/**
+ * Extract keywords from a query for relevance matching
+ * @param {string} query - The user's query
+ * @returns {string[]} Array of keywords
+ */
+function extractQueryKeywords(query) {
+    // Common stop words to filter out
+    const stopWords = new Set([
+        'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
+        'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
+        'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above',
+        'below', 'between', 'under', 'again', 'further', 'then', 'once', 'here',
+        'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more',
+        'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+        'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
+        'because', 'until', 'while', 'although', 'though', 'after', 'before',
+        'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am',
+        'it', 'its', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'you',
+        'your', 'yours', 'he', 'him', 'his', 'she', 'her', 'hers', 'they',
+        'them', 'their', 'please', 'help', 'want', 'know', 'tell', 'give',
+        'find', 'show', 'explain', 'describe', 'summarize', 'analyze', 'about'
+    ]);
+
+    // Extract words, filter stop words, keep meaningful terms
+    const words = query.toLowerCase()
+        .replace(/[^\w\s-]/g, ' ')
+        .split(/\s+/)
+        .filter(word => word.length > 2 && !stopWords.has(word));
+
+    // Also extract multi-word phrases (bigrams) for better matching
+    const queryLower = query.toLowerCase();
+    const phrases = [];
+    const phrasePatterns = [
+        /security\s+\w+/gi, /data\s+\w+/gi, /user\s+\w+/gi,
+        /error\s+\w+/gi, /api\s+\w+/gi, /\w+\s+management/gi,
+        /\w+\s+system/gi, /\w+\s+service/gi, /\w+\s+control/gi
+    ];
+    for (const pattern of phrasePatterns) {
+        const matches = queryLower.match(pattern);
+        if (matches) phrases.push(...matches);
+    }
+
+    return [...new Set([...words, ...phrases])];
+}
+
+/**
+ * Score a sentence's relevance to query keywords
+ * @param {string} sentence - The sentence to score
+ * @param {string[]} keywords - Query keywords
+ * @returns {number} Relevance score
+ */
+function scoreSentenceRelevance(sentence, keywords) {
+    const sentenceLower = sentence.toLowerCase();
+    let score = 0;
+
+    for (const keyword of keywords) {
+        if (sentenceLower.includes(keyword)) {
+            // Exact match gets higher score
+            score += keyword.length > 5 ? 3 : 2;
+            // Bonus for keyword at start of sentence
+            if (sentenceLower.startsWith(keyword) || sentenceLower.includes(`. ${keyword}`)) {
+                score += 1;
+            }
+        }
+    }
+
+    // Bonus for sentences with numbers/data (likely important)
+    if (/\d+/.test(sentence)) score += 0.5;
+
+    // Bonus for sentences with key indicators
+    if (/must|shall|required|important|critical|essential|key|primary/i.test(sentence)) {
+        score += 1;
+    }
+
+    return score;
+}
+
+/**
+ * Condense content using query-focused extractive summarization
+ * @param {string} content - The content to condense
+ * @param {string} query - The user's query for relevance matching
+ * @param {number} targetRatio - Target ratio of content to keep (0.0-1.0)
+ * @returns {{condensed: string, originalLength: number, condensedLength: number, reductionPercent: number}}
+ */
+function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensationRatio) {
+    const originalLength = content.length;
+
+    // Split into sentences (handle various sentence endings)
+    const sentenceRegex = /[^.!?\n]+[.!?\n]+/g;
+    const sentences = content.match(sentenceRegex) || [content];
+
+    if (sentences.length <= CHUNKING_CONFIG.minSentencesToKeep) {
+        // Not enough sentences to condense meaningfully
+        return {
+            condensed: content,
+            originalLength,
+            condensedLength: content.length,
+            reductionPercent: 0,
+            method: 'none'
+        };
+    }
+
+    // Extract keywords from query
+    const keywords = extractQueryKeywords(query);
+
+    // Score each sentence for relevance
+    const scoredSentences = sentences.map((sentence, index) => ({
+        sentence: sentence.trim(),
+        index,
+        score: scoreSentenceRelevance(sentence, keywords),
+        length: sentence.length
+    }));
+
+    // Sort by score (highest first)
+    scoredSentences.sort((a, b) => b.score - a.score);
+
+    // Calculate target length
+    const targetLength = Math.floor(originalLength * targetRatio);
+
+    // Select top sentences until we reach target length
+    const selectedSentences = [];
+    let currentLength = 0;
+
+    for (const scored of scoredSentences) {
+        if (currentLength + scored.length <= targetLength ||
+            selectedSentences.length < CHUNKING_CONFIG.minSentencesToKeep) {
+            selectedSentences.push(scored);
+            currentLength += scored.length;
+        }
+
+        // Stop if we've collected enough
+        if (currentLength >= targetLength &&
+            selectedSentences.length >= CHUNKING_CONFIG.minSentencesToKeep) {
+            break;
+        }
+    }
+
+    // Re-sort by original index to maintain document order
+    selectedSentences.sort((a, b) => a.index - b.index);
+
+    // Build condensed content with section markers
+    const condensed = selectedSentences.map(s => s.sentence).join(' ');
+    const condensedLength = condensed.length;
+    const reductionPercent = Math.round((1 - condensedLength / originalLength) * 100);
+
+    console.log(`[Condensation] Reduced content from ${originalLength} to ${condensedLength} chars (${reductionPercent}% reduction, ${selectedSentences.length}/${sentences.length} sentences kept)`);
+
+    return {
+        condensed,
+        originalLength,
+        condensedLength,
+        reductionPercent,
+        sentencesKept: selectedSentences.length,
+        totalSentences: sentences.length,
+        method: 'query-focused-extractive'
+    };
+}
 
 /**
  * Estimate token count from content (string or vision array)
@@ -7912,11 +8078,56 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 queryPart = 'Please analyze and summarize this content.';
                             }
 
+                            // Apply content condensation if enabled
+                            let finalContent = contentPart;
+                            let condensationInfo = null;
+
+                            if (CHUNKING_CONFIG.enableCondensation) {
+                                const condensationResult = condenseContent(
+                                    contentPart,
+                                    queryPart,
+                                    CHUNKING_CONFIG.condensationRatio
+                                );
+
+                                if (condensationResult.reductionPercent > 10) {
+                                    // Only use condensation if it provides meaningful reduction
+                                    finalContent = condensationResult.condensed;
+                                    condensationInfo = condensationResult;
+
+                                    // Check if condensation avoided chunking entirely
+                                    const condensedTokens = estimateTokenCount(finalContent);
+                                    if (condensedTokens <= availableForContent) {
+                                        // Content now fits! No need for map-reduce
+                                        console.log(`[Chat Stream] Condensation avoided chunking: ${contentTokens} -> ${condensedTokens} tokens`);
+
+                                        // Update the message with condensed content
+                                        const condensedNotice = `[Note: Content was condensed from ${condensationResult.originalLength.toLocaleString()} to ${condensationResult.condensedLength.toLocaleString()} chars (${condensationResult.reductionPercent}% reduction) using query-focused extraction.]\n\n${finalContent}`;
+
+                                        if (isArrayFormat && textPartIdx !== -1) {
+                                            chatMessages[i].content[textPartIdx].text = condensedNotice + '\n\n' + queryPart;
+                                        } else {
+                                            chatMessages[i].content = condensedNotice + '\n\n' + queryPart;
+                                        }
+
+                                        // Recalculate tokens - no longer need map-reduce
+                                        totalInputTokens = 0;
+                                        for (const msg of chatMessages) {
+                                            totalInputTokens += estimateTokens(msg.content);
+                                        }
+
+                                        // Skip map-reduce since content now fits
+                                        break;
+                                    }
+
+                                    console.log(`[Chat Stream] Content condensed: ${contentTokens} -> ${estimateTokenCount(finalContent)} tokens (${condensationResult.reductionPercent}% reduction)`);
+                                }
+                            }
+
                             useMapReduce = true;
-                            mapReduceContent = contentPart;
+                            mapReduceContent = finalContent;
                             mapReduceQuery = queryPart;
 
-                            console.log(`[Chat Stream] Using map-reduce chunking for ${contentTokens} tokens (query: "${queryPart.substring(0, 50)}...")`);
+                            console.log(`[Chat Stream] Using map-reduce chunking for ${estimateTokenCount(finalContent)} tokens (query: "${queryPart.substring(0, 50)}...")`);
                         } else {
                             // Fall back to simple truncation
                             const maxChars = Math.floor((availableForContent * CHARS_PER_TOKEN) / SAFETY_MARGIN);

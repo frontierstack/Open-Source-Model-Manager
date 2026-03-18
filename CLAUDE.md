@@ -236,22 +236,33 @@ The `read_file` skill supports chunking for files that exceed context limits:
 When content exceeds the model's context window, the system automatically uses a map-reduce strategy:
 
 1. **Detection**: Content tokens > available context triggers chunking
-2. **Splitting**: Content split into overlapping chunks (500 token overlap by default)
-3. **Map Phase**: Chunks processed in parallel (max 4 concurrent)
-4. **Reduce Phase**: Partial responses synthesized into coherent final response
+2. **Condensation**: Query-focused extraction reduces content by ~60% (optional)
+3. **Splitting**: Content split into overlapping chunks (300 token overlap)
+4. **Map Phase**: Chunks processed in parallel (max 8 concurrent)
+5. **Reduce Phase**: Partial responses synthesized into coherent final response
 
 Configuration in `webapp/server.js`:
 ```javascript
 const CHUNKING_CONFIG = {
     enabled: true,
     minTokensForChunking: 2000,  // Minimum tokens to trigger map-reduce
-    overlapTokens: 500,          // Token overlap between chunks
-    maxParallelChunks: 4,        // Concurrent chunk processing
+    overlapTokens: 300,          // Token overlap between chunks (reduced for speed)
+    maxParallelChunks: 8,        // Concurrent chunk processing (increased for speed)
     synthesisPromptReserve: 500, // Tokens reserved for synthesis
     chunkTimeout: 300000,        // 5 minute timeout per chunk
     maxRetries: 3,               // Retry failed chunks with exponential backoff
+    enableCondensation: true,    // Pre-condense content using query-focused extraction
+    condensationRatio: 0.4,      // Keep 40% of content (60% reduction target)
+    minSentencesToKeep: 50,      // Minimum sentences to retain
 };
 ```
+
+**Content Condensation:**
+Before chunking, content can be condensed using query-focused extractive summarization:
+- Extracts keywords from user's query
+- Scores sentences by relevance to query keywords
+- Keeps most relevant sentences (default: 40% of content)
+- May avoid chunking entirely if condensed content fits context window
 
 API parameter: `chunkingStrategy: 'auto' | 'map-reduce' | 'truncate' | 'none'`
 
