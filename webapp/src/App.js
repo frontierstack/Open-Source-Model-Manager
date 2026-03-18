@@ -2081,8 +2081,7 @@ fetch(\`${baseUrl}/api/users/\${userId}/enable\`, {
             // WEB SEARCH
             // ============================================================================
             '/api/search': {
-                curl: `# Web Search with DuckDuckGo
-# Bearer Token Authentication
+                curl: `# Bearer Token Authentication
 curl -k -G "${baseUrl}/api/search" \\
   -H "Authorization: Bearer your_bearer_token" \\
   --data-urlencode "q=latest AI news" \\
@@ -2090,14 +2089,15 @@ curl -k -G "${baseUrl}/api/search" \\
   --data-urlencode "fetchContent=true" \\
   --data-urlencode "contentLimit=3"
 
-# Parameters:
-# q - Search query (required)
-# limit - Max results (default: 5)
-# timeRange - d/w/m/y for day/week/month/year
-# fetchContent - Fetch actual page content (default: false)
-# contentLimit - Number of URLs to fetch content from`,
+# OR API Key + Secret Authentication
+curl -k -G "${baseUrl}/api/search" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  --data-urlencode "q=latest AI news" \\
+  --data-urlencode "limit=10"`,
                 python: `import requests
 
+# Bearer Token Authentication
 response = requests.get(
     '${baseUrl}/api/search',
     headers={
@@ -2112,14 +2112,33 @@ response = requests.get(
     verify=False
 )
 
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/search',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    params={
+        'q': 'latest AI news',
+        'limit': 10
+    },
+    verify=False
+)
+
 results = response.json()
 print(f"Found {results['count']} results")
 for r in results['results']:
-    print(f"- {r['title']}: {r['url']}")
-    if 'content' in r:
-        print(f"  Content: {r['content'][:200]}...")`,
-                powershell: `$headers = @{
+    print(f"- {r['title']}: {r['url']}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{
     "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
 }
 
 $params = @{
@@ -2133,7 +2152,8 @@ $query = ($params.GetEnumerator() | ForEach-Object { "$($_.Key)=$([uri]::EscapeD
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/search?$query" -Headers $headers
 Write-Output "Found $($response.count) results"
 $response.results | ForEach-Object { Write-Output "- $($_.title): $($_.url)" }`,
-                javascript: `const params = new URLSearchParams({
+                javascript: `// Bearer Token Authentication
+const params = new URLSearchParams({
   q: 'latest AI news',
   limit: 10,
   fetchContent: true,
@@ -2148,15 +2168,40 @@ fetch(\`${baseUrl}/api/search?\${params}\`, {
   console.log(\`Found \${data.count} results\`);
   data.results.forEach(r => console.log(\`- \${r.title}: \${r.url}\`));
 })
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch(\`${baseUrl}/api/search?\${params}\`, {
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  }
+})
+.then(res => res.json())
+.then(data => {
+  console.log(\`Found \${data.count} results\`);
+  data.results.forEach(r => console.log(\`- \${r.title}: \${r.url}\`));
+})
 .catch(err => console.error(err));`
             },
             // ============================================================================
             // URL FETCH (Chat Feature)
             // ============================================================================
             '/api/url/fetch': {
-                curl: `# Fetch content from URLs (used by chat URL fetch feature)
+                curl: `# Bearer Token Authentication
 curl -k -X POST ${baseUrl}/api/url/fetch \\
   -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "urls": ["https://example.com/article", "https://example.org/page"],
+    "maxLength": 4000,
+    "timeout": 15000
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/url/fetch \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
   -H "Content-Type: application/json" \\
   -d '{
     "urls": ["https://example.com/article", "https://example.org/page"],
@@ -2165,7 +2210,7 @@ curl -k -X POST ${baseUrl}/api/url/fetch \\
   }'`,
                 python: `import requests
 
-# Fetch content from multiple URLs (max 3 per request)
+# Bearer Token Authentication
 response = requests.post(
     '${baseUrl}/api/url/fetch',
     headers={
@@ -2174,8 +2219,24 @@ response = requests.post(
     },
     json={
         'urls': ['https://example.com/article', 'https://example.org/page'],
-        'maxLength': 4000,  # Max chars per URL (default: 4000)
-        'timeout': 15000    # Timeout in ms (default: 15000)
+        'maxLength': 4000,
+        'timeout': 15000
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    '${baseUrl}/api/url/fetch',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'urls': ['https://example.com/article', 'https://example.org/page'],
+        'maxLength': 4000,
+        'timeout': 15000
     },
     verify=False
 )
@@ -2186,11 +2247,19 @@ for result in data['results']:
         print(f"Title: {result['title']}")
         print(f"URL: {result['url']}")
         print(f"Content: {result['content'][:200]}...")
-        print(f"Source: {result['source']}")  # scrapling, playwright, or axios
+        print(f"Source: {result['source']}")
     else:
         print(f"Failed: {result['url']} - {result['error']}")`,
-                powershell: `$headers = @{
+                powershell: `# Bearer Token Authentication
+$headers = @{
     "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -2209,10 +2278,39 @@ foreach ($result in $response.results) {
         Write-Output "Failed: $($result.url) - $($result.error)"
     }
 }`,
-                javascript: `fetch('${baseUrl}/api/url/fetch', {
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/url/fetch', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    urls: ['https://example.com/article', 'https://example.org/page'],
+    maxLength: 4000,
+    timeout: 15000
+  })
+})
+.then(res => res.json())
+.then(data => {
+  data.results.forEach(result => {
+    if (result.success) {
+      console.log(\`Title: \${result.title}\`);
+      console.log(\`Content: \${result.content.slice(0, 200)}...\`);
+      console.log(\`Source: \${result.source}\`);
+    } else {
+      console.log(\`Failed: \${result.url} - \${result.error}\`);
+    }
+  });
+})
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/url/fetch', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret',
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
@@ -2239,7 +2337,7 @@ foreach ($result in $response.results) {
             // PLAYWRIGHT WEB SCRAPING
             // ============================================================================
             '/api/playwright/fetch': {
-                curl: `# Fetch webpage with Playwright (handles JS-rendered pages)
+                curl: `# Bearer Token Authentication
 curl -k -X POST ${baseUrl}/api/playwright/fetch \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/json" \\
@@ -2250,17 +2348,19 @@ curl -k -X POST ${baseUrl}/api/playwright/fetch \\
     "includeLinks": true
   }'
 
-# Or fetch multiple URLs
+# OR API Key + Secret Authentication
 curl -k -X POST ${baseUrl}/api/playwright/fetch \\
-  -H "Authorization: Bearer your_bearer_token" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "urls": ["https://example.com", "https://example.org"],
-    "timeout": 15000
+    "url": "https://example.com",
+    "waitForJS": true,
+    "maxLength": 8000
   }'`,
                 python: `import requests
 
-# Single URL fetch
+# Bearer Token Authentication
 response = requests.post(
     '${baseUrl}/api/playwright/fetch',
     headers={
@@ -2276,27 +2376,35 @@ response = requests.post(
     verify=False
 )
 
-result = response.json()
-print(f"Title: {result['title']}")
-print(f"Content: {result['content'][:500]}...")
-
-# Multiple URLs
+# OR API Key + Secret Authentication
 response = requests.post(
     '${baseUrl}/api/playwright/fetch',
     headers={
-        'Authorization': 'Bearer your_bearer_token',
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
         'Content-Type': 'application/json'
     },
     json={
-        'urls': ['https://example.com', 'https://example.org']
+        'url': 'https://example.com',
+        'waitForJS': True,
+        'maxLength': 8000
     },
     verify=False
 )
 
-for page in response.json():
-    print(f"- {page['url']}: {page['title']}")`,
-                powershell: `$headers = @{
+result = response.json()
+print(f"Title: {result['title']}")
+print(f"Content: {result['content'][:500]}...")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{
     "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -2309,7 +2417,8 @@ $body = @{
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/fetch" -Method Post -Headers $headers -Body $body
 Write-Output "Title: $($response.title)"
 Write-Output "Content: $($response.content.Substring(0, 500))..."`,
-                javascript: `fetch('${baseUrl}/api/playwright/fetch', {
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/playwright/fetch', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer your_bearer_token',
@@ -2327,10 +2436,31 @@ Write-Output "Content: $($response.content.Substring(0, 500))..."`,
   console.log('Title:', data.title);
   console.log('Content:', data.content?.substring(0, 500));
 })
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/playwright/fetch', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    url: 'https://example.com',
+    waitForJS: true,
+    maxLength: 8000
+  })
+})
+.then(res => res.json())
+.then(data => {
+  console.log('Title:', data.title);
+  console.log('Content:', data.content?.substring(0, 500));
+})
 .catch(err => console.error(err));`
             },
             '/api/playwright/interact': {
-                curl: `# Interact with page before extracting content
+                curl: `# Bearer Token Authentication
 curl -k -X POST ${baseUrl}/api/playwright/interact \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/json" \\
@@ -2338,14 +2468,26 @@ curl -k -X POST ${baseUrl}/api/playwright/interact \\
     "url": "https://example.com/login",
     "actions": [
       {"type": "type", "selector": "#username", "text": "user"},
-      {"type": "type", "selector": "#password", "text": "pass"},
-      {"type": "click", "selector": "#submit"},
-      {"type": "waitForNavigation", "timeout": 5000}
+      {"type": "click", "selector": "#submit"}
     ],
     "maxLength": 8000
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/playwright/interact \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "url": "https://example.com/login",
+    "actions": [
+      {"type": "type", "selector": "#username", "text": "user"},
+      {"type": "click", "selector": "#submit"}
+    ]
   }'`,
                 python: `import requests
 
+# Bearer Token Authentication
 response = requests.post(
     '${baseUrl}/api/playwright/interact',
     headers={
@@ -2356,11 +2498,27 @@ response = requests.post(
         'url': 'https://example.com/login',
         'actions': [
             {'type': 'type', 'selector': '#username', 'text': 'user'},
-            {'type': 'type', 'selector': '#password', 'text': 'pass'},
-            {'type': 'click', 'selector': '#submit'},
-            {'type': 'waitForNavigation', 'timeout': 5000}
+            {'type': 'click', 'selector': '#submit'}
         ],
         'maxLength': 8000
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    '${baseUrl}/api/playwright/interact',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'url': 'https://example.com/login',
+        'actions': [
+            {'type': 'type', 'selector': '#username', 'text': 'user'},
+            {'type': 'click', 'selector': '#submit'}
+        ]
     },
     verify=False
 )
@@ -2368,8 +2526,16 @@ response = requests.post(
 result = response.json()
 print(f"Final URL: {result['url']}")
 print(f"Content after interaction: {result['content'][:500]}...")`,
-                powershell: `$headers = @{
+                powershell: `# Bearer Token Authentication
+$headers = @{
     "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -2377,15 +2543,14 @@ $body = @{
     url = "https://example.com/login"
     actions = @(
         @{type = "type"; selector = "#username"; text = "user"},
-        @{type = "type"; selector = "#password"; text = "pass"},
-        @{type = "click"; selector = "#submit"},
-        @{type = "waitForNavigation"; timeout = 5000}
+        @{type = "click"; selector = "#submit"}
     )
 } | ConvertTo-Json -Depth 3
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/interact" -Method Post -Headers $headers -Body $body
 Write-Output "Final URL: $($response.url)"`,
-                javascript: `fetch('${baseUrl}/api/playwright/interact', {
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/playwright/interact', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer your_bearer_token',
@@ -2395,11 +2560,29 @@ Write-Output "Final URL: $($response.url)"`,
     url: 'https://example.com/login',
     actions: [
       {type: 'type', selector: '#username', text: 'user'},
-      {type: 'type', selector: '#password', text: 'pass'},
-      {type: 'click', selector: '#submit'},
-      {type: 'waitForNavigation', timeout: 5000}
+      {type: 'click', selector: '#submit'}
     ],
     maxLength: 8000
+  })
+})
+.then(res => res.json())
+.then(data => console.log('Final URL:', data.url))
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/playwright/interact', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    url: 'https://example.com/login',
+    actions: [
+      {type: 'type', selector: '#username', text: 'user'},
+      {type: 'click', selector: '#submit'}
+    ]
   })
 })
 .then(res => res.json())
