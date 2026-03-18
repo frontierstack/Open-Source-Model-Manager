@@ -137,6 +137,469 @@ const contentContinuationQueue = new Map();
 // Map structure: conversationId -> { userId, content, startTime, model, clientConnected, abortController }
 const activeStreamingJobs = new Map();
 
+// ============================================================================
+// MAP-REDUCE CHUNKING CONFIGURATION
+// ============================================================================
+// When content exceeds context window, it's split into overlapping chunks,
+// processed in parallel (map phase), and responses are synthesized (reduce phase)
+
+const CHUNKING_CONFIG = {
+    // Enable automatic map-reduce chunking for large content
+    enabled: true,
+    // Minimum tokens to trigger chunking (below this, use simple truncation)
+    minTokensForChunking: 2000,
+    // Overlap between chunks (tokens) - preserves context at boundaries
+    overlapTokens: 500,
+    // Maximum concurrent chunk requests
+    maxParallelChunks: 4,
+    // Tokens reserved for synthesis prompt
+    synthesisPromptReserve: 500,
+    // Characters per token estimate
+    charsPerToken: 4,
+    // Safety margin for token estimation
+    safetyMargin: 1.05,
+    // Per-chunk timeout in milliseconds (5 minutes)
+    chunkTimeout: 300000,
+    // Maximum retry attempts per chunk
+    maxRetries: 3
+};
+
+/**
+ * Estimate token count from content (string or vision array)
+ * @param {string|Array} content - The content to estimate tokens for
+ * @returns {number} Estimated token count
+ */
+function estimateTokenCount(content) {
+    const { charsPerToken, safetyMargin } = CHUNKING_CONFIG;
+
+    if (typeof content === 'string') {
+        return Math.ceil((content.length / charsPerToken) * safetyMargin);
+    }
+    if (Array.isArray(content)) {
+        // Vision format: array of { type: 'text', text: '...' } and { type: 'image_url', ... }
+        let tokens = 0;
+        for (const part of content) {
+            if (part.type === 'text' && part.text) {
+                tokens += Math.ceil((part.text.length / charsPerToken) * safetyMargin);
+            } else if (part.type === 'image_url') {
+                // Images use ~1000 tokens (conservative estimate)
+                tokens += 1000;
+            }
+        }
+        return tokens;
+    }
+    return 0;
+}
+
+/**
+ * Split content into overlapping chunks for map-reduce processing
+ * @param {string} content - The content to split
+ * @param {number} chunkSizeTokens - Target tokens per chunk
+ * @param {number} overlapTokens - Overlap between chunks
+ * @returns {Array<{content: string, index: number, isFirst: boolean, isLast: boolean}>}
+ */
+function splitIntoChunks(content, chunkSizeTokens, overlapTokens = CHUNKING_CONFIG.overlapTokens) {
+    const { charsPerToken, safetyMargin } = CHUNKING_CONFIG;
+
+    // Convert token counts to character counts
+    const chunkSizeChars = Math.floor((chunkSizeTokens * charsPerToken) / safetyMargin);
+    const overlapChars = Math.floor((overlapTokens * charsPerToken) / safetyMargin);
+    const stepSize = chunkSizeChars - overlapChars;
+
+    if (stepSize <= 0) {
+        // If overlap is too large, just return the whole content
+        return [{ content, index: 0, isFirst: true, isLast: true }];
+    }
+
+    const chunks = [];
+    let position = 0;
+    let index = 0;
+
+    while (position < content.length) {
+        const endPosition = Math.min(position + chunkSizeChars, content.length);
+        let chunkContent = content.substring(position, endPosition);
+
+        // Try to break at word/sentence boundary if not at the end
+        if (endPosition < content.length) {
+            // Look for sentence end (. ! ?) within last 10% of chunk
+            const lookbackStart = Math.floor(chunkContent.length * 0.9);
+            const lookbackRegion = chunkContent.substring(lookbackStart);
+            const sentenceEnd = lookbackRegion.search(/[.!?]\s/);
+
+            if (sentenceEnd !== -1) {
+                // Found a sentence boundary - adjust chunk to end there
+                const newEnd = lookbackStart + sentenceEnd + 2; // Include the punctuation and space
+                chunkContent = chunkContent.substring(0, newEnd);
+            } else {
+                // Try to break at word boundary
+                const lastSpace = chunkContent.lastIndexOf(' ');
+                if (lastSpace > chunkContent.length * 0.8) {
+                    chunkContent = chunkContent.substring(0, lastSpace + 1);
+                }
+            }
+        }
+
+        chunks.push({
+            content: chunkContent,
+            index,
+            isFirst: index === 0,
+            isLast: position + chunkContent.length >= content.length
+        });
+
+        // Move position by the actual chunk size minus overlap
+        position += Math.max(chunkContent.length - overlapChars, stepSize);
+        index++;
+
+        // Safety check to prevent infinite loop
+        if (index > 100) {
+            console.warn('[Chunking] Maximum chunk count reached, stopping');
+            chunks[chunks.length - 1].isLast = true;
+            break;
+        }
+    }
+
+    // Mark the last chunk
+    if (chunks.length > 0) {
+        chunks[chunks.length - 1].isLast = true;
+    }
+
+    return chunks;
+}
+
+/**
+ * Generate the prompt for processing a single chunk
+ * @param {string} chunkContent - The chunk content
+ * @param {number} chunkIndex - Zero-based chunk index
+ * @param {number} totalChunks - Total number of chunks
+ * @param {string} originalQuery - The user's original query/question
+ * @param {boolean} isFirst - Whether this is the first chunk
+ * @param {boolean} isLast - Whether this is the last chunk
+ * @returns {string} The formatted chunk prompt
+ */
+function buildChunkPrompt(chunkContent, chunkIndex, totalChunks, originalQuery, isFirst, isLast) {
+    const position = isFirst ? 'BEGINNING' : (isLast ? 'END' : 'MIDDLE');
+
+    return `[CHUNK ${chunkIndex + 1}/${totalChunks} - ${position} OF DOCUMENT]
+
+The following is part ${chunkIndex + 1} of ${totalChunks} of a large document that was split due to context limitations.
+${!isFirst ? 'Note: This chunk overlaps slightly with the previous chunk to maintain context.' : ''}
+${!isLast ? 'Note: This chunk overlaps slightly with the next chunk.' : ''}
+
+---CHUNK CONTENT START---
+${chunkContent}
+---CHUNK CONTENT END---
+
+USER'S QUERY: ${originalQuery}
+
+Please analyze this chunk and provide relevant findings. Focus on information pertinent to the user's query.
+${isLast ? 'This is the final chunk.' : 'Your response will be combined with analyses of other chunks.'}`;
+}
+
+/**
+ * Generate the synthesis prompt for combining chunk responses
+ * @param {Array<{chunkIndex: number, response: string}>} chunkResponses - Array of chunk responses
+ * @param {string} originalQuery - The user's original query
+ * @returns {string} The synthesis prompt
+ */
+function buildSynthesisPrompt(chunkResponses, originalQuery) {
+    const responseParts = chunkResponses
+        .sort((a, b) => a.chunkIndex - b.chunkIndex)
+        .map(cr => `[ANALYSIS OF CHUNK ${cr.chunkIndex + 1}/${chunkResponses.length}]\n${cr.response}`)
+        .join('\n\n---\n\n');
+
+    return `You are synthesizing multiple partial analyses of a large document that was processed in chunks.
+
+ORIGINAL USER QUERY: ${originalQuery}
+
+The document was split into ${chunkResponses.length} chunks and each was analyzed separately. Below are the individual analyses:
+
+${responseParts}
+
+---
+
+Please synthesize these partial analyses into a single, coherent, and comprehensive response that:
+1. Combines all relevant findings from each chunk
+2. Eliminates redundancy (chunks had some overlap)
+3. Presents information in a logical order
+4. Directly addresses the user's original query
+5. Notes if any information might be missing due to chunking
+
+Provide your synthesized response:`;
+}
+
+/**
+ * Process large content using map-reduce chunking strategy
+ * @param {Object} options - Processing options
+ * @param {string} options.targetHost - Model host
+ * @param {number} options.targetPort - Model port
+ * @param {string} options.largeContent - The large content to process
+ * @param {string} options.originalQuery - The user's original query
+ * @param {Array} options.systemMessages - System messages to include
+ * @param {number} options.contextSize - Available context window size
+ * @param {number} options.temperature - Temperature setting
+ * @param {number} options.topP - Top P setting
+ * @param {number} options.maxTokens - Max tokens for responses
+ * @param {function} options.onProgress - Callback for progress updates
+ * @returns {Promise<{success: boolean, response: string, chunkCount: number, error?: string}>}
+ */
+async function processWithMapReduce(options) {
+    const {
+        targetHost,
+        targetPort,
+        largeContent,
+        originalQuery,
+        systemMessages = [],
+        contextSize,
+        temperature = 0.7,
+        topP = 1.0,
+        maxTokens,
+        onProgress
+    } = options;
+
+    const { overlapTokens, maxParallelChunks, synthesisPromptReserve } = CHUNKING_CONFIG;
+
+    // Calculate available tokens for each chunk
+    const systemTokens = systemMessages.reduce((sum, msg) => sum + estimateTokenCount(msg.content), 0);
+    const queryTokens = estimateTokenCount(originalQuery);
+    const responseReserve = maxTokens || Math.floor(contextSize * 0.2);
+
+    // Available for chunk content = context - system - query wrapper - response reserve - buffer
+    const availableForChunkContent = contextSize - systemTokens - queryTokens - responseReserve - 500;
+
+    if (availableForChunkContent < 1000) {
+        return {
+            success: false,
+            error: 'Context window too small for map-reduce chunking',
+            chunkCount: 0
+        };
+    }
+
+    // Split content into overlapping chunks
+    const chunks = splitIntoChunks(largeContent, availableForChunkContent, overlapTokens);
+    const totalChunks = chunks.length;
+
+    console.log(`[Map-Reduce] Splitting content into ${totalChunks} chunks (${availableForChunkContent} tokens each, ${overlapTokens} token overlap)`);
+
+    if (onProgress) {
+        onProgress({ phase: 'chunking', totalChunks, currentChunk: 0, message: `Splitting content into ${totalChunks} chunks...` });
+    }
+
+    // MAP PHASE: Process chunks in parallel (with concurrency limit)
+    const chunkResponses = [];
+    const chunkErrors = [];
+
+    // Process in batches to limit concurrency
+    for (let batchStart = 0; batchStart < chunks.length; batchStart += maxParallelChunks) {
+        const batchEnd = Math.min(batchStart + maxParallelChunks, chunks.length);
+        const batch = chunks.slice(batchStart, batchEnd);
+
+        console.log(`[Map-Reduce] Processing batch ${Math.floor(batchStart / maxParallelChunks) + 1}: chunks ${batchStart + 1}-${batchEnd}`);
+
+        if (onProgress) {
+            onProgress({
+                phase: 'map',
+                totalChunks,
+                currentChunk: batchStart,
+                message: `Processing chunks ${batchStart + 1}-${batchEnd} of ${totalChunks}...`
+            });
+        }
+
+        const batchPromises = batch.map(async (chunk) => {
+            const chunkPrompt = buildChunkPrompt(
+                chunk.content,
+                chunk.index,
+                totalChunks,
+                originalQuery,
+                chunk.isFirst,
+                chunk.isLast
+            );
+
+            const messages = [
+                ...systemMessages,
+                { role: 'user', content: chunkPrompt }
+            ];
+
+            // Retry logic with exponential backoff
+            const maxRetries = 3;
+            const baseTimeout = 300000; // 5 minute timeout per chunk
+
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    const response = await axios({
+                        method: 'post',
+                        url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
+                        data: {
+                            messages,
+                            temperature,
+                            top_p: topP,
+                            max_tokens: responseReserve,
+                            stream: false
+                        },
+                        timeout: baseTimeout
+                    });
+
+                    const responseContent = response.data?.choices?.[0]?.message?.content || '';
+                    console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} completed (${responseContent.length} chars)${attempt > 1 ? ` after ${attempt} attempts` : ''}`);
+
+                    return {
+                        chunkIndex: chunk.index,
+                        response: responseContent,
+                        success: true,
+                        attempts: attempt
+                    };
+                } catch (error) {
+                    const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
+                    const isRetryable = isTimeout || error.code === 'ECONNRESET' || error.response?.status >= 500;
+
+                    if (attempt < maxRetries && isRetryable) {
+                        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
+                        console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} attempt ${attempt} failed (${error.message}), retrying in ${delay/1000}s...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+
+                    console.error(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} failed after ${attempt} attempts:`, error.message);
+                    return {
+                        chunkIndex: chunk.index,
+                        response: `[Error processing chunk ${chunk.index + 1}: ${error.message}]`,
+                        success: false,
+                        error: error.message,
+                        attempts: attempt
+                    };
+                }
+            }
+
+            // Should not reach here, but return error just in case
+            return {
+                chunkIndex: chunk.index,
+                response: `[Error processing chunk ${chunk.index + 1}: Max retries exceeded]`,
+                success: false,
+                error: 'Max retries exceeded',
+                attempts: maxRetries
+            };
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+
+        for (const result of batchResults) {
+            if (result.success) {
+                chunkResponses.push(result);
+            } else {
+                chunkErrors.push(result);
+            }
+        }
+    }
+
+    // Check if we have enough successful responses
+    if (chunkResponses.length === 0) {
+        return {
+            success: false,
+            error: 'All chunk processing failed',
+            chunkCount: totalChunks,
+            errors: chunkErrors
+        };
+    }
+
+    // Add error responses with error messages so they're included in synthesis
+    for (const err of chunkErrors) {
+        chunkResponses.push(err);
+    }
+
+    console.log(`[Map-Reduce] Map phase complete: ${chunkResponses.length - chunkErrors.length}/${totalChunks} chunks successful`);
+
+    // REDUCE PHASE: Synthesize chunk responses
+    if (onProgress) {
+        onProgress({
+            phase: 'reduce',
+            totalChunks,
+            currentChunk: totalChunks,
+            message: 'Synthesizing responses...'
+        });
+    }
+
+    // Check if synthesis would fit in context
+    const synthesisPrompt = buildSynthesisPrompt(chunkResponses, originalQuery);
+    const synthesisTokens = estimateTokenCount(synthesisPrompt);
+
+    if (synthesisTokens > contextSize - responseReserve - synthesisPromptReserve) {
+        // Synthesis prompt is too large - need to do hierarchical reduction
+        console.log(`[Map-Reduce] Synthesis prompt too large (${synthesisTokens} tokens), using direct concatenation`);
+
+        // Fall back to concatenating chunk responses with clear separation
+        const directResponse = chunkResponses
+            .sort((a, b) => a.chunkIndex - b.chunkIndex)
+            .map(cr => cr.response)
+            .join('\n\n---\n\n');
+
+        return {
+            success: true,
+            response: `[Note: Content was processed in ${totalChunks} chunks. Synthesis was skipped due to response size.]\n\n${directResponse}`,
+            chunkCount: totalChunks,
+            synthesized: false
+        };
+    }
+
+    // Perform synthesis
+    const synthesisMessages = [
+        ...systemMessages,
+        { role: 'user', content: synthesisPrompt }
+    ];
+
+    try {
+        console.log(`[Map-Reduce] Starting synthesis (${synthesisTokens} tokens input)`);
+
+        const synthesisResponse = await axios({
+            method: 'post',
+            url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
+            data: {
+                messages: synthesisMessages,
+                temperature: Math.max(0.3, temperature - 0.2), // Slightly lower temp for synthesis
+                top_p: topP,
+                max_tokens: responseReserve,
+                stream: false
+            },
+            timeout: 180000 // 3 minute timeout for synthesis
+        });
+
+        const finalResponse = synthesisResponse.data?.choices?.[0]?.message?.content || '';
+        console.log(`[Map-Reduce] Synthesis complete (${finalResponse.length} chars)`);
+
+        if (onProgress) {
+            onProgress({
+                phase: 'complete',
+                totalChunks,
+                currentChunk: totalChunks,
+                message: 'Processing complete'
+            });
+        }
+
+        return {
+            success: true,
+            response: finalResponse,
+            chunkCount: totalChunks,
+            synthesized: true,
+            failedChunks: chunkErrors.length
+        };
+
+    } catch (error) {
+        console.error(`[Map-Reduce] Synthesis failed:`, error.message);
+
+        // Fall back to concatenated responses
+        const directResponse = chunkResponses
+            .sort((a, b) => a.chunkIndex - b.chunkIndex)
+            .map(cr => cr.response)
+            .join('\n\n---\n\n');
+
+        return {
+            success: true,
+            response: `[Note: Synthesis failed (${error.message}). Showing concatenated chunk responses:]\n\n${directResponse}`,
+            chunkCount: totalChunks,
+            synthesized: false,
+            synthesisError: error.message
+        };
+    }
+}
+
 // Global active backend state - determines which backend is used for loading models
 // Can be 'llamacpp' or 'vllm'
 let activeBackend = 'llamacpp'; // Default to llama.cpp for older GPU support
@@ -7240,8 +7703,10 @@ app.delete('/api/chat/continuation/:conversationId', requireAuth, (req, res) => 
 // Streaming chat endpoint - Server-Sent Events (SSE)
 app.post('/api/chat/stream', requireAuth, async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
-    const { message, messages: inputMessages, model, temperature, top_p, topP, maxTokens, max_tokens, conversationId, continueProcessing } = req.body;
+    const { message, messages: inputMessages, model, temperature, top_p, topP, maxTokens, max_tokens, conversationId, continueProcessing, chunkingStrategy } = req.body;
     const effectiveTopP = top_p !== undefined ? top_p : (topP !== undefined ? topP : 1.0);
+    // Chunking strategy: 'auto' (default), 'map-reduce', 'truncate', 'none'
+    const effectiveChunkingStrategy = chunkingStrategy || 'auto';
 
     // Check for continuation request
     if (continueProcessing && conversationId) {
@@ -7380,10 +7845,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const responseReserve = effectiveMaxTokens || Math.floor(contextSize * 0.2);
         const availableContextForInput = contextSize - responseReserve;
 
-        // Smart content chunking - truncate if exceeds context and queue remainder
+        // Smart content chunking - use map-reduce for large content
         let contentTruncated = false;
         let remainingContent = null;
         let truncationInfo = null;
+        let useMapReduce = false;
+        let mapReduceContent = null;
+        let mapReduceQuery = null;
 
         if (totalInputTokens > availableContextForInput) {
             // Find the last user message (which typically contains the large content)
@@ -7414,51 +7882,82 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                     // Calculate how much we need to trim
                     const otherTokens = totalInputTokens - contentTokens;
-                    const availableForContent = availableContextForInput - otherTokens - 200; // Reserve 200 tokens for continuation notice
+                    const availableForContent = availableContextForInput - otherTokens - 200;
 
                     if (availableForContent > 0 && contentTokens > availableForContent) {
-                        // Truncate at character level using conservative estimate
-                        // Divide by safety margin to ensure we don't exceed limit
-                        const maxChars = Math.floor((availableForContent * CHARS_PER_TOKEN) / SAFETY_MARGIN);
-                        const truncatedContent = textContent.substring(0, maxChars);
-                        remainingContent = textContent.substring(maxChars);
+                        // Determine if we should use map-reduce or simple truncation
+                        const shouldUseMapReduce = CHUNKING_CONFIG.enabled &&
+                            (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce') &&
+                            contentTokens >= CHUNKING_CONFIG.minTokensForChunking;
 
-                        const remainingTokens = estimateTokens(remainingContent);
-                        const totalChunks = Math.ceil(contentTokens / availableForContent);
+                        if (shouldUseMapReduce) {
+                            // Extract query from content (usually the last part or a question)
+                            // Try to find a question or instruction at the end
+                            const lines = textContent.split('\n');
+                            let queryPart = '';
+                            let contentPart = textContent;
 
-                        const truncatedWithNotice = truncatedContent +
-                            `\n\n[CONTENT TRUNCATED - Processing chunk 1 of ${totalChunks}. ~${remainingTokens.toLocaleString()} tokens remaining. The model will be provided with a summary and the next chunk automatically.]`;
+                            // Look for common query patterns at the end
+                            for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
+                                const line = lines[j].trim();
+                                if (line.endsWith('?') || line.match(/^(please|can you|what|how|why|summarize|analyze|explain|describe|list|find|search)/i)) {
+                                    queryPart = lines.slice(j).join('\n');
+                                    contentPart = lines.slice(0, j).join('\n');
+                                    break;
+                                }
+                            }
 
-                        // Update message with truncated content (handle both formats)
-                        if (isArrayFormat && textPartIdx !== -1) {
-                            chatMessages[i].content[textPartIdx].text = truncatedWithNotice;
+                            // If no clear query found, use a generic one
+                            if (!queryPart) {
+                                queryPart = 'Please analyze and summarize this content.';
+                            }
+
+                            useMapReduce = true;
+                            mapReduceContent = contentPart;
+                            mapReduceQuery = queryPart;
+
+                            console.log(`[Chat Stream] Using map-reduce chunking for ${contentTokens} tokens (query: "${queryPart.substring(0, 50)}...")`);
                         } else {
-                            chatMessages[i].content = truncatedWithNotice;
+                            // Fall back to simple truncation
+                            const maxChars = Math.floor((availableForContent * CHARS_PER_TOKEN) / SAFETY_MARGIN);
+                            const truncatedContent = textContent.substring(0, maxChars);
+                            remainingContent = textContent.substring(maxChars);
+
+                            const remainingTokens = estimateTokens(remainingContent);
+                            const totalChunks = Math.ceil(contentTokens / availableForContent);
+
+                            const truncatedWithNotice = truncatedContent +
+                                `\n\n[CONTENT TRUNCATED - Processing chunk 1 of ${totalChunks}. ~${remainingTokens.toLocaleString()} tokens remaining. The model will be provided with a summary and the next chunk automatically.]`;
+
+                            if (isArrayFormat && textPartIdx !== -1) {
+                                chatMessages[i].content[textPartIdx].text = truncatedWithNotice;
+                            } else {
+                                chatMessages[i].content = truncatedWithNotice;
+                            }
+
+                            contentTruncated = true;
+                            truncationInfo = {
+                                totalTokens: contentTokens,
+                                processedTokens: availableForContent,
+                                remainingTokens,
+                                totalChunks,
+                                currentChunk: 1
+                            };
+
+                            totalInputTokens = 0;
+                            for (const msg of chatMessages) {
+                                totalInputTokens += estimateTokens(msg.content);
+                            }
+
+                            console.log(`[Chat Stream] Content truncated: Processing ${availableForContent} of ${contentTokens} tokens (chunk 1/${totalChunks})`);
                         }
-
-                        contentTruncated = true;
-                        truncationInfo = {
-                            totalTokens: contentTokens,
-                            processedTokens: availableForContent,
-                            remainingTokens,
-                            totalChunks,
-                            currentChunk: 1
-                        };
-
-                        // Recalculate tokens
-                        totalInputTokens = 0;
-                        for (const msg of chatMessages) {
-                            totalInputTokens += estimateTokens(msg.content);
-                        }
-
-                        console.log(`[Chat Stream] Content chunked: Processing ${availableForContent} of ${contentTokens} tokens (chunk 1/${totalChunks})`);
                     }
                     break;
                 }
             }
 
-            // If still over limit after truncation attempt, return error
-            if (totalInputTokens > availableContextForInput && !contextShift) {
+            // If still over limit after processing and not using map-reduce, return error
+            if (!useMapReduce && totalInputTokens > availableContextForInput && !contextShift) {
                 return res.status(400).json({
                     success: false,
                     error: `Not enough context window: Input requires ~${totalInputTokens} tokens but only ${availableContextForInput} available (context: ${contextSize}, reserved for response: ${responseReserve}). Enable context shifting or reduce input size.`
@@ -7472,6 +7971,121 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
+        // =====================================================================
+        // MAP-REDUCE PROCESSING PATH
+        // =====================================================================
+        // If content exceeds context window and map-reduce is enabled,
+        // process chunks in parallel and synthesize the response
+        if (useMapReduce && mapReduceContent && mapReduceQuery) {
+            console.log(`[Chat Stream] Starting map-reduce processing...`);
+
+            // Send initial progress event
+            const progressEvent = {
+                type: 'chunking_progress',
+                phase: 'starting',
+                message: 'Splitting content into chunks for parallel processing...'
+            };
+            res.write(`data: ${JSON.stringify(progressEvent)}\n\n`);
+
+            // Extract system messages for the chunks
+            const systemMsgs = chatMessages.filter(m => m.role === 'system');
+
+            try {
+                const mapReduceResult = await processWithMapReduce({
+                    targetHost,
+                    targetPort,
+                    largeContent: mapReduceContent,
+                    originalQuery: mapReduceQuery,
+                    systemMessages: systemMsgs,
+                    contextSize,
+                    temperature: temperature || 0.7,
+                    topP: effectiveTopP,
+                    maxTokens: responseReserve,
+                    onProgress: (progress) => {
+                        // Stream progress events to client
+                        const event = {
+                            type: 'chunking_progress',
+                            ...progress
+                        };
+                        try {
+                            res.write(`data: ${JSON.stringify(event)}\n\n`);
+                        } catch (e) {
+                            // Client disconnected
+                        }
+                    }
+                });
+
+                if (mapReduceResult.success) {
+                    // Stream the synthesized response token by token for consistent UX
+                    const words = mapReduceResult.response.split(/(\s+)/);
+                    let fullResponse = '';
+
+                    for (const word of words) {
+                        fullResponse += word;
+                        const event = {
+                            token: word,
+                            choices: [{
+                                delta: { content: word },
+                                index: 0
+                            }]
+                        };
+                        try {
+                            res.write(`data: ${JSON.stringify(event)}\n\n`);
+                        } catch (e) {
+                            break; // Client disconnected
+                        }
+                        // Small delay to simulate streaming
+                        await new Promise(resolve => setTimeout(resolve, 5));
+                    }
+
+                    // Send final event
+                    const finalEvent = {
+                        done: true,
+                        choices: [{
+                            delta: {},
+                            index: 0,
+                            finish_reason: 'stop'
+                        }],
+                        model: targetModel,
+                        contextSize,
+                        mapReduce: {
+                            enabled: true,
+                            chunkCount: mapReduceResult.chunkCount,
+                            synthesized: mapReduceResult.synthesized,
+                            failedChunks: mapReduceResult.failedChunks || 0
+                        }
+                    };
+                    res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+                    res.write(`data: [DONE]\n\n`);
+                    res.end();
+
+                    console.log(`[Chat Stream] Map-reduce complete: ${mapReduceResult.chunkCount} chunks, synthesized=${mapReduceResult.synthesized}`);
+                    return;
+                } else {
+                    // Map-reduce failed, return error
+                    const errorEvent = {
+                        error: mapReduceResult.error || 'Map-reduce processing failed',
+                        done: true
+                    };
+                    res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+                    res.end();
+                    return;
+                }
+            } catch (mapReduceError) {
+                console.error('[Chat Stream] Map-reduce error:', mapReduceError);
+                const errorEvent = {
+                    error: `Map-reduce processing failed: ${mapReduceError.message}`,
+                    done: true
+                };
+                res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+                res.end();
+                return;
+            }
+        }
+
+        // =====================================================================
+        // NORMAL STREAMING PATH
+        // =====================================================================
         const requestBody = {
             messages: chatMessages,
             temperature: temperature || 0.7,

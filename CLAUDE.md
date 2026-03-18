@@ -232,6 +232,33 @@ The `read_file` skill supports chunking for files that exceed context limits:
 - Context shifting truncates input if needed
 - Pre-emptive checks prevent OOM errors
 
+**Map-Reduce Chunking for Large Content:**
+When content exceeds the model's context window, the system automatically uses a map-reduce strategy:
+
+1. **Detection**: Content tokens > available context triggers chunking
+2. **Splitting**: Content split into overlapping chunks (500 token overlap by default)
+3. **Map Phase**: Chunks processed in parallel (max 4 concurrent)
+4. **Reduce Phase**: Partial responses synthesized into coherent final response
+
+Configuration in `webapp/server.js`:
+```javascript
+const CHUNKING_CONFIG = {
+    enabled: true,
+    minTokensForChunking: 2000,  // Minimum tokens to trigger map-reduce
+    overlapTokens: 500,          // Token overlap between chunks
+    maxParallelChunks: 4,        // Concurrent chunk processing
+    synthesisPromptReserve: 500, // Tokens reserved for synthesis
+    chunkTimeout: 300000,        // 5 minute timeout per chunk
+    maxRetries: 3,               // Retry failed chunks with exponential backoff
+};
+```
+
+API parameter: `chunkingStrategy: 'auto' | 'map-reduce' | 'truncate' | 'none'`
+
+SSE events during map-reduce:
+- `{ type: 'chunking_progress', phase: 'chunking|map|reduce|complete', ... }`
+- Final event includes: `{ mapReduce: { enabled: true, chunkCount, synthesized, failedChunks } }`
+
 ### Frontend State Management (Zustand)
 
 **Main webapp stores** (`webapp/src/stores/`):

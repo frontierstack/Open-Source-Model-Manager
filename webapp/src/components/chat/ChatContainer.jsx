@@ -447,6 +447,31 @@ export default function ChatContainer({
 
                         try {
                             const parsed = JSON.parse(data);
+
+                            // Handle map-reduce chunking progress events
+                            if (parsed.type === 'chunking_progress') {
+                                const { phase, totalChunks, currentChunk, message } = parsed;
+                                let statusMsg = message;
+                                if (phase === 'map' && totalChunks > 0) {
+                                    const percent = Math.round((currentChunk / totalChunks) * 100);
+                                    statusMsg = `Processing chunks (${percent}% complete)`;
+                                } else if (phase === 'reduce') {
+                                    statusMsg = 'Synthesizing responses...';
+                                }
+                                // Update UI with progress (if you have a status indicator)
+                                console.log(`[Map-Reduce] ${phase}: ${statusMsg}`);
+                                continue; // Don't process as content
+                            }
+
+                            // Handle map-reduce completion info
+                            if (parsed.mapReduce?.enabled) {
+                                const mr = parsed.mapReduce;
+                                const statusMsg = mr.synthesized
+                                    ? `Response synthesized from ${mr.chunkCount} chunks`
+                                    : `Response compiled from ${mr.chunkCount} chunks`;
+                                showSnackbar(statusMsg, mr.failedChunks > 0 ? 'warning' : 'success');
+                            }
+
                             const delta = parsed.choices?.[0]?.delta;
 
                             if (delta?.content) {

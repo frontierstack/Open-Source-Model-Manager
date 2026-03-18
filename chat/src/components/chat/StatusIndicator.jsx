@@ -5,7 +5,8 @@ import {
     Loader2,
     Sparkles,
     Zap,
-    Layers
+    Layers,
+    GitMerge
 } from 'lucide-react';
 
 /**
@@ -19,6 +20,7 @@ export const StatusType = {
     PROCESSING: 'processing',
     GENERATING: 'generating',
     CHUNKING: 'chunking',
+    SYNTHESIZING: 'synthesizing',
 };
 
 /**
@@ -83,6 +85,15 @@ export default function StatusIndicator({ status, message }) {
                     color: 'text-cyan-400',
                     bgColor: 'bg-cyan-500/10',
                     borderColor: 'border-cyan-500/20',
+                    iconAnimation: 'animate-pulse',
+                };
+            case StatusType.SYNTHESIZING:
+                return {
+                    icon: GitMerge,
+                    label: message || 'Synthesizing',
+                    color: 'text-violet-400',
+                    bgColor: 'bg-violet-500/10',
+                    borderColor: 'border-violet-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             default:

@@ -921,6 +921,44 @@ export default function ChatContainer({
                                 tokenCount = parsed.usage.completion_tokens;
                             }
 
+                            // Handle map-reduce chunking progress events
+                            if (parsed.type === 'chunking_progress') {
+                                const { phase, totalChunks, currentChunk, message } = parsed;
+
+                                if (phase === 'starting' || phase === 'chunking') {
+                                    setProcessingStatus('chunking', message || 'Splitting content into chunks...');
+                                } else if (phase === 'map') {
+                                    const percentComplete = totalChunks > 0
+                                        ? Math.round((currentChunk / totalChunks) * 100)
+                                        : 0;
+                                    setProcessingStatus(
+                                        'processing',
+                                        message || `Processing chunks (${percentComplete}% complete)`
+                                    );
+                                } else if (phase === 'reduce') {
+                                    setProcessingStatus('synthesizing', message || 'Synthesizing responses...');
+                                } else if (phase === 'complete') {
+                                    setProcessingStatus('generating', 'Streaming response...');
+                                }
+                                continue; // Don't process this as a content event
+                            }
+
+                            // Handle map-reduce completion info
+                            if (parsed.mapReduce?.enabled) {
+                                const mr = parsed.mapReduce;
+                                const statusMsg = mr.synthesized
+                                    ? `Response synthesized from ${mr.chunkCount} chunks`
+                                    : `Response compiled from ${mr.chunkCount} chunks (synthesis skipped)`;
+                                if (mr.failedChunks > 0) {
+                                    showSnackbar(
+                                        `${statusMsg} | ${mr.failedChunks} chunk(s) had errors`,
+                                        'warning'
+                                    );
+                                } else {
+                                    showSnackbar(statusMsg, 'success');
+                                }
+                            }
+
                             // Handle continuation info (content was split due to context limits)
                             if (parsed.continuation?.hasMore) {
                                 const cont = parsed.continuation;

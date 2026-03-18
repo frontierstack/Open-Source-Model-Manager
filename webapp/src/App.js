@@ -1625,11 +1625,31 @@ curl -k -N -X POST ${baseUrl}/api/chat/stream \\
   -d '{
     "message": "Write a short poem about coding",
     "maxTokens": 500
-  }'`,
+  }'
+
+# With Map-Reduce Chunking for Large Content
+# chunkingStrategy options: "auto" (default), "map-reduce", "truncate", "none"
+curl -k -N -X POST ${baseUrl}/api/chat/stream \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "messages": [
+      {"role": "user", "content": "Analyze this large document..."}
+    ],
+    "maxTokens": 2000,
+    "chunkingStrategy": "map-reduce"
+  }'
+
+# SSE Events for Map-Reduce:
+# - {"type":"chunking_progress","phase":"chunking","message":"Splitting..."}
+# - {"type":"chunking_progress","phase":"map","currentChunk":1,"totalChunks":3}
+# - {"type":"chunking_progress","phase":"reduce","message":"Synthesizing..."}
+# - {"done":true,"mapReduce":{"enabled":true,"chunkCount":3,"synthesized":true}}`,
                 python: `import requests
+import json
 
 # Streaming Chat - Process tokens as they arrive
-def stream_chat(message, bearer_token):
+def stream_chat(message, bearer_token, chunking_strategy='auto'):
     response = requests.post(
         '${baseUrl}/api/chat/stream',
         headers={
@@ -1638,7 +1658,8 @@ def stream_chat(message, bearer_token):
         },
         json={
             'message': message,
-            'maxTokens': 500
+            'maxTokens': 500,
+            'chunkingStrategy': chunking_strategy  # 'auto', 'map-reduce', 'truncate', 'none'
         },
         stream=True,
         verify=False
@@ -1651,10 +1672,24 @@ def stream_chat(message, bearer_token):
                 data = line[6:]  # Remove 'data: ' prefix
                 if data == '[DONE]':
                     break
-                import json
                 chunk = json.loads(data)
-                if 'content' in chunk:
-                    print(chunk['content'], end='', flush=True)
+
+                # Handle map-reduce progress events
+                if chunk.get('type') == 'chunking_progress':
+                    phase = chunk.get('phase')
+                    msg = chunk.get('message', '')
+                    print(f'[{phase}] {msg}')
+                    continue
+
+                # Handle map-reduce completion info
+                if chunk.get('mapReduce', {}).get('enabled'):
+                    mr = chunk['mapReduce']
+                    print(f'\\n[Processed {mr["chunkCount"]} chunks, synthesized={mr["synthesized"]}]')
+
+                # Handle content tokens
+                delta = chunk.get('choices', [{}])[0].get('delta', {})
+                if delta.get('content'):
+                    print(delta['content'], end='', flush=True)
     print()  # Final newline
 
 stream_chat('Write a short poem about coding', 'your_bearer_token')`,
@@ -1676,7 +1711,7 @@ $body = @{
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/chat" -Method Post -Headers $headers -Body $body
 Write-Output $response.response`,
                 javascript: `// Streaming Chat with EventSource-like handling
-async function streamChat(message, bearerToken) {
+async function streamChat(message, bearerToken, chunkingStrategy = 'auto') {
   const response = await fetch('${baseUrl}/api/chat/stream', {
     method: 'POST',
     headers: {
@@ -1685,7 +1720,8 @@ async function streamChat(message, bearerToken) {
     },
     body: JSON.stringify({
       message: message,
-      maxTokens: 500
+      maxTokens: 500,
+      chunkingStrategy: chunkingStrategy  // 'auto', 'map-reduce', 'truncate', 'none'
     })
   });
 
@@ -1706,10 +1742,25 @@ async function streamChat(message, bearerToken) {
         if (data === '[DONE]') continue;
         try {
           const parsed = JSON.parse(data);
-          if (parsed.content) {
-            process.stdout.write(parsed.content); // Node.js
-            // Or: document.body.innerHTML += parsed.content; // Browser
-            fullResponse += parsed.content;
+
+          // Handle map-reduce progress events
+          if (parsed.type === 'chunking_progress') {
+            console.log(\`[Map-Reduce] \${parsed.phase}: \${parsed.message || ''}\`);
+            continue;
+          }
+
+          // Handle map-reduce completion info
+          if (parsed.mapReduce?.enabled) {
+            const mr = parsed.mapReduce;
+            console.log(\`[Processed \${mr.chunkCount} chunks, synthesized=\${mr.synthesized}]\`);
+          }
+
+          // Handle content tokens
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) {
+            process.stdout.write(content); // Node.js
+            // Or: document.body.innerHTML += content; // Browser
+            fullResponse += content;
           }
         } catch (e) {}
       }
