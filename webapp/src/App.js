@@ -5258,12 +5258,15 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                         skipUntilNextSection = true;
                         continue;
                     }
-                    // Stop skipping when we hit a blank line followed by non-auth content or end
+                    // Stop skipping when we hit a blank line followed by actual code (not headers)
                     if (skipUntilNextSection) {
-                        // Check if this is a new section or end of code block
                         if (line.trim() === '' && i + 1 < lines.length) {
-                            const nextLine = lines[i + 1].toLowerCase();
-                            if (nextLine.includes('# ') && !nextLine.includes('api key') && !nextLine.includes('bearer')) {
+                            const nextLine = lines[i + 1].toLowerCase().trim();
+                            // Stop skipping if next line is actual code (not part of headers block)
+                            // Headers block lines start with quotes, whitespace+quotes, or closing brace
+                            const isHeaderLine = nextLine.startsWith('"') || nextLine.startsWith("'") ||
+                                                nextLine === '}' || nextLine.startsWith('$headers');
+                            if (!isHeaderLine && nextLine !== '') {
                                 skipUntilNextSection = false;
                             }
                         }
@@ -5285,6 +5288,16 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                         continue; // Skip the "# OR API Key" marker line itself
                     }
                     if (skipUntilNextSection) {
+                        // Stop skipping when we hit actual code after headers
+                        if (line.trim() === '' && i + 1 < lines.length) {
+                            const nextLine = lines[i + 1].toLowerCase().trim();
+                            const isHeaderLine = nextLine.startsWith('"') || nextLine.startsWith("'") ||
+                                                nextLine === '}' || nextLine.startsWith('$headers') ||
+                                                nextLine.startsWith('headers') || nextLine.startsWith('{');
+                            if (!isHeaderLine && nextLine !== '' && !nextLine.includes('api key') && !nextLine.includes('bearer')) {
+                                skipUntilNextSection = false;
+                            }
+                        }
                         continue;
                     }
                     filteredLines.push(line);
