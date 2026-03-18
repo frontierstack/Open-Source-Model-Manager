@@ -1,4 +1,4 @@
-@import url(https://fonts.googleapis.com/css2?family=Anonymous+Pro:wght@400;700&family=Crimson+Pro:wght@300;400;600&family=DM+Sans:wght@300;400;500;600&family=Fira+Code:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Lato:wght@300;400;700&family=Lexend:wght@300;400;500;600&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;600&family=Manrope:wght@300;400;500;600&family=Merriweather:wght@300;400;700&family=Nunito:wght@300;400;600&family=Open+Sans:wght@300;400;600&family=Outfit:wght@300;400;500;600&family=Playfair+Display:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Poppins:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Sora:wght@300;400;500;600&family=Source+Sans+Pro:wght@300;400;600&family=Source+Serif+Pro:wght@300;400;600&family=Space+Grotesk:wght@300;400;500;600&family=Space+Mono:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Urbanist:wght@300;400;500;600&family=Victor+Mono:wght@400;500&family=Work+Sans:wght@300;400;500;600&display=swap);
+@import url(https://fonts.googleapis.com/css2?family=Anonymous+Pro:wght@400;700&family=Assistant:wght@300;400;500;600&family=Atkinson+Hyperlegible:wght@400;700&family=Barlow:wght@300;400;500;600&family=Comfortaa:wght@300;400;500;600&family=Commit+Mono:wght@400;500&family=Crimson+Pro:wght@300;400;600&family=DM+Sans:wght@300;400;500;600&family=Exo+2:wght@300;400;500;600&family=Figtree:wght@300;400;500;600&family=Fira+Code:wght@400;500&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=Intel+One+Mono:wght@400;500&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Karla:wght@300;400;500;600&family=Lato:wght@300;400;700&family=Lexend:wght@300;400;500;600&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;600&family=Manrope:wght@300;400;500;600&family=Martian+Mono:wght@400;500&family=Merriweather:wght@300;400;700&family=Monaspace+Neon:wght@400;500&family=Nunito:wght@300;400;600&family=Onest:wght@300;400;500;600&family=Open+Sans:wght@300;400;600&family=Outfit:wght@300;400;500;600&family=Overpass:wght@300;400;500;600&family=Playfair+Display:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Poppins:wght@300;400;500;600&family=Public+Sans:wght@300;400;500;600&family=Quicksand:wght@300;400;500;600&family=Readex+Pro:wght@300;400;500;600&family=Red+Hat+Display:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Rubik:wght@300;400;500;600&family=Sora:wght@300;400;500;600&family=Source+Sans+Pro:wght@300;400;600&family=Source+Serif+Pro:wght@300;400;600&family=Space+Grotesk:wght@300;400;500;600&family=Space+Mono:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Urbanist:wght@300;400;500;600&family=Victor+Mono:wght@400;500&family=Work+Sans:wght@300;400;500;600&display=swap);
 *, ::before, ::after{
   --tw-border-spacing-x: 0;
   --tw-border-spacing-y: 0;
@@ -577,6 +577,8 @@ body.font-size-large .markdown-content,
 /* New Serif Fonts */
 
 /* New Monospace Fonts */
+
+/* New Sans-Serif Fonts (Extended) */
 
 /* Selection styling */
 
@@ -4065,6 +4067,646 @@ body.font-size-large .markdown-content,
 }
 
 /* ============================================
+   Theme: Evergreen
+   Deep forest greens inspired theme
+   ============================================ */
+.theme-evergreen {
+    --primary-rgb: 34, 139, 34;
+    --bg-primary: #0a1510;
+    --bg-secondary: #12211a;
+    --bg-tertiary: #1a3025;
+    --bg-elevated: #0e1a14;
+    --bg-hover: rgba(34, 139, 34, 0.08);
+    --bg-active: rgba(34, 139, 34, 0.12);
+
+    --surface-primary: rgba(18, 33, 26, 0.9);
+    --surface-secondary: rgba(26, 48, 37, 0.8);
+    --surface-glass: rgba(10, 21, 16, 0.95);
+
+    --text-primary: #e8f5e9;
+    --text-secondary: #81c784;
+    --text-tertiary: #4caf50;
+    --text-muted: #2e7d32;
+
+    --border-primary: rgba(34, 139, 34, 0.2);
+    --border-secondary: rgba(34, 139, 34, 0.1);
+    --border-hover: rgba(34, 139, 34, 0.3);
+    --border-focus: rgba(76, 175, 80, 0.5);
+
+    --accent-primary: #228b22;
+    --accent-secondary: #2e7d32;
+    --accent-hover: #4caf50;
+    --accent-muted: rgba(34, 139, 34, 0.15);
+
+    /* User message - deep forest green */
+    --user-msg-from: #1a3825;
+    --user-msg-to: #12281a;
+    --user-msg-hover-from: #224830;
+    --user-msg-hover-to: #1a3825;
+    --user-msg-text: #d8f0dc;
+
+    --assistant-bg: rgba(18, 33, 26, 0.8);
+    --assistant-border: rgba(34, 139, 34, 0.15);
+    --assistant-text: #d0e8d4;
+
+    --scrollbar-thumb: rgba(34, 139, 34, 0.2);
+    --scrollbar-thumb-hover: rgba(34, 139, 34, 0.35);
+
+    --code-bg: #060e0a;
+    --code-header-bg: rgba(18, 33, 26, 0.7);
+    --code-border: rgba(34, 139, 34, 0.12);
+
+    --input-bg: rgba(14, 26, 20, 0.8);
+    --input-border: rgba(34, 139, 34, 0.2);
+    --input-focus-border: rgba(76, 175, 80, 0.5);
+    --input-focus-ring: rgba(76, 175, 80, 0.15);
+
+    --shadow-accent: rgba(34, 139, 34, 0.25);
+    --shadow-accent-hover: rgba(76, 175, 80, 0.35);
+
+    --success: #4caf50;
+    --warning: #ff9800;
+    --error: #f44336;
+    --info: #29b6f6;
+}
+
+/* ============================================
+   Theme: Coffee
+   Warm brown and tan tones
+   ============================================ */
+.theme-coffee {
+    --primary-rgb: 141, 110, 99;
+    --bg-primary: #1a1412;
+    --bg-secondary: #2a221e;
+    --bg-tertiary: #3a302a;
+    --bg-elevated: #211a16;
+    --bg-hover: rgba(141, 110, 99, 0.08);
+    --bg-active: rgba(141, 110, 99, 0.12);
+
+    --surface-primary: rgba(42, 34, 30, 0.9);
+    --surface-secondary: rgba(58, 48, 42, 0.8);
+    --surface-glass: rgba(26, 20, 18, 0.95);
+
+    --text-primary: #efebe9;
+    --text-secondary: #bcaaa4;
+    --text-tertiary: #a1887f;
+    --text-muted: #8d6e63;
+
+    --border-primary: rgba(141, 110, 99, 0.2);
+    --border-secondary: rgba(141, 110, 99, 0.1);
+    --border-hover: rgba(141, 110, 99, 0.3);
+    --border-focus: rgba(161, 136, 127, 0.5);
+
+    --accent-primary: #8d6e63;
+    --accent-secondary: #6d4c41;
+    --accent-hover: #a1887f;
+    --accent-muted: rgba(141, 110, 99, 0.15);
+
+    /* User message - warm coffee brown */
+    --user-msg-from: #3e3028;
+    --user-msg-to: #2e221c;
+    --user-msg-hover-from: #4e3e34;
+    --user-msg-hover-to: #3e3028;
+    --user-msg-text: #f0e8e4;
+
+    --assistant-bg: rgba(42, 34, 30, 0.8);
+    --assistant-border: rgba(141, 110, 99, 0.15);
+    --assistant-text: #e0d6d0;
+
+    --scrollbar-thumb: rgba(141, 110, 99, 0.2);
+    --scrollbar-thumb-hover: rgba(141, 110, 99, 0.35);
+
+    --code-bg: #120e0c;
+    --code-header-bg: rgba(42, 34, 30, 0.7);
+    --code-border: rgba(141, 110, 99, 0.12);
+
+    --input-bg: rgba(33, 26, 22, 0.8);
+    --input-border: rgba(141, 110, 99, 0.2);
+    --input-focus-border: rgba(161, 136, 127, 0.5);
+    --input-focus-ring: rgba(161, 136, 127, 0.15);
+
+    --shadow-accent: rgba(141, 110, 99, 0.25);
+    --shadow-accent-hover: rgba(161, 136, 127, 0.35);
+
+    --success: #66bb6a;
+    --warning: #ffa726;
+    --error: #ef5350;
+    --info: #42a5f5;
+}
+
+/* ============================================
+   Theme: Slate
+   Neutral grays with subtle blue undertone
+   ============================================ */
+.theme-slate {
+    --primary-rgb: 100, 116, 139;
+    --bg-primary: #0f172a;
+    --bg-secondary: #1e293b;
+    --bg-tertiary: #334155;
+    --bg-elevated: #172033;
+    --bg-hover: rgba(100, 116, 139, 0.08);
+    --bg-active: rgba(100, 116, 139, 0.12);
+
+    --surface-primary: rgba(30, 41, 59, 0.9);
+    --surface-secondary: rgba(51, 65, 85, 0.8);
+    --surface-glass: rgba(15, 23, 42, 0.95);
+
+    --text-primary: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-tertiary: #94a3b8;
+    --text-muted: #64748b;
+
+    --border-primary: rgba(100, 116, 139, 0.2);
+    --border-secondary: rgba(100, 116, 139, 0.1);
+    --border-hover: rgba(100, 116, 139, 0.3);
+    --border-focus: rgba(148, 163, 184, 0.5);
+
+    --accent-primary: #64748b;
+    --accent-secondary: #475569;
+    --accent-hover: #94a3b8;
+    --accent-muted: rgba(100, 116, 139, 0.15);
+
+    /* User message - slate blue-gray */
+    --user-msg-from: #2d3a50;
+    --user-msg-to: #1e2a3d;
+    --user-msg-hover-from: #3a4a62;
+    --user-msg-hover-to: #2d3a50;
+    --user-msg-text: #e2e8f0;
+
+    --assistant-bg: rgba(30, 41, 59, 0.8);
+    --assistant-border: rgba(100, 116, 139, 0.15);
+    --assistant-text: #e2e8f0;
+
+    --scrollbar-thumb: rgba(100, 116, 139, 0.2);
+    --scrollbar-thumb-hover: rgba(100, 116, 139, 0.35);
+
+    --code-bg: #0a1020;
+    --code-header-bg: rgba(30, 41, 59, 0.7);
+    --code-border: rgba(100, 116, 139, 0.12);
+
+    --input-bg: rgba(23, 32, 51, 0.8);
+    --input-border: rgba(100, 116, 139, 0.2);
+    --input-focus-border: rgba(148, 163, 184, 0.5);
+    --input-focus-ring: rgba(148, 163, 184, 0.15);
+
+    --shadow-accent: rgba(100, 116, 139, 0.25);
+    --shadow-accent-hover: rgba(148, 163, 184, 0.35);
+
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --info: #3b82f6;
+}
+
+/* ============================================
+   Theme: Ember
+   Warm red and orange tones
+   ============================================ */
+.theme-ember {
+    --primary-rgb: 220, 38, 38;
+    --bg-primary: #1a0f0f;
+    --bg-secondary: #2a1818;
+    --bg-tertiary: #3d2525;
+    --bg-elevated: #211414;
+    --bg-hover: rgba(220, 38, 38, 0.08);
+    --bg-active: rgba(220, 38, 38, 0.12);
+
+    --surface-primary: rgba(42, 24, 24, 0.9);
+    --surface-secondary: rgba(61, 37, 37, 0.8);
+    --surface-glass: rgba(26, 15, 15, 0.95);
+
+    --text-primary: #fef2f2;
+    --text-secondary: #fca5a5;
+    --text-tertiary: #f87171;
+    --text-muted: #dc2626;
+
+    --border-primary: rgba(220, 38, 38, 0.2);
+    --border-secondary: rgba(220, 38, 38, 0.1);
+    --border-hover: rgba(220, 38, 38, 0.3);
+    --border-focus: rgba(248, 113, 113, 0.5);
+
+    --accent-primary: #dc2626;
+    --accent-secondary: #b91c1c;
+    --accent-hover: #ef4444;
+    --accent-muted: rgba(220, 38, 38, 0.15);
+
+    /* User message - warm ember red */
+    --user-msg-from: #4a1a1a;
+    --user-msg-to: #3a1212;
+    --user-msg-hover-from: #5c2424;
+    --user-msg-hover-to: #4a1a1a;
+    --user-msg-text: #fee2e2;
+
+    --assistant-bg: rgba(42, 24, 24, 0.8);
+    --assistant-border: rgba(220, 38, 38, 0.15);
+    --assistant-text: #f8e0e0;
+
+    --scrollbar-thumb: rgba(220, 38, 38, 0.2);
+    --scrollbar-thumb-hover: rgba(220, 38, 38, 0.35);
+
+    --code-bg: #120a0a;
+    --code-header-bg: rgba(42, 24, 24, 0.7);
+    --code-border: rgba(220, 38, 38, 0.12);
+
+    --input-bg: rgba(33, 20, 20, 0.8);
+    --input-border: rgba(220, 38, 38, 0.2);
+    --input-focus-border: rgba(248, 113, 113, 0.5);
+    --input-focus-ring: rgba(248, 113, 113, 0.15);
+
+    --shadow-accent: rgba(220, 38, 38, 0.3);
+    --shadow-accent-hover: rgba(248, 113, 113, 0.4);
+
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error: #dc2626;
+    --info: #3b82f6;
+}
+
+/* ============================================
+   Theme: Mint
+   Fresh green and teal tones
+   ============================================ */
+.theme-mint {
+    --primary-rgb: 16, 185, 129;
+    --bg-primary: #0a1814;
+    --bg-secondary: #122620;
+    --bg-tertiary: #1a3530;
+    --bg-elevated: #0e1e1a;
+    --bg-hover: rgba(16, 185, 129, 0.08);
+    --bg-active: rgba(16, 185, 129, 0.12);
+
+    --surface-primary: rgba(18, 38, 32, 0.9);
+    --surface-secondary: rgba(26, 53, 48, 0.8);
+    --surface-glass: rgba(10, 24, 20, 0.95);
+
+    --text-primary: #ecfdf5;
+    --text-secondary: #6ee7b7;
+    --text-tertiary: #34d399;
+    --text-muted: #10b981;
+
+    --border-primary: rgba(16, 185, 129, 0.2);
+    --border-secondary: rgba(16, 185, 129, 0.1);
+    --border-hover: rgba(16, 185, 129, 0.3);
+    --border-focus: rgba(52, 211, 153, 0.5);
+
+    --accent-primary: #10b981;
+    --accent-secondary: #059669;
+    --accent-hover: #34d399;
+    --accent-muted: rgba(16, 185, 129, 0.15);
+
+    /* User message - fresh mint green */
+    --user-msg-from: #143832;
+    --user-msg-to: #0e2824;
+    --user-msg-hover-from: #1c4840;
+    --user-msg-hover-to: #143832;
+    --user-msg-text: #d1fae5;
+
+    --assistant-bg: rgba(18, 38, 32, 0.8);
+    --assistant-border: rgba(16, 185, 129, 0.15);
+    --assistant-text: #d0f0e8;
+
+    --scrollbar-thumb: rgba(16, 185, 129, 0.2);
+    --scrollbar-thumb-hover: rgba(16, 185, 129, 0.35);
+
+    --code-bg: #06100c;
+    --code-header-bg: rgba(18, 38, 32, 0.7);
+    --code-border: rgba(16, 185, 129, 0.12);
+
+    --input-bg: rgba(14, 30, 26, 0.8);
+    --input-border: rgba(16, 185, 129, 0.2);
+    --input-focus-border: rgba(52, 211, 153, 0.5);
+    --input-focus-ring: rgba(52, 211, 153, 0.15);
+
+    --shadow-accent: rgba(16, 185, 129, 0.25);
+    --shadow-accent-hover: rgba(52, 211, 153, 0.35);
+
+    --success: #10b981;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --info: #06b6d4;
+}
+
+/* ============================================
+   Theme: Copper
+   Warm metallic copper tones
+   ============================================ */
+.theme-copper {
+    --primary-rgb: 184, 115, 51;
+    --bg-primary: #1a1210;
+    --bg-secondary: #2a1e1a;
+    --bg-tertiary: #3d2c25;
+    --bg-elevated: #211816;
+    --bg-hover: rgba(184, 115, 51, 0.08);
+    --bg-active: rgba(184, 115, 51, 0.12);
+
+    --surface-primary: rgba(42, 30, 26, 0.9);
+    --surface-secondary: rgba(61, 44, 37, 0.8);
+    --surface-glass: rgba(26, 18, 16, 0.95);
+
+    --text-primary: #fff5eb;
+    --text-secondary: #dda15e;
+    --text-tertiary: #bc6c25;
+    --text-muted: #945a1f;
+
+    --border-primary: rgba(184, 115, 51, 0.2);
+    --border-secondary: rgba(184, 115, 51, 0.1);
+    --border-hover: rgba(184, 115, 51, 0.3);
+    --border-focus: rgba(221, 161, 94, 0.5);
+
+    --accent-primary: #b87333;
+    --accent-secondary: #945a1f;
+    --accent-hover: #dda15e;
+    --accent-muted: rgba(184, 115, 51, 0.15);
+
+    /* User message - metallic copper */
+    --user-msg-from: #4a2c1a;
+    --user-msg-to: #3a2014;
+    --user-msg-hover-from: #5c3822;
+    --user-msg-hover-to: #4a2c1a;
+    --user-msg-text: #fce8d8;
+
+    --assistant-bg: rgba(42, 30, 26, 0.8);
+    --assistant-border: rgba(184, 115, 51, 0.15);
+    --assistant-text: #f0e0d0;
+
+    --scrollbar-thumb: rgba(184, 115, 51, 0.2);
+    --scrollbar-thumb-hover: rgba(184, 115, 51, 0.35);
+
+    --code-bg: #120c0a;
+    --code-header-bg: rgba(42, 30, 26, 0.7);
+    --code-border: rgba(184, 115, 51, 0.12);
+
+    --input-bg: rgba(33, 24, 22, 0.8);
+    --input-border: rgba(184, 115, 51, 0.2);
+    --input-focus-border: rgba(221, 161, 94, 0.5);
+    --input-focus-ring: rgba(221, 161, 94, 0.15);
+
+    --shadow-accent: rgba(184, 115, 51, 0.3);
+    --shadow-accent-hover: rgba(221, 161, 94, 0.4);
+
+    --success: #66bb6a;
+    --warning: #dda15e;
+    --error: #ef5350;
+    --info: #42a5f5;
+}
+
+/* ============================================
+   Theme: Arctic
+   Cold blue and white tones
+   ============================================ */
+.theme-arctic {
+    --primary-rgb: 56, 189, 248;
+    --bg-primary: #0c1620;
+    --bg-secondary: #142230;
+    --bg-tertiary: #1c3040;
+    --bg-elevated: #101c28;
+    --bg-hover: rgba(56, 189, 248, 0.08);
+    --bg-active: rgba(56, 189, 248, 0.12);
+
+    --surface-primary: rgba(20, 34, 48, 0.9);
+    --surface-secondary: rgba(28, 48, 64, 0.8);
+    --surface-glass: rgba(12, 22, 32, 0.95);
+
+    --text-primary: #f0f9ff;
+    --text-secondary: #7dd3fc;
+    --text-tertiary: #38bdf8;
+    --text-muted: #0ea5e9;
+
+    --border-primary: rgba(56, 189, 248, 0.2);
+    --border-secondary: rgba(56, 189, 248, 0.1);
+    --border-hover: rgba(56, 189, 248, 0.3);
+    --border-focus: rgba(125, 211, 252, 0.5);
+
+    --accent-primary: #38bdf8;
+    --accent-secondary: #0ea5e9;
+    --accent-hover: #7dd3fc;
+    --accent-muted: rgba(56, 189, 248, 0.15);
+
+    /* User message - icy arctic blue */
+    --user-msg-from: #1a3548;
+    --user-msg-to: #122638;
+    --user-msg-hover-from: #224558;
+    --user-msg-hover-to: #1a3548;
+    --user-msg-text: #e0f2fe;
+
+    --assistant-bg: rgba(20, 34, 48, 0.8);
+    --assistant-border: rgba(56, 189, 248, 0.15);
+    --assistant-text: #e0f0f8;
+
+    --scrollbar-thumb: rgba(56, 189, 248, 0.2);
+    --scrollbar-thumb-hover: rgba(56, 189, 248, 0.35);
+
+    --code-bg: #081018;
+    --code-header-bg: rgba(20, 34, 48, 0.7);
+    --code-border: rgba(56, 189, 248, 0.12);
+
+    --input-bg: rgba(16, 28, 40, 0.8);
+    --input-border: rgba(56, 189, 248, 0.2);
+    --input-focus-border: rgba(125, 211, 252, 0.5);
+    --input-focus-ring: rgba(125, 211, 252, 0.15);
+
+    --shadow-accent: rgba(56, 189, 248, 0.25);
+    --shadow-accent-hover: rgba(125, 211, 252, 0.35);
+
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --info: #38bdf8;
+}
+
+/* ============================================
+   Theme: Sand
+   Warm beige and tan tones
+   ============================================ */
+.theme-sand {
+    --primary-rgb: 194, 154, 108;
+    --bg-primary: #1a1714;
+    --bg-secondary: #28231e;
+    --bg-tertiary: #38322a;
+    --bg-elevated: #201c18;
+    --bg-hover: rgba(194, 154, 108, 0.08);
+    --bg-active: rgba(194, 154, 108, 0.12);
+
+    --surface-primary: rgba(40, 35, 30, 0.9);
+    --surface-secondary: rgba(56, 50, 42, 0.8);
+    --surface-glass: rgba(26, 23, 20, 0.95);
+
+    --text-primary: #fdf6ee;
+    --text-secondary: #d4b896;
+    --text-tertiary: #c29a6c;
+    --text-muted: #a08060;
+
+    --border-primary: rgba(194, 154, 108, 0.2);
+    --border-secondary: rgba(194, 154, 108, 0.1);
+    --border-hover: rgba(194, 154, 108, 0.3);
+    --border-focus: rgba(212, 184, 150, 0.5);
+
+    --accent-primary: #c29a6c;
+    --accent-secondary: #a08060;
+    --accent-hover: #d4b896;
+    --accent-muted: rgba(194, 154, 108, 0.15);
+
+    /* User message - warm sand */
+    --user-msg-from: #40352a;
+    --user-msg-to: #30281f;
+    --user-msg-hover-from: #504538;
+    --user-msg-hover-to: #40352a;
+    --user-msg-text: #f8f0e4;
+
+    --assistant-bg: rgba(40, 35, 30, 0.8);
+    --assistant-border: rgba(194, 154, 108, 0.15);
+    --assistant-text: #ece0d0;
+
+    --scrollbar-thumb: rgba(194, 154, 108, 0.2);
+    --scrollbar-thumb-hover: rgba(194, 154, 108, 0.35);
+
+    --code-bg: #12100d;
+    --code-header-bg: rgba(40, 35, 30, 0.7);
+    --code-border: rgba(194, 154, 108, 0.12);
+
+    --input-bg: rgba(32, 28, 24, 0.8);
+    --input-border: rgba(194, 154, 108, 0.2);
+    --input-focus-border: rgba(212, 184, 150, 0.5);
+    --input-focus-ring: rgba(212, 184, 150, 0.15);
+
+    --shadow-accent: rgba(194, 154, 108, 0.25);
+    --shadow-accent-hover: rgba(212, 184, 150, 0.35);
+
+    --success: #66bb6a;
+    --warning: #f59e0b;
+    --error: #ef5350;
+    --info: #42a5f5;
+}
+
+/* ============================================
+   Theme: Graphite
+   Dark neutral gray theme
+   ============================================ */
+.theme-graphite {
+    --primary-rgb: 115, 115, 115;
+    --bg-primary: #141414;
+    --bg-secondary: #1f1f1f;
+    --bg-tertiary: #2a2a2a;
+    --bg-elevated: #1a1a1a;
+    --bg-hover: rgba(115, 115, 115, 0.08);
+    --bg-active: rgba(115, 115, 115, 0.12);
+
+    --surface-primary: rgba(31, 31, 31, 0.9);
+    --surface-secondary: rgba(42, 42, 42, 0.8);
+    --surface-glass: rgba(20, 20, 20, 0.95);
+
+    --text-primary: #e8e8e8;
+    --text-secondary: #b0b0b0;
+    --text-tertiary: #808080;
+    --text-muted: #606060;
+
+    --border-primary: rgba(115, 115, 115, 0.2);
+    --border-secondary: rgba(115, 115, 115, 0.1);
+    --border-hover: rgba(115, 115, 115, 0.3);
+    --border-focus: rgba(160, 160, 160, 0.5);
+
+    --accent-primary: #737373;
+    --accent-secondary: #5c5c5c;
+    --accent-hover: #a0a0a0;
+    --accent-muted: rgba(115, 115, 115, 0.15);
+
+    /* User message - neutral graphite */
+    --user-msg-from: #383838;
+    --user-msg-to: #2a2a2a;
+    --user-msg-hover-from: #454545;
+    --user-msg-hover-to: #383838;
+    --user-msg-text: #f0f0f0;
+
+    --assistant-bg: rgba(31, 31, 31, 0.8);
+    --assistant-border: rgba(115, 115, 115, 0.15);
+    --assistant-text: #e0e0e0;
+
+    --scrollbar-thumb: rgba(115, 115, 115, 0.2);
+    --scrollbar-thumb-hover: rgba(115, 115, 115, 0.35);
+
+    --code-bg: #0c0c0c;
+    --code-header-bg: rgba(31, 31, 31, 0.7);
+    --code-border: rgba(115, 115, 115, 0.12);
+
+    --input-bg: rgba(26, 26, 26, 0.8);
+    --input-border: rgba(115, 115, 115, 0.2);
+    --input-focus-border: rgba(160, 160, 160, 0.5);
+    --input-focus-ring: rgba(160, 160, 160, 0.15);
+
+    --shadow-accent: rgba(115, 115, 115, 0.25);
+    --shadow-accent-hover: rgba(160, 160, 160, 0.35);
+
+    --success: #4caf50;
+    --warning: #ff9800;
+    --error: #f44336;
+    --info: #2196f3;
+}
+
+/* ============================================
+   Theme: Terracotta
+   Earthy red and orange tones
+   ============================================ */
+.theme-terracotta {
+    --primary-rgb: 201, 93, 61;
+    --bg-primary: #1a120f;
+    --bg-secondary: #2a1c18;
+    --bg-tertiary: #3d2a22;
+    --bg-elevated: #211614;
+    --bg-hover: rgba(201, 93, 61, 0.08);
+    --bg-active: rgba(201, 93, 61, 0.12);
+
+    --surface-primary: rgba(42, 28, 24, 0.9);
+    --surface-secondary: rgba(61, 42, 34, 0.8);
+    --surface-glass: rgba(26, 18, 15, 0.95);
+
+    --text-primary: #fef4f0;
+    --text-secondary: #e8a088;
+    --text-tertiary: #c95d3d;
+    --text-muted: #a04830;
+
+    --border-primary: rgba(201, 93, 61, 0.2);
+    --border-secondary: rgba(201, 93, 61, 0.1);
+    --border-hover: rgba(201, 93, 61, 0.3);
+    --border-focus: rgba(232, 160, 136, 0.5);
+
+    --accent-primary: #c95d3d;
+    --accent-secondary: #a04830;
+    --accent-hover: #e8a088;
+    --accent-muted: rgba(201, 93, 61, 0.15);
+
+    /* User message - earthy terracotta */
+    --user-msg-from: #4a2418;
+    --user-msg-to: #3a1a12;
+    --user-msg-hover-from: #5c3020;
+    --user-msg-hover-to: #4a2418;
+    --user-msg-text: #fce8e0;
+
+    --assistant-bg: rgba(42, 28, 24, 0.8);
+    --assistant-border: rgba(201, 93, 61, 0.15);
+    --assistant-text: #f0e0d8;
+
+    --scrollbar-thumb: rgba(201, 93, 61, 0.2);
+    --scrollbar-thumb-hover: rgba(201, 93, 61, 0.35);
+
+    --code-bg: #120c0a;
+    --code-header-bg: rgba(42, 28, 24, 0.7);
+    --code-border: rgba(201, 93, 61, 0.12);
+
+    --input-bg: rgba(33, 22, 20, 0.8);
+    --input-border: rgba(201, 93, 61, 0.2);
+    --input-focus-border: rgba(232, 160, 136, 0.5);
+    --input-focus-ring: rgba(232, 160, 136, 0.15);
+
+    --shadow-accent: rgba(201, 93, 61, 0.3);
+    --shadow-accent-hover: rgba(232, 160, 136, 0.4);
+
+    --success: #66bb6a;
+    --warning: #ffa726;
+    --error: #c95d3d;
+    --info: #42a5f5;
+}
+
+/* ============================================
    Base Styles
    ============================================ */
 
@@ -4445,6 +5087,90 @@ html body.font-family-firacode *:not(code):not(pre):not(.code-content):not(.code
 html body.font-family-consolas,
 html body.font-family-consolas *:not(code):not(pre):not(.code-content):not(.code-header) {
     font-family: Consolas, "Courier New", monospace !important;
+}
+
+/* New Sans-Serif Fonts (Extended) - High Specificity */
+html body.font-family-atkinson,
+html body.font-family-atkinson *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Atkinson Hyperlegible", -apple-system, sans-serif !important;
+}
+html body.font-family-geist,
+html body.font-family-geist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Geist", -apple-system, sans-serif !important;
+}
+html body.font-family-figtree,
+html body.font-family-figtree *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Figtree", -apple-system, sans-serif !important;
+}
+html body.font-family-onest,
+html body.font-family-onest *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Onest", -apple-system, sans-serif !important;
+}
+html body.font-family-rubik,
+html body.font-family-rubik *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Rubik", -apple-system, sans-serif !important;
+}
+html body.font-family-quicksand,
+html body.font-family-quicksand *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Quicksand", -apple-system, sans-serif !important;
+}
+html body.font-family-comfortaa,
+html body.font-family-comfortaa *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Comfortaa", -apple-system, sans-serif !important;
+}
+html body.font-family-overpass,
+html body.font-family-overpass *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Overpass", -apple-system, sans-serif !important;
+}
+html body.font-family-karla,
+html body.font-family-karla *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Karla", -apple-system, sans-serif !important;
+}
+html body.font-family-assistant,
+html body.font-family-assistant *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Assistant", -apple-system, sans-serif !important;
+}
+html body.font-family-exo2,
+html body.font-family-exo2 *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Exo 2", -apple-system, sans-serif !important;
+}
+html body.font-family-barlow,
+html body.font-family-barlow *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Barlow", -apple-system, sans-serif !important;
+}
+html body.font-family-publicsans,
+html body.font-family-publicsans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Public Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-redhatdisplay,
+html body.font-family-redhatdisplay *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Red Hat Display", -apple-system, sans-serif !important;
+}
+html body.font-family-readexpro,
+html body.font-family-readexpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Readex Pro", -apple-system, sans-serif !important;
+}
+
+/* New Monospace Fonts - High Specificity */
+html body.font-family-geistmono,
+html body.font-family-geistmono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Geist Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-monaspace,
+html body.font-family-monaspace *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Monaspace Neon", "JetBrains Mono", monospace !important;
+}
+html body.font-family-intelone,
+html body.font-family-intelone *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Intel One Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-commitmono,
+html body.font-family-commitmono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Commit Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-martianmono,
+html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Martian Mono", "JetBrains Mono", monospace !important;
 }
 .marker\:text-dark-500 *::marker{
   color: rgb(113 113 122 );
