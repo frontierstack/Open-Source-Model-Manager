@@ -69,6 +69,7 @@ export const useChatStore = create(
             topP: 1.0,
             maxTokens: 2048,
             webSearchEnabled: false,
+            urlFetchEnabled: false,
             selectedSystemPromptId: null,
             fontSize: 'medium',
             fontFamily: 'system',
@@ -304,6 +305,21 @@ export const useChatStore = create(
 
         setWebSearchEnabled: (enabled) => set(state => {
             const settings = { ...state.settings, webSearchEnabled: enabled };
+            saveToStorage(STORAGE_KEYS.SETTINGS, settings);
+            return { settings };
+        }),
+
+        toggleUrlFetch: () => set(state => {
+            const settings = {
+                ...state.settings,
+                urlFetchEnabled: !state.settings.urlFetchEnabled
+            };
+            saveToStorage(STORAGE_KEYS.SETTINGS, settings);
+            return { settings };
+        }),
+
+        setUrlFetchEnabled: (enabled) => set(state => {
+            const settings = { ...state.settings, urlFetchEnabled: enabled };
             saveToStorage(STORAGE_KEYS.SETTINGS, settings);
             return { settings };
         }),

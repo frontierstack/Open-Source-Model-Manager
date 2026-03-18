@@ -443,6 +443,54 @@ When performing web searches, the system uses a multi-engine fallback:
 
 ---
 
+## Chat UI Features
+
+The Chat UI (https://localhost:3002) includes several intelligent features that can be toggled via buttons in the input bar.
+
+### Web Search Toggle (Globe Icon)
+
+When enabled, the AI will search the web for relevant information before responding:
+- Click the globe icon (🌐) to toggle
+- Searches multiple engines (DuckDuckGo, Scrapling, Brave Search)
+- Results are included as context for the model
+
+### URL Fetch Toggle (Link Icon)
+
+When enabled, URLs pasted in your message will be automatically fetched and included as context:
+- Click the link icon (🔗) to toggle
+- Automatically detects URLs in your message (up to 3 per message)
+- Fetches page content using Scrapling/Playwright/axios fallback chain
+- Content is truncated to ~4000 characters per URL
+- Fetched content is included in the model context
+
+**Example usage:**
+```
+[URL fetch enabled]
+User: Summarize this article: https://example.com/news/article
+
+The system will:
+1. Detect the URL
+2. Fetch the page content
+3. Include the content as context
+4. Model responds with a summary of the actual article
+```
+
+### File Attachments (Paperclip Icon)
+
+Upload files to include in the conversation:
+- Images (PNG, JPG, etc.) - sent to vision-capable models
+- Documents (PDF, DOCX, TXT, MD)
+- Code files (JS, PY, etc.)
+- Drag-and-drop or click to browse
+
+### System Prompts (Document Icon)
+
+Select from saved system prompts to customize the AI's behavior:
+- Click the scroll icon to select a prompt
+- Create/edit prompts in Settings
+
+---
+
 ## Docker Commands
 
 ### Container Management

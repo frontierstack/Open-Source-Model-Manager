@@ -14,6 +14,7 @@ import {
     ChevronDown,
     Check,
     Globe,
+    Link2,
     MessageCircle
 } from 'lucide-react';
 
@@ -62,6 +63,8 @@ export default function ChatInput({
     onSystemPromptSelect,
     webSearchEnabled = false,
     onWebSearchToggle,
+    urlFetchEnabled = false,
+    onUrlFetchToggle,
     messages = [],
     maxContextTokens = 4096,
 }) {
@@ -485,6 +488,22 @@ export default function ChatInput({
                             title={webSearchEnabled ? 'Web search on' : 'Web search off'}
                         >
                             <Globe className="w-4 h-4" />
+                        </button>
+
+                        {/* URL fetch toggle */}
+                        <button
+                            onClick={onUrlFetchToggle}
+                            disabled={disabled || isStreaming}
+                            className={`flex-shrink-0 p-1.5 rounded-lg transition-all duration-150
+                                       disabled:opacity-40 disabled:cursor-not-allowed
+                                       ${urlFetchEnabled
+                                           ? 'text-emerald-400 bg-emerald-500/15'
+                                           : 'text-dark-400 hover:text-dark-200 hover:bg-dark-700/50'
+                                       }`}
+                            aria-label={urlFetchEnabled ? 'Disable URL fetch' : 'Enable URL fetch'}
+                            title={urlFetchEnabled ? 'URL fetch on - URLs in messages will be fetched' : 'URL fetch off'}
+                        >
+                            <Link2 className="w-4 h-4" />
                         </button>
 
                         {/* System prompt selector */}

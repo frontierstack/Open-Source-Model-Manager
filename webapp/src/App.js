@@ -2151,6 +2151,91 @@ fetch(\`${baseUrl}/api/search?\${params}\`, {
 .catch(err => console.error(err));`
             },
             // ============================================================================
+            // URL FETCH (Chat Feature)
+            // ============================================================================
+            '/api/url/fetch': {
+                curl: `# Fetch content from URLs (used by chat URL fetch feature)
+curl -k -X POST ${baseUrl}/api/url/fetch \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "urls": ["https://example.com/article", "https://example.org/page"],
+    "maxLength": 4000,
+    "timeout": 15000
+  }'`,
+                python: `import requests
+
+# Fetch content from multiple URLs (max 3 per request)
+response = requests.post(
+    '${baseUrl}/api/url/fetch',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'urls': ['https://example.com/article', 'https://example.org/page'],
+        'maxLength': 4000,  # Max chars per URL (default: 4000)
+        'timeout': 15000    # Timeout in ms (default: 15000)
+    },
+    verify=False
+)
+
+data = response.json()
+for result in data['results']:
+    if result['success']:
+        print(f"Title: {result['title']}")
+        print(f"URL: {result['url']}")
+        print(f"Content: {result['content'][:200]}...")
+        print(f"Source: {result['source']}")  # scrapling, playwright, or axios
+    else:
+        print(f"Failed: {result['url']} - {result['error']}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    urls = @("https://example.com/article", "https://example.org/page")
+    maxLength = 4000
+    timeout = 15000
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/url/fetch" -Method Post -Headers $headers -Body $body
+foreach ($result in $response.results) {
+    if ($result.success) {
+        Write-Output "Title: $($result.title)"
+        Write-Output "Content: $($result.content.Substring(0, 200))..."
+    } else {
+        Write-Output "Failed: $($result.url) - $($result.error)"
+    }
+}`,
+                javascript: `fetch('${baseUrl}/api/url/fetch', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    urls: ['https://example.com/article', 'https://example.org/page'],
+    maxLength: 4000,
+    timeout: 15000
+  })
+})
+.then(res => res.json())
+.then(data => {
+  data.results.forEach(result => {
+    if (result.success) {
+      console.log(\`Title: \${result.title}\`);
+      console.log(\`Content: \${result.content.slice(0, 200)}...\`);
+      console.log(\`Source: \${result.source}\`);
+    } else {
+      console.log(\`Failed: \${result.url} - \${result.error}\`);
+    }
+  });
+})
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
             // PLAYWRIGHT WEB SCRAPING
             // ============================================================================
             '/api/playwright/fetch': {
@@ -8021,6 +8106,7 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             <MenuItem value="/api/system/reset">POST /api/system/reset - System Reset (Admin)</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Search & Web Scraping ───</MenuItem>
                                                             <MenuItem value="/api/search">GET /api/search - Web Search</MenuItem>
+                                                            <MenuItem value="/api/url/fetch">POST /api/url/fetch - Fetch URLs (Chat Feature)</MenuItem>
                                                             <MenuItem value="/api/playwright/fetch">POST /api/playwright/fetch - Fetch Webpage (Playwright)</MenuItem>
                                                             <MenuItem value="/api/playwright/interact">POST /api/playwright/interact - Interact with Page</MenuItem>
                                                             <MenuItem value="/api/playwright/status">GET /api/playwright/status - Playwright Status</MenuItem>
@@ -8386,6 +8472,7 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create conversations</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage conversation</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Web search with content fetch</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch URLs for chat context</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stealth browser fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Page interaction</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/status</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Browser status</TableCell></TableRow>

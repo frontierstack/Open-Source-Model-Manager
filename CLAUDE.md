@@ -316,6 +316,15 @@ The `read_file` skill supports chunking for files that exceed context limits:
 - Search fallback chain: DuckDuckGo → Scrapling → Brave Search
 - Files: `webapp/services/scrapling_fetch.py` (Python), `webapp/services/scraplingService.js` (Node.js wrapper)
 
+**URL Fetch (Chat Feature):**
+- `POST /api/url/fetch` - Fetch content from URLs in chat messages
+- Accepts `{ urls: string[], maxLength?: number, timeout?: number }`
+- Limited to 3 URLs per request
+- Uses same fallback chain as web scraping (Scrapling → Playwright → axios)
+- Returns `{ results: [{ url, success, content, title, source, error }] }`
+- Chat UI toggle: Link icon (🔗) enables automatic URL detection and fetching
+- Fetched content is included as context for the model
+
 **Email Parsing (Nested Attachments):**
 - Supports `.eml` and `.msg` file formats via `mailparser` and `msgreader`
 - Recursive extraction of nested attachments (emails within emails)

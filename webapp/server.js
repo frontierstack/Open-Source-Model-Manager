@@ -5713,6 +5713,61 @@ async function fetchUrlContent(url, options = {}) {
     return await fetchUrlContentAxios(url, timeout);
 }
 
+// URL fetch endpoint for chat - fetches content from URLs in messages
+app.post('/api/url/fetch', requireAuth, async (req, res) => {
+    const { urls, maxLength = 4000, timeout = 15000 } = req.body;
+
+    if (!urls || !Array.isArray(urls) || urls.length === 0) {
+        return res.status(400).json({ error: 'URLs array required' });
+    }
+
+    // Limit to 3 URLs per request
+    const urlsToFetch = urls.slice(0, 3);
+
+    try {
+        const results = await Promise.all(
+            urlsToFetch.map(async (url) => {
+                try {
+                    const result = await fetchUrlContent(url, {
+                        timeout,
+                        maxLength,
+                        waitForJS: true,
+                    });
+
+                    if (result.success) {
+                        return {
+                            url,
+                            success: true,
+                            content: result.content?.slice(0, maxLength) || '',
+                            title: result.title || '',
+                            source: result.source || 'unknown',
+                        };
+                    } else {
+                        return {
+                            url,
+                            success: false,
+                            error: result.error || 'Fetch failed',
+                        };
+                    }
+                } catch (error) {
+                    return {
+                        url,
+                        success: false,
+                        error: error.message || 'Fetch failed',
+                    };
+                }
+            })
+        );
+
+        res.json({ results });
+    } catch (error) {
+        console.error('URL fetch error:', error);
+        res.status(500).json({
+            error: error.message || 'Failed to fetch URLs',
+        });
+    }
+});
+
 // Playwright fetch endpoint - advanced web scraping with stealth mode
 app.post('/api/playwright/fetch', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, 'query')) {

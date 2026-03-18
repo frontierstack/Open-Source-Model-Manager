@@ -46,6 +46,17 @@ function parseThinkTags(content) {
 }
 
 /**
+ * Extract URLs from text (max 3 URLs)
+ */
+function extractUrls(text, maxUrls = 3) {
+    // Match http:// and https:// URLs, stopping at whitespace or common delimiters
+    const urlRegex = /https?:\/\/[^\s<>"')\]]+/gi;
+    const matches = text.match(urlRegex) || [];
+    // Remove duplicates and limit to maxUrls
+    return [...new Set(matches)].slice(0, maxUrls);
+}
+
+/**
  * ChatContainer - Main chat interface container with Tailwind styling
  */
 export default function ChatContainer({
@@ -570,6 +581,69 @@ export default function ChatContainer({
             }
         }
 
+        // Handle URL fetching if enabled
+        let urlFetchResults = null;
+        let urlContextSummary = null;
+        if (settings.urlFetchEnabled) {
+            const urls = extractUrls(content);
+            if (urls.length > 0) {
+                try {
+                    setIsLoading(true);
+                    setProcessingStatus('parsing', `Fetching ${urls.length} URL${urls.length > 1 ? 's' : ''}`);
+
+                    const fetchResponse = await fetch('/api/url/fetch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ urls, maxLength: 4000, timeout: 15000 }),
+                    });
+
+                    if (fetchResponse.ok) {
+                        const fetchData = await fetchResponse.json();
+                        const successfulResults = fetchData.results?.filter(r => r.success) || [];
+                        const failedResults = fetchData.results?.filter(r => !r.success) || [];
+
+                        if (successfulResults.length > 0) {
+                            urlFetchResults = successfulResults;
+
+                            // Create a summary for memory persistence
+                            urlContextSummary = successfulResults
+                                .map((r, i) => `${i + 1}. "${r.title || 'Untitled'}" - ${r.url}`)
+                                .join('; ');
+
+                            // Format fetched content for the model
+                            const urlContext = successfulResults
+                                .map((r) => {
+                                    let resultText = `[${r.title || 'Untitled'}]\nSource: ${r.url}\n`;
+                                    if (r.content) {
+                                        // Truncate content if too long
+                                        const truncatedContent = r.content.length > 3500
+                                            ? r.content.slice(0, 3500) + '...'
+                                            : r.content;
+                                        resultText += `Content:\n${truncatedContent}\n`;
+                                    }
+                                    return resultText;
+                                })
+                                .join('\n---\n');
+
+                            // Prepend URL content to fullContent
+                            fullContent = `The following content was fetched from URLs in the user's message:\n\n` +
+                                `--- Fetched URL Content ---\n${urlContext}\n--- End of Fetched Content ---\n\n` +
+                                `User message: ${fullContent}`;
+                        }
+
+                        // Log failed URLs
+                        if (failedResults.length > 0) {
+                            console.warn('Some URLs failed to fetch:', failedResults.map(r => r.url));
+                        }
+                    }
+                } catch (error) {
+                    console.error('URL fetch failed:', error);
+                    showSnackbar('URL fetch failed, proceeding without fetched content', 'warning');
+                }
+            }
+        }
+
         // Add user message (display version without file content embedded)
         const userMessage = {
             id: crypto.randomUUID(),
@@ -577,6 +651,8 @@ export default function ChatContainer({
             content,
             attachments: attachedFiles?.map(a => ({ filename: a.filename, type: a.type })),
             timestamp: new Date().toISOString(),
+            // Add URL context metadata if URLs were fetched
+            ...(urlContextSummary && { urlContext: urlContextSummary, hadUrlFetch: true }),
         };
 
         // For new conversations, start with empty array to avoid stale closure issues
@@ -607,6 +683,11 @@ export default function ChatContainer({
             // If this is a previous user message with search context, include it
             if (m.role === 'user' && m.searchContext && idx !== updatedMessages.length - 1) {
                 msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
+            }
+
+            // If this is a previous user message with URL context, include it
+            if (m.role === 'user' && m.urlContext && idx !== updatedMessages.length - 1) {
+                msgContent = `[Previous URL context: ${m.urlContext}]\n\n${msgContent}`;
             }
 
             // For the current message with image attachments, use OpenAI vision format
@@ -1348,6 +1429,8 @@ export default function ChatContainer({
                     onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
                     webSearchEnabled={settings.webSearchEnabled}
                     onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
+                    urlFetchEnabled={settings.urlFetchEnabled}
+                    onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
                     messages={messages}
                     maxContextTokens={selectedModelContextSize}
                 />
