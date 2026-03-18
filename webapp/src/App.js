@@ -956,23 +956,16 @@ response = requests.post(
 
 result = response.json()
 print(result['response'])`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -1061,23 +1054,16 @@ response = requests.post(
 
 result = response.json()
 print(result['completion'])`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -1151,23 +1137,15 @@ response = requests.get(
 models = response.json()
 for model in models:
     print(f"{model['name']}: {model['status']}")`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
 }
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/models" -Method Get -Headers $headers
@@ -1247,23 +1225,16 @@ response = requests.post(
 
 result = response.json()
 print(result['message'])`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -1371,23 +1342,16 @@ response = requests.post(
 
 result = response.json()
 print(f"Model loaded on port {result['port']}")`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
     "Content-Type" = "application/json"
 }
 
@@ -1470,23 +1434,15 @@ response = requests.delete(
 
 result = response.json()
 print(result['message'])`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
 }
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/models/Llama-2-7B-GGUF" -Method Delete -Headers $headers
@@ -1545,23 +1501,15 @@ response = requests.get(
 instances = response.json()
 for instance in instances:
     print(f"{instance['name']}: {instance['status']} on port {instance['port']}")`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
 }
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances" -Method Get -Headers $headers
@@ -1619,23 +1567,15 @@ response = requests.delete(
 
 result = response.json()
 print(result['message'])`,
-                powershell: `# Disable SSL certificate validation (for self-signed certs)
-add-type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
-        }
-    }
-"@
-[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-
-# Bearer Token Authentication
+                powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
 }
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF" -Method Delete -Headers $headers
@@ -2593,35 +2533,70 @@ fetch('${baseUrl}/api/playwright/interact', {
             // SYSTEM ENDPOINTS
             // ============================================================================
             '/api/system/resources': {
-                curl: `# Get system hardware information (CPU, RAM, GPU)
+                curl: `# Bearer Token Authentication
 curl -k -X GET ${baseUrl}/api/system/resources \\
-  -H "Authorization: Bearer your_bearer_token"`,
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/system/resources \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
 
+# Bearer Token Authentication
 response = requests.get(
     '${baseUrl}/api/system/resources',
     headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
 
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/system/resources',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
 resources = response.json()
 print(f"CPU: {resources['cpu']['model']} ({resources['cpu']['cores']} cores)")
-print(f"RAM: {resources['memory']['total'] / 1024**3:.1f} GB")
-if resources.get('gpu'):
-    for gpu in resources['gpu']:
-        print(f"GPU: {gpu['name']} ({gpu['memory_total']} MB)")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+print(f"RAM: {resources['memory']['total'] / 1024**3:.1f} GB")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/system/resources" -Headers $headers
 Write-Output "CPU: $($response.cpu.model) ($($response.cpu.cores) cores)"
 Write-Output "RAM: $([math]::Round($response.memory.total / 1GB, 1)) GB"`,
-                javascript: `fetch('${baseUrl}/api/system/resources', {
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/system/resources', {
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
 .then(data => {
   console.log(\`CPU: \${data.cpu.model} (\${data.cpu.cores} cores)\`);
   console.log(\`RAM: \${(data.memory.total / 1024**3).toFixed(1)} GB\`);
-  data.gpu?.forEach(g => console.log(\`GPU: \${g.name}\`));
+})
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/system/resources', {
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  }
+})
+.then(res => res.json())
+.then(data => {
+  console.log(\`CPU: \${data.cpu.model} (\${data.cpu.cores} cores)\`);
+  console.log(\`RAM: \${(data.memory.total / 1024**3).toFixed(1)} GB\`);
 })
 .catch(err => console.error(err));`
             },
@@ -2723,7 +2698,18 @@ response = requests.post(
     verify=False
 )
 print(f"Backend set to: {response.json()['backend']}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+    "Content-Type" = "application/json"
+}
 
 # Get current backend
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/backend/active" -Headers $headers
@@ -2731,7 +2717,7 @@ Write-Output "Current backend: $($response.backend)"
 
 # Set backend
 $body = @{ backend = "llamacpp" } | ConvertTo-Json
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/backend/active" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/backend/active" -Method Post -Headers $headers -Body $body
 Write-Output "Backend set to: $($response.backend)"`,
                 javascript: `// Get current backend
 fetch('${baseUrl}/api/backend/active', {
@@ -2770,7 +2756,17 @@ response = requests.get(
 instances = response.json()
 for instance in instances:
     print(f"{instance['name']}: {instance['status']} on port {instance['port']}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/llamacpp/instances" -Headers $headers
 $response | ForEach-Object { Write-Output "$($_.name): $($_.status) on port $($_.port)" }`,
                 javascript: `fetch('${baseUrl}/api/llamacpp/instances', {
@@ -2795,7 +2791,17 @@ response = requests.delete(
 )
 
 print(response.json()['message'])`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/llamacpp/instances/Llama-2-7B-GGUF" -Method Delete -Headers $headers
 Write-Output $response.message`,
                 javascript: `fetch('${baseUrl}/api/llamacpp/instances/Llama-2-7B-GGUF', {
@@ -3338,7 +3344,17 @@ response = requests.get(
 results = response.json()
 for model in results:
     print(f"- {model['id']}: {model['downloads']} downloads")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $query = [uri]::EscapeDataString("llama 7b gguf")
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/huggingface/search?q=$query&limit=10" -Headers $headers
 $response | ForEach-Object { Write-Output "- $($_.id): $($_.downloads) downloads" }`,
@@ -3371,7 +3387,16 @@ response = requests.get(
 apps = response.json()
 for app in apps:
     print(f"- {app['name']}: {app.get('status', {}).get('status', 'unknown')}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 # List apps
 $apps = Invoke-RestMethod -Uri "${baseUrl}/api/apps" -Headers $headers
@@ -3422,7 +3447,16 @@ with open('/path/to/image.png', 'rb') as f:
 
 result = response.json()
 print(f"Uploaded: {result['filename']}, Type: {result['type']}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 # Upload file
 $filePath = "C:\\path\\to\\document.pdf"
@@ -3506,7 +3540,17 @@ result = response.json()
 if result.get('hasContinuation'):
     print(f"Remaining: {result['remainingTokens']} tokens")
     print(f"Chunk {result['processedChunks']}/{result['totalChunks']}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $conversationId = "conv_abc123"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/chat/continuation/$conversationId" -Headers $headers
@@ -3561,7 +3605,16 @@ response = requests.post(
 )
 
 print("Logged out successfully" if response.ok else "Logout failed")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/logout" -Method Post -Headers $headers
 Write-Output "Logged out successfully"`,
@@ -3618,7 +3671,16 @@ response = requests.get(
 
 user = response.json().get('user')
 print(f"User: {user['username']}, Role: {user['role']}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/auth/me" -Headers $headers
 Write-Output "User: $($response.user.username), Role: $($response.user.role)"`,
@@ -3775,7 +3837,17 @@ response = requests.get(
 config = response.json()
 print(f"Context Size: {config.get('contextSize')}")
 print(f"GPU Layers: {config.get('gpuLayers')}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $modelName = "llama-7b"
 
 $config = Invoke-RestMethod -Uri "${baseUrl}/api/model-configs/$modelName" -Headers $headers
@@ -3919,7 +3991,17 @@ response = requests.get(
 files = response.json()
 for f in files:
     print(f"- {f['path']}: {f.get('size', 0) / 1e9:.2f} GB")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $owner = "TheBloke"
 $repo = "Llama-2-7B-GGUF"
 
@@ -3972,7 +4054,16 @@ response = requests.get(
 downloads = response.json()
 for d in downloads:
     print(f"- {d['filename']}: {d['progress']}% ({d['status']})")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 $downloads = Invoke-RestMethod -Uri "${baseUrl}/api/downloads" -Headers $headers
 $downloads | ForEach-Object {
@@ -4019,7 +4110,17 @@ response = requests.delete(
 )
 
 print("Download cancelled" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $downloadId = "dl_abc123"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/downloads/$downloadId" -Method Delete -Headers $headers
@@ -4070,7 +4171,17 @@ response = requests.get(
 
 slots = response.json()
 print(f"Used: {slots.get('used')}, Total: {slots.get('total')}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $modelName = "llama-7b"
 
 $slots = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/$modelName/slots" -Headers $headers
@@ -4116,7 +4227,17 @@ response = requests.post(
 )
 
 print("KV cache cleared" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $modelName = "llama-7b"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/$modelName/slots/clear" -Method Post -Headers $headers
@@ -4166,7 +4287,16 @@ response = requests.get(
 prompts = response.json()
 for model, prompt in prompts.items():
     print(f"- {model}: {prompt[:50]}...")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 $prompts = Invoke-RestMethod -Uri "${baseUrl}/api/system-prompts" -Headers $headers
 $prompts.PSObject.Properties | ForEach-Object {
@@ -4216,7 +4346,17 @@ response = requests.get(
 
 result = response.json()
 print(f"System Prompt: {result.get('systemPrompt')}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $modelName = "llama-7b"
 
 $result = Invoke-RestMethod -Uri "${baseUrl}/api/system-prompts/$modelName" -Headers $headers
@@ -4340,7 +4480,17 @@ response = requests.delete(
 )
 
 print("System prompt deleted" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $modelName = "llama-7b"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/system-prompts/$modelName" -Method Delete -Headers $headers
@@ -4471,7 +4621,16 @@ response = requests.get(
 
 status = response.json()
 print(f"Browser: {status.get('browser')}, Active: {status.get('active')}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 $status = Invoke-RestMethod -Uri "${baseUrl}/api/playwright/status" -Headers $headers
 Write-Output "Browser: $($status.browser), Active: $($status.active)"`,
@@ -4517,7 +4676,16 @@ response = requests.get(
 conversations = response.json()
 for conv in conversations:
     print(f"- {conv['id']}: {conv.get('title', 'Untitled')} ({len(conv.get('messages', []))} messages)")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
 
 $conversations = Invoke-RestMethod -Uri "${baseUrl}/api/conversations" -Headers $headers
 $conversations | ForEach-Object {
@@ -4646,7 +4814,17 @@ response = requests.get(
 conv = response.json()
 print(f"Title: {conv.get('title')}")
 print(f"Messages: {len(conv.get('messages', []))}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $conversationId = "conv_abc123"
 
 $conv = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId" -Headers $headers
@@ -4770,7 +4948,17 @@ response = requests.delete(
 )
 
 print("Conversation deleted" if response.ok else f"Error: {response.json()}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $conversationId = "conv_abc123"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId" -Method Delete -Headers $headers
@@ -4904,7 +5092,17 @@ response = requests.post(
 )
 
 print(f"App started: {response.json()}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $appName = "my-app"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/$appName/start" -Method Post -Headers $headers
@@ -4951,7 +5149,17 @@ response = requests.post(
 )
 
 print(f"App stopped: {response.json()}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $appName = "my-app"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/$appName/stop" -Method Post -Headers $headers
@@ -4998,7 +5206,17 @@ response = requests.post(
 )
 
 print(f"App restarted: {response.json()}")`,
-                powershell: `$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
 $appName = "my-app"
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/apps/$appName/restart" -Method Post -Headers $headers
