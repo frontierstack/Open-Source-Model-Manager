@@ -15,6 +15,7 @@ export default function ChatMessages({
     processingMessage,
     onContinue,
     isLoading,
+    chatStyle = 'default',
 }) {
     const messagesEndRef = useRef(null);
     const containerRef = useRef(null);
@@ -70,12 +71,17 @@ export default function ChatMessages({
         );
     }
 
+    // Get chat style class
+    const chatStyleClass = chatStyle && chatStyle !== 'default' ? `chat-style-${chatStyle}` : '';
+
     return (
         <div
             ref={containerRef}
             onScroll={handleScroll}
-            className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+            className={`flex-1 overflow-y-auto px-4 py-4 ${chatStyleClass}`}
         >
+            {/* Centered container for messages */}
+            <div className="max-w-4xl mx-auto space-y-4">
             {messages.map((message, index) => (
                 <ChatMessage
                     key={message.id || index}
@@ -110,6 +116,7 @@ export default function ChatMessages({
             )}
 
             <div ref={messagesEndRef} />
+            </div>
         </div>
     );
 }

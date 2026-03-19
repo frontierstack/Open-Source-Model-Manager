@@ -16,7 +16,12 @@ import {
     Zap,
     Sparkles,
     Code,
-    Target
+    Target,
+    Layout,
+    Minimize2,
+    Maximize2,
+    AlignCenter,
+    Square
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
 
@@ -51,7 +56,54 @@ export default function ChatSettings({
         presencePenalty = 0,
         fontSize = 'medium',
         fontFamily = 'system',
+        chatStyle = 'default',
     } = settings;
+
+    // Chat window style options
+    const chatStyleOptions = [
+        {
+            value: 'default',
+            label: 'Default',
+            icon: MessageSquare,
+            description: 'Classic chat layout',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'normal' }
+        },
+        {
+            value: 'centered',
+            label: 'Centered',
+            icon: AlignCenter,
+            description: 'Messages centered',
+            preview: { userAlign: 'center', assistantAlign: 'center', width: 'normal' }
+        },
+        {
+            value: 'bubbles',
+            label: 'Bubbles',
+            icon: Square,
+            description: 'Rounded bubble style',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'compact' }
+        },
+        {
+            value: 'cozy',
+            label: 'Cozy',
+            icon: Maximize2,
+            description: 'Extra spacious layout',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'wide' }
+        },
+        {
+            value: 'compact',
+            label: 'Compact',
+            icon: Minimize2,
+            description: 'Tight, minimal spacing',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'tight' }
+        },
+        {
+            value: 'wide',
+            label: 'Wide',
+            icon: Layout,
+            description: 'Full width messages',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'full' }
+        },
+    ];
 
     // Font options with resolution presets
     const fontSizeOptions = [
@@ -616,6 +668,45 @@ export default function ChatSettings({
                                                     <div className="text-[10px] font-medium flex items-center gap-1 justify-center">
                                                         {option.label}
                                                         {isActive && <Check className="w-2.5 h-2.5" />}
+                                                    </div>
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="border-t border-white/5" />
+
+                            {/* Chat Layout Style */}
+                            <div>
+                                <label className="block text-xs font-medium text-dark-200 mb-2">
+                                    Chat Layout
+                                </label>
+                                <div className="grid grid-cols-3 gap-2">
+                                    {chatStyleOptions.map((option) => {
+                                        const Icon = option.icon;
+                                        const isActive = chatStyle === option.value;
+                                        return (
+                                            <button
+                                                key={option.value}
+                                                onClick={() => onUpdateSettings({ chatStyle: option.value })}
+                                                className={`flex flex-col items-center gap-1.5 p-2.5 rounded-lg border transition-all duration-200 ${
+                                                    isActive
+                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
+                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
+                                                }`}
+                                            >
+                                                <div className={`p-1.5 rounded-md ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
+                                                    <Icon className="w-4 h-4" />
+                                                </div>
+                                                <div className="text-center">
+                                                    <div className="text-[10px] font-medium flex items-center gap-1 justify-center">
+                                                        {option.label}
+                                                        {isActive && <Check className="w-2.5 h-2.5" />}
+                                                    </div>
+                                                    <div className="text-[9px] text-dark-500 mt-0.5">
+                                                        {option.description}
                                                     </div>
                                                 </div>
                                             </button>

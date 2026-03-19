@@ -70,10 +70,10 @@ export default function ChatMessage({
 
             {/* Message bubble */}
             <div
-                className={`group relative max-w-[85%] min-w-[80px] px-4 py-3 ${
+                className={`group relative min-w-[80px] ${
                     isUser
-                        ? 'message-user'
-                        : 'message-assistant'
+                        ? 'message-user max-w-[75%] px-4 py-3'
+                        : 'message-assistant max-w-[90%] px-5 py-4'
                 }`}
             >
                 {/* Thinking/Reasoning section */}

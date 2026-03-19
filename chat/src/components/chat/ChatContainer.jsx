@@ -1593,6 +1593,7 @@ export default function ChatContainer({
                     processingMessage={processingMessage}
                     onContinue={handleContinueResponse}
                     isLoading={isLoading}
+                    chatStyle={settings.chatStyle}
                 />
 
                 {/* Input */}

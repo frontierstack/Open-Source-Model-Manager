@@ -1289,6 +1289,9 @@ body.font-size-large .markdown-content,
 .max-w-3xl{
   max-width: 48rem;
 }
+.max-w-4xl{
+  max-width: 56rem;
+}
 .max-w-\[100px\]{
   max-width: 100px;
 }
@@ -1301,8 +1304,14 @@ body.font-size-large .markdown-content,
 .max-w-\[60px\]{
   max-width: 60px;
 }
+.max-w-\[75\%\]{
+  max-width: 75%;
+}
 .max-w-\[85\%\]{
   max-width: 85%;
+}
+.max-w-\[90\%\]{
+  max-width: 90%;
 }
 .max-w-full{
   max-width: 100%;
@@ -2008,6 +2017,10 @@ body.font-size-large .markdown-content,
 .px-4{
   padding-left: 1rem;
   padding-right: 1rem;
+}
+.px-5{
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
 }
 .px-6{
   padding-left: 1.5rem;
@@ -5037,6 +5050,84 @@ body.font-size-large .markdown-content,
         box-shadow: none;
         border: 1px solid #ccc;
     }
+}
+
+/* ============================================
+   Chat Layout Styles
+   ============================================ */
+
+/* Default - Classic chat layout (no changes needed, base styles apply) */
+
+/* Centered - Both messages centered */
+.chat-style-centered .flex.flex-col.items-end,
+.chat-style-centered .flex.flex-col.items-start {
+    align-items: center !important;
+}
+
+.chat-style-centered .message-user,
+.chat-style-centered .message-assistant {
+    max-width: 80% !important;
+}
+
+/* Bubbles - Rounded bubble style */
+.chat-style-bubbles .message-user,
+.chat-style-bubbles .message-assistant {
+    border-radius: 1.5rem !important;
+    max-width: 70% !important;
+}
+
+.chat-style-bubbles .message-user {
+    border-bottom-right-radius: 0.375rem !important;
+    padding: 0.875rem 1.25rem !important;
+}
+
+.chat-style-bubbles .message-assistant {
+    border-bottom-left-radius: 0.375rem !important;
+    padding: 1rem 1.5rem !important;
+}
+
+/* Cozy - Extra spacious layout */
+.chat-style-cozy .message-user {
+    max-width: 70% !important;
+    padding: 1rem 1.25rem !important;
+}
+
+.chat-style-cozy .message-assistant {
+    max-width: 95% !important;
+    padding: 1.5rem 2rem !important;
+}
+
+.chat-style-cozy .space-y-4 > * + * {
+    margin-top: 1.5rem !important;
+}
+
+/* Compact - Tight, minimal spacing */
+.chat-style-compact .message-user,
+.chat-style-compact .message-assistant {
+    padding: 0.5rem 0.75rem !important;
+    max-width: 85% !important;
+}
+
+.chat-style-compact .space-y-4 > * + * {
+    margin-top: 0.5rem !important;
+}
+
+.chat-style-compact .mb-4 {
+    margin-bottom: 0.5rem !important;
+}
+
+/* Wide - Full width messages */
+.chat-style-wide .message-user {
+    max-width: 85% !important;
+}
+
+.chat-style-wide .message-assistant {
+    max-width: 100% !important;
+    padding: 1.25rem 1.5rem !important;
+}
+
+.chat-style-wide .max-w-4xl {
+    max-width: 100% !important;
 }
 
 /* ============================================
