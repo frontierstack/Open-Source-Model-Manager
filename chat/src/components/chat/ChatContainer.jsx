@@ -136,7 +136,7 @@ export default function ChatContainer({
                     llamacppInstances.forEach(inst => {
                         instances.push({
                             name: inst.name || inst.model,
-                            status: 'running',
+                            status: inst.status || 'running',  // Use actual backend status
                             backend: 'llamacpp',
                             port: inst.port,
                             // Include context size from config for accurate context tracking
@@ -152,7 +152,7 @@ export default function ChatContainer({
                     vllmInstances.forEach(inst => {
                         instances.push({
                             name: inst.name || inst.model,
-                            status: 'running',
+                            status: inst.status || 'running',  // Use actual backend status
                             backend: 'vllm',
                             port: inst.port,
                             // Include context size from config for accurate context tracking

@@ -443,7 +443,8 @@ function AppContent() {
                     const contextSize = runningInfo?.config?.contextSize || runningInfo?.contextSize || m.contextSize;
                     return {
                         ...m,
-                        status: runningInfo ? 'running' : 'stopped',
+                        // Use actual backend status (starting, loading, running, unhealthy) or 'stopped' if not running
+                        status: runningInfo ? (runningInfo.status || 'running') : 'stopped',
                         backend: runningInfo?.backend || m.backend || 'llamacpp',
                         // Include contextSize from running instance for accurate context tracking
                         ...(contextSize && { contextSize }),

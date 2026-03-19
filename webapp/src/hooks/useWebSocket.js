@@ -79,6 +79,15 @@ export function useWebSocket() {
             if (status === 'running') {
                 updateInstance(modelName, { status: 'running', port });
                 showSnackbar(`${modelName} is now running`, 'success');
+            } else if (status === 'starting') {
+                updateInstance(modelName, { status: 'starting' });
+                // No snackbar for starting - it's expected
+            } else if (status === 'loading') {
+                updateInstance(modelName, { status: 'loading' });
+                showSnackbar(`${modelName} is still loading...`, 'info');
+            } else if (status === 'unhealthy') {
+                updateInstance(modelName, { status: 'unhealthy', error });
+                showSnackbar(`${modelName} is unhealthy`, 'warning');
             } else if (status === 'stopped') {
                 removeInstance(modelName);
                 showSnackbar(`${modelName} stopped`, 'info');

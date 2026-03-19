@@ -2506,6 +2506,14 @@ async function createVllmInstance(modelName, modelPath, config) {
             backend: 'vllm'
         });
 
+        // Broadcast structured status update for frontend
+        broadcast({
+            type: 'status',
+            modelName,
+            status: 'starting',
+            port
+        });
+
         console.log(`Created vLLM instance for ${modelName} on port ${port} (container: ${containerName})`);
 
         // Start streaming container logs
@@ -2591,6 +2599,14 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             status: 'starting',
             config,
             backend: 'llamacpp'
+        });
+
+        // Broadcast structured status update for frontend
+        broadcast({
+            type: 'status',
+            modelName,
+            status: 'starting',
+            port
         });
 
         console.log(`Created llama.cpp instance for ${modelName} on port ${port} (container: ${containerName})`);
@@ -2722,6 +2738,14 @@ async function monitorContainerHealth(container, modelName, port) {
                     instance.status = 'running';
                     modelInstances.set(modelName, instance);
 
+                    // Broadcast structured status update for frontend
+                    broadcast({
+                        type: 'status',
+                        modelName,
+                        status: 'running',
+                        port
+                    });
+
                     // Only broadcast success message if transitioning from loading/unhealthy state
                     if (wasUnhealthy || wasLoading || instance.status === 'starting') {
                         if (wasUnhealthy) {
@@ -2730,20 +2754,10 @@ async function monitorContainerHealth(container, modelName, port) {
                                 message: `[${modelName}] Server recovered and is now healthy`,
                                 level: 'success'
                             });
-                            broadcast({
-                                type: 'status',
-                                message: `Instance ${modelName} recovered - now ready on port ${port}`,
-                                level: 'success'
-                            });
                         } else {
                             broadcast({
                                 type: 'log',
                                 message: `[${modelName}] Server is ready and healthy`,
-                                level: 'success'
-                            });
-                            broadcast({
-                                type: 'status',
-                                message: `Instance ${modelName} ready on port ${port}`,
                                 level: 'success'
                             });
                         }
@@ -2774,6 +2788,15 @@ async function monitorContainerHealth(container, modelName, port) {
                 if (instance.status === 'starting') {
                     instance.status = 'loading';
                     modelInstances.set(modelName, instance);
+
+                    // Broadcast structured status update for frontend
+                    broadcast({
+                        type: 'status',
+                        modelName,
+                        status: 'loading',
+                        port
+                    });
+
                     broadcast({
                         type: 'log',
                         message: `[${modelName}] Large model detected - extended loading in progress...`,
@@ -2797,18 +2820,23 @@ async function monitorContainerHealth(container, modelName, port) {
             } else {
                 // Phase 2 complete - mark as unhealthy but continue monitoring
                 if (instance.status !== 'unhealthy') {
+                    instance.status = 'unhealthy';
+                    modelInstances.set(modelName, instance);
+
+                    // Broadcast structured status update for frontend
+                    broadcast({
+                        type: 'status',
+                        modelName,
+                        status: 'unhealthy',
+                        port,
+                        error: 'Loading timeout - check logs'
+                    });
+
                     broadcast({
                         type: 'log',
                         message: `[${modelName}] Initial loading timeout (${PHASE1_DURATION + PHASE2_DURATION}s) - marked as unhealthy but monitoring continues`,
                         level: 'warning'
                     });
-                    broadcast({
-                        type: 'status',
-                        message: `Instance ${modelName} slow to load - check logs. Will auto-recover when ready.`,
-                        level: 'warning'
-                    });
-                    instance.status = 'unhealthy';
-                    modelInstances.set(modelName, instance);
                 }
 
                 // Phase 3: Continue monitoring indefinitely to allow recovery
@@ -2901,7 +2929,13 @@ app.delete('/api/vllm/instances/:modelName', requireAuth, async (req, res) => {
 
         // Clean up our state
         modelInstances.delete(modelName);
-        broadcast({ type: 'status', message: `Instance ${modelName} stopped` });
+
+        // Broadcast structured status update for frontend
+        broadcast({
+            type: 'status',
+            modelName,
+            status: 'stopped'
+        });
 
         res.json({ message: 'Instance stopped' });
     } catch (error) {
@@ -2988,7 +3022,13 @@ app.delete('/api/llamacpp/instances/:modelName', requireAuth, async (req, res) =
         }
 
         modelInstances.delete(modelName);
-        broadcast({ type: 'status', message: `Instance ${modelName} stopped` });
+
+        // Broadcast structured status update for frontend
+        broadcast({
+            type: 'status',
+            modelName,
+            status: 'stopped'
+        });
 
         res.json({ message: 'Instance stopped' });
     } catch (error) {
