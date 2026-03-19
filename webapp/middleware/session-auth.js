@@ -1,6 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
+const { decryptApiKeys } = require('../utils/encryption');
 
 // Path to API keys file
 const API_KEYS_FILE = path.join('/models/.modelserver', 'api-keys.json');
@@ -12,7 +13,9 @@ const API_KEYS_FILE = path.join('/models/.modelserver', 'api-keys.json');
 async function loadApiKeys() {
     try {
         const data = await fs.readFile(API_KEYS_FILE, 'utf8');
-        return JSON.parse(data);
+        const keys = JSON.parse(data);
+        // Decrypt sensitive fields (handles both encrypted and unencrypted data)
+        return decryptApiKeys(keys);
     } catch (error) {
         if (error.code === 'ENOENT') {
             return [];

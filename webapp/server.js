@@ -18,6 +18,7 @@ const passport = require('passport');
 const initializePassport = require('./auth/passport-config');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { encryptApiKeys, decryptApiKeys, isEncrypted } = require('./utils/encryption');
 
 // ============================================================================
 // SSL INSPECTION BYPASS CONFIGURATION
@@ -3832,7 +3833,9 @@ process.on('SIGINT', async () => {
 async function loadApiKeys() {
     try {
         const data = await fs.readFile(API_KEYS_FILE, 'utf8');
-        return JSON.parse(data);
+        const keys = JSON.parse(data);
+        // Decrypt sensitive fields (handles both encrypted and unencrypted data for migration)
+        return decryptApiKeys(keys);
     } catch (err) {
         if (err.code === 'ENOENT') return [];
         console.error('Error loading API keys:', err);
@@ -3842,7 +3845,42 @@ async function loadApiKeys() {
 
 async function saveApiKeys(keys) {
     await ensureDataDir();
-    await fs.writeFile(API_KEYS_FILE, JSON.stringify(keys, null, 2));
+    // Encrypt sensitive fields before saving
+    const encryptedKeys = encryptApiKeys(keys);
+    await fs.writeFile(API_KEYS_FILE, JSON.stringify(encryptedKeys, null, 2));
+}
+
+/**
+ * Migrate unencrypted API keys to encrypted format
+ * Called during server initialization
+ */
+async function migrateApiKeysEncryption() {
+    try {
+        const data = await fs.readFile(API_KEYS_FILE, 'utf8');
+        const keys = JSON.parse(data);
+
+        if (!Array.isArray(keys) || keys.length === 0) {
+            return; // No keys to migrate
+        }
+
+        // Check if any key needs encryption
+        const needsMigration = keys.some(key => {
+            return (key.key && !isEncrypted(key.key)) ||
+                   (key.secret && !isEncrypted(key.secret));
+        });
+
+        if (needsMigration) {
+            console.log('[Encryption] Migrating API keys to encrypted format...');
+            // Save will automatically encrypt the keys
+            await saveApiKeys(keys);
+            console.log('[Encryption] API keys migration complete');
+        }
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            return; // No file to migrate
+        }
+        console.error('[Encryption] Error during API keys migration:', err.message);
+    }
 }
 
 // Helper functions for API key usage stats
@@ -11024,7 +11062,9 @@ server.listen(PORT, async () => {
         // This is critical for cross-platform compatibility (Windows+WSL, macOS, Linux)
         detectHostModelsPath(),
         // Load API key usage stats from disk
-        loadApiKeyUsageStats()
+        loadApiKeyUsageStats(),
+        // Migrate unencrypted API keys to encrypted format (one-time operation)
+        migrateApiKeysEncryption()
     ]);
 
     hostModelsPath = detectedPath;
