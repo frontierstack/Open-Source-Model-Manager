@@ -607,18 +607,27 @@ export default function ChatContainer({
                             urlFetchResults = successfulResults;
 
                             // Create a detailed summary for memory persistence (used in follow-up questions)
-                            // Include truncated content so follow-ups have context
+                            // Total budget of 3000 chars, divided among URLs to prevent context overflow
+                            const URL_CONTEXT_BUDGET = 3000;
+                            const charsPerUrl = Math.floor(URL_CONTEXT_BUDGET / successfulResults.length);
+
                             urlContextSummary = successfulResults
-                                .map((r, i) => {
+                                .map((r) => {
                                     let summary = `[${r.title || 'Untitled'}](${r.url})`;
                                     if (r.content) {
-                                        // Include first 1500 chars of content for follow-up context
-                                        const contentPreview = r.content.slice(0, 1500).trim();
-                                        summary += `\n${contentPreview}${r.content.length > 1500 ? '...' : ''}`;
+                                        // Allocate remaining budget after title/url (estimate ~100 chars for metadata)
+                                        const contentBudget = Math.max(200, charsPerUrl - 100);
+                                        const contentPreview = r.content.slice(0, contentBudget).trim();
+                                        summary += `\n${contentPreview}${r.content.length > contentBudget ? '...' : ''}`;
                                     }
                                     return summary;
                                 })
                                 .join('\n\n---\n\n');
+
+                            // Final safety cap in case of edge cases
+                            if (urlContextSummary.length > URL_CONTEXT_BUDGET + 500) {
+                                urlContextSummary = urlContextSummary.slice(0, URL_CONTEXT_BUDGET + 500) + '... [truncated]';
+                            }
 
                             // Format fetched content for the model
                             const urlContext = successfulResults
@@ -686,16 +695,24 @@ export default function ChatContainer({
 
         // Prepare messages for API (use fullContent for the last message to include attachments)
         // Also include search context from previous messages if they had web search results
+        // Only include context from last N messages to prevent context overflow
+        const MAX_CONTEXT_MESSAGES = 4; // Only include search/url context from last 4 user messages
+        const userMessageIndices = updatedMessages
+            .map((m, i) => m.role === 'user' ? i : -1)
+            .filter(i => i !== -1);
+        const recentUserIndices = new Set(userMessageIndices.slice(-MAX_CONTEXT_MESSAGES));
+
         const apiMessages = updatedMessages.map((m, idx) => {
             let msgContent = idx === updatedMessages.length - 1 ? fullContent : m.content;
+            const isRecentUserMessage = recentUserIndices.has(idx);
 
-            // If this is a previous user message with search context, include it
-            if (m.role === 'user' && m.searchContext && idx !== updatedMessages.length - 1) {
+            // If this is a recent previous user message with search context, include it
+            if (m.role === 'user' && m.searchContext && idx !== updatedMessages.length - 1 && isRecentUserMessage) {
                 msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
             }
 
-            // If this is a previous user message with URL context, include it
-            if (m.role === 'user' && m.urlContext && idx !== updatedMessages.length - 1) {
+            // If this is a recent previous user message with URL context, include it
+            if (m.role === 'user' && m.urlContext && idx !== updatedMessages.length - 1 && isRecentUserMessage) {
                 msgContent = `[Previous URL context: ${m.urlContext}]\n\n${msgContent}`;
             }
 
