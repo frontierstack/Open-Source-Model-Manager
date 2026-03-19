@@ -28,6 +28,28 @@ const saveToStorage = (key, value) => {
     }
 };
 
+// Migrate old settings - clear hardcoded maxTokens defaults
+const migrateSettings = () => {
+    try {
+        const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+        if (stored) {
+            const settings = JSON.parse(stored);
+            // If maxTokens was set to old hardcoded default (1024), reset to null
+            // so it uses the model's context window dynamically
+            if (settings.maxTokens === 1024) {
+                settings.maxTokens = null;
+                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+                console.log('[Settings] Migrated maxTokens from 1024 to null (dynamic)');
+            }
+        }
+    } catch (e) {
+        console.error('Failed to migrate settings:', e);
+    }
+};
+
+// Run migration on load
+migrateSettings();
+
 /**
  * Chat Store
  * Manages conversations, messages, chat settings, theme, and user info
