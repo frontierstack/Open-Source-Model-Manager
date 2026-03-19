@@ -9,6 +9,55 @@ import ChatSettings from './ChatSettings';
 import WebSearchIndicator from './WebSearchIndicator';
 
 /**
+ * Parse <think> tags from content and separate thinking from response
+ * Handles both complete and partial (streaming) content
+ *
+ * If the entire response is wrapped in <think> tags with no content outside,
+ * the thinking content is returned as the main content (not as reasoning).
+ */
+function parseThinkTags(content) {
+    if (!content) return { content: '', reasoning: '' };
+
+    let reasoning = '';
+    let cleanContent = content;
+    let hasCompletedThinkBlock = false;
+
+    // Find all complete <think>...</think> blocks
+    const completeThinkRegex = /<think>([\s\S]*?)<\/think>/gi;
+    let match;
+    while ((match = completeThinkRegex.exec(content)) !== null) {
+        reasoning += match[1];
+        cleanContent = cleanContent.replace(match[0], '');
+        hasCompletedThinkBlock = true;
+    }
+
+    // Handle unclosed <think> tag (content is still streaming)
+    const lastOpenIdx = cleanContent.lastIndexOf('<think>');
+    const lastCloseIdx = cleanContent.lastIndexOf('</think>');
+    const hasUnclosedThink = lastOpenIdx > lastCloseIdx;
+
+    if (hasUnclosedThink) {
+        // There's an unclosed <think> tag - everything after it is reasoning
+        const partialReasoning = cleanContent.substring(lastOpenIdx + 7);
+        reasoning += partialReasoning;
+        cleanContent = cleanContent.substring(0, lastOpenIdx);
+    }
+
+    // Clean up extra whitespace
+    cleanContent = cleanContent.replace(/^\s+/, '').replace(/\s+$/, '');
+    reasoning = reasoning.replace(/^\s+/, '').replace(/\s+$/, '');
+
+    // If content is empty but we have reasoning from COMPLETED think blocks,
+    // the model likely wrapped its entire response in <think> tags.
+    // Only apply this when think tags are closed (not during streaming).
+    if (!cleanContent && reasoning && hasCompletedThinkBlock && !hasUnclosedThink) {
+        return { content: reasoning, reasoning: '' };
+    }
+
+    return { content: cleanContent, reasoning };
+}
+
+/**
  * ChatContainer - Main chat interface container
  */
 export default function ChatContainer({
@@ -484,9 +533,16 @@ export default function ChatContainer({
 
                             if (delta?.content) {
                                 assistantContent += delta.content;
-                                setStreamingContent(assistantContent);
+                                // Parse <think> tags from content and separate reasoning
+                                const thinkParsed = parseThinkTags(assistantContent);
+                                setStreamingContent(thinkParsed.content);
+                                if (thinkParsed.reasoning) {
+                                    assistantReasoning = thinkParsed.reasoning;
+                                    setStreamingReasoning(assistantReasoning);
+                                }
                             }
 
+                            // Handle explicit reasoning field from model API
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
                                 setStreamingReasoning(assistantReasoning);
@@ -526,12 +582,16 @@ export default function ChatContainer({
                 );
             }
 
-            // Add assistant message
+            // Add assistant message - parse think tags for final content
+            const finalParsed = parseThinkTags(assistantContent);
+            const finalContent = finalParsed.content;
+            const finalReasoning = finalParsed.reasoning || assistantReasoning || undefined;
+
             const assistantMessage = {
                 id: crypto.randomUUID(),
                 role: 'assistant',
-                content: assistantContent,
-                reasoning: assistantReasoning || undefined,
+                content: finalContent,
+                reasoning: finalReasoning,
                 timestamp: new Date().toISOString(),
                 chunked: continuationInfo?.hasMore || false,
             };

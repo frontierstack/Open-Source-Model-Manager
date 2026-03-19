@@ -9,16 +9,16 @@ import ChatSettings from './ChatSettings';
 /**
  * Parse <think> tags from content and separate thinking from response
  * Handles both complete and partial (streaming) content
+ *
+ * If the entire response is wrapped in <think> tags with no content outside,
+ * the thinking content is returned as the main content (not as reasoning).
  */
 function parseThinkTags(content) {
     if (!content) return { content: '', reasoning: '' };
 
-    // Check for <think> tags (case insensitive)
-    const thinkOpenRegex = /<think>/gi;
-    const thinkCloseRegex = /<\/think>/gi;
-
     let reasoning = '';
     let cleanContent = content;
+    let hasCompletedThinkBlock = false;
 
     // Find all complete <think>...</think> blocks
     const completeThinkRegex = /<think>([\s\S]*?)<\/think>/gi;
@@ -26,13 +26,15 @@ function parseThinkTags(content) {
     while ((match = completeThinkRegex.exec(content)) !== null) {
         reasoning += match[1];
         cleanContent = cleanContent.replace(match[0], '');
+        hasCompletedThinkBlock = true;
     }
 
     // Handle unclosed <think> tag (content is still streaming)
     const lastOpenIdx = cleanContent.lastIndexOf('<think>');
     const lastCloseIdx = cleanContent.lastIndexOf('</think>');
+    const hasUnclosedThink = lastOpenIdx > lastCloseIdx;
 
-    if (lastOpenIdx > lastCloseIdx) {
+    if (hasUnclosedThink) {
         // There's an unclosed <think> tag - everything after it is reasoning
         const partialReasoning = cleanContent.substring(lastOpenIdx + 7);
         reasoning += partialReasoning;
@@ -41,6 +43,14 @@ function parseThinkTags(content) {
 
     // Clean up extra whitespace
     cleanContent = cleanContent.replace(/^\s+/, '').replace(/\s+$/, '');
+    reasoning = reasoning.replace(/^\s+/, '').replace(/\s+$/, '');
+
+    // If content is empty but we have reasoning from COMPLETED think blocks,
+    // the model likely wrapped its entire response in <think> tags.
+    // Only apply this when think tags are closed (not during streaming).
+    if (!cleanContent && reasoning && hasCompletedThinkBlock && !hasUnclosedThink) {
+        return { content: reasoning, reasoning: '' };
+    }
 
     return { content: cleanContent, reasoning };
 }
