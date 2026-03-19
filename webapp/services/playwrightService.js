@@ -8,9 +8,20 @@
  * - Smart content extraction (handles JS-rendered pages)
  * - Configurable timeouts and retry logic
  * - Graceful degradation on failures
+ * - SSL inspection bypass for corporate proxy environments
  */
 
 const { spawn, execSync } = require('child_process');
+
+// ============================================================================
+// SSL INSPECTION BYPASS CONFIGURATION
+// ============================================================================
+// Check environment variable (set by docker-compose from build.sh detection)
+const sslBypassEnabled = process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0';
+
+if (sslBypassEnabled) {
+    console.log('[Playwright] SSL bypass enabled for corporate proxy environment');
+}
 
 // Use playwright-extra with stealth plugin for enhanced bot detection bypass
 const { chromium: playwrightChromium } = require('playwright-extra');
@@ -119,7 +130,7 @@ function randomDelay(min = 50, max = 200) {
  */
 function getStealthContextOptions() {
     const viewport = randomChoice(VIEWPORTS);
-    return {
+    const options = {
         userAgent: randomChoice(USER_AGENTS),
         viewport: viewport,
         screen: viewport,
@@ -145,6 +156,13 @@ function getStealthContextOptions() {
             'Sec-Fetch-User': '?1'
         }
     };
+
+    // Enable SSL bypass for corporate proxy environments
+    if (sslBypassEnabled) {
+        options.ignoreHTTPSErrors = true;
+    }
+
+    return options;
 }
 
 /**

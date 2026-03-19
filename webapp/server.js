@@ -19,6 +19,35 @@ const initializePassport = require('./auth/passport-config');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
+// ============================================================================
+// SSL INSPECTION BYPASS CONFIGURATION
+// ============================================================================
+// Auto-configured by build.sh when corporate SSL inspection is detected.
+// This allows web search and URL fetching to work behind corporate proxies.
+// Set NODE_TLS_REJECT_UNAUTHORIZED=0 in environment to enable bypass.
+
+let sslBypassEnabled = false;
+let httpsAgent = null;
+
+// Check environment variable (set by docker-compose from build.sh detection)
+if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    sslBypassEnabled = true;
+    httpsAgent = new https.Agent({
+        rejectUnauthorized: false
+    });
+    console.log('[SSL] Corporate proxy bypass enabled - SSL verification disabled for outbound requests');
+
+    // Configure axios defaults for SSL bypass
+    axios.defaults.httpsAgent = httpsAgent;
+    console.log('[SSL] Axios configured with SSL bypass agent');
+}
+
+// Export SSL config for services to use
+const sslConfig = {
+    bypassEnabled: sslBypassEnabled,
+    httpsAgent: httpsAgent
+};
+
 // Playwright service for advanced web scraping
 let playwrightService = null;
 let playwrightEnabled = false;
@@ -8167,12 +8196,96 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 }
             }
 
-            // If still over limit after processing and not using map-reduce, return error
-            if (!useMapReduce && totalInputTokens > availableContextForInput && !contextShift) {
-                return res.status(400).json({
-                    success: false,
-                    error: `Not enough context window: Input requires ~${totalInputTokens} tokens but only ${availableContextForInput} available (context: ${contextSize}, reserved for response: ${responseReserve}). Enable context shifting or reduce input size.`
-                });
+            // If still over limit after processing and not using map-reduce
+            if (!useMapReduce && totalInputTokens > availableContextForInput) {
+                if (contextShift) {
+                    // CONTEXT SHIFTING: Remove oldest messages (except system) until input fits
+                    // Preserve: system messages, last user message, and as many recent messages as possible
+                    console.log(`[Chat Stream] Context shift enabled - trimming ${totalInputTokens} tokens to fit ${availableContextForInput}`);
+
+                    // Separate system messages from conversation messages
+                    const systemMessages = chatMessages.filter(m => m.role === 'system');
+                    const conversationMessages = chatMessages.filter(m => m.role !== 'system');
+
+                    // Calculate tokens used by system messages (always kept)
+                    let systemTokens = 0;
+                    for (const msg of systemMessages) {
+                        systemTokens += estimateTokens(msg.content);
+                    }
+
+                    // Available for conversation after system messages
+                    const availableForConversation = availableContextForInput - systemTokens;
+
+                    if (availableForConversation <= 0) {
+                        return res.status(400).json({
+                            success: false,
+                            error: `System prompt alone exceeds context window. Please reduce system prompt size.`
+                        });
+                    }
+
+                    // Keep messages from the end (most recent) until we run out of space
+                    const keptMessages = [];
+                    let conversationTokens = 0;
+
+                    // Start from the most recent message and work backwards
+                    for (let i = conversationMessages.length - 1; i >= 0; i--) {
+                        const msg = conversationMessages[i];
+                        const msgTokens = estimateTokens(msg.content);
+
+                        if (conversationTokens + msgTokens <= availableForConversation) {
+                            keptMessages.unshift(msg); // Add to front to maintain order
+                            conversationTokens += msgTokens;
+                        } else if (i === conversationMessages.length - 1) {
+                            // Last user message is too large - truncate it
+                            const excessTokens = (conversationTokens + msgTokens) - availableForConversation;
+                            const targetLength = Math.max(100, msg.content.length - (excessTokens * 4));
+
+                            if (typeof msg.content === 'string') {
+                                const truncatedContent = msg.content.substring(0, targetLength) +
+                                    '\n\n[...input truncated due to context limit...]';
+                                keptMessages.unshift({ ...msg, content: truncatedContent });
+                                conversationTokens += estimateTokens(truncatedContent);
+                            } else {
+                                // Array format (vision) - truncate text part
+                                const newContent = msg.content.map(part => {
+                                    if (part.type === 'text' && part.text) {
+                                        return {
+                                            type: 'text',
+                                            text: part.text.substring(0, targetLength) + '\n\n[...truncated...]'
+                                        };
+                                    }
+                                    return part;
+                                });
+                                keptMessages.unshift({ ...msg, content: newContent });
+                                conversationTokens += estimateTokens(targetLength);
+                            }
+                        }
+                        // else: skip this older message (context shift removes it)
+                    }
+
+                    // If we couldn't keep any messages, error out
+                    if (keptMessages.length === 0) {
+                        return res.status(400).json({
+                            success: false,
+                            error: `Input too large even with context shifting. Please reduce message size or clear conversation history.`
+                        });
+                    }
+
+                    // Rebuild chatMessages with system messages first, then kept conversation
+                    const removedCount = conversationMessages.length - keptMessages.length;
+                    chatMessages.length = 0;
+                    chatMessages.push(...systemMessages, ...keptMessages);
+
+                    // Recalculate total tokens
+                    totalInputTokens = systemTokens + conversationTokens;
+
+                    console.log(`[Chat Stream] Context shift removed ${removedCount} old messages. New total: ${totalInputTokens} tokens`);
+                } else {
+                    return res.status(400).json({
+                        success: false,
+                        error: `Not enough context window: Input requires ~${totalInputTokens} tokens but only ${availableContextForInput} available (context: ${contextSize}, reserved for response: ${responseReserve}). Enable context shifting or reduce input size.`
+                    });
+                }
             }
         }
 

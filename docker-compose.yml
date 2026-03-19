@@ -41,6 +41,17 @@ services:
       # HOST_MODELS_PATH is auto-detected from container mount.
       # Only set manually if model loading fails (Windows+WSL edge cases):
       # - HOST_MODELS_PATH=${HOST_MODELS_PATH:-}
+      #
+      # SSL/TLS Configuration for Corporate Proxy Environments:
+      # Set by build.sh automatically when SSL inspection is detected,
+      # or set manually: NODE_TLS_REJECT_UNAUTHORIZED=0 ./start.sh
+      - NODE_TLS_REJECT_UNAUTHORIZED=${NODE_TLS_REJECT_UNAUTHORIZED:-1}
+      # Additional proxy settings (uncomment if needed):
+      # - SSL_CERT_FILE=${SSL_CERT_FILE:-}
+      # - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
+      # - HTTPS_PROXY=${HTTPS_PROXY:-}
+      # - HTTP_PROXY=${HTTP_PROXY:-}
+      # - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Enable GPU access for system resource detection (nvidia-smi)

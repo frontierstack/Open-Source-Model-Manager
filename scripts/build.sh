@@ -64,12 +64,13 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --no-cache      Force rebuild all images without Docker cache"
-            echo "  --no-cleanup    Skip Docker system cleanup after build"
-            echo "  --no-parallel   Build images sequentially instead of parallel"
-            echo "  --no-resume     Start fresh build (ignore previous state)"
-            echo "  --retry <n>     Number of retries on failure (default: 2)"
-            echo "  -h, --help      Show this help message"
+            echo "  --no-cache       Force rebuild all images without Docker cache"
+            echo "  --no-cleanup     Skip Docker system cleanup after build"
+            echo "  --no-parallel    Build images sequentially instead of parallel"
+            echo "  --no-resume      Start fresh build (ignore previous state)"
+            echo "  --retry <n>      Number of retries on failure (default: 2)"
+            echo "  --skip-ssl-check Skip SSL inspection detection"
+            echo "  -h, --help       Show this help message"
             echo ""
             echo "Features:"
             echo "  - Incremental builds (skip existing images)"
@@ -78,6 +79,18 @@ while [[ $# -gt 0 ]]; do
             echo "  - Parallel builds (llamacpp + vllm simultaneously)"
             echo "  - Automatic retry on transient failures"
             echo "  - Build timing and progress indicators"
+            echo ""
+            echo "Corporate Proxy/SSL Environment Variables:"
+            echo "  HTTP_PROXY                    HTTP proxy URL"
+            echo "  HTTPS_PROXY                   HTTPS proxy URL"
+            echo "  NO_PROXY                      Hosts to bypass proxy (default: localhost,127.0.0.1)"
+            echo "  NODE_TLS_REJECT_UNAUTHORIZED  Set to 0 to skip Node.js SSL verification"
+            echo "  GIT_SSL_NO_VERIFY             Set to true to skip git SSL verification"
+            echo "  PIP_TRUSTED_HOST              pip trusted hosts (e.g., pypi.org)"
+            echo ""
+            echo "Example for corporate environment:"
+            echo "  HTTP_PROXY=http://proxy:8080 HTTPS_PROXY=http://proxy:8080 ./build.sh"
+            echo "  NODE_TLS_REJECT_UNAUTHORIZED=0 GIT_SSL_NO_VERIFY=true ./build.sh"
             exit 0
             ;;
         *)
@@ -136,13 +149,23 @@ build_image() {
         profile_arg="--profile build-only"
     fi
 
+    # Build args for corporate proxy/SSL environments
+    local build_args=""
+    [ -n "$HTTP_PROXY" ] && build_args="$build_args --build-arg HTTP_PROXY=$HTTP_PROXY"
+    [ -n "$HTTPS_PROXY" ] && build_args="$build_args --build-arg HTTPS_PROXY=$HTTPS_PROXY"
+    [ -n "$NO_PROXY" ] && build_args="$build_args --build-arg NO_PROXY=$NO_PROXY"
+    [ -n "$NODE_TLS_REJECT_UNAUTHORIZED" ] && build_args="$build_args --build-arg NODE_TLS_REJECT_UNAUTHORIZED=$NODE_TLS_REJECT_UNAUTHORIZED"
+    [ -n "$GIT_SSL_NO_VERIFY" ] && build_args="$build_args --build-arg GIT_SSL_NO_VERIFY=$GIT_SSL_NO_VERIFY"
+    [ -n "$PIP_TRUSTED_HOST" ] && build_args="$build_args --build-arg PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST"
+    [ -n "$PIP_CERT" ] && build_args="$build_args --build-arg PIP_CERT=$PIP_CERT"
+
     local attempt=1
     while [ $attempt -le $((RETRY_COUNT + 1)) ]; do
         log_info "Building ${component} (attempt ${attempt}/$((RETRY_COUNT + 1)))..."
 
         local start_time=$(date +%s)
         if [ "$NO_CACHE" = true ]; then
-            if docker compose $profile_arg build "$component" --no-cache; then
+            if docker compose $profile_arg build $build_args "$component" --no-cache; then
                 local end_time=$(date +%s)
                 local duration=$((end_time - start_time))
                 log_success "${component} built in ${duration}s"
@@ -150,7 +173,7 @@ build_image() {
                 return 0
             fi
         else
-            if docker compose $profile_arg build "$component"; then
+            if docker compose $profile_arg build $build_args "$component"; then
                 local end_time=$(date +%s)
                 local duration=$((end_time - start_time))
                 log_success "${component} built in ${duration}s"
@@ -199,6 +222,95 @@ if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server
     fi
 else
     echo ">>> SSL certificates already exist"
+fi
+
+# ============================================================================
+# SSL INSPECTION DETECTION
+# ============================================================================
+# Detect corporate SSL inspection proxies that intercept HTTPS traffic.
+# If detected, automatically configure SSL bypass for web search features.
+
+SSL_INSPECTION_DETECTED=false
+ENV_FILE="$PROJECT_DIR/.env"
+
+detect_ssl_inspection() {
+    echo ""
+    echo ">>> Checking for SSL inspection/corporate proxy..."
+
+    # Test sites that are commonly used and should have valid certificates
+    local test_urls=(
+        "https://curl.se"
+        "https://pypi.org"
+        "https://registry.npmjs.org"
+        "https://duckduckgo.com"
+    )
+
+    local failures=0
+    local inspection_indicators=0
+
+    for url in "${test_urls[@]}"; do
+        # Try to connect and check certificate
+        local result=$(curl -sS --connect-timeout 5 --max-time 10 "$url" -o /dev/null -w "%{ssl_verify_result}" 2>&1)
+        local exit_code=$?
+
+        if [ $exit_code -ne 0 ]; then
+            ((failures++))
+
+            # Check for specific SSL errors indicating inspection
+            if echo "$result" | grep -qiE "(certificate|ssl|tls|verify|self.signed|unable to get local issuer)"; then
+                ((inspection_indicators++))
+                log_warning "SSL issue detected with $url"
+            fi
+        fi
+    done
+
+    # Also check if we can detect a corporate proxy certificate
+    # by comparing certificate issuers
+    local cert_check=$(curl -sS --connect-timeout 5 -v https://google.com 2>&1 | grep -i "issuer:" | head -1)
+    if echo "$cert_check" | grep -qiE "(zscaler|bluecoat|fortigate|paloalto|mcafee|symantec.*proxy|websense|barracuda|cisco.*umbrella|checkpoint)"; then
+        ((inspection_indicators++))
+        log_warning "Corporate proxy certificate detected: $cert_check"
+    fi
+
+    # Determine if SSL inspection is likely active
+    if [ $inspection_indicators -ge 1 ] || [ $failures -ge 2 ]; then
+        SSL_INSPECTION_DETECTED=true
+        log_warning "SSL inspection/corporate proxy detected!"
+        log_info "Configuring automatic SSL bypass for web search features..."
+
+        # Update .env file with SSL bypass setting (docker-compose reads this)
+        if [ -f "$ENV_FILE" ]; then
+            # Remove existing NODE_TLS_REJECT_UNAUTHORIZED line if present
+            grep -v "^NODE_TLS_REJECT_UNAUTHORIZED=" "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
+            mv "$ENV_FILE.tmp" "$ENV_FILE"
+        fi
+        echo "# Auto-added by build.sh - SSL inspection detected" >> "$ENV_FILE"
+        echo "NODE_TLS_REJECT_UNAUTHORIZED=0" >> "$ENV_FILE"
+
+        # Set environment variables for the build process
+        export NODE_TLS_REJECT_UNAUTHORIZED=0
+        export GIT_SSL_NO_VERIFY=true
+        export PIP_TRUSTED_HOST="pypi.org pypi.python.org files.pythonhosted.org"
+
+        log_success "SSL bypass configured in .env file. Web search will work through corporate proxy."
+    else
+        log_success "No SSL inspection detected. Standard SSL verification will be used."
+    fi
+}
+
+# Run SSL detection (can be skipped with --skip-ssl-check)
+SKIP_SSL_CHECK=false
+for arg in "$@"; do
+    if [ "$arg" = "--skip-ssl-check" ]; then
+        SKIP_SSL_CHECK=true
+        break
+    fi
+done
+
+if [ "$SKIP_SSL_CHECK" = false ]; then
+    detect_ssl_inspection
+else
+    log_info "Skipping SSL inspection check (--skip-ssl-check)"
 fi
 
 echo ""

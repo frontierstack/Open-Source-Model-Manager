@@ -2,6 +2,19 @@
 
 # koda CLI Installer (Remote)
 # Supports Linux, macOS, and Windows (via WSL or Git Bash)
+#
+# Corporate Proxy/SSL Configuration:
+#   Set these environment variables before running:
+#   - KODA_INSECURE=1         : Skip all SSL verification (use with caution)
+#   - KODA_CA_CERT=/path/cert : Use custom CA certificate for SSL
+#   - HTTPS_PROXY=http://...  : HTTP(S) proxy URL
+#   - HTTP_PROXY=http://...   : HTTP proxy URL
+#
+# Example for corporate environment:
+#   KODA_INSECURE=1 curl -sk https://localhost:3001/api/cli/install | bash
+#
+# Or with custom CA certificate:
+#   KODA_CA_CERT=/etc/ssl/corporate-ca.crt curl -sk https://localhost:3001/api/cli/install | bash
 
 set -e
 
@@ -10,9 +23,104 @@ API_URL="${KODA_API_URL:-https://localhost:3001}"
 INSTALL_DIR="$HOME/.local/bin"
 CLI_DIR="$HOME/.local/lib/koda-cli"
 
+# SSL/Proxy configuration
+KODA_INSECURE="${KODA_INSECURE:-0}"
+KODA_CA_CERT="${KODA_CA_CERT:-}"
+
+# Build curl options based on environment
+build_curl_opts() {
+    local opts="-s"
+
+    # Always add -k for self-signed certs (localhost)
+    if [[ "$API_URL" == *"localhost"* ]] || [[ "$API_URL" == *"127.0.0.1"* ]]; then
+        opts="$opts -k"
+    fi
+
+    # Full insecure mode for corporate proxy environments
+    if [ "$KODA_INSECURE" = "1" ]; then
+        opts="$opts -k"
+    fi
+
+    # Custom CA certificate
+    if [ -n "$KODA_CA_CERT" ] && [ -f "$KODA_CA_CERT" ]; then
+        opts="$opts --cacert $KODA_CA_CERT"
+    fi
+
+    # Proxy settings (curl respects HTTPS_PROXY/HTTP_PROXY automatically,
+    # but we can be explicit)
+    if [ -n "$HTTPS_PROXY" ]; then
+        opts="$opts --proxy $HTTPS_PROXY"
+    elif [ -n "$HTTP_PROXY" ]; then
+        opts="$opts --proxy $HTTP_PROXY"
+    fi
+
+    echo "$opts"
+}
+
+CURL_OPTS=$(build_curl_opts)
+
+# Function to download with retry and fallback
+download_file() {
+    local url="$1"
+    local output="$2"
+    local description="$3"
+
+    echo "  - $description"
+
+    # Try HTTPS first
+    if curl $CURL_OPTS "$url" -o "$output" 2>/dev/null; then
+        return 0
+    fi
+
+    # If HTTPS failed and we have an HTTPS URL, try HTTP fallback on port 3080
+    if [[ "$url" == https://* ]]; then
+        local http_url="${url/https:\/\//http://}"
+        http_url="${http_url/:3001/:3080}"
+
+        echo "    (Trying HTTP fallback...)"
+        if curl $CURL_OPTS "$http_url" -o "$output" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # Both failed - provide helpful error message
+    echo ""
+    echo "Error: Failed to download $description"
+    echo ""
+    echo "This may be caused by:"
+    echo "  1. Corporate SSL inspection/proxy intercepting HTTPS"
+    echo "  2. Network connectivity issues"
+    echo "  3. Server not running"
+    echo ""
+    echo "Try one of these solutions:"
+    echo ""
+    echo "  Option 1: Skip SSL verification (corporate proxy)"
+    echo "    KODA_INSECURE=1 curl -sk $API_URL/api/cli/install | bash"
+    echo ""
+    echo "  Option 2: Use custom CA certificate"
+    echo "    KODA_CA_CERT=/path/to/corporate-ca.crt curl -sk $API_URL/api/cli/install | bash"
+    echo ""
+    echo "  Option 3: Configure proxy"
+    echo "    HTTPS_PROXY=http://proxy:port curl -sk $API_URL/api/cli/install | bash"
+    echo ""
+    return 1
+}
+
 echo "=========================================="
 echo "  koda CLI Installer"
 echo "=========================================="
+echo ""
+
+# Show SSL configuration if non-default
+if [ "$KODA_INSECURE" = "1" ]; then
+    echo "Mode: Insecure (SSL verification disabled)"
+fi
+if [ -n "$KODA_CA_CERT" ]; then
+    echo "CA Certificate: $KODA_CA_CERT"
+fi
+if [ -n "$HTTPS_PROXY" ] || [ -n "$HTTP_PROXY" ]; then
+    echo "Proxy: ${HTTPS_PROXY:-$HTTP_PROXY}"
+fi
 echo ""
 
 # Detect OS
@@ -162,18 +270,12 @@ mkdir -p "$CLI_DIR/bin"
 echo ">>> Downloading CLI files from $API_URL..."
 
 # Download package.json
-echo "  - package.json"
-curl -sk "$API_URL/api/cli/files/package.json" -o "$CLI_DIR/package.json"
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to download package.json"
+if ! download_file "$API_URL/api/cli/files/package.json" "$CLI_DIR/package.json" "package.json"; then
     exit 1
 fi
 
 # Download koda.js
-echo "  - koda.js"
-curl -sk "$API_URL/api/cli/files/koda.js" -o "$CLI_DIR/bin/koda.js"
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to download koda.js"
+if ! download_file "$API_URL/api/cli/files/koda.js" "$CLI_DIR/bin/koda.js" "koda.js"; then
     exit 1
 fi
 

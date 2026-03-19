@@ -2,12 +2,46 @@
 """
 Scrapling web fetcher service - provides captcha-evading web scraping
 Called from Node.js via subprocess for web fetching operations
+
+Supports SSL inspection bypass for corporate proxy environments.
+Auto-configured by build.sh when corporate proxy is detected.
 """
 
 import sys
 import json
 import argparse
+import os
+import ssl
+import warnings
 from typing import Optional
+
+# ============================================================================
+# SSL INSPECTION BYPASS CONFIGURATION
+# ============================================================================
+# Check environment variable (set by docker-compose from build.sh detection)
+SSL_BYPASS_ENABLED = os.environ.get('NODE_TLS_REJECT_UNAUTHORIZED') == '0'
+
+# Apply SSL bypass if enabled
+if SSL_BYPASS_ENABLED:
+    # Disable SSL verification warnings
+    warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+
+    # Disable SSL verification globally for urllib3/requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Set environment variables for subprocess/requests
+    os.environ['PYTHONHTTPSVERIFY'] = '0'
+    os.environ['CURL_CA_BUNDLE'] = ''
+    os.environ['REQUESTS_CA_BUNDLE'] = ''
+
+    # Create unverified SSL context as default
+    try:
+        ssl._create_default_https_context = ssl._create_unverified_context
+    except AttributeError:
+        pass
+
+    print('[Scrapling] SSL bypass enabled for corporate proxy environment', file=sys.stderr)
 
 def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
               timeout: int = 30000, extract_links: bool = False) -> dict:
@@ -37,13 +71,19 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
         }
 
         try:
+            # Build fetcher options
+            fetcher_opts = {
+                'headless': headless,
+                'timeout': timeout // 1000,  # Convert to seconds
+                'block_images': True,  # Speed up loading
+            }
+
+            # Add SSL bypass if enabled (ignore certificate errors)
+            if SSL_BYPASS_ENABLED:
+                fetcher_opts['ignore_https_errors'] = True
+
             # Try StealthyFetcher first for captcha evasion
-            page = StealthyFetcher.fetch(
-                url,
-                headless=headless,
-                timeout=timeout // 1000,  # Convert to seconds
-                block_images=True,  # Speed up loading
-            )
+            page = StealthyFetcher.fetch(url, **fetcher_opts)
 
             # Extract text content
             # Get the main text content, removing scripts and styles

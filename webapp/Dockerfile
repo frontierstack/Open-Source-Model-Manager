@@ -1,5 +1,29 @@
 FROM node:18
 
+# Build arguments for corporate proxy/SSL environments
+# Pass these at build time: docker build --build-arg HTTP_PROXY=http://proxy:port ...
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY=localhost,127.0.0.1
+ARG NODE_TLS_REJECT_UNAUTHORIZED
+ARG PIP_TRUSTED_HOST
+ARG PIP_CERT
+
+# Set proxy environment variables if provided
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV no_proxy=${NO_PROXY}
+
+# Node.js SSL configuration (set to 0 to disable SSL verification in corporate environments)
+ENV NODE_TLS_REJECT_UNAUTHORIZED=${NODE_TLS_REJECT_UNAUTHORIZED:-1}
+
+# Python/pip SSL configuration
+ENV PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}
+ENV PIP_CERT=${PIP_CERT}
+
 WORKDIR /usr/src/app
 
 COPY package*.json ./
