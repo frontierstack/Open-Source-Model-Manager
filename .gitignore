@@ -7,8 +7,8 @@
 *.rst
 *.txt
 
-# Exception: commands.md is tracked
-!commands.md
+# Exception: COMMANDS.md is tracked
+!COMMANDS.md
 
 # ============================================================================
 # SENSITIVE DATA (DO NOT PUSH)

@@ -744,6 +744,43 @@ curl -sk https://localhost:3001
 docker compose restart webapp
 ```
 
+### SSL/TLS Corporate Proxy Issues
+
+Corporate networks often use SSL inspection (MITM proxies) that break certificate verification.
+
+**Symptoms:**
+- `curl: (60) SSL certificate problem: unable to get local issuer certificate`
+- `UNABLE_TO_VERIFY_LEAF_SIGNATURE` errors
+- Web search/URL fetch failures
+
+**Auto-detection:**
+```bash
+# build.sh automatically detects SSL inspection and configures bypass
+./build.sh
+```
+
+**Manual bypass:**
+```bash
+# Option 1: One-time (for current session)
+NODE_TLS_REJECT_UNAUTHORIZED=0 ./start.sh
+
+# Option 2: Persistent (add to .env)
+echo "NODE_TLS_REJECT_UNAUTHORIZED=0" >> .env
+docker compose up -d webapp
+
+# Option 3: Test manually in container
+docker compose exec webapp bash -c 'NODE_TLS_REJECT_UNAUTHORIZED=0 python3 /usr/src/app/services/scrapling_fetch.py --action fetch --url "https://example.com"'
+```
+
+**When bypass is active, logs show:**
+```
+[SSL] Corporate proxy bypass enabled - SSL verification disabled
+[Scrapling] SSL bypass enabled for corporate proxy environment
+[Scrapling] curl_cffi SSL verification disabled
+```
+
+**Note:** SSL bypass only activates when `NODE_TLS_REJECT_UNAUTHORIZED=0` is set. Normal environments use standard SSL verification.
+
 ### Download Failures
 
 **Check download logs:**
@@ -815,18 +852,45 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 
 ### Environment Variables
 
-```bash
-# Edit .env file
-nano .env
+The `.env` file in project root configures runtime behavior. It's gitignored and auto-created by `build.sh` when needed.
 
-# Add variables
-HUGGING_FACE_HUB_TOKEN=hf_xxx
-SESSION_SECRET=your-secret
+**Available Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HUGGING_FACE_HUB_TOKEN` | (none) | HuggingFace API token for model downloads |
+| `HOST_IP` | auto-detected | Host IP for container networking |
+| `HOST_MODELS_PATH` | auto-detected | Override models directory path (Windows+WSL) |
+| `NODE_TLS_REJECT_UNAUTHORIZED` | `1` | Set to `0` to bypass SSL verification (corporate proxies) |
+| `SESSION_SECRET` | auto-generated | Session encryption key |
+
+**Example .env files:**
+
+```bash
+# Minimal (most users)
+HUGGING_FACE_HUB_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+
+# Corporate network with SSL inspection
+HUGGING_FACE_HUB_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+NODE_TLS_REJECT_UNAUTHORIZED=0
+
+# Windows+WSL with custom paths
+HUGGING_FACE_HUB_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+HOST_MODELS_PATH=/mnt/d/models
 HOST_IP=192.168.1.100
 
-# Restart services to apply
-docker compose down
-docker compose up -d
+# Full example with all options
+HUGGING_FACE_HUB_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+NODE_TLS_REJECT_UNAUTHORIZED=0
+HOST_IP=192.168.1.100
+HOST_MODELS_PATH=/mnt/d/models
+SESSION_SECRET=my-custom-secret-key
+```
+
+**Applying changes:**
+```bash
+# After editing .env, restart services
+docker compose up -d webapp
 ```
 
 ### Database Backup
