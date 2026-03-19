@@ -74,6 +74,9 @@ try {
         } else {
             console.log('Scrapling Python module not available - using fallback');
         }
+    }).catch(error => {
+        console.log('Scrapling availability check failed:', error.message);
+        scraplingEnabled = false;
     });
 } catch (error) {
     console.log('Scrapling service not available:', error.message);

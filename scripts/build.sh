@@ -247,6 +247,7 @@ detect_ssl_inspection() {
 
     local failures=0
     local inspection_indicators=0
+    local service_failures=0
 
     for url in "${test_urls[@]}"; do
         # Try to connect and check certificate
@@ -272,8 +273,115 @@ detect_ssl_inspection() {
         log_warning "Corporate proxy certificate detected: $cert_check"
     fi
 
+    # ========================================
+    # Extended service-specific tests
+    # These test actual web search and API endpoints used by the application
+    # ========================================
+    echo ">>> Testing web search and API services..."
+
+    # Test 1: DuckDuckGo HTML search endpoint (actual search, not just homepage)
+    echo -n "    Testing DuckDuckGo search... "
+    local ddg_result=$(curl -sS --connect-timeout 10 --max-time 15 \
+        "https://html.duckduckgo.com/html/?q=test" \
+        -H "User-Agent: Mozilla/5.0" 2>&1)
+    local ddg_exit=$?
+    if [ $ddg_exit -ne 0 ]; then
+        ((service_failures++))
+        echo "FAILED"
+        if echo "$ddg_result" | grep -qiE "(certificate|ssl|tls|verify)"; then
+            ((inspection_indicators++))
+            log_warning "SSL issue with DuckDuckGo search"
+        fi
+    elif ! echo "$ddg_result" | grep -qi "result\|web-result\|links"; then
+        ((service_failures++))
+        echo "FAILED (no results)"
+        log_warning "DuckDuckGo search returned no results (possible block/SSL issue)"
+    else
+        echo "OK"
+    fi
+
+    # Test 2: HuggingFace API (model search)
+    echo -n "    Testing HuggingFace API... "
+    local hf_result=$(curl -sS --connect-timeout 10 --max-time 15 \
+        "https://huggingface.co/api/models?limit=1" 2>&1)
+    local hf_exit=$?
+    if [ $hf_exit -ne 0 ]; then
+        ((service_failures++))
+        echo "FAILED"
+        if echo "$hf_result" | grep -qiE "(certificate|ssl|tls|verify)"; then
+            ((inspection_indicators++))
+            log_warning "SSL issue with HuggingFace API"
+        fi
+    elif ! echo "$hf_result" | grep -q '"id"'; then
+        ((service_failures++))
+        echo "FAILED (invalid response)"
+        log_warning "HuggingFace API returned invalid response"
+    else
+        echo "OK"
+    fi
+
+    # Test 3: Brave Search (fallback search engine)
+    echo -n "    Testing Brave Search... "
+    local brave_result=$(curl -sS --connect-timeout 10 --max-time 15 \
+        "https://search.brave.com/search?q=test&source=web" \
+        -H "User-Agent: Mozilla/5.0" 2>&1)
+    local brave_exit=$?
+    if [ $brave_exit -ne 0 ]; then
+        ((service_failures++))
+        echo "FAILED"
+        if echo "$brave_result" | grep -qiE "(certificate|ssl|tls|verify)"; then
+            ((inspection_indicators++))
+            log_warning "SSL issue with Brave Search"
+        fi
+    elif ! echo "$brave_result" | grep -qi "result\|snippet\|search"; then
+        ((service_failures++))
+        echo "FAILED (no results)"
+        log_warning "Brave Search returned no results (possible block/SSL issue)"
+    else
+        echo "OK"
+    fi
+
+    # Test 4: Python curl_cffi (used by Scrapling) - only if Python is available
+    if command -v python3 &> /dev/null; then
+        echo -n "    Testing Python SSL (curl_cffi/requests)... "
+        local py_result=$(python3 -c "
+import sys
+try:
+    import urllib.request
+    urllib.request.urlopen('https://httpbin.org/get', timeout=10)
+    print('OK')
+except Exception as e:
+    if 'certificate' in str(e).lower() or 'ssl' in str(e).lower():
+        print('SSL_ERROR')
+    else:
+        print('FAILED: ' + str(e)[:50])
+" 2>&1)
+        if echo "$py_result" | grep -q "SSL_ERROR"; then
+            ((service_failures++))
+            ((inspection_indicators++))
+            echo "FAILED (SSL)"
+            log_warning "Python SSL verification failed"
+        elif echo "$py_result" | grep -q "FAILED"; then
+            ((service_failures++))
+            echo "$py_result"
+        elif echo "$py_result" | grep -q "OK"; then
+            echo "OK"
+        else
+            # Module not available or other issue
+            echo "SKIPPED"
+        fi
+    else
+        echo "    Testing Python SSL... SKIPPED (python3 not found)"
+    fi
+
+    # Summary of service tests
+    if [ $service_failures -gt 0 ]; then
+        log_warning "$service_failures web service(s) failed connectivity tests"
+    fi
+
     # Determine if SSL inspection is likely active
-    if [ $inspection_indicators -ge 1 ] || [ $failures -ge 2 ]; then
+    # Now includes service-specific failures in the decision
+    if [ $inspection_indicators -ge 1 ] || [ $failures -ge 2 ] || [ $service_failures -ge 2 ]; then
         SSL_INSPECTION_DETECTED=true
         log_warning "SSL inspection/corporate proxy detected!"
         log_info "Configuring automatic SSL bypass for web search features..."

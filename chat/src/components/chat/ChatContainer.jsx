@@ -599,7 +599,14 @@ export default function ChatContainer({
                     });
 
                     if (fetchResponse.ok) {
-                        const fetchData = await fetchResponse.json();
+                        let fetchData;
+                        try {
+                            fetchData = await fetchResponse.json();
+                        } catch (parseErr) {
+                            console.error('Failed to parse URL fetch response:', parseErr);
+                            showSnackbar('URL fetch returned invalid data, proceeding without fetched content', 'warning');
+                            fetchData = { results: [] };
+                        }
                         const successfulResults = fetchData.results?.filter(r => r.success) || [];
                         const failedResults = fetchData.results?.filter(r => !r.success) || [];
 
@@ -654,10 +661,22 @@ export default function ChatContainer({
                         if (failedResults.length > 0) {
                             console.warn('Some URLs failed to fetch:', failedResults.map(r => r.url));
                         }
+                    } else {
+                        // Handle non-OK HTTP responses
+                        const statusMsg = fetchResponse.status >= 500
+                            ? 'URL fetch service temporarily unavailable'
+                            : fetchResponse.status === 401
+                                ? 'Authentication required for URL fetch'
+                                : `URL fetch failed (HTTP ${fetchResponse.status})`;
+                        console.warn('URL fetch HTTP error:', fetchResponse.status);
+                        showSnackbar(`${statusMsg}, proceeding without fetched content`, 'warning');
                     }
                 } catch (error) {
                     console.error('URL fetch failed:', error);
-                    showSnackbar('URL fetch failed, proceeding without fetched content', 'warning');
+                    const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
+                        ? 'Network error - unable to reach URL fetch service'
+                        : 'URL fetch failed';
+                    showSnackbar(`${errorMsg}, proceeding without fetched content`, 'warning');
                 }
             }
         }
@@ -768,7 +787,14 @@ export default function ChatContainer({
                 });
 
                 if (searchResponse.ok) {
-                    const searchData = await searchResponse.json();
+                    let searchData;
+                    try {
+                        searchData = await searchResponse.json();
+                    } catch (parseErr) {
+                        console.error('Failed to parse web search response:', parseErr);
+                        showSnackbar('Web search returned invalid data, proceeding without results', 'warning');
+                        searchData = { results: [] };
+                    }
                     if (searchData.results && searchData.results.length > 0) {
                         searchResults = searchData.results;
 
@@ -813,11 +839,23 @@ export default function ChatContainer({
                         saveMessages(conversationId, messagesWithContext);
                     }
                 } else {
-                    console.warn('Web search returned non-OK status:', searchResponse.status);
+                    // Handle non-OK HTTP responses with user-friendly messages
+                    const statusMsg = searchResponse.status >= 500
+                        ? 'Web search service temporarily unavailable'
+                        : searchResponse.status === 401
+                            ? 'Authentication required for web search'
+                            : searchResponse.status === 429
+                                ? 'Web search rate limit reached'
+                                : `Web search failed (HTTP ${searchResponse.status})`;
+                    console.warn('Web search HTTP error:', searchResponse.status);
+                    showSnackbar(`${statusMsg}, proceeding without search results`, 'warning');
                 }
             } catch (error) {
                 console.error('Web search failed:', error);
-                showSnackbar('Web search failed, proceeding without search results', 'warning');
+                const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
+                    ? 'Network error - unable to reach web search service'
+                    : 'Web search failed';
+                showSnackbar(`${errorMsg}, proceeding without search results`, 'warning');
             }
         }
 
@@ -882,12 +920,35 @@ export default function ChatContainer({
             let inStreamError = null; // Track errors that occur mid-stream
             let lastFinishReason = null; // Track if response was cut off
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+            // Wrap stream reading in try-catch to handle network errors
+            try {
+                while (true) {
+                    let readResult;
+                    try {
+                        readResult = await reader.read();
+                    } catch (readError) {
+                        // Network error during stream read
+                        console.error('Stream read error:', readError);
+                        inStreamError = readError.name === 'AbortError'
+                            ? 'Request was cancelled'
+                            : 'Connection lost while streaming response';
+                        break;
+                    }
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
+                    const { done, value } = readResult;
+                    if (done) break;
+
+                    let decodedChunk;
+                    try {
+                        decodedChunk = decoder.decode(value, { stream: true });
+                    } catch (decodeError) {
+                        console.error('Decode error:', decodeError);
+                        inStreamError = 'Error decoding response data';
+                        break;
+                    }
+
+                    buffer += decodedChunk;
+                    const lines = buffer.split('\n');
 
                 // Keep the last potentially incomplete line in the buffer
                 buffer = lines.pop() || '';
@@ -1023,6 +1084,13 @@ export default function ChatContainer({
                             }
                         }
                     }
+                }
+            }
+            } catch (streamError) {
+                // Catch any unexpected errors during stream processing
+                console.error('Unexpected stream error:', streamError);
+                if (!inStreamError) {
+                    inStreamError = streamError.message || 'An error occurred while processing the response';
                 }
             }
 
@@ -1262,63 +1330,102 @@ export default function ChatContainer({
             let buffer = '';
             let tokenCount = 0;
             let lastFinishReason = null;
+            let inStreamError = null;
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+            // Wrap stream reading in try-catch to handle network errors
+            try {
+                while (true) {
+                    let readResult;
+                    try {
+                        readResult = await reader.read();
+                    } catch (readError) {
+                        console.error('Continuation stream read error:', readError);
+                        inStreamError = readError.name === 'AbortError'
+                            ? 'Request was cancelled'
+                            : 'Connection lost while streaming response';
+                        break;
+                    }
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
+                    const { done, value } = readResult;
+                    if (done) break;
 
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.slice(6).trim();
-                        if (data === '[DONE]') continue;
-                        if (!data) continue;
+                    let decodedChunk;
+                    try {
+                        decodedChunk = decoder.decode(value, { stream: true });
+                    } catch (decodeError) {
+                        console.error('Continuation decode error:', decodeError);
+                        inStreamError = 'Error decoding response data';
+                        break;
+                    }
 
-                        try {
-                            const parsed = JSON.parse(data);
-                            if (parsed.error) continue;
+                    buffer += decodedChunk;
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
 
-                            const delta = parsed.choices?.[0]?.delta;
-                            if (delta?.content) {
-                                assistantContent += delta.content;
-                                const thinkParsed = parseThinkTags(assistantContent);
-                                // Only update UI if still on same conversation
-                                const currentActiveId = useChatStore.getState().activeConversationId;
-                                if (currentActiveId === conversationId) {
-                                    setStreamingContent(thinkParsed.content);
-                                    if (thinkParsed.reasoning) {
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6).trim();
+                            if (data === '[DONE]') continue;
+                            if (!data) continue;
+
+                            try {
+                                const parsed = JSON.parse(data);
+                                if (parsed.error) {
+                                    inStreamError = typeof parsed.error === 'object'
+                                        ? parsed.error.message || JSON.stringify(parsed.error)
+                                        : parsed.error;
+                                    continue;
+                                }
+
+                                const delta = parsed.choices?.[0]?.delta;
+                                if (delta?.content) {
+                                    assistantContent += delta.content;
+                                    const thinkParsed = parseThinkTags(assistantContent);
+                                    // Only update UI if still on same conversation
+                                    const currentActiveId = useChatStore.getState().activeConversationId;
+                                    if (currentActiveId === conversationId) {
+                                        setStreamingContent(thinkParsed.content);
+                                        if (thinkParsed.reasoning) {
+                                            assistantReasoning = thinkParsed.reasoning;
+                                            setStreamingReasoning(assistantReasoning);
+                                        }
+                                    } else if (thinkParsed.reasoning) {
                                         assistantReasoning = thinkParsed.reasoning;
+                                    }
+                                    tokenCount++;
+                                }
+
+                                if (delta?.reasoning) {
+                                    assistantReasoning += delta.reasoning;
+                                    const currentActiveId = useChatStore.getState().activeConversationId;
+                                    if (currentActiveId === conversationId) {
                                         setStreamingReasoning(assistantReasoning);
                                     }
-                                } else if (thinkParsed.reasoning) {
-                                    assistantReasoning = thinkParsed.reasoning;
                                 }
-                                tokenCount++;
-                            }
 
-                            if (delta?.reasoning) {
-                                assistantReasoning += delta.reasoning;
-                                const currentActiveId = useChatStore.getState().activeConversationId;
-                                if (currentActiveId === conversationId) {
-                                    setStreamingReasoning(assistantReasoning);
+                                const finishReason = parsed.choices?.[0]?.finish_reason;
+                                if (finishReason) {
+                                    lastFinishReason = finishReason;
+                                    if (finishReason === 'length') {
+                                        showSnackbar('Response was cut off again. Click "Continue" to resume.', 'warning');
+                                    }
                                 }
+                            } catch (e) {
+                                // Ignore parse errors
                             }
-
-                            const finishReason = parsed.choices?.[0]?.finish_reason;
-                            if (finishReason) {
-                                lastFinishReason = finishReason;
-                                if (finishReason === 'length') {
-                                    showSnackbar('Response was cut off again. Click "Continue" to resume.', 'warning');
-                                }
-                            }
-                        } catch (e) {
-                            // Ignore parse errors
                         }
                     }
                 }
+            } catch (streamError) {
+                console.error('Unexpected continuation stream error:', streamError);
+                if (!inStreamError) {
+                    inStreamError = streamError.message || 'An error occurred while processing the response';
+                }
+            }
+
+            // If there was an error, throw it to be caught by the outer catch
+            if (inStreamError && !assistantContent.trim()) {
+                throw new Error(inStreamError);
             }
 
             const responseTime = Date.now() - startTime;
