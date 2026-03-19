@@ -7,33 +7,44 @@ Supports SSL inspection bypass for corporate proxy environments.
 Auto-configured by build.sh when corporate proxy is detected.
 """
 
+# ============================================================================
+# SSL INSPECTION BYPASS - MUST BE BEFORE ALL IMPORTS
+# ============================================================================
+# curl_cffi (used by Scrapling) reads env vars at import time, so we must
+# set these BEFORE importing anything that might trigger curl_cffi import
+import os
+
+SSL_BYPASS_ENABLED = os.environ.get('NODE_TLS_REJECT_UNAUTHORIZED') == '0'
+
+if SSL_BYPASS_ENABLED:
+    # Set environment variables BEFORE any other imports
+    # curl_cffi uses these to configure SSL verification
+    os.environ['PYTHONHTTPSVERIFY'] = '0'
+    os.environ['CURL_CA_BUNDLE'] = ''
+    os.environ['REQUESTS_CA_BUNDLE'] = ''
+    os.environ['SSL_CERT_FILE'] = ''
+    # For curl_cffi specifically
+    os.environ['CURL_SSL_NO_REVOKE'] = '1'
+
 import sys
 import json
 import argparse
-import os
 import ssl
 import warnings
 from typing import Optional
 
-# ============================================================================
-# SSL INSPECTION BYPASS CONFIGURATION
-# ============================================================================
-# Check environment variable (set by docker-compose from build.sh detection)
-SSL_BYPASS_ENABLED = os.environ.get('NODE_TLS_REJECT_UNAUTHORIZED') == '0'
-
-# Apply SSL bypass if enabled
+# Apply additional SSL bypass after imports
 if SSL_BYPASS_ENABLED:
     # Disable SSL verification warnings
     warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-    # Disable SSL verification globally for urllib3/requests
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-    # Set environment variables for subprocess/requests
-    os.environ['PYTHONHTTPSVERIFY'] = '0'
-    os.environ['CURL_CA_BUNDLE'] = ''
-    os.environ['REQUESTS_CA_BUNDLE'] = ''
+    # Disable SSL verification globally for urllib3/requests (if available)
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except ImportError:
+        pass
 
     # Create unverified SSL context as default
     try:
@@ -42,6 +53,20 @@ if SSL_BYPASS_ENABLED:
         pass
 
     print('[Scrapling] SSL bypass enabled for corporate proxy environment', file=sys.stderr)
+
+    # Monkey-patch curl_cffi to disable SSL verification by default
+    try:
+        import curl_cffi.requests
+        _original_request = curl_cffi.requests.Session.request
+
+        def _patched_request(self, method, url, **kwargs):
+            kwargs.setdefault('verify', False)
+            return _original_request(self, method, url, **kwargs)
+
+        curl_cffi.requests.Session.request = _patched_request
+        print('[Scrapling] curl_cffi SSL verification disabled', file=sys.stderr)
+    except Exception as e:
+        print(f'[Scrapling] Warning: Could not patch curl_cffi: {e}', file=sys.stderr)
 
 def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
               timeout: int = 30000, extract_links: bool = False) -> dict:
@@ -108,8 +133,13 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
         except Exception as stealth_err:
             # Fall back to basic Fetcher if StealthyFetcher fails
             try:
+                # Build fetcher options for fallback
+                fallback_opts = {'timeout': timeout // 1000}
+                if SSL_BYPASS_ENABLED:
+                    fallback_opts['verify'] = False
+
                 fetcher = Fetcher()
-                page = fetcher.get(url, timeout=timeout // 1000)
+                page = fetcher.get(url, **fallback_opts)
                 text_content = page.get_all_text(separator='\n', strip=True)
                 result['content'] = text_content[:50000] if text_content else ''
 
@@ -162,8 +192,13 @@ def search_and_fetch(query: str, max_results: int = 5) -> dict:
         encoded_query = urllib.parse.quote_plus(query)
         search_url = f'https://html.duckduckgo.com/html/?q={encoded_query}'
 
+        # Build fetcher options
+        fetcher_opts = {'timeout': 15}
+        if SSL_BYPASS_ENABLED:
+            fetcher_opts['verify'] = False
+
         fetcher = Fetcher()
-        page = fetcher.get(search_url, timeout=15)
+        page = fetcher.get(search_url, **fetcher_opts)
 
         results = []
         for result in page.css('.result'):

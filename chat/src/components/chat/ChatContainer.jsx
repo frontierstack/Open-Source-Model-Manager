@@ -606,10 +606,19 @@ export default function ChatContainer({
                         if (successfulResults.length > 0) {
                             urlFetchResults = successfulResults;
 
-                            // Create a summary for memory persistence
+                            // Create a detailed summary for memory persistence (used in follow-up questions)
+                            // Include truncated content so follow-ups have context
                             urlContextSummary = successfulResults
-                                .map((r, i) => `${i + 1}. "${r.title || 'Untitled'}" - ${r.url}`)
-                                .join('; ');
+                                .map((r, i) => {
+                                    let summary = `[${r.title || 'Untitled'}](${r.url})`;
+                                    if (r.content) {
+                                        // Include first 1500 chars of content for follow-up context
+                                        const contentPreview = r.content.slice(0, 1500).trim();
+                                        summary += `\n${contentPreview}${r.content.length > 1500 ? '...' : ''}`;
+                                    }
+                                    return summary;
+                                })
+                                .join('\n\n---\n\n');
 
                             // Format fetched content for the model
                             const urlContext = successfulResults
