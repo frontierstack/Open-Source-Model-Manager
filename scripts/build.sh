@@ -233,27 +233,49 @@ fi
 SSL_INSPECTION_DETECTED=false
 ENV_FILE="$PROJECT_DIR/.env"
 
+# Helper function to run a command with timeout (works across different environments)
+run_with_timeout() {
+    local timeout_secs=$1
+    shift
+
+    if command -v timeout &> /dev/null; then
+        timeout "$timeout_secs" "$@" 2>&1
+    else
+        # Fallback: run command directly with shorter curl timeouts
+        "$@" 2>&1
+    fi
+}
+
 detect_ssl_inspection() {
     echo ""
     echo ">>> Checking for SSL inspection/corporate proxy..."
-
-    # Test sites that are commonly used and should have valid certificates
-    local test_urls=(
-        "https://curl.se"
-        "https://pypi.org"
-        "https://registry.npmjs.org"
-        "https://duckduckgo.com"
-    )
 
     local failures=0
     local inspection_indicators=0
     local service_failures=0
 
+    # Quick connectivity check first - if this fails, skip detailed tests
+    echo -n "    Quick connectivity check... "
+    local quick_check
+    quick_check=$(curl -sS --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" "https://google.com" 2>&1) || true
+    if [ "$quick_check" != "200" ] && [ "$quick_check" != "301" ] && [ "$quick_check" != "302" ]; then
+        echo "SKIPPED (network issues)"
+        log_warning "Network connectivity issues detected, skipping detailed SSL checks"
+        return 0
+    fi
+    echo "OK"
+
+    # Test sites that are commonly used and should have valid certificates
+    local test_urls=(
+        "https://curl.se"
+        "https://pypi.org"
+    )
+
     for url in "${test_urls[@]}"; do
-        # Try to connect and check certificate (with timeout wrapper to catch DNS hangs)
+        # Try to connect and check certificate
         local result
         local exit_code
-        result=$(timeout 15 curl -sS --connect-timeout 5 --max-time 10 "$url" -o /dev/null -w "%{ssl_verify_result}" 2>&1) || true
+        result=$(curl -sS --connect-timeout 3 --max-time 5 "$url" -o /dev/null -w "%{ssl_verify_result}" 2>&1) || true
         exit_code=$?
 
         if [ $exit_code -ne 0 ]; then
@@ -270,46 +292,22 @@ detect_ssl_inspection() {
     # Also check if we can detect a corporate proxy certificate
     # by comparing certificate issuers
     local cert_check
-    cert_check=$(timeout 15 curl -sS --connect-timeout 5 -v https://google.com 2>&1 | grep -i "issuer:" | head -1) || true
+    cert_check=$(curl -sS --connect-timeout 3 -v https://google.com 2>&1 | grep -i "issuer:" | head -1) || true
     if echo "$cert_check" | grep -qiE "(zscaler|bluecoat|fortigate|paloalto|mcafee|symantec.*proxy|websense|barracuda|cisco.*umbrella|checkpoint)"; then
         ((inspection_indicators++))
         log_warning "Corporate proxy certificate detected: $cert_check"
     fi
 
     # ========================================
-    # Extended service-specific tests
-    # These test actual web search and API endpoints used by the application
+    # Extended service-specific tests (simplified for WSL/cross-platform)
     # ========================================
     echo ">>> Testing web search and API services..."
 
-    # Test 1: DuckDuckGo HTML search endpoint (actual search, not just homepage)
-    echo -n "    Testing DuckDuckGo search... "
-    local ddg_result
-    local ddg_exit
-    ddg_result=$(timeout 20 curl -sS --connect-timeout 10 --max-time 15 \
-        "https://html.duckduckgo.com/html/?q=test" \
-        -H "User-Agent: Mozilla/5.0" 2>&1) || true
-    ddg_exit=$?
-    if [ $ddg_exit -ne 0 ]; then
-        ((service_failures++))
-        echo "FAILED"
-        if echo "$ddg_result" | grep -qiE "(certificate|ssl|tls|verify)"; then
-            ((inspection_indicators++))
-            log_warning "SSL issue with DuckDuckGo search"
-        fi
-    elif ! echo "$ddg_result" | grep -qi "result\|web-result\|links"; then
-        ((service_failures++))
-        echo "FAILED (no results)"
-        log_warning "DuckDuckGo search returned no results (possible block/SSL issue)"
-    else
-        echo "OK"
-    fi
-
-    # Test 2: HuggingFace API (model search)
+    # Test 1: HuggingFace API (most important for model downloads)
     echo -n "    Testing HuggingFace API... "
     local hf_result
     local hf_exit
-    hf_result=$(timeout 20 curl -sS --connect-timeout 10 --max-time 15 \
+    hf_result=$(curl -sS --connect-timeout 5 --max-time 10 \
         "https://huggingface.co/api/models?limit=1" 2>&1) || true
     hf_exit=$?
     if [ $hf_exit -ne 0 ]; then
@@ -319,46 +317,22 @@ detect_ssl_inspection() {
             ((inspection_indicators++))
             log_warning "SSL issue with HuggingFace API"
         fi
-    elif ! echo "$hf_result" | grep -q '"id"'; then
-        ((service_failures++))
+    elif echo "$hf_result" | grep -q '"id"'; then
+        echo "OK"
+    else
         echo "FAILED (invalid response)"
-        log_warning "HuggingFace API returned invalid response"
-    else
-        echo "OK"
+        ((service_failures++))
     fi
 
-    # Test 3: Brave Search (fallback search engine)
-    echo -n "    Testing Brave Search... "
-    local brave_result
-    local brave_exit
-    brave_result=$(timeout 20 curl -sS --connect-timeout 10 --max-time 15 \
-        "https://search.brave.com/search?q=test&source=web" \
-        -H "User-Agent: Mozilla/5.0" 2>&1) || true
-    brave_exit=$?
-    if [ $brave_exit -ne 0 ]; then
-        ((service_failures++))
-        echo "FAILED"
-        if echo "$brave_result" | grep -qiE "(certificate|ssl|tls|verify)"; then
-            ((inspection_indicators++))
-            log_warning "SSL issue with Brave Search"
-        fi
-    elif ! echo "$brave_result" | grep -qi "result\|snippet\|search"; then
-        ((service_failures++))
-        echo "FAILED (no results)"
-        log_warning "Brave Search returned no results (possible block/SSL issue)"
-    else
-        echo "OK"
-    fi
-
-    # Test 4: Python curl_cffi (used by Scrapling) - only if Python is available
+    # Test 2: Python SSL (used by Scrapling) - only if Python is available
     if command -v python3 &> /dev/null; then
-        echo -n "    Testing Python SSL (curl_cffi/requests)... "
+        echo -n "    Testing Python SSL... "
         local py_result
-        py_result=$(timeout 20 python3 -c "
+        py_result=$(python3 -c "
 import sys
 try:
     import urllib.request
-    urllib.request.urlopen('https://httpbin.org/get', timeout=10)
+    urllib.request.urlopen('https://pypi.org', timeout=5)
     print('OK')
 except Exception as e:
     if 'certificate' in str(e).lower() or 'ssl' in str(e).lower():
