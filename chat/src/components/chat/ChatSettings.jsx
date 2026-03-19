@@ -33,6 +33,7 @@ export default function ChatSettings({
     onDeleteSystemPrompt,
     theme,
     onThemeChange,
+    contextSize = 4096,
 }) {
     const [activeTab, setActiveTab] = useState('chat');
     const [editingPrompt, setEditingPrompt] = useState(null);
@@ -43,7 +44,7 @@ export default function ChatSettings({
 
     const {
         temperature = 0.7,
-        maxTokens = 2048,
+        maxTokens = contextSize,  // Default to model's context window
         systemPromptId = null,
         topP = 1.0,
         frequencyPenalty = 0,
@@ -130,12 +131,13 @@ export default function ChatSettings({
 
     if (!open) return null;
 
+    // Presets use percentages of the model's context window
     const presets = [
         {
             label: 'Precise',
             icon: Target,
             temperature: 0.2,
-            maxTokens: 1024,
+            maxTokens: Math.floor(contextSize * 0.5),  // 50% of context
             topP: 0.9,
             description: 'Focused, deterministic responses'
         },
@@ -143,7 +145,7 @@ export default function ChatSettings({
             label: 'Balanced',
             icon: Zap,
             temperature: 0.7,
-            maxTokens: 2048,
+            maxTokens: Math.floor(contextSize * 0.75), // 75% of context
             topP: 1.0,
             description: 'Good for general tasks'
         },
@@ -151,7 +153,7 @@ export default function ChatSettings({
             label: 'Creative',
             icon: Sparkles,
             temperature: 1.0,
-            maxTokens: 4096,
+            maxTokens: contextSize,                    // Full context
             topP: 1.0,
             description: 'Imaginative, varied outputs'
         },
@@ -159,7 +161,7 @@ export default function ChatSettings({
             label: 'Code',
             icon: Code,
             temperature: 0.1,
-            maxTokens: 4096,
+            maxTokens: contextSize,                    // Full context for code
             topP: 0.95,
             description: 'Precise code generation'
         },

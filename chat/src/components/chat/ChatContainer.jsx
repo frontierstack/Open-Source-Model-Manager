@@ -873,7 +873,7 @@ export default function ChatContainer({
                 messages: apiMessages,
                 temperature: settings.temperature,
                 top_p: settings.topP,
-                max_tokens: settings.maxTokens,
+                max_tokens: settings.maxTokens || selectedModelContextSize,  // Use context size if not explicitly set
                 stream: true,
                 conversationId: conversationId, // Include for background streaming support
             };
@@ -1306,7 +1306,7 @@ export default function ChatContainer({
                 messages: apiMessages,
                 temperature: settings.temperature,
                 top_p: settings.topP,
-                max_tokens: settings.maxTokens,
+                max_tokens: settings.maxTokens || selectedModelContextSize,  // Use context size if not explicitly set
                 stream: true,
             };
 
@@ -1618,6 +1618,7 @@ export default function ChatContainer({
                 onDeleteSystemPrompt={handleDeleteSystemPrompt}
                 theme={theme}
                 onThemeChange={setTheme}
+                contextSize={selectedModelContextSize}
             />
         </div>
     );

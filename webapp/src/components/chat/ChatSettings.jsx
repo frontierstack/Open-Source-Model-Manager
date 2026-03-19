@@ -34,6 +34,7 @@ export default function ChatSettings({
     systemPrompts,
     onSaveSystemPrompt,
     onDeleteSystemPrompt,
+    contextSize = 4096,
 }) {
     const [activeTab, setActiveTab] = useState(0);
     const [newPromptName, setNewPromptName] = useState('');
@@ -45,7 +46,7 @@ export default function ChatSettings({
     const {
         temperature = 0.7,
         topP = 1.0,
-        maxTokens = 2048,
+        maxTokens = contextSize,  // Default to model's context window
         systemPromptId = null,
     } = settings;
 
@@ -298,21 +299,22 @@ export default function ChatSettings({
                     <Box>
                         <Typography variant="body2" sx={{ mb: 1.5 }}>Quick Presets</Typography>
                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                            {/* Presets use percentages of the model's context window */}
                             <PresetButton
                                 label="Precise"
-                                onClick={() => onUpdateSettings({ temperature: 0.2, topP: 0.9, maxTokens: 1024 })}
+                                onClick={() => onUpdateSettings({ temperature: 0.2, topP: 0.9, maxTokens: Math.floor(contextSize * 0.5) })}
                             />
                             <PresetButton
                                 label="Balanced"
-                                onClick={() => onUpdateSettings({ temperature: 0.7, topP: 1.0, maxTokens: 2048 })}
+                                onClick={() => onUpdateSettings({ temperature: 0.7, topP: 1.0, maxTokens: Math.floor(contextSize * 0.75) })}
                             />
                             <PresetButton
                                 label="Creative"
-                                onClick={() => onUpdateSettings({ temperature: 1.0, topP: 1.0, maxTokens: 4096 })}
+                                onClick={() => onUpdateSettings({ temperature: 1.0, topP: 1.0, maxTokens: contextSize })}
                             />
                             <PresetButton
                                 label="Code"
-                                onClick={() => onUpdateSettings({ temperature: 0.1, topP: 0.95, maxTokens: 4096 })}
+                                onClick={() => onUpdateSettings({ temperature: 0.1, topP: 0.95, maxTokens: contextSize })}
                             />
                         </Box>
                     </Box>

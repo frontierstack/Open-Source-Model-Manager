@@ -20,11 +20,12 @@ export const useChatStore = create(
         chunkingInfo: null, // { hasMore, processedChunks, totalChunks, remainingTokens }
 
         // Settings
+        // maxTokens: null means "use model's context window" (dynamic)
         settings: {
             model: null,
             temperature: 0.7,
             topP: 1.0,
-            maxTokens: 2048,
+            maxTokens: null,  // null = use model's context window dynamically
             webSearchEnabled: false,
             systemPromptId: null,
         },

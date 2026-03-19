@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import { useChatStore } from '../../stores/useChatStore';
 import ChatHeader from './ChatHeader';
@@ -58,6 +58,14 @@ export default function ChatContainer({
         clearAttachments,
         updateSettings,
     } = useChatStore();
+
+    // Calculate selected model's context size dynamically
+    const selectedModelContextSize = useMemo(() => {
+        if (!settings.model || !models) return 4096; // Default fallback
+        const model = models.find(m => m.name === settings.model);
+        // Check various possible properties for context size
+        return model?.contextSize || model?.context_size || model?.config?.contextSize || model?.config?.maxModelLen || 4096;
+    }, [settings.model, models]);
 
     // Load conversations and system prompts on mount
     useEffect(() => {
@@ -415,7 +423,7 @@ export default function ChatContainer({
                     model: settings.model,
                     messages: apiMessages,
                     temperature: settings.temperature,
-                    max_tokens: settings.maxTokens,
+                    max_tokens: settings.maxTokens || selectedModelContextSize,  // Use context size if not explicitly set
                     stream: true,
                     conversationId, // Include for continuation support
                 }),
@@ -676,6 +684,7 @@ export default function ChatContainer({
                 systemPrompts={systemPrompts}
                 onSaveSystemPrompt={handleSaveSystemPrompt}
                 onDeleteSystemPrompt={handleDeleteSystemPrompt}
+                contextSize={selectedModelContextSize}
             />
         </Box>
     );
