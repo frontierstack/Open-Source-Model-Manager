@@ -8377,6 +8377,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
+        // Disable timeouts for SSE streaming - model responses can take minutes
+        // Node.js default is 2 minutes which kills long-running streams
+        req.setTimeout(0);
+        res.setTimeout(0);
+        if (req.socket) req.socket.setTimeout(0);
+
         // =====================================================================
         // MAP-REDUCE PROCESSING PATH
         // =====================================================================
@@ -10925,6 +10931,11 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             res.setHeader('Content-Type', response.headers['content-type'] || 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
+
+            // Disable timeouts for streaming responses
+            req.setTimeout(0);
+            res.setTimeout(0);
+            if (req.socket) req.socket.setTimeout(0);
 
             // Forward other response headers (excluding hop-by-hop headers)
             const headersToSkip = ['transfer-encoding', 'content-length', 'connection', 'keep-alive', 'content-type', 'cache-control'];

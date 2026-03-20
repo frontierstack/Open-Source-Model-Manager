@@ -50,7 +50,7 @@ export default function ChatSettings({
     const {
         temperature = 0.7,
         maxTokens = contextSize,  // Default to model's context window
-        systemPromptId = null,
+        selectedSystemPromptId = null,
         topP = 1.0,
         frequencyPenalty = 0,
         presencePenalty = 0,
@@ -308,8 +308,8 @@ export default function ChatSettings({
         });
         if (confirmed) {
             await onDeleteSystemPrompt?.(promptId);
-            if (systemPromptId === promptId) {
-                onUpdateSettings({ systemPromptId: null });
+            if (selectedSystemPromptId === promptId) {
+                onUpdateSettings({ selectedSystemPromptId: null });
             }
         }
     };
@@ -370,8 +370,8 @@ export default function ChatSettings({
                                 </label>
                                 <div className="relative">
                                     <select
-                                        value={systemPromptId || ''}
-                                        onChange={(e) => onUpdateSettings({ systemPromptId: e.target.value || null })}
+                                        value={selectedSystemPromptId || ''}
+                                        onChange={(e) => onUpdateSettings({ selectedSystemPromptId: e.target.value || null })}
                                         className="w-full px-3 py-2 bg-dark-800/80 border border-white/10 rounded-lg text-dark-200 text-xs appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
                                     >
                                         <option value="">None (default behavior)</option>
@@ -596,22 +596,22 @@ export default function ChatSettings({
                                             <div
                                                 key={prompt.id}
                                                 className={`group flex items-start justify-between p-2.5 rounded-lg border transition-all ${
-                                                    systemPromptId === prompt.id
+                                                    selectedSystemPromptId === prompt.id
                                                         ? 'bg-primary-500/10 border-primary-500/30'
                                                         : 'bg-dark-800/50 border-white/5 hover:border-white/10'
                                                 }`}
                                             >
                                                 <div
                                                     className="flex-1 min-w-0 cursor-pointer"
-                                                    onClick={() => onUpdateSettings({ systemPromptId: prompt.id })}
+                                                    onClick={() => onUpdateSettings({ selectedSystemPromptId: prompt.id })}
                                                 >
                                                     <div className="flex items-center gap-1.5">
                                                         <span className={`text-xs font-medium ${
-                                                            systemPromptId === prompt.id ? 'text-primary-300' : 'text-dark-200'
+                                                            selectedSystemPromptId === prompt.id ? 'text-primary-300' : 'text-dark-200'
                                                         }`}>
                                                             {prompt.name || prompt.id}
                                                         </span>
-                                                        {systemPromptId === prompt.id && (
+                                                        {selectedSystemPromptId === prompt.id && (
                                                             <span className="text-[10px] bg-primary-500/20 text-primary-400 px-1.5 py-0.5 rounded">
                                                                 Active
                                                             </span>
