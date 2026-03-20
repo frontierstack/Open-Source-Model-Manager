@@ -103,6 +103,13 @@ export default function ChatSettings({
             description: 'Full width messages',
             preview: { userAlign: 'right', assistantAlign: 'left', width: 'full' }
         },
+        {
+            value: 'wide-centered',
+            label: 'Wide Centered',
+            icon: AlignCenter,
+            description: 'Full width, centered',
+            preview: { userAlign: 'center', assistantAlign: 'center', width: 'full' }
+        },
     ];
 
     // Font options with resolution presets
@@ -165,9 +172,9 @@ export default function ChatSettings({
         { value: 'cascadiacode', label: 'Cascadia Code', category: 'mono' },
         { value: 'victormono', label: 'Victor Mono', category: 'mono' },
         { value: 'geistmono', label: 'Geist Mono', category: 'mono' },
-        { value: 'monaspace', label: 'Monaspace', category: 'mono' },
+        { value: 'sourcecodepro', label: 'Source Code Pro', category: 'mono' },
         { value: 'intelone', label: 'Intel One Mono', category: 'mono' },
-        { value: 'commitmono', label: 'Commit Mono', category: 'mono' },
+        { value: 'inconsolata', label: 'Inconsolata', category: 'mono' },
         { value: 'martianmono', label: 'Martian Mono', category: 'mono' },
     ];
 
@@ -223,13 +230,12 @@ export default function ChatSettings({
         // Standard
         { value: 'dark', label: 'Dark', icon: Moon, description: 'Default dark theme' },
         { value: 'light', label: 'Light', icon: Sun, description: 'Clean white theme' },
-        { value: 'obsidian', label: 'Obsidian', icon: Moon, description: 'Pure black OLED' },
         // Nature
         { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Deep blue theme' },
         { value: 'forest', label: 'Forest', icon: Sparkles, description: 'Natural greens' },
         { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm orange tones' },
         { value: 'rose', label: 'Rose', icon: Sparkles, description: 'Soft pink theme' },
-        { value: 'aurora', label: 'Aurora', icon: Sparkles, description: 'Northern lights' },
+        { value: 'jade', label: 'Jade', icon: Sparkles, description: 'Rich deep green' },
         { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Deep night blue' },
         { value: 'evergreen', label: 'Evergreen', icon: Sparkles, description: 'Deep forest greens' },
         { value: 'mint', label: 'Mint', icon: Sparkles, description: 'Fresh green teal' },
@@ -240,25 +246,26 @@ export default function ChatSettings({
         { value: 'coffee', label: 'Coffee', icon: Moon, description: 'Warm brown tones' },
         { value: 'ember', label: 'Ember', icon: Zap, description: 'Warm red orange' },
         { value: 'copper', label: 'Copper', icon: Sparkles, description: 'Warm metallic' },
+        { value: 'amber', label: 'Amber', icon: Sun, description: 'Warm golden amber' },
         // Neutral
         { value: 'slate', label: 'Slate', icon: Moon, description: 'Blue-gray neutral' },
         { value: 'graphite', label: 'Graphite', icon: Moon, description: 'Dark neutral gray' },
+        { value: 'storm', label: 'Storm', icon: Moon, description: 'Dark blue-gray moody' },
         // Classic Dev
         { value: 'nord', label: 'Nord', icon: Moon, description: 'Arctic palette' },
         { value: 'solarized', label: 'Solarized', icon: Sun, description: 'Solarized Dark' },
         { value: 'gruvbox', label: 'Gruvbox', icon: Moon, description: 'Retro groove' },
         { value: 'dracula', label: 'Dracula', icon: Moon, description: 'Dark theme' },
-        { value: 'monokai', label: 'Monokai', icon: Code, description: 'Sublime classic' },
+        { value: 'sapphire', label: 'Sapphire', icon: Moon, description: 'Deep blue premium' },
         { value: 'onedark', label: 'One Dark', icon: Moon, description: 'Atom inspired' },
         { value: 'tokyo', label: 'Tokyo Night', icon: Moon, description: 'Neon city' },
-        { value: 'catppuccin', label: 'Catppuccin', icon: Sparkles, description: 'Pastel colors' },
-        { value: 'palenight', label: 'Palenight', icon: Moon, description: 'Material dark' },
         // Vibrant
         { value: 'matrix', label: 'Matrix', icon: Code, description: 'Hacker terminal' },
         { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon vibes' },
         { value: 'synthwave', label: 'Synthwave', icon: Zap, description: '80s retro' },
         { value: 'vaporwave', label: 'Vaporwave', icon: Sparkles, description: 'Aesthetic pink' },
         { value: 'neonoir', label: 'Neo Noir', icon: Moon, description: 'Dark neon' },
+        { value: 'crimson', label: 'Crimson', icon: Zap, description: 'Deep rich red' },
     ];
 
     const currentTheme = theme || 'system';

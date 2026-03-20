@@ -883,7 +883,7 @@ export default function ChatContainer({
                 messages: apiMessages,
                 temperature: settings.temperature,
                 top_p: settings.topP,
-                max_tokens: settings.maxTokens || selectedModelContextSize,  // Use context size if not explicitly set
+                max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
                 conversationId: conversationId, // Include for background streaming support
             };
@@ -1056,6 +1056,12 @@ export default function ChatContainer({
                                 }
                             }
 
+                            // Handle auto-continuation events (server auto-continues when response hits length limit)
+                            if (parsed.type === 'auto_continuation') {
+                                setProcessingStatus('generating', `Auto-continuing response (${parsed.continuation}/${parsed.maxContinuations})...`);
+                                continue;
+                            }
+
                             // Handle continuation info (content was split due to context limits)
                             if (parsed.continuation?.hasMore) {
                                 const cont = parsed.continuation;
@@ -1084,8 +1090,19 @@ export default function ChatContainer({
                             if (finishReason) {
                                 lastFinishReason = finishReason;
                                 if (finishReason === 'length') {
-                                    showSnackbar('Response was cut off due to length limit. Click "Continue" to resume.', 'warning');
+                                    const maxReached = parsed.autoContinuation?.maxReached;
+                                    showSnackbar(
+                                        maxReached
+                                            ? 'Response reached max auto-continuations. Click "Continue" to resume.'
+                                            : 'Response was cut off due to length limit. Click "Continue" to resume.',
+                                        'warning'
+                                    );
                                 }
+                            }
+
+                            // Log auto-continuation summary
+                            if (parsed.autoContinuation) {
+                                console.log(`[Chat] Response used ${parsed.autoContinuation.continuations} auto-continuation(s)`);
                             }
                         } catch (e) {
                             // Only log if it's not a JSON parse error for partial data
@@ -1316,7 +1333,7 @@ export default function ChatContainer({
                 messages: apiMessages,
                 temperature: settings.temperature,
                 top_p: settings.topP,
-                max_tokens: settings.maxTokens || selectedModelContextSize,  // Use context size if not explicitly set
+                max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
             };
 

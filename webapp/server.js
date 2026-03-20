@@ -8118,8 +8118,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
 
         // Reserve space for response (default 20% of context or effectiveMaxTokens if specified)
-        const responseReserve = effectiveMaxTokens || Math.floor(contextSize * 0.2);
-        const availableContextForInput = contextSize - responseReserve;
+        // Ensure minimum 2048 tokens for response so small context windows still get useful replies
+        const responseReserve = effectiveMaxTokens || Math.max(2048, Math.floor(contextSize * 0.2));
+        const availableContextForInput = Math.max(512, contextSize - responseReserve);
 
         // Smart content chunking - use map-reduce for large content
         let contentTruncated = false;
@@ -8489,26 +8490,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
 
         // =====================================================================
-        // NORMAL STREAMING PATH
+        // NORMAL STREAMING PATH (with automatic continuation)
         // =====================================================================
-        const requestBody = {
-            messages: chatMessages,
-            temperature: temperature || 0.7,
-            top_p: effectiveTopP,
-            stream: true // Enable streaming from the model
-        };
-
-        if (effectiveMaxTokens) {
-            requestBody.max_tokens = effectiveMaxTokens;
-        }
-
-        // Make streaming request to model instance
-        const response = await axios({
-            method: 'post',
-            url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
-            data: requestBody,
-            responseType: 'stream'
-        });
+        const MAX_AUTO_CONTINUATIONS = 5; // Safety cap to prevent infinite loops
+        const CONTINUATION_CONTEXT_CHARS = 2000; // ~500 tokens of tail context for continuations
 
         let fullResponse = '';
         let fullReasoning = '';
@@ -8516,6 +8501,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let promptTokens = 0;
         let completionTokens = 0;
         let clientConnected = true;
+        let continuationCount = 0;
 
         // Track this streaming job for background processing
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
@@ -8529,272 +8515,298 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 startTime: Date.now(),
                 model: targetModel,
                 clientConnected: true,
-                inputMessages: inputMessages // Save for reconstructing message on completion
+                inputMessages: inputMessages
             });
         }
 
-        // Process the stream
-        response.data.on('data', async (chunk) => {
-            try {
-                const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+        // Helper: stream one request to the model and return the finish_reason
+        const streamOneRequest = (requestMessages, maxTokens) => {
+            return new Promise(async (resolve, reject) => {
+                let lastFinishReason = 'stop';
 
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.slice(6);
-
-                        // Check for [DONE] marker
-                        if (data === '[DONE]') {
-
-                            // Save response to conversation if client disconnected (background completion)
-                            if (!clientConnected && streamingConversationId && fullResponse) {
-                                try {
-                                    // Load existing messages and add the assistant response
-                                    const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
-                                    const assistantMessage = {
-                                        id: crypto.randomUUID(),
-                                        role: 'assistant',
-                                        content: fullResponse,
-                                        reasoning: fullReasoning || undefined,
-                                        timestamp: new Date().toISOString(),
-                                        responseTime: Date.now() - activeStreamingJobs.get(streamingConversationId)?.startTime,
-                                        tokenCount: completionTokens,
-                                        backgroundCompleted: true // Mark that this was completed in background
-                                    };
-                                    conversationMsgs.push(assistantMessage);
-                                    await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
-                                    console.log(`[Chat Stream] Background response saved to conversation ${streamingConversationId}`);
-                                } catch (saveErr) {
-                                    console.error(`[Chat Stream] Failed to save background response:`, saveErr);
-                                }
-                            }
-
-                            // Clean up the streaming job
-                            if (streamingConversationId) {
-                                activeStreamingJobs.delete(streamingConversationId);
-                            }
-
-                            // Only send to client if still connected
-                            if (clientConnected) {
-                                // Send final event with both OpenAI-compatible format and done flag for Koda compatibility
-                                const finalEvent = {
-                                    done: true,  // For Koda CLI compatibility
-                                    choices: [{
-                                        delta: {},
-                                        index: 0,
-                                        finish_reason: 'stop'
-                                    }],
-                                    tokens: {
-                                        prompt_tokens: promptTokens,
-                                        completion_tokens: completionTokens,
-                                        total_tokens: promptTokens + completionTokens
-                                    },
-                                    usage: {
-                                        prompt_tokens: promptTokens,
-                                        completion_tokens: completionTokens,
-                                        total_tokens: promptTokens + completionTokens
-                                    },
-                                    model: targetModel,
-                                    contextSize: contextSize,
-                                    // Include continuation info if content was truncated
-                                    ...(contentTruncated && {
-                                        continuation: {
-                                            hasMore: true,
-                                            ...truncationInfo,
-                                            message: `Content was split into ${truncationInfo.totalChunks} chunks. Processed chunk ${truncationInfo.currentChunk}. ~${truncationInfo.remainingTokens.toLocaleString()} tokens remaining.`
-                                        }
-                                    })
-                                };
-                                try {
-                                    res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
-                                } catch (writeErr) {
-                                    // Client disconnected
-                                }
-
-                                // If there's remaining content, store it for continuation
-                                if (remainingContent && req.body.conversationId) {
-                                    contentContinuationQueue.set(req.body.conversationId, {
-                                        content: remainingContent,
-                                        processedChunks: truncationInfo?.currentChunk || 1,
-                                        totalChunks: truncationInfo?.totalChunks || 1,
-                                        contextSize,
-                                        modelName: targetModel,
-                                        timestamp: Date.now()
-                                    });
-                                    console.log(`[Chat Stream] Queued ${remainingContent.length} chars for continuation (conversation: ${req.body.conversationId})`);
-                                }
-
-                                try {
-                                    res.write(`data: [DONE]\n\n`);
-                                } catch (writeErr) {
-                                    // Client disconnected
-                                }
-
-                                // Manually update token usage stats (streaming doesn't use res.send interceptor)
-                                if (req.apiKeyData) {
-                                    const stats = apiKeyUsageStats.get(req.apiKeyData.id);
-                                    if (stats && stats.requests.length > 0) {
-                                        const totalTokens = promptTokens + completionTokens;
-                                        const lastReq = stats.requests[stats.requests.length - 1];
-                                        lastReq.tokens = totalTokens;
-                                        stats.tokenCount += totalTokens;
-                                        apiKeyUsageStats.set(req.apiKeyData.id, stats);
-                                    }
-                                }
-
-                                try {
-                                    res.end();
-                                } catch (endErr) {
-                                    // Client disconnected
-                                }
-                            }
-                            return;
-                        }
-
-                        try {
-                            const parsed = JSON.parse(data);
-
-                            // Extract token from delta and forward in OpenAI-compatible format
-                            if (parsed.choices && parsed.choices[0]?.delta) {
-                                const delta = parsed.choices[0].delta;
-                                const content = delta.content || '';
-                                const reasoning = delta.reasoning_content || delta.reasoning || '';
-
-                                if (content || reasoning) {
-                                    if (content) fullResponse += content;
-                                    if (reasoning) fullReasoning += reasoning;
-                                    tokenCount++;
-                                    completionTokens++;
-
-                                    // Update the streaming job with latest content
-                                    if (streamingConversationId) {
-                                        const job = activeStreamingJobs.get(streamingConversationId);
-                                        if (job) {
-                                            job.content = fullResponse;
-                                            job.reasoning = fullReasoning;
-                                        }
-                                    }
-
-                                    // Only send to client if still connected
-                                    if (clientConnected) {
-                                        // Send in both OpenAI-compatible and simple token format for client compatibility
-                                        const event = {
-                                            token: content || undefined,  // Simple format for Koda CLI
-                                            choices: [{
-                                                delta: {
-                                                    content: content || undefined,
-                                                    reasoning: reasoning || undefined
-                                                },
-                                                index: 0
-                                            }]
-                                        };
-                                        try {
-                                            res.write(`data: ${JSON.stringify(event)}\n\n`);
-                                        } catch (writeErr) {
-                                            // Client disconnected during write
-                                            clientConnected = false;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Capture usage stats if available
-                            if (parsed.usage) {
-                                promptTokens = parsed.usage.prompt_tokens || 0;
-                                completionTokens = parsed.usage.completion_tokens || 0;
-                            }
-                            // llama.cpp uses timings instead of usage
-                            if (parsed.timings) {
-                                promptTokens = (parsed.timings.prompt_n || 0) + (parsed.timings.cache_n || 0);
-                                completionTokens = parsed.timings.predicted_n || 0;
-                            }
-                        } catch (e) {
-                            // Skip invalid JSON chunks
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error processing stream chunk:', error);
-            }
-        });
-
-        response.data.on('end', async () => {
-            // Save response to conversation if client disconnected (background completion)
-            if (!clientConnected && streamingConversationId && fullResponse) {
                 try {
-                    const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
-                    const assistantMessage = {
-                        id: crypto.randomUUID(),
-                        role: 'assistant',
-                        content: fullResponse,
-                        reasoning: fullReasoning || undefined,
-                        timestamp: new Date().toISOString(),
-                        responseTime: Date.now() - (activeStreamingJobs.get(streamingConversationId)?.startTime || Date.now()),
-                        tokenCount: completionTokens,
-                        backgroundCompleted: true
+                    const requestBody = {
+                        messages: requestMessages,
+                        temperature: temperature || 0.7,
+                        top_p: effectiveTopP,
+                        stream: true,
+                        max_tokens: maxTokens
                     };
-                    conversationMsgs.push(assistantMessage);
-                    await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
-                    console.log(`[Chat Stream] Background response saved to conversation ${streamingConversationId} (end event)`);
-                } catch (saveErr) {
-                    console.error(`[Chat Stream] Failed to save background response:`, saveErr);
+
+                    const response = await axios({
+                        method: 'post',
+                        url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
+                        data: requestBody,
+                        responseType: 'stream'
+                    });
+
+                    response.data.on('data', (chunk) => {
+                        try {
+                            const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+
+                            for (const line of lines) {
+                                if (line.startsWith('data: ')) {
+                                    const data = line.slice(6);
+
+                                    if (data === '[DONE]') {
+                                        // [DONE] received - resolve will happen in 'end' event
+                                        return;
+                                    }
+
+                                    try {
+                                        const parsed = JSON.parse(data);
+
+                                        // Capture finish_reason from model
+                                        if (parsed.choices && parsed.choices[0]?.finish_reason) {
+                                            lastFinishReason = parsed.choices[0].finish_reason;
+                                        }
+
+                                        if (parsed.choices && parsed.choices[0]?.delta) {
+                                            const delta = parsed.choices[0].delta;
+                                            const content = delta.content || '';
+                                            const reasoning = delta.reasoning_content || delta.reasoning || '';
+
+                                            if (content || reasoning) {
+                                                if (content) fullResponse += content;
+                                                if (reasoning) fullReasoning += reasoning;
+                                                tokenCount++;
+                                                completionTokens++;
+
+                                                if (streamingConversationId) {
+                                                    const job = activeStreamingJobs.get(streamingConversationId);
+                                                    if (job) {
+                                                        job.content = fullResponse;
+                                                        job.reasoning = fullReasoning;
+                                                    }
+                                                }
+
+                                                if (clientConnected) {
+                                                    const event = {
+                                                        token: content || undefined,
+                                                        choices: [{
+                                                            delta: {
+                                                                content: content || undefined,
+                                                                reasoning: reasoning || undefined
+                                                            },
+                                                            index: 0
+                                                        }]
+                                                    };
+                                                    try {
+                                                        res.write(`data: ${JSON.stringify(event)}\n\n`);
+                                                    } catch (writeErr) {
+                                                        clientConnected = false;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (parsed.usage) {
+                                            promptTokens = parsed.usage.prompt_tokens || 0;
+                                            completionTokens = parsed.usage.completion_tokens || 0;
+                                        }
+                                        if (parsed.timings) {
+                                            promptTokens = (parsed.timings.prompt_n || 0) + (parsed.timings.cache_n || 0);
+                                            completionTokens = parsed.timings.predicted_n || 0;
+                                        }
+                                    } catch (e) {
+                                        // Skip invalid JSON chunks
+                                    }
+                                }
+                            }
+                        } catch (error) {
+                            console.error('Error processing stream chunk:', error);
+                        }
+                    });
+
+                    response.data.on('end', () => {
+                        resolve(lastFinishReason);
+                    });
+
+                    response.data.on('error', (error) => {
+                        reject(error);
+                    });
+                } catch (error) {
+                    reject(error);
                 }
-            }
+            });
+        };
 
-            // Clean up the streaming job
-            if (streamingConversationId) {
-                activeStreamingJobs.delete(streamingConversationId);
-            }
+        try {
+            // Initial request with original messages
+            const initialMaxTokens = effectiveMaxTokens || responseReserve;
+            let finishReason = await streamOneRequest(chatMessages, initialMaxTokens);
 
-            // If stream ended without [DONE] marker, send final event (only if client connected)
-            if (clientConnected && !res.writableEnded) {
-                const finalEvent = {
-                    done: true,
-                    tokens: {
-                        prompt_tokens: promptTokens,
-                        completion_tokens: completionTokens,
-                        total_tokens: promptTokens + completionTokens
-                    },
-                    model: targetModel,
-                    response: fullResponse,
-                    contextSize: contextSize  // Include context window size for client tracking
-                };
-                try {
-                    res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
-                } catch (writeErr) {
-                    // Client disconnected
-                }
+            // Auto-continuation loop: if model hit length limit, keep going
+            while (finishReason === 'length' && continuationCount < MAX_AUTO_CONTINUATIONS && clientConnected) {
+                continuationCount++;
+                console.log(`[Chat Stream] Auto-continuing response (${continuationCount}/${MAX_AUTO_CONTINUATIONS}), accumulated ${fullResponse.length} chars so far`);
 
-                // Manually update token usage stats (streaming doesn't use res.send interceptor)
-                if (req.apiKeyData) {
-                    const stats = apiKeyUsageStats.get(req.apiKeyData.id);
-                    if (stats && stats.requests.length > 0) {
-                        const totalTokens = promptTokens + completionTokens;
-                        const lastReq = stats.requests[stats.requests.length - 1];
-                        lastReq.tokens = totalTokens;
-                        stats.tokenCount += totalTokens;
-                        apiKeyUsageStats.set(req.apiKeyData.id, stats);
+                // Notify client that we're auto-continuing
+                if (clientConnected) {
+                    try {
+                        res.write(`data: ${JSON.stringify({
+                            type: 'auto_continuation',
+                            continuation: continuationCount,
+                            maxContinuations: MAX_AUTO_CONTINUATIONS
+                        })}\n\n`);
+                    } catch (writeErr) {
+                        clientConnected = false;
+                        break;
                     }
                 }
 
+                // Build a slim continuation request:
+                // - Keep system prompt
+                // - Keep original user message (last one only)
+                // - Add a tail of the response so far as assistant context
+                // - Add a continuation instruction as the new user message
+                const systemMsg = chatMessages.find(m => m.role === 'system');
+                const lastUserMsg = [...chatMessages].reverse().find(m => m.role === 'user');
+
+                // Take only the tail of the response for context (~500 tokens)
+                const responseTail = fullResponse.length > CONTINUATION_CONTEXT_CHARS
+                    ? fullResponse.slice(-CONTINUATION_CONTEXT_CHARS)
+                    : fullResponse;
+
+                const continuationMessages = [];
+                if (systemMsg) continuationMessages.push(systemMsg);
+                if (lastUserMsg) continuationMessages.push(lastUserMsg);
+                continuationMessages.push({
+                    role: 'assistant',
+                    content: responseTail
+                });
+                continuationMessages.push({
+                    role: 'user',
+                    content: 'Continue from where you left off. Do not repeat what you already said, just continue directly.'
+                });
+
+                // Calculate available tokens for this continuation
+                // Estimate the continuation prompt size to leave room for response
+                const continuationInputTokens = continuationMessages.reduce(
+                    (sum, msg) => sum + estimateTokens(msg.content), 0
+                );
+                const continuationMaxTokens = Math.max(
+                    512, // minimum useful response
+                    contextSize - continuationInputTokens - 100 // leave small buffer
+                );
+
+                finishReason = await streamOneRequest(continuationMessages, continuationMaxTokens);
+            }
+
+            if (continuationCount > 0) {
+                console.log(`[Chat Stream] Auto-continuation complete after ${continuationCount} continuation(s), total ${fullResponse.length} chars`);
+            }
+        } catch (streamError) {
+            console.error('Stream error:', streamError);
+            if (clientConnected && !res.writableEnded) {
+                const errorEvent = { error: streamError.message, done: true };
                 try {
-                    res.end();
-                } catch (endErr) {
-                    // Client disconnected
+                    res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+                } catch (writeErr) { /* client disconnected */ }
+            }
+        }
+
+        // Save response to conversation if client disconnected (background completion)
+        if (!clientConnected && streamingConversationId && fullResponse) {
+            try {
+                const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
+                const assistantMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: fullResponse,
+                    reasoning: fullReasoning || undefined,
+                    timestamp: new Date().toISOString(),
+                    responseTime: Date.now() - (activeStreamingJobs.get(streamingConversationId)?.startTime || Date.now()),
+                    tokenCount: completionTokens,
+                    backgroundCompleted: true
+                };
+                conversationMsgs.push(assistantMessage);
+                await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
+                console.log(`[Chat Stream] Background response saved to conversation ${streamingConversationId}`);
+            } catch (saveErr) {
+                console.error(`[Chat Stream] Failed to save background response:`, saveErr);
+            }
+        }
+
+        // Clean up the streaming job
+        if (streamingConversationId) {
+            activeStreamingJobs.delete(streamingConversationId);
+        }
+
+        // Send final event to client
+        if (clientConnected && !res.writableEnded) {
+            const actualFinishReason = (continuationCount >= MAX_AUTO_CONTINUATIONS) ? 'length' : 'stop';
+            const finalEvent = {
+                done: true,
+                choices: [{
+                    delta: {},
+                    index: 0,
+                    finish_reason: actualFinishReason
+                }],
+                tokens: {
+                    prompt_tokens: promptTokens,
+                    completion_tokens: completionTokens,
+                    total_tokens: promptTokens + completionTokens
+                },
+                usage: {
+                    prompt_tokens: promptTokens,
+                    completion_tokens: completionTokens,
+                    total_tokens: promptTokens + completionTokens
+                },
+                model: targetModel,
+                contextSize: contextSize,
+                ...(continuationCount > 0 && {
+                    autoContinuation: {
+                        continuations: continuationCount,
+                        maxReached: continuationCount >= MAX_AUTO_CONTINUATIONS
+                    }
+                }),
+                // Include content continuation info if input content was truncated
+                ...(contentTruncated && {
+                    continuation: {
+                        hasMore: true,
+                        ...truncationInfo,
+                        message: `Content was split into ${truncationInfo.totalChunks} chunks. Processed chunk ${truncationInfo.currentChunk}. ~${truncationInfo.remainingTokens.toLocaleString()} tokens remaining.`
+                    }
+                })
+            };
+            try {
+                res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+            } catch (writeErr) { /* client disconnected */ }
+
+            // If there's remaining content, store it for continuation
+            if (remainingContent && req.body.conversationId) {
+                contentContinuationQueue.set(req.body.conversationId, {
+                    content: remainingContent,
+                    processedChunks: truncationInfo?.currentChunk || 1,
+                    totalChunks: truncationInfo?.totalChunks || 1,
+                    contextSize,
+                    modelName: targetModel,
+                    timestamp: Date.now()
+                });
+                console.log(`[Chat Stream] Queued ${remainingContent.length} chars for continuation (conversation: ${req.body.conversationId})`);
+            }
+
+            try {
+                res.write(`data: [DONE]\n\n`);
+            } catch (writeErr) { /* client disconnected */ }
+
+            // Update token usage stats
+            if (req.apiKeyData) {
+                const stats = apiKeyUsageStats.get(req.apiKeyData.id);
+                if (stats && stats.requests.length > 0) {
+                    const totalTokens = promptTokens + completionTokens;
+                    const lastReq = stats.requests[stats.requests.length - 1];
+                    lastReq.tokens = totalTokens;
+                    stats.tokenCount += totalTokens;
+                    apiKeyUsageStats.set(req.apiKeyData.id, stats);
                 }
             }
-        });
 
-        response.data.on('error', (error) => {
-            console.error('Stream error:', error);
-            if (!res.writableEnded) {
-                const errorEvent = {
-                    error: error.message,
-                    done: true
-                };
-                res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+            try {
                 res.end();
-            }
-        });
+            } catch (endErr) { /* client disconnected */ }
+        }
 
         // Handle client disconnect - DON'T destroy stream, let it continue in background
         req.on('close', () => {

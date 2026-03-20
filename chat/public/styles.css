@@ -1,4 +1,4 @@
-@import url(https://fonts.googleapis.com/css2?family=Anonymous+Pro:wght@400;700&family=Assistant:wght@300;400;500;600&family=Atkinson+Hyperlegible:wght@400;700&family=Barlow:wght@300;400;500;600&family=Comfortaa:wght@300;400;500;600&family=Commit+Mono:wght@400;500&family=Crimson+Pro:wght@300;400;600&family=DM+Sans:wght@300;400;500;600&family=Exo+2:wght@300;400;500;600&family=Figtree:wght@300;400;500;600&family=Fira+Code:wght@400;500&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=Intel+One+Mono:wght@400;500&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Karla:wght@300;400;500;600&family=Lato:wght@300;400;700&family=Lexend:wght@300;400;500;600&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;600&family=Manrope:wght@300;400;500;600&family=Martian+Mono:wght@400;500&family=Merriweather:wght@300;400;700&family=Monaspace+Neon:wght@400;500&family=Nunito:wght@300;400;600&family=Onest:wght@300;400;500;600&family=Open+Sans:wght@300;400;600&family=Outfit:wght@300;400;500;600&family=Overpass:wght@300;400;500;600&family=Playfair+Display:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Poppins:wght@300;400;500;600&family=Public+Sans:wght@300;400;500;600&family=Quicksand:wght@300;400;500;600&family=Readex+Pro:wght@300;400;500;600&family=Red+Hat+Display:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Rubik:wght@300;400;500;600&family=Sora:wght@300;400;500;600&family=Source+Sans+Pro:wght@300;400;600&family=Source+Serif+Pro:wght@300;400;600&family=Space+Grotesk:wght@300;400;500;600&family=Space+Mono:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Urbanist:wght@300;400;500;600&family=Victor+Mono:wght@400;500&family=Work+Sans:wght@300;400;500;600&display=swap);
+@import url(https://fonts.googleapis.com/css2?family=Anonymous+Pro:wght@400;700&family=Assistant:wght@300;400;500;600&family=Atkinson+Hyperlegible:wght@400;700&family=Barlow:wght@300;400;500;600&family=Comfortaa:wght@300;400;500;600&family=Cascadia+Code:wght@400;500&family=Inconsolata:wght@400;500&family=Crimson+Pro:wght@300;400;600&family=DM+Sans:wght@300;400;500;600&family=Exo+2:wght@300;400;500;600&family=Figtree:wght@300;400;500;600&family=Fira+Code:wght@400;500&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=Intel+One+Mono:wght@400;500&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Karla:wght@300;400;500;600&family=Lato:wght@300;400;700&family=Lexend:wght@300;400;500;600&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;600&family=Manrope:wght@300;400;500;600&family=Martian+Mono:wght@400;500&family=Merriweather:wght@300;400;700&family=Source+Code+Pro:wght@400;500&family=Nunito:wght@300;400;600&family=Onest:wght@300;400;500;600&family=Open+Sans:wght@300;400;600&family=Outfit:wght@300;400;500;600&family=Overpass:wght@300;400;500;600&family=Playfair+Display:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Poppins:wght@300;400;500;600&family=Public+Sans:wght@300;400;500;600&family=Quicksand:wght@300;400;500;600&family=Readex+Pro:wght@300;400;500;600&family=Red+Hat+Display:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Rubik:wght@300;400;500;600&family=Sora:wght@300;400;500;600&family=Source+Sans+Pro:wght@300;400;600&family=Source+Serif+Pro:wght@300;400;600&family=Space+Grotesk:wght@300;400;500;600&family=Space+Mono:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Urbanist:wght@300;400;500;600&family=Victor+Mono:wght@400;500&family=Work+Sans:wght@300;400;500;600&display=swap);
 *, ::before, ::after{
   --tw-border-spacing-x: 0;
   --tw-border-spacing-y: 0;
@@ -2602,65 +2602,6 @@ body.font-size-large .markdown-content,
 }
 
 /* ============================================
-   Theme: Obsidian
-   Pure black OLED-optimized theme
-   ============================================ */
-.theme-obsidian {
-    --primary-rgb: 168, 85, 247;
-    --bg-primary: #000000;
-    --bg-secondary: #0a0a0a;
-    --bg-tertiary: #171717;
-    --bg-elevated: #0d0d0d;
-    --bg-hover: rgba(255, 255, 255, 0.04);
-    --bg-active: rgba(255, 255, 255, 0.06);
-
-    --surface-primary: rgba(10, 10, 10, 0.9);
-    --surface-secondary: rgba(23, 23, 23, 0.8);
-    --surface-glass: rgba(0, 0, 0, 0.9);
-
-    --text-primary: #ffffff;
-    --text-secondary: #a3a3a3;
-    --text-tertiary: #737373;
-    --text-muted: #525252;
-
-    --border-primary: rgba(255, 255, 255, 0.08);
-    --border-secondary: rgba(255, 255, 255, 0.04);
-    --border-hover: rgba(255, 255, 255, 0.12);
-    --border-focus: rgba(168, 85, 247, 0.5);
-
-    --accent-primary: #a855f7;
-    --accent-secondary: #9333ea;
-    --accent-hover: #c084fc;
-    --accent-muted: rgba(168, 85, 247, 0.15);
-
-    /* User message - muted purple for OLED */
-    --user-msg-from: #2d1a45;
-    --user-msg-to: #1f1233;
-    --user-msg-hover-from: #3a2358;
-    --user-msg-hover-to: #2d1a45;
-    --user-msg-text: #e8dff5;
-
-    --assistant-bg: rgba(10, 10, 10, 0.8);
-    --assistant-border: rgba(255, 255, 255, 0.06);
-    --assistant-text: #e0e0e0;
-
-    --scrollbar-thumb: rgba(255, 255, 255, 0.08);
-    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
-
-    --code-bg: #000000;
-    --code-header-bg: rgba(23, 23, 23, 0.6);
-    --code-border: rgba(255, 255, 255, 0.04);
-
-    --input-bg: rgba(10, 10, 10, 0.8);
-    --input-border: rgba(255, 255, 255, 0.08);
-    --input-focus-border: rgba(168, 85, 247, 0.5);
-    --input-focus-ring: rgba(168, 85, 247, 0.15);
-
-    --shadow-accent: rgba(168, 85, 247, 0.25);
-    --shadow-accent-hover: rgba(168, 85, 247, 0.35);
-}
-
-/* ============================================
    Theme: Ocean
    Deep blue nautical theme
    ============================================ */
@@ -3030,70 +2971,6 @@ body.font-size-large .markdown-content,
 }
 
 /* ============================================
-   Theme: Monokai
-   Classic code editor theme
-   ============================================ */
-.theme-monokai {
-    --primary-rgb: 174, 129, 255;
-    --bg-primary: #272822;
-    --bg-secondary: #2d2e27;
-    --bg-tertiary: #3e3d32;
-    --bg-elevated: #2a2b25;
-    --bg-hover: rgba(248, 248, 242, 0.06);
-    --bg-active: rgba(248, 248, 242, 0.1);
-
-    --surface-primary: rgba(45, 46, 39, 0.9);
-    --surface-secondary: rgba(62, 61, 50, 0.8);
-    --surface-glass: rgba(39, 40, 34, 0.95);
-
-    --text-primary: #f8f8f2;
-    --text-secondary: #cfcfc2;
-    --text-tertiary: #a6a69a;
-    --text-muted: #75715e;
-
-    --border-primary: rgba(248, 248, 242, 0.1);
-    --border-secondary: rgba(248, 248, 242, 0.05);
-    --border-hover: rgba(248, 248, 242, 0.2);
-    --border-focus: rgba(174, 129, 255, 0.5);
-
-    --accent-primary: #ae81ff;
-    --accent-secondary: #a6e22e;
-    --accent-hover: #f92672;
-    --accent-muted: rgba(174, 129, 255, 0.15);
-
-    /* User message - monokai purple */
-    --user-msg-from: #3d3054;
-    --user-msg-to: #2e2440;
-    --user-msg-hover-from: #4c3c68;
-    --user-msg-hover-to: #3d3054;
-    --user-msg-text: #e0d4f8;
-
-    --assistant-bg: rgba(45, 46, 39, 0.8);
-    --assistant-border: rgba(248, 248, 242, 0.08);
-    --assistant-text: #f8f8f2;
-
-    --scrollbar-thumb: rgba(248, 248, 242, 0.15);
-    --scrollbar-thumb-hover: rgba(248, 248, 242, 0.25);
-
-    --code-bg: #1e1f1a;
-    --code-header-bg: rgba(45, 46, 39, 0.7);
-    --code-border: rgba(248, 248, 242, 0.08);
-
-    --input-bg: rgba(45, 46, 39, 0.8);
-    --input-border: rgba(248, 248, 242, 0.15);
-    --input-focus-border: rgba(174, 129, 255, 0.5);
-    --input-focus-ring: rgba(174, 129, 255, 0.15);
-
-    --shadow-accent: rgba(174, 129, 255, 0.3);
-    --shadow-accent-hover: rgba(249, 38, 114, 0.4);
-
-    --success: #a6e22e;
-    --warning: #e6db74;
-    --error: #f92672;
-    --info: #66d9ef;
-}
-
-/* ============================================
    Theme: Gruvbox
    Retro groove color scheme
    ============================================ */
@@ -3219,70 +3096,6 @@ body.font-size-large .markdown-content,
     --warning: #e0af68;
     --error: #f7768e;
     --info: #7dcfff;
-}
-
-/* ============================================
-   Theme: Catppuccin
-   Catppuccin Mocha variant
-   ============================================ */
-.theme-catppuccin {
-    --primary-rgb: 203, 166, 247;
-    --bg-primary: #1e1e2e;
-    --bg-secondary: #313244;
-    --bg-tertiary: #45475a;
-    --bg-elevated: #262637;
-    --bg-hover: rgba(205, 214, 244, 0.06);
-    --bg-active: rgba(205, 214, 244, 0.1);
-
-    --surface-primary: rgba(49, 50, 68, 0.9);
-    --surface-secondary: rgba(69, 71, 90, 0.8);
-    --surface-glass: rgba(30, 30, 46, 0.95);
-
-    --text-primary: #cdd6f4;
-    --text-secondary: #bac2de;
-    --text-tertiary: #a6adc8;
-    --text-muted: #6c7086;
-
-    --border-primary: rgba(205, 214, 244, 0.1);
-    --border-secondary: rgba(205, 214, 244, 0.05);
-    --border-hover: rgba(205, 214, 244, 0.2);
-    --border-focus: rgba(203, 166, 247, 0.5);
-
-    --accent-primary: #cba6f7;
-    --accent-secondary: #f5c2e7;
-    --accent-hover: #89b4fa;
-    --accent-muted: rgba(203, 166, 247, 0.15);
-
-    /* User message - catppuccin mauve */
-    --user-msg-from: #3d3055;
-    --user-msg-to: #2e2444;
-    --user-msg-hover-from: #4c3c68;
-    --user-msg-hover-to: #3d3055;
-    --user-msg-text: #e8dcf8;
-
-    --assistant-bg: rgba(49, 50, 68, 0.8);
-    --assistant-border: rgba(205, 214, 244, 0.08);
-    --assistant-text: #cdd6f4;
-
-    --scrollbar-thumb: rgba(205, 214, 244, 0.15);
-    --scrollbar-thumb-hover: rgba(205, 214, 244, 0.25);
-
-    --code-bg: #181825;
-    --code-header-bg: rgba(49, 50, 68, 0.7);
-    --code-border: rgba(205, 214, 244, 0.08);
-
-    --input-bg: rgba(49, 50, 68, 0.8);
-    --input-border: rgba(205, 214, 244, 0.15);
-    --input-focus-border: rgba(203, 166, 247, 0.5);
-    --input-focus-ring: rgba(203, 166, 247, 0.15);
-
-    --shadow-accent: rgba(203, 166, 247, 0.3);
-    --shadow-accent-hover: rgba(245, 194, 231, 0.4);
-
-    --success: #a6e3a1;
-    --warning: #f9e2af;
-    --error: #f38ba8;
-    --info: #89b4fa;
 }
 
 /* ============================================
@@ -3706,70 +3519,6 @@ body.font-size-large .markdown-content,
 }
 
 /* ============================================
-   Theme: Aurora
-   Northern lights inspired theme
-   ============================================ */
-.theme-aurora {
-    --primary-rgb: 147, 112, 219;
-    --bg-primary: #0d1117;
-    --bg-secondary: #161b22;
-    --bg-tertiary: #21262d;
-    --bg-elevated: #131920;
-    --bg-hover: rgba(147, 112, 219, 0.08);
-    --bg-active: rgba(147, 112, 219, 0.12);
-
-    --surface-primary: rgba(22, 27, 34, 0.9);
-    --surface-secondary: rgba(33, 38, 45, 0.8);
-    --surface-glass: rgba(13, 17, 23, 0.95);
-
-    --text-primary: #e6edf3;
-    --text-secondary: #b8c9db;
-    --text-tertiary: #7d8590;
-    --text-muted: #484f58;
-
-    --border-primary: rgba(147, 112, 219, 0.15);
-    --border-secondary: rgba(147, 112, 219, 0.08);
-    --border-hover: rgba(147, 112, 219, 0.25);
-    --border-focus: rgba(147, 112, 219, 0.5);
-
-    --accent-primary: #9370db;
-    --accent-secondary: #58a6ff;
-    --accent-hover: #a78bfa;
-    --accent-muted: rgba(147, 112, 219, 0.15);
-
-    /* User message - aurora purple/blue */
-    --user-msg-from: #2d2850;
-    --user-msg-to: #1e1a3d;
-    --user-msg-hover-from: #3a3362;
-    --user-msg-hover-to: #2d2850;
-    --user-msg-text: #e0d8f8;
-
-    --assistant-bg: rgba(22, 27, 34, 0.8);
-    --assistant-border: rgba(147, 112, 219, 0.12);
-    --assistant-text: #e6edf3;
-
-    --scrollbar-thumb: rgba(147, 112, 219, 0.2);
-    --scrollbar-thumb-hover: rgba(147, 112, 219, 0.35);
-
-    --code-bg: #0a0d12;
-    --code-header-bg: rgba(22, 27, 34, 0.7);
-    --code-border: rgba(147, 112, 219, 0.1);
-
-    --input-bg: rgba(19, 25, 32, 0.8);
-    --input-border: rgba(147, 112, 219, 0.2);
-    --input-focus-border: rgba(147, 112, 219, 0.5);
-    --input-focus-ring: rgba(147, 112, 219, 0.15);
-
-    --shadow-accent: rgba(147, 112, 219, 0.3);
-    --shadow-accent-hover: rgba(88, 166, 255, 0.4);
-
-    --success: #3fb950;
-    --warning: #d29922;
-    --error: #f85149;
-    --info: #58a6ff;
-}
-
-/* ============================================
    Theme: One Dark
    Atom One Dark theme
    ============================================ */
@@ -3831,70 +3580,6 @@ body.font-size-large .markdown-content,
     --warning: #e5c07b;
     --error: #e06c75;
     --info: #61afef;
-}
-
-/* ============================================
-   Theme: Palenight
-   Material Palenight theme
-   ============================================ */
-.theme-palenight {
-    --primary-rgb: 199, 146, 234;
-    --bg-primary: #292d3e;
-    --bg-secondary: #343a50;
-    --bg-tertiary: #444862;
-    --bg-elevated: #303445;
-    --bg-hover: rgba(199, 146, 234, 0.08);
-    --bg-active: rgba(199, 146, 234, 0.12);
-
-    --surface-primary: rgba(52, 58, 80, 0.9);
-    --surface-secondary: rgba(68, 72, 98, 0.8);
-    --surface-glass: rgba(41, 45, 62, 0.95);
-
-    --text-primary: #a6accd;
-    --text-secondary: #8087a2;
-    --text-tertiary: #676e95;
-    --text-muted: #4e5579;
-
-    --border-primary: rgba(199, 146, 234, 0.12);
-    --border-secondary: rgba(199, 146, 234, 0.06);
-    --border-hover: rgba(199, 146, 234, 0.2);
-    --border-focus: rgba(199, 146, 234, 0.5);
-
-    --accent-primary: #c792ea;
-    --accent-secondary: #82aaff;
-    --accent-hover: #89ddff;
-    --accent-muted: rgba(199, 146, 234, 0.15);
-
-    /* User message - palenight purple */
-    --user-msg-from: #3a3560;
-    --user-msg-to: #2c2850;
-    --user-msg-hover-from: #4a4572;
-    --user-msg-hover-to: #3a3560;
-    --user-msg-text: #e0d8f0;
-
-    --assistant-bg: rgba(52, 58, 80, 0.8);
-    --assistant-border: rgba(199, 146, 234, 0.1);
-    --assistant-text: #a6accd;
-
-    --scrollbar-thumb: rgba(199, 146, 234, 0.15);
-    --scrollbar-thumb-hover: rgba(199, 146, 234, 0.25);
-
-    --code-bg: #232635;
-    --code-header-bg: rgba(52, 58, 80, 0.7);
-    --code-border: rgba(199, 146, 234, 0.08);
-
-    --input-bg: rgba(48, 52, 69, 0.8);
-    --input-border: rgba(199, 146, 234, 0.15);
-    --input-focus-border: rgba(199, 146, 234, 0.5);
-    --input-focus-ring: rgba(199, 146, 234, 0.15);
-
-    --shadow-accent: rgba(199, 146, 234, 0.25);
-    --shadow-accent-hover: rgba(130, 170, 255, 0.35);
-
-    --success: #c3e88d;
-    --warning: #ffcb6b;
-    --error: #f07178;
-    --info: #82aaff;
 }
 
 /* ============================================
@@ -4730,6 +4415,326 @@ body.font-size-large .markdown-content,
 }
 
 /* ============================================
+   Theme: Sapphire
+   Deep blue premium theme
+   ============================================ */
+.theme-sapphire {
+    --primary-rgb: 15, 82, 186;
+    --bg-primary: #0a1628;
+    --bg-secondary: #0f1f38;
+    --bg-tertiary: #142a4a;
+    --bg-elevated: #0d1a30;
+    --bg-hover: rgba(15, 82, 186, 0.08);
+    --bg-active: rgba(15, 82, 186, 0.12);
+
+    --surface-primary: rgba(15, 31, 56, 0.9);
+    --surface-secondary: rgba(20, 42, 74, 0.8);
+    --surface-glass: rgba(10, 22, 40, 0.95);
+
+    --text-primary: #e2eaf4;
+    --text-secondary: #8ba3c4;
+    --text-tertiary: #5a7ba3;
+    --text-muted: #3d5a82;
+
+    --border-primary: rgba(15, 82, 186, 0.2);
+    --border-secondary: rgba(15, 82, 186, 0.1);
+    --border-hover: rgba(15, 82, 186, 0.3);
+    --border-focus: rgba(15, 82, 186, 0.5);
+
+    --accent-primary: #0f52ba;
+    --accent-secondary: #1e6fd9;
+    --accent-hover: #0d47a1;
+    --accent-muted: rgba(15, 82, 186, 0.15);
+
+    /* User message - deep sapphire blue */
+    --user-msg-from: #0f3d7a;
+    --user-msg-to: #0a2d5c;
+    --user-msg-hover-from: #144a90;
+    --user-msg-hover-to: #0f3d7a;
+    --user-msg-text: #e2eaf4;
+
+    --assistant-bg: rgba(15, 31, 56, 0.8);
+    --assistant-border: rgba(15, 82, 186, 0.15);
+    --assistant-text: #e2eaf4;
+
+    --scrollbar-thumb: rgba(15, 82, 186, 0.3);
+    --scrollbar-thumb-hover: rgba(15, 82, 186, 0.45);
+
+    --code-bg: #081220;
+    --code-header-bg: rgba(10, 22, 40, 0.7);
+    --code-border: rgba(15, 82, 186, 0.1);
+
+    --input-bg: rgba(15, 31, 56, 0.8);
+    --input-border: rgba(15, 82, 186, 0.25);
+    --input-focus-border: rgba(15, 82, 186, 0.5);
+    --input-focus-ring: rgba(15, 82, 186, 0.15);
+
+    --shadow-accent: rgba(15, 82, 186, 0.3);
+    --shadow-accent-hover: rgba(30, 111, 217, 0.4);
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --info: #60a5fa;
+}
+
+/* ============================================
+   Theme: Amber
+   Warm golden amber theme
+   ============================================ */
+.theme-amber {
+    --primary-rgb: 245, 158, 11;
+    --bg-primary: #1a1408;
+    --bg-secondary: #231c0e;
+    --bg-tertiary: #2d2414;
+    --bg-elevated: #1e180b;
+    --bg-hover: rgba(245, 158, 11, 0.08);
+    --bg-active: rgba(245, 158, 11, 0.12);
+
+    --surface-primary: rgba(35, 28, 14, 0.9);
+    --surface-secondary: rgba(45, 36, 20, 0.8);
+    --surface-glass: rgba(26, 20, 8, 0.95);
+
+    --text-primary: #f5ecd8;
+    --text-secondary: #c4a86c;
+    --text-tertiary: #9a7f48;
+    --text-muted: #7a6338;
+
+    --border-primary: rgba(245, 158, 11, 0.2);
+    --border-secondary: rgba(245, 158, 11, 0.1);
+    --border-hover: rgba(245, 158, 11, 0.3);
+    --border-focus: rgba(245, 158, 11, 0.5);
+
+    --accent-primary: #f59e0b;
+    --accent-secondary: #d97706;
+    --accent-hover: #b45309;
+    --accent-muted: rgba(245, 158, 11, 0.15);
+
+    /* User message - warm amber */
+    --user-msg-from: #6b4106;
+    --user-msg-to: #4d2f04;
+    --user-msg-hover-from: #845008;
+    --user-msg-hover-to: #6b4106;
+    --user-msg-text: #fef3c7;
+
+    --assistant-bg: rgba(35, 28, 14, 0.8);
+    --assistant-border: rgba(245, 158, 11, 0.12);
+    --assistant-text: #f5ecd8;
+
+    --scrollbar-thumb: rgba(245, 158, 11, 0.3);
+    --scrollbar-thumb-hover: rgba(245, 158, 11, 0.45);
+
+    --code-bg: #141005;
+    --code-header-bg: rgba(26, 20, 8, 0.7);
+    --code-border: rgba(245, 158, 11, 0.1);
+
+    --input-bg: rgba(35, 28, 14, 0.8);
+    --input-border: rgba(245, 158, 11, 0.25);
+    --input-focus-border: rgba(245, 158, 11, 0.5);
+    --input-focus-ring: rgba(245, 158, 11, 0.15);
+
+    --shadow-accent: rgba(245, 158, 11, 0.3);
+    --shadow-accent-hover: rgba(217, 119, 6, 0.4);
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --info: #60a5fa;
+}
+
+/* ============================================
+   Theme: Jade
+   Rich deep green theme
+   ============================================ */
+.theme-jade {
+    --primary-rgb: 0, 168, 107;
+    --bg-primary: #081a12;
+    --bg-secondary: #0e231a;
+    --bg-tertiary: #142d22;
+    --bg-elevated: #0b1e16;
+    --bg-hover: rgba(0, 168, 107, 0.08);
+    --bg-active: rgba(0, 168, 107, 0.12);
+
+    --surface-primary: rgba(14, 35, 26, 0.9);
+    --surface-secondary: rgba(20, 45, 34, 0.8);
+    --surface-glass: rgba(8, 26, 18, 0.95);
+
+    --text-primary: #d8f5e8;
+    --text-secondary: #6cc4a0;
+    --text-tertiary: #48a07c;
+    --text-muted: #357a5c;
+
+    --border-primary: rgba(0, 168, 107, 0.2);
+    --border-secondary: rgba(0, 168, 107, 0.1);
+    --border-hover: rgba(0, 168, 107, 0.3);
+    --border-focus: rgba(0, 168, 107, 0.5);
+
+    --accent-primary: #00a86b;
+    --accent-secondary: #00c77b;
+    --accent-hover: #008f5a;
+    --accent-muted: rgba(0, 168, 107, 0.15);
+
+    /* User message - rich jade green */
+    --user-msg-from: #006844;
+    --user-msg-to: #004d32;
+    --user-msg-hover-from: #008055;
+    --user-msg-hover-to: #006844;
+    --user-msg-text: #d8f5e8;
+
+    --assistant-bg: rgba(14, 35, 26, 0.8);
+    --assistant-border: rgba(0, 168, 107, 0.12);
+    --assistant-text: #d8f5e8;
+
+    --scrollbar-thumb: rgba(0, 168, 107, 0.3);
+    --scrollbar-thumb-hover: rgba(0, 168, 107, 0.45);
+
+    --code-bg: #05120c;
+    --code-header-bg: rgba(8, 26, 18, 0.7);
+    --code-border: rgba(0, 168, 107, 0.1);
+
+    --input-bg: rgba(14, 35, 26, 0.8);
+    --input-border: rgba(0, 168, 107, 0.25);
+    --input-focus-border: rgba(0, 168, 107, 0.5);
+    --input-focus-ring: rgba(0, 168, 107, 0.15);
+
+    --shadow-accent: rgba(0, 168, 107, 0.3);
+    --shadow-accent-hover: rgba(0, 199, 123, 0.4);
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --info: #60a5fa;
+}
+
+/* ============================================
+   Theme: Crimson
+   Deep rich red theme
+   ============================================ */
+.theme-crimson {
+    --primary-rgb: 220, 38, 38;
+    --bg-primary: #1a0808;
+    --bg-secondary: #230e0e;
+    --bg-tertiary: #2d1414;
+    --bg-elevated: #1e0b0b;
+    --bg-hover: rgba(220, 38, 38, 0.08);
+    --bg-active: rgba(220, 38, 38, 0.12);
+
+    --surface-primary: rgba(35, 14, 14, 0.9);
+    --surface-secondary: rgba(45, 20, 20, 0.8);
+    --surface-glass: rgba(26, 8, 8, 0.95);
+
+    --text-primary: #f5d8d8;
+    --text-secondary: #c46c6c;
+    --text-tertiary: #a04848;
+    --text-muted: #7a3535;
+
+    --border-primary: rgba(220, 38, 38, 0.2);
+    --border-secondary: rgba(220, 38, 38, 0.1);
+    --border-hover: rgba(220, 38, 38, 0.3);
+    --border-focus: rgba(220, 38, 38, 0.5);
+
+    --accent-primary: #dc2626;
+    --accent-secondary: #ef4444;
+    --accent-hover: #b91c1c;
+    --accent-muted: rgba(220, 38, 38, 0.15);
+
+    /* User message - deep crimson red */
+    --user-msg-from: #7f1d1d;
+    --user-msg-to: #5c1414;
+    --user-msg-hover-from: #991b1b;
+    --user-msg-hover-to: #7f1d1d;
+    --user-msg-text: #fce4e4;
+
+    --assistant-bg: rgba(35, 14, 14, 0.8);
+    --assistant-border: rgba(220, 38, 38, 0.12);
+    --assistant-text: #f5d8d8;
+
+    --scrollbar-thumb: rgba(220, 38, 38, 0.3);
+    --scrollbar-thumb-hover: rgba(220, 38, 38, 0.45);
+
+    --code-bg: #140505;
+    --code-header-bg: rgba(26, 8, 8, 0.7);
+    --code-border: rgba(220, 38, 38, 0.1);
+
+    --input-bg: rgba(35, 14, 14, 0.8);
+    --input-border: rgba(220, 38, 38, 0.25);
+    --input-focus-border: rgba(220, 38, 38, 0.5);
+    --input-focus-ring: rgba(220, 38, 38, 0.15);
+
+    --shadow-accent: rgba(220, 38, 38, 0.3);
+    --shadow-accent-hover: rgba(239, 68, 68, 0.4);
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --info: #60a5fa;
+}
+
+/* ============================================
+   Theme: Storm
+   Dark blue-gray moody theme
+   ============================================ */
+.theme-storm {
+    --primary-rgb: 99, 118, 150;
+    --bg-primary: #111820;
+    --bg-secondary: #171f2a;
+    --bg-tertiary: #1d2735;
+    --bg-elevated: #141c26;
+    --bg-hover: rgba(99, 118, 150, 0.08);
+    --bg-active: rgba(99, 118, 150, 0.12);
+
+    --surface-primary: rgba(23, 31, 42, 0.9);
+    --surface-secondary: rgba(29, 39, 53, 0.8);
+    --surface-glass: rgba(17, 24, 32, 0.95);
+
+    --text-primary: #d4dbe6;
+    --text-secondary: #8898b0;
+    --text-tertiary: #5f7090;
+    --text-muted: #475570;
+
+    --border-primary: rgba(99, 118, 150, 0.2);
+    --border-secondary: rgba(99, 118, 150, 0.1);
+    --border-hover: rgba(99, 118, 150, 0.3);
+    --border-focus: rgba(99, 118, 150, 0.5);
+
+    --accent-primary: #637696;
+    --accent-secondary: #7b90b0;
+    --accent-hover: #4f6080;
+    --accent-muted: rgba(99, 118, 150, 0.15);
+
+    /* User message - stormy blue-gray */
+    --user-msg-from: #4f6080;
+    --user-msg-to: #3d4d68;
+    --user-msg-hover-from: #5a6d90;
+    --user-msg-hover-to: #4f6080;
+    --user-msg-text: #d4dbe6;
+
+    --assistant-bg: rgba(23, 31, 42, 0.8);
+    --assistant-border: rgba(99, 118, 150, 0.12);
+    --assistant-text: #d4dbe6;
+
+    --scrollbar-thumb: rgba(99, 118, 150, 0.3);
+    --scrollbar-thumb-hover: rgba(99, 118, 150, 0.45);
+
+    --code-bg: #0c1018;
+    --code-header-bg: rgba(17, 24, 32, 0.7);
+    --code-border: rgba(99, 118, 150, 0.1);
+
+    --input-bg: rgba(23, 31, 42, 0.8);
+    --input-border: rgba(99, 118, 150, 0.25);
+    --input-focus-border: rgba(99, 118, 150, 0.5);
+    --input-focus-ring: rgba(99, 118, 150, 0.15);
+
+    --shadow-accent: rgba(99, 118, 150, 0.3);
+    --shadow-accent-hover: rgba(123, 144, 176, 0.4);
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --info: #60a5fa;
+}
+
+/* ============================================
    Base Styles
    ============================================ */
 
@@ -5130,6 +5135,23 @@ body.font-size-large .markdown-content,
     max-width: 100% !important;
 }
 
+/* Wide Centered - Full width container, messages centered */
+.chat-style-wide-centered .max-w-4xl {
+    max-width: 100% !important;
+}
+
+.chat-style-wide-centered .flex.flex-col.items-end,
+.chat-style-wide-centered .flex.flex-col.items-start {
+    align-items: center !important;
+}
+
+.chat-style-wide-centered .message-user,
+.chat-style-wide-centered .message-assistant {
+    max-width: 100% !important;
+    width: 100% !important;
+    padding: 1.25rem 1.5rem !important;
+}
+
 /* ============================================
    Font Family Overrides (highest priority - outside @layer)
    ============================================ */
@@ -5257,17 +5279,17 @@ html body.font-family-geistmono,
 html body.font-family-geistmono *:not(code):not(pre):not(.code-content):not(.code-header) {
     font-family: "Geist Mono", "JetBrains Mono", monospace !important;
 }
-html body.font-family-monaspace,
-html body.font-family-monaspace *:not(code):not(pre):not(.code-content):not(.code-header) {
-    font-family: "Monaspace Neon", "JetBrains Mono", monospace !important;
+html body.font-family-sourcecodepro,
+html body.font-family-sourcecodepro *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Source Code Pro", "JetBrains Mono", monospace !important;
 }
 html body.font-family-intelone,
 html body.font-family-intelone *:not(code):not(pre):not(.code-content):not(.code-header) {
     font-family: "Intel One Mono", "JetBrains Mono", monospace !important;
 }
-html body.font-family-commitmono,
-html body.font-family-commitmono *:not(code):not(pre):not(.code-content):not(.code-header) {
-    font-family: "Commit Mono", "JetBrains Mono", monospace !important;
+html body.font-family-inconsolata,
+html body.font-family-inconsolata *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Inconsolata", "JetBrains Mono", monospace !important;
 }
 html body.font-family-martianmono,
 html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.code-header) {
