@@ -2305,7 +2305,12 @@ function detectFalseCompletionClaim(response, userMessage) {
     const fileOperationRequests = [
         /\b(delete|remove|rm|erase|clear|wipe)\b.*\b(file|folder|directory|dir|everything|all)\b/i,
         /\b(file|folder|directory|dir|everything|all)\b.*\b(delete|remove|rm|erase|clear|wipe)d?\b/i,
+        // Match "delete/remove <filename>" without requiring the word "file" (e.g., "delete test.txt")
+        /\b(delete|remove|rm|erase)\b.*\.\w{1,5}\b/i,
+        /\b(delete|remove|rm|erase)\b\s+\S+/i,
         /\bcreate\b.*\b(file|folder|directory)\b/i,
+        // Match "create <filename>" (e.g., "create test.txt")
+        /\bcreate\b.*\.\w{1,5}\b/i,
         /\bmove\b.*\b(file|folder|directory)\b/i,
         /\brename\b.*\b(file|folder|directory)\b/i,
         /\bcopy\b.*\b(file|folder|directory)\b/i,
@@ -2844,6 +2849,9 @@ async function executeFileOperationSkill(skillName, params) {
                     return { success: false, error: `File not found: ${filePath}` };
                 }
 
+                // Stop animation before showing confirmation prompt
+                stopAnimation(true);
+
                 // Prompt for confirmation before deleting
                 log(colorize(`\n⚠️  DELETE FILE: ${filePath}`, 'yellow'));
                 const confirmation = await promptConfirmation('Are you sure you want to delete this file?');
@@ -2852,7 +2860,7 @@ async function executeFileOperationSkill(skillName, params) {
                     return {
                         success: false,
                         filePath: filePath,
-                        message: 'Delete cancelled by user'
+                        error: 'Delete cancelled by user'
                     };
                 } else if (confirmation === 'skip') {
                     return {
@@ -2907,6 +2915,9 @@ async function executeFileOperationSkill(skillName, params) {
                     return { success: false, error: `Path is a file, not a directory. Use delete_file instead: ${dirPath}` };
                 }
 
+                // Stop animation before showing confirmation prompt
+                stopAnimation(true);
+
                 // Prompt for confirmation before deleting
                 log(colorize(`\n⚠️  DELETE DIRECTORY: ${dirPath}`, 'yellow'));
                 log(colorize('This will recursively delete all contents!', 'red'));
@@ -2916,13 +2927,13 @@ async function executeFileOperationSkill(skillName, params) {
                     return {
                         success: false,
                         dirPath: dirPath,
-                        message: 'Delete cancelled by user'
+                        error: 'Delete cancelled by user'
                     };
                 } else if (confirmation === 'skip') {
                     return {
-                        success: true,
+                        success: false,
                         dirPath: dirPath,
-                        message: 'Delete skipped by user',
+                        error: 'Delete skipped by user',
                         skipped: true
                     };
                 }
@@ -7202,6 +7213,9 @@ YOU MUST NOT:
         resetStreamingState();
         isStreaming = true;
 
+        let isInThinkBlock = false;
+        let thinkingIndicatorShown = false;
+
         const result = await api.chatStream(
             currentMessage,
             null,
@@ -7211,7 +7225,30 @@ YOU MUST NOT:
                 streamingResponse += token;
                 tokenCount++;
 
-                // Stop animation on first token and clear the line
+                // Track thinking state for <think> tags
+                if (streamingResponse.includes('<think>') && !streamingResponse.includes('</think>')) {
+                    if (!isInThinkBlock) {
+                        isInThinkBlock = true;
+                        // Show thinking indicator instead of leaving screen blank
+                        if (!thinkingIndicatorShown) {
+                            if (!hasStoppedAnimation) {
+                                stopAnimation(true);
+                                hasStoppedAnimation = true;
+                            }
+                            startAnimation('Thinking', 'dots');
+                            thinkingIndicatorShown = true;
+                        }
+                    }
+                    return; // Don't process display during thinking
+                } else if (isInThinkBlock && streamingResponse.includes('</think>')) {
+                    isInThinkBlock = false;
+                    // Stop thinking animation when think block ends
+                    if (thinkingIndicatorShown) {
+                        stopAnimation(true);
+                    }
+                }
+
+                // Stop animation on first visible token and clear the line
                 if (!hasStoppedAnimation) {
                     stopAnimation(true);
                     hasStoppedAnimation = true;
