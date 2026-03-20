@@ -962,7 +962,7 @@ function displayDiff(oldContent, newContent, filePath) {
 
 // Prompt user for confirmation
 // Uses raw stdin to avoid conflicts with main readline interface
-function promptConfirmation(message) {
+function promptConfirmation(message, timeoutMs = 30000) {
     return new Promise((resolve) => {
         // Save terminal state
         const wasRaw = process.stdin.isRaw;
@@ -973,12 +973,15 @@ function promptConfirmation(message) {
         // Write prompt
         process.stdout.write(colorize(`${message} (y/n/s=skip): `, 'yellow'));
 
+        let timeoutId = null;
+
         // Listen for a single line of input
         const onData = (data) => {
             const answer = data.toString().trim().toLowerCase();
 
-            // Remove listener
+            // Remove listener and clear timeout
             process.stdin.removeListener('data', onData);
+            if (timeoutId) clearTimeout(timeoutId);
 
             // Restore terminal state
             if (process.stdin.setRawMode && wasRaw) {
@@ -994,6 +997,16 @@ function promptConfirmation(message) {
                 resolve('no');
             }
         };
+
+        // Timeout - auto-cancel if no response
+        timeoutId = setTimeout(() => {
+            process.stdin.removeListener('data', onData);
+            if (process.stdin.setRawMode && wasRaw) {
+                process.stdin.setRawMode(true);
+            }
+            process.stdout.write(colorize('\n(timed out - cancelled)\n', 'dim'));
+            resolve('no');
+        }, timeoutMs);
 
         // Attach listener
         process.stdin.once('data', onData);
@@ -1300,6 +1313,14 @@ function cleanSkillSyntax(text) {
     if (!text) return '';
 
     let result = text;
+
+    // Step 0: Strip thinking model tags (<think>...</think>)
+    // Remove complete thinking blocks
+    result = result.replace(/<think>[\s\S]*?<\/think>/g, '');
+    // Remove unclosed/in-progress thinking tags (streaming)
+    result = result.replace(/<think>[\s\S]*$/g, '');
+    // Remove orphaned closing tags
+    result = result.replace(/<\/think>/g, '');
 
     // Step 1: Remove complete multi-line skill calls with triple-quoted strings
     // Pattern: [SKILL:name(param="""...multiline...""")]
@@ -1965,6 +1986,8 @@ class AgentAPI {
                                                 }
                                             });
                                         }
+                                    } else if (data.type === 'auto_continuation') {
+                                        // Server is auto-continuing the response - skip, tokens keep flowing
                                     } else if (data.token) {
                                         fullResponse += data.token;
                                         if (onToken) {
@@ -2833,9 +2856,9 @@ async function executeFileOperationSkill(skillName, params) {
                     };
                 } else if (confirmation === 'skip') {
                     return {
-                        success: true,
+                        success: false,
                         filePath: filePath,
-                        message: 'Delete skipped by user',
+                        error: 'Delete skipped by user',
                         skipped: true
                     };
                 }
@@ -5065,8 +5088,8 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 addToHistory('system', `⊘ ${operation} skipped: ${relativePath}`);
                 results.push({
                     skill: call.skillName,
-                    success: true,
-                    result: { filePath, skipped: true },
+                    success: false,
+                    error: `${operation} skipped by user`,
                     skipped: true
                 });
                 displayChatHistory();
@@ -7220,11 +7243,16 @@ YOU MUST NOT:
                 lastStreamedMessage = '';
                 lastCleanedMessage = '';
 
-                // Remove streaming cursor
+                // Remove streaming cursor and strip thinking tags from final content
+                const cleanedFinalResponse = fullResponse
+                    .replace(/<think>[\s\S]*?<\/think>/g, '')
+                    .replace(/<think>[\s\S]*$/g, '')
+                    .replace(/<\/think>/g, '')
+                    .trim();
                 const lastMsg = chatHistory[chatHistory.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant-streaming') {
                     lastMsg.role = 'assistant';
-                    lastMsg.content = fullResponse;
+                    lastMsg.content = cleanedFinalResponse;
                 }
 
                 // Update token usage stats
@@ -7252,7 +7280,9 @@ YOU MUST NOT:
             return;
         }
 
-        const response = result.data.response;
+        // Strip thinking tags from response before processing
+        let response = result.data.response;
+        response = response.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/g, '').replace(/<\/think>/g, '').trim();
         finalResponse = response;
 
         // Check for skill calls in the response
