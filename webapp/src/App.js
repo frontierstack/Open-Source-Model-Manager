@@ -586,73 +586,90 @@ const App = () => {
         const wsPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
         const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}`;
 
-        const client = new WebSocket(wsUrl);
-        wsRef.current = client;
+        let reconnectTimeout = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 20;
+        let intentionalClose = false;
 
-        client.onopen = () => {
-            setWsConnected(true);
-            showSnackbar('Connected to backend', 'success');
-        };
+        const connectWs = () => {
+            const client = new WebSocket(wsUrl);
+            wsRef.current = client;
 
-        client.onmessage = (message) => {
-            try {
-                const data = JSON.parse(message.data);
-                if (data.type === 'log') {
-                    setLogs(prevLogs => [...prevLogs, {
-                        message: data.message.trim(),
-                        level: data.level || 'info'
-                    }]);
-                } else if (data.type === 'status') {
-                    const severity = data.level === 'error' ? 'error' :
-                                     data.level === 'success' ? 'success' :
-                                     data.message.toLowerCase().includes('error') ? 'error' : 'success';
-                    showSnackbar(data.message, severity);
-                    fetchModels();
-                    fetchInstances();
-                    setLoading(false);
-                } else if (data.type === 'download_started') {
-                    fetchDownloads();
-                    showSnackbar(`Download started: ${data.modelName}`, 'info');
-                } else if (data.type === 'download_progress') {
-                    setActiveDownloads(prev => prev.map(d =>
-                        d.downloadId === data.downloadId ? { ...d, progress: data.progress } : d
-                    ));
-                } else if (data.type === 'download_finished') {
-                    fetchDownloads();
-                    fetchModels();
-                    if (data.success) {
-                        showSnackbar(data.message, 'success');
-                    } else {
-                        showSnackbar(data.message, 'error');
-                    }
-                } else if (data.type === 'download_cancelled') {
-                    fetchDownloads();
-                    showSnackbar(data.message, 'warning');
-                } else if (data.type === 'download_removed') {
-                    // Remove download from UI
-                    setActiveDownloads(prev => prev.filter(d => d.downloadId !== data.downloadId));
-                } else if (data.type === 'service_status_changed') {
-                    fetchApps();
+            client.onopen = () => {
+                setWsConnected(true);
+                if (reconnectAttempts > 0) {
+                    showSnackbar('Reconnected to backend', 'success');
+                } else {
+                    showSnackbar('Connected to backend', 'success');
                 }
-            } catch (error) {
-                console.error('Error processing WebSocket message:', error);
-                // Don't crash the UI - just log the error
-            }
+                reconnectAttempts = 0;
+            };
+
+            client.onmessage = (message) => {
+                try {
+                    const data = JSON.parse(message.data);
+                    if (data.type === 'log') {
+                        setLogs(prevLogs => [...prevLogs, {
+                            message: data.message.trim(),
+                            level: data.level || 'info'
+                        }]);
+                    } else if (data.type === 'status') {
+                        const severity = data.level === 'error' ? 'error' :
+                                         data.level === 'success' ? 'success' :
+                                         data.message.toLowerCase().includes('error') ? 'error' : 'success';
+                        showSnackbar(data.message, severity);
+                        fetchModels();
+                        fetchInstances();
+                        setLoading(false);
+                    } else if (data.type === 'download_started') {
+                        fetchDownloads();
+                        showSnackbar(`Download started: ${data.modelName}`, 'info');
+                    } else if (data.type === 'download_progress') {
+                        setActiveDownloads(prev => prev.map(d =>
+                            d.downloadId === data.downloadId ? { ...d, progress: data.progress } : d
+                        ));
+                    } else if (data.type === 'download_finished') {
+                        fetchDownloads();
+                        fetchModels();
+                        if (data.success) {
+                            showSnackbar(data.message, 'success');
+                        } else {
+                            showSnackbar(data.message, 'error');
+                        }
+                    } else if (data.type === 'download_cancelled') {
+                        fetchDownloads();
+                        showSnackbar(data.message, 'warning');
+                    } else if (data.type === 'download_removed') {
+                        setActiveDownloads(prev => prev.filter(d => d.downloadId !== data.downloadId));
+                    } else if (data.type === 'service_status_changed') {
+                        fetchApps();
+                    }
+                } catch (error) {
+                    console.error('Error processing WebSocket message:', error);
+                }
+            };
+
+            client.onclose = () => {
+                setWsConnected(false);
+                if (!intentionalClose && reconnectAttempts < maxReconnectAttempts) {
+                    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
+                    reconnectAttempts++;
+                    reconnectTimeout = setTimeout(connectWs, delay);
+                }
+            };
+
+            client.onerror = () => {
+                // onclose will fire after onerror, reconnection handled there
+            };
         };
 
-        client.onclose = () => {
-            setWsConnected(false);
-            showSnackbar('Disconnected from backend', 'error');
-        };
-
-        client.onerror = () => {
-            setWsConnected(false);
-            showSnackbar('WebSocket connection error', 'error');
-        };
+        connectWs();
 
         return () => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.close();
+            intentionalClose = true;
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.close();
             }
         };
     }, []);

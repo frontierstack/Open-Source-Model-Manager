@@ -1528,9 +1528,7 @@ wss.on('connection', async (ws, req) => {
     }
 
     if (!userId) {
-        console.warn('[WebSocket] Connection rejected: no valid session');
-        ws.close(4001, 'Authentication required');
-        return;
+        console.warn('[WebSocket] Connection without session - will not receive user-targeted messages');
     }
 
     ws.on('close', () => {
