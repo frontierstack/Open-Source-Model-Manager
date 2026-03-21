@@ -89,7 +89,7 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],  // Required for React
+            scriptSrc: ["'self'", "'unsafe-inline'"],
             styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],  // Required for MUI and Google Fonts
             imgSrc: ["'self'", "data:", "https:"],
             connectSrc: ["'self'", "wss:", "ws:"],  // WebSocket connections
@@ -99,7 +99,7 @@ app.use(helmet({
         },
     },
     crossOriginEmbedderPolicy: false,  // Required for some external resources
-    crossOriginResourcePolicy: { policy: "cross-origin" },  // Allow cross-origin requests
+    crossOriginResourcePolicy: { policy: "same-origin" },
 }));
 
 // Security: Rate limiting for authentication endpoints
@@ -157,6 +157,37 @@ if (fsSync.existsSync(SSL_KEY_PATH) && fsSync.existsSync(SSL_CERT_PATH)) {
 
 const wss = new WebSocket.Server({ server });
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+
+// Timing-safe string comparison to prevent timing attacks on API keys
+function timingSafeCompare(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+// SSRF protection: validate URLs against private IP ranges
+function isPrivateUrl(urlString) {
+    try {
+        const parsed = new URL(urlString);
+        const hostname = parsed.hostname.toLowerCase();
+        // Block private/reserved hostnames
+        if (['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal'].includes(hostname)) return true;
+        // Block private IP ranges
+        const parts = hostname.split('.').map(Number);
+        if (parts.length === 4 && parts.every(p => !isNaN(p))) {
+            if (parts[0] === 10) return true; // 10.0.0.0/8
+            if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
+            if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+            if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16 (link-local/AWS metadata)
+            if (parts[0] === 0) return true; // 0.0.0.0/8
+        }
+        // Block file:// and other dangerous protocols
+        if (!['http:', 'https:'].includes(parsed.protocol)) return true;
+        return false;
+    } catch {
+        return true; // Invalid URL = block
+    }
+}
 
 // In-memory store for model instances (supports both vLLM and llama.cpp backends)
 // Map structure: modelName -> { containerId, port, status, config, backend }
@@ -1333,7 +1364,22 @@ function allocatePort() {
 }
 
 // Session middleware configuration
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// Persist session secret so sessions survive container restarts
+const SESSION_SECRET_FILE = path.join(DATA_DIR, '.session-secret');
+let SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+    try {
+        SESSION_SECRET = fsSync.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
+    } catch {
+        SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+        try {
+            fsSync.writeFileSync(SESSION_SECRET_FILE, SESSION_SECRET, { mode: 0o600 });
+            console.log('[Security] Generated and persisted new session secret');
+        } catch (e) {
+            console.warn('[Security] Could not persist session secret:', e.message);
+        }
+    }
+}
 const SESSION_DIR = path.join('/models/.modelserver', 'sessions');
 
 // Ensure sessions directory exists
@@ -1415,7 +1461,7 @@ initializePassport(passport);
 app.use(passport.initialize());
 app.use(passport.session());
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Helper function to parse session ID from cookie string
@@ -1465,10 +1511,11 @@ async function getUserIdFromSession(sessionId) {
 wss.on('connection', async (ws, req) => {
     console.log('Client connected');
 
+    let userId = null;
     try {
         // Try to bind WebSocket to user session
         const sessionId = parseSessionCookie(req.headers.cookie);
-        const userId = await getUserIdFromSession(sessionId);
+        userId = await getUserIdFromSession(sessionId);
 
         ws.userId = userId;
         ws.sessionId = sessionId;
@@ -1478,7 +1525,12 @@ wss.on('connection', async (ws, req) => {
         }
     } catch (error) {
         console.error('Error setting up WebSocket connection:', error.message);
-        // Continue anyway - connection can work without user binding
+    }
+
+    if (!userId) {
+        console.warn('[WebSocket] Connection rejected: no valid session');
+        ws.close(4001, 'Authentication required');
+        return;
     }
 
     ws.on('close', () => {
@@ -1543,7 +1595,7 @@ const {
 } = require('./auth/users');
 
 // Check if any users exist (for first admin setup)
-app.get('/api/auth/has-users', async (req, res) => {
+app.get('/api/auth/has-users', authRateLimiter, async (req, res) => {
     try {
         const hasUsers = await hasAnyUsers();
         res.json({ hasUsers });
@@ -1623,7 +1675,7 @@ app.post('/api/auth/login', authRateLimiter, (req, res, next) => {
         }
 
         if (!user) {
-            return res.status(401).json({ error: info.message || 'Invalid credentials' });
+            return res.status(401).json({ error: 'Invalid username or password' });
         }
 
         req.logIn(user, async (err) => {
@@ -1742,8 +1794,10 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 
 // Change password (rate limited to prevent brute force)
 app.put('/api/auth/password', authRateLimiter, requireAuth, async (req, res) => {
-    // requireAuth middleware handles both session and API key authentication
-    // No need for additional isAuthenticated check
+    // Require session authentication only - API keys cannot change passwords
+    if (!req.user || !req.user.id) {
+        return res.status(401).json({ error: 'Session authentication required for password changes' });
+    }
 
     try {
         const { currentPassword, newPassword } = req.body;
@@ -1773,7 +1827,7 @@ app.put('/api/auth/password', authRateLimiter, requireAuth, async (req, res) => 
 app.get('/api/users', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
@@ -1789,15 +1843,18 @@ app.get('/api/users', requireAuth, async (req, res) => {
 app.put('/api/users/:id', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
         const { id } = req.params;
-        const updates = req.body;
 
-        // Don't allow changing role to admin unless current user is admin
-        // (already checked above, but for safety)
+        // Whitelist allowed fields to prevent mass assignment
+        const { email, disabled, role } = req.body;
+        const updates = {};
+        if (email !== undefined) updates.email = email;
+        if (disabled !== undefined) updates.disabled = disabled;
+        if (role !== undefined && req.user.role === 'admin') updates.role = role;
 
         const updatedUser = await updateUser(id, updates);
         res.json(updatedUser);
@@ -1811,7 +1868,7 @@ app.put('/api/users/:id', requireAuth, async (req, res) => {
 app.delete('/api/users/:id', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
@@ -1834,7 +1891,7 @@ app.delete('/api/users/:id', requireAuth, async (req, res) => {
 app.post('/api/users/:username/reset-password', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
@@ -1857,7 +1914,7 @@ app.post('/api/users/:username/reset-password', requireAuth, async (req, res) =>
 app.post('/api/users', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
@@ -1883,7 +1940,7 @@ app.post('/api/users', requireAuth, async (req, res) => {
 app.post('/api/users/invite', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
@@ -1915,7 +1972,7 @@ app.post('/api/users/invite', requireAuth, async (req, res) => {
 app.put('/api/users/:id/disable', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
@@ -1942,7 +1999,7 @@ app.put('/api/users/:id/disable', requireAuth, async (req, res) => {
 app.put('/api/users/:id/enable', requireAuth, async (req, res) => {
     try {
         // Check if user is admin
-        if (req.user.role !== 'admin') {
+        if (!req.user || req.user.role !== 'admin') {
             return res.status(403).json({ error: 'Admin access required' });
         }
 
@@ -2372,6 +2429,20 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             ggufFile = ggufFiles[0];
         }
 
+        // Validate model configuration parameters
+        if (req.body.maxModelLen !== undefined) {
+            const maxLen = Number(req.body.maxModelLen);
+            if (isNaN(maxLen) || maxLen < 256 || maxLen > 1048576) {
+                return res.status(400).json({ error: 'maxModelLen must be between 256 and 1048576' });
+            }
+        }
+        if (req.body.gpuMemoryUtilization !== undefined) {
+            const gpuUtil = Number(req.body.gpuMemoryUtilization);
+            if (isNaN(gpuUtil) || gpuUtil < 0.1 || gpuUtil > 1.0) {
+                return res.status(400).json({ error: 'gpuMemoryUtilization must be between 0.1 and 1.0' });
+            }
+        }
+
         const fullPath = path.join(modelPath, ggufFile);
 
         let result;
@@ -2483,8 +2554,8 @@ async function createVllmInstance(modelName, modelPath, config) {
                 Runtime: 'nvidia',
                 Binds: [getModelsVolumeBind()],
                 PortBindings: {
-                    // Bind to all interfaces for container-to-container communication
-                    [`${port}/tcp`]: [{ HostIp: '0.0.0.0', HostPort: `${port}` }]
+                    // Bind to localhost only - containers communicate via Docker network, not exposed externally
+                    [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: `${port}` }]
                 },
                 DeviceRequests: [{
                     Driver: 'nvidia',
@@ -2580,7 +2651,8 @@ async function createLlamacppInstance(modelName, modelPath, config) {
                 Runtime: 'nvidia',
                 Binds: [getModelsVolumeBind()],
                 PortBindings: {
-                    [`${port}/tcp`]: [{ HostIp: '0.0.0.0', HostPort: `${port}` }]
+                    // Bind to localhost only - containers communicate via Docker network, not exposed externally
+                    [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: `${port}` }]
                 },
                 DeviceRequests: [{
                     Driver: 'nvidia',
@@ -3980,7 +4052,7 @@ async function optionalAuth(req, res, next) {
     // If headers are provided, validate them
     try {
         const keys = await loadApiKeys();
-        const keyData = keys.find(k => k.key === apiKey && k.secret === apiSecret && k.active);
+        const keyData = keys.find(k => timingSafeCompare(k.key, apiKey) && timingSafeCompare(k.secret, apiSecret) && k.active);
 
         if (!keyData) {
             return res.status(401).json({ error: 'Invalid or inactive API key' });
@@ -4086,7 +4158,7 @@ async function requireAuth(req, res, next) {
         const bearerToken = authHeader.substring(7);
         try {
             const keys = await loadApiKeys();
-            const keyData = keys.find(k => k.key === bearerToken && k.active && k.bearerOnly === true);
+            const keyData = keys.find(k => timingSafeCompare(k.key, bearerToken) && k.active && k.bearerOnly === true);
 
             if (!keyData) {
                 return res.status(401).json({ error: 'Invalid or inactive Bearer token' });
@@ -4168,7 +4240,7 @@ function checkPermission(keyData, permission) {
 // Otherwise, return only items belonging to the user
 function filterByUserId(items, userId) {
     if (!userId) {
-        return items; // No filtering for unauthenticated requests
+        return []; // Require authentication - no unauthenticated access
     }
     // Include items without userId (global/system items) or items owned by user
     return items.filter(item => !item.userId || item.userId === userId);
@@ -4179,7 +4251,7 @@ function filterByUserId(items, userId) {
 // Otherwise, check if item belongs to user
 function checkOwnership(item, userId) {
     if (!userId) {
-        return true; // No ownership check for unauthenticated requests
+        return false; // Require authentication - no unauthenticated access
     }
     // Allow access to global items (no userId) or items owned by user
     return item && (!item.userId || item.userId === userId);
@@ -4210,7 +4282,7 @@ async function requireAdmin(req, res, next) {
         // Check for admin permission
         try {
             const keys = await loadApiKeys();
-            const keyData = keys.find(k => k.key === apiKey && k.secret === apiSecret && k.active);
+            const keyData = keys.find(k => timingSafeCompare(k.key, apiKey) && timingSafeCompare(k.secret, apiSecret) && k.active);
 
             if (!keyData) {
                 return res.status(401).json({ error: 'Invalid or inactive API key' });
@@ -4262,7 +4334,12 @@ app.get('/api/api-keys', requireAdmin, async (req, res) => {
                 }
             };
         });
-        res.json(keysWithStats);
+        // Mask secrets - only show last 4 characters
+        const maskedKeys = keysWithStats.map(k => ({
+            ...k,
+            secret: k.secret ? `${'*'.repeat(Math.max(0, k.secret.length - 4))}${k.secret.slice(-4)}` : null,
+        }));
+        res.json(maskedKeys);
     } catch (error) {
         console.error('Error getting API keys:', error);
         res.status(500).json({ error: 'Failed to load API keys' });
@@ -4286,8 +4363,8 @@ app.post('/api/api-keys', requireAdmin, async (req, res) => {
             secret: bearerOnly ? null : generateApiSecret(), // No secret for bearer-only keys
             bearerOnly: bearerOnly || false,
             permissions: permissions || ['query', 'models'],
-            rateLimitRequests: rateLimitRequests !== undefined ? rateLimitRequests : 60, // null for no limit, default 60
-            rateLimitTokens: rateLimitTokens !== undefined ? rateLimitTokens : 100000, // null for no limit, default 100k
+            rateLimitRequests: (rateLimitRequests !== undefined && rateLimitRequests !== null && rateLimitRequests > 0) ? rateLimitRequests : 60,
+            rateLimitTokens: (rateLimitTokens !== undefined && rateLimitTokens !== null && rateLimitTokens > 0) ? rateLimitTokens : 100000,
             active: true,
             createdAt: new Date().toISOString()
         };
@@ -5021,7 +5098,7 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
                 if (agentId) {
                     console.error(`[Agent ${agentId}] Skill execution failed: ${error.message}`);
                 }
-                return res.status(500).json({ error: 'Skill execution failed: ' + error.message });
+                return res.status(500).json({ error: 'Skill execution failed' });
             }
         } else {
             // Fallback to hardcoded implementations for legacy skills
@@ -5037,18 +5114,18 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
         res.json(result);
     } catch (error) {
         console.error('Error executing skill:', error);
-        res.status(500).json({ error: 'Failed to execute skill: ' + error.message });
+        res.status(500).json({ error: 'Failed to execute skill' });
     }
 });
 
 // Python skill executor
 async function executePythonSkill(skill, params) {
-    const tempFile = `/tmp/skill_${Date.now()}_${Math.random().toString(36).substring(7)}.py`;
+    const tempFile = `/tmp/skill_${Date.now()}_${crypto.randomBytes(12).toString('hex')}.py`;
 
     try {
         // Create Python script with JSON I/O
         // Write params to a separate JSON file to avoid shell escaping issues
-        const paramsFile = `/tmp/skill_params_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.json`;
+        const paramsFile = `/tmp/skill_params_${Date.now()}_${crypto.randomBytes(12).toString('hex')}.json`;
         const paramsJson = JSON.stringify(params);
         await fs.writeFile(paramsFile, paramsJson);
 
@@ -5286,6 +5363,9 @@ async function executeLegacySkill(skillName, params) {
                 if (!params.url) {
                     throw new Error('url required' );
                 }
+                if (isPrivateUrl(params.url)) {
+                    throw new Error('URLs targeting private/internal networks are not allowed');
+                }
                 try {
                     const axios = require('axios');
                     const response = await axios.get(params.url, { timeout: 10000 });
@@ -5298,6 +5378,9 @@ async function executeLegacySkill(skillName, params) {
             case 'http_request':
                 if (!params.url || !params.method) {
                     throw new Error('url and method required' );
+                }
+                if (isPrivateUrl(params.url)) {
+                    throw new Error('URLs targeting private/internal networks are not allowed');
                 }
                 try {
                     const axios = require('axios');
@@ -5357,7 +5440,7 @@ async function executeLegacySkill(skillName, params) {
             // System Commands
             case 'netstat':
                 const netstatCmd = process.platform === 'win32' ? 'netstat' : 'netstat';
-                const netstatArgs = params.flags || '-tuln';
+                const netstatArgs = (params.flags || '-tuln').replace(/[;&|`$(){}]/g, '');
                 try {
                     const { stdout } = await execPromise(`${netstatCmd} ${netstatArgs}`);
                     result = { success: true, output: stdout };
@@ -5418,6 +5501,11 @@ async function executeLegacySkill(skillName, params) {
                 if (!params.text || !params.pattern) {
                     throw new Error('text and pattern required' );
                 }
+                // Reject obviously dangerous regex patterns (catastrophic backtracking)
+                if (params.pattern.length > 200) throw new Error('Pattern too long (max 200 chars)');
+                if (/(\+\+|\*\*|\{\d+,\}\+|\(\?[^)]*\)\+\+)/.test(params.pattern)) {
+                    throw new Error('Pattern contains potentially dangerous constructs');
+                }
                 try {
                     const regex = new RegExp(params.pattern, params.flags || 'g');
                     const matches = [...params.text.matchAll(regex)];
@@ -5441,8 +5529,13 @@ async function executeLegacySkill(skillName, params) {
 
             case 'git_status':
                 const repoPath = params.repoPath || '.';
+                // Validate repoPath to prevent path traversal
+                const resolvedRepoPath = path.resolve(repoPath);
+                if (!resolvedRepoPath.startsWith('/models') && resolvedRepoPath !== path.resolve('.')) {
+                    throw new Error('repoPath must be within /models directory');
+                }
                 try {
-                    const { stdout } = await execPromise('git status', { cwd: repoPath });
+                    const { stdout } = await execPromise('git status', { cwd: resolvedRepoPath });
                     result = { success: true, output: stdout };
                 } catch (e) {
                     throw new Error('Git command failed: ' + e.message );
@@ -5451,9 +5544,19 @@ async function executeLegacySkill(skillName, params) {
 
             case 'git_diff':
                 const gitRepoPath = params.repoPath || '.';
-                const gitFiles = params.files ? params.files.join(' ') : '';
+                // Validate repoPath to prevent path traversal
+                const resolvedGitRepoPath = path.resolve(gitRepoPath);
+                if (!resolvedGitRepoPath.startsWith('/models') && resolvedGitRepoPath !== path.resolve('.')) {
+                    throw new Error('repoPath must be within /models directory');
+                }
+                const gitArgs = ['diff'];
+                if (params.files && Array.isArray(params.files)) {
+                    // Sanitize: only allow filenames without shell metacharacters
+                    const safeFiles = params.files.filter(f => typeof f === 'string' && !/[;&|`$(){}]/.test(f));
+                    gitArgs.push('--', ...safeFiles);
+                }
                 try {
-                    const { stdout } = await execPromise(`git diff ${gitFiles}`, { cwd: gitRepoPath });
+                    const { stdout } = await execPromise(`git ${gitArgs.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`, { cwd: resolvedGitRepoPath });
                     result = { success: true, output: stdout };
                 } catch (e) {
                     throw new Error('Git command failed: ' + e.message );
@@ -5712,6 +5815,20 @@ function validateAgentFilePath(filePath) {
 
     // Resolve to absolute path
     const resolved = path.resolve(filePath);
+
+    // Check for symlink attacks
+    try {
+        const realPath = fs.realpathSync(resolved);
+        if (realPath !== resolved) {
+            // Path contains symlinks - validate the real path too
+            const allowedPrefixes = ['/models', '/tmp'];
+            if (!allowedPrefixes.some(prefix => realPath.startsWith(prefix))) {
+                return { valid: false, error: 'Symlink target is outside allowed directories' };
+            }
+        }
+    } catch (e) {
+        // File doesn't exist yet, which is OK for write operations
+    }
 
     // Check if path starts with any allowed directory
     const isAllowed = AGENT_ALLOWED_PATHS.some(allowedPath => {
@@ -6777,6 +6894,10 @@ async function saveConversationsIndex(userId, conversations) {
 
 // Load messages for a conversation
 async function loadConversationMessages(userId, conversationId) {
+    // Validate conversationId format to prevent path traversal
+    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) {
+        throw new Error('Invalid conversation ID format');
+    }
     const userDir = await ensureUserConversationsDir(userId);
     const messagesPath = path.join(userDir, `${conversationId}.json`);
     try {
@@ -6795,6 +6916,10 @@ async function loadConversationMessages(userId, conversationId) {
 
 // Save messages for a conversation
 async function saveConversationMessages(userId, conversationId, messages) {
+    // Validate conversationId format to prevent path traversal
+    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) {
+        throw new Error('Invalid conversation ID format');
+    }
     const userDir = await ensureUserConversationsDir(userId);
     const messagesPath = path.join(userDir, `${conversationId}.json`);
     await fs.writeFile(messagesPath, JSON.stringify(messages, null, 2));
@@ -7236,6 +7361,12 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
     try {
         // Handle base64-encoded file content
         const { filename, content, mimeType, optimize = true } = req.body;
+
+        // Validate file size (max 10MB)
+        const contentLength = content ? content.length : 0;
+        if (contentLength > 10 * 1024 * 1024) {
+            return res.status(413).json({ error: 'File too large. Maximum size is 10MB.' });
+        }
 
         if (!content) {
             return res.status(400).json({ error: 'File content is required' });
@@ -10802,7 +10933,7 @@ function sanitizeHost(hostHeader) {
 }
 
 // Bash installer (Linux/macOS/WSL/Git Bash)
-app.get('/api/cli/install', (req, res) => {
+app.get('/api/cli/install', apiRateLimiter, (req, res) => {
     const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.sh');
     const host = sanitizeHost(req.get('host'));
     const protocol = req.protocol || 'https';
@@ -10823,7 +10954,7 @@ app.get('/api/cli/install', (req, res) => {
 });
 
 // PowerShell installer (Windows)
-app.get('/api/cli/install.ps1', (req, res) => {
+app.get('/api/cli/install.ps1', apiRateLimiter, (req, res) => {
     const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.ps1');
     const host = sanitizeHost(req.get('host'));
     const protocol = req.protocol || 'https';
@@ -10844,7 +10975,7 @@ app.get('/api/cli/install.ps1', (req, res) => {
 });
 
 // Serve CLI files for download
-app.get('/api/cli/files/package.json', (req, res) => {
+app.get('/api/cli/files/package.json', apiRateLimiter, (req, res) => {
     const packagePath = path.join(__dirname, 'agents-cli/package.json');
     fs.readFile(packagePath, 'utf8')
         .then(content => {
@@ -10857,7 +10988,7 @@ app.get('/api/cli/files/package.json', (req, res) => {
         });
 });
 
-app.get('/api/cli/files/koda.js', (req, res) => {
+app.get('/api/cli/files/koda.js', apiRateLimiter, (req, res) => {
     const kodaPath = path.join(__dirname, 'agents-cli/bin/koda.js');
     fs.readFile(kodaPath, 'utf8')
         .then(content => {

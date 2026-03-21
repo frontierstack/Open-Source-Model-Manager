@@ -69,18 +69,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python libraries for skills
+# Install Python libraries for skills (pinned to major versions to prevent breaking changes)
 RUN pip3 install --break-system-packages --no-cache-dir \
-    huggingface-hub \
-    psutil \
+    huggingface-hub==0.27.* \
+    psutil==6.1.* \
     # PDF generation (create_pdf skill)
-    reportlab \
+    reportlab==4.2.* \
     # PDF reading (read_pdf skill)
-    PyPDF2 \
+    PyPDF2==3.0.* \
     # HTML to PDF conversion (html_to_pdf skill)
-    weasyprint \
+    weasyprint==63.* \
     # Web scraping with captcha evasion (Scrapling with all dependencies)
-    "scrapling[all]"
+    "scrapling[all]>=0.2,<1.0"
 
 # Install Playwright browsers for Python (shares with Node.js)
 RUN python3 -m playwright install chromium
@@ -93,6 +93,9 @@ RUN npx playwright install chromium
 
 COPY . .
 RUN npm run build
+
+# Security note: Running as root is required for Docker socket access (/var/run/docker.sock)
+# To improve security, consider using a Docker API proxy with restricted permissions
 
 EXPOSE 3001
 
