@@ -794,7 +794,7 @@ export default function ChatContainer({
             try {
                 setIsLoading(true);
                 setProcessingStatus('searching', 'Searching the web');
-                const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=3`, {
+                const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=5`, {
                     credentials: 'include',
                 });
 
@@ -824,9 +824,9 @@ export default function ChatContainer({
                                     resultText += `Summary: ${r.snippet}\n`;
                                 }
                                 if (r.content) {
-                                    // Include fetched content if available
-                                    const truncatedContent = r.content.length > 1000
-                                        ? r.content.slice(0, 1000) + '...'
+                                    // Include fetched content - use generous limit for detailed answers
+                                    const truncatedContent = r.content.length > 4000
+                                        ? r.content.slice(0, 4000) + '...'
                                         : r.content;
                                     resultText += `Content: ${truncatedContent}\n`;
                                 }
@@ -836,7 +836,7 @@ export default function ChatContainer({
 
                         // Update the last user message with search context
                         apiMessages[apiMessages.length - 1].content =
-                            `The following web search results are provided for context. Use them to answer the user's question if relevant.\n\n` +
+                            `The following web search results are provided for reference. Answer the user's question using SPECIFIC details from these results (names, numbers, identifiers, dates, CVEs, versions, etc.). Do not say information is unavailable if it appears in the results. Cite sources by number.\n\n` +
                             `--- Web Search Results ---\n${searchContext}\n--- End of Search Results ---\n\n` +
                             `User question: ${content}`;
 
