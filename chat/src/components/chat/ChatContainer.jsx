@@ -937,11 +937,13 @@ export default function ChatContainer({
                     try {
                         readResult = await reader.read();
                     } catch (readError) {
-                        // Network error during stream read
-                        console.error('Stream read error:', readError);
-                        inStreamError = readError.name === 'AbortError'
-                            ? 'Request was cancelled'
-                            : 'Connection lost while streaming response';
+                        if (readError.name === 'AbortError') {
+                            // User manually stopped - not an error, save partial content
+                            lastFinishReason = 'stop_by_user';
+                        } else {
+                            console.error('Stream read error:', readError);
+                            inStreamError = 'Connection lost while streaming response';
+                        }
                         break;
                     }
 
@@ -1196,8 +1198,8 @@ export default function ChatContainer({
                 // Show snackbar notification
                 showSnackbar(inStreamError, 'error');
             } else {
-                // Normal completion - save the full response
-                // Check if response was cut off due to length limit
+                // Normal completion or user-stopped
+                const stoppedByUser = lastFinishReason === 'stop_by_user';
                 const needsContinuation = lastFinishReason === 'length';
 
                 const assistantMessage = {
@@ -1209,8 +1211,8 @@ export default function ChatContainer({
                     searchResults: searchResults ? searchResults.length : undefined,
                     responseTime,
                     tokenCount: tokenCount > 0 ? tokenCount : undefined,
-                    needsContinuation, // Mark if response was cut off
-                    isPartial: needsContinuation, // Also mark as partial for UI
+                    needsContinuation, // Mark if response was cut off by length
+                    isPartial: needsContinuation, // Only show continuation UI for length cutoffs
                 };
 
                 finalMessages = [...finalMessages, assistantMessage];
@@ -1220,8 +1222,9 @@ export default function ChatContainer({
                 }
                 saveMessages(conversationId, finalMessages);
 
-                // Show notification that response completed in background
-                if (userSwitchedConversation) {
+                if (stoppedByUser) {
+                    showSnackbar('Generation stopped', 'info');
+                } else if (userSwitchedConversation) {
                     showSnackbar('Response completed in background', 'success');
                 }
             }
@@ -1285,10 +1288,10 @@ export default function ChatContainer({
         const conversationId = activeConversationId;
         if (!conversationId) return;
 
-        // Create a continuation prompt that asks the model to continue
-        const continuationPrompt = "Continue from where you left off. Do not repeat what you already said, just continue directly:";
+        // Create a continuation prompt (sent to API only, not shown in UI)
+        const continuationPrompt = "Continue from where you left off. Do not repeat what you already said, just continue directly.";
 
-        // Get current messages and find the message to continue
+        // Get current messages
         const currentMsgs = useChatStore.getState().messages;
 
         // Build messages array with the continuation prompt
@@ -1297,21 +1300,11 @@ export default function ChatContainer({
             content: msg.content
         }));
 
-        // Add continuation prompt
+        // Add continuation prompt to API request only (not visible in chat)
         apiMessages.push({
             role: 'user',
             content: continuationPrompt
         });
-
-        // Add the user's continuation request to UI
-        const continuationUserMessage = {
-            id: crypto.randomUUID(),
-            role: 'user',
-            content: continuationPrompt,
-            timestamp: new Date().toISOString(),
-            isContinuation: true,
-        };
-        addMessage(continuationUserMessage);
 
         // Start streaming - track which conversation this stream belongs to
         streamingConversationRef.current = conversationId;
@@ -1323,7 +1316,7 @@ export default function ChatContainer({
         abortControllerRef.current = new AbortController();
 
         // Capture messages at start for proper saving even if user switches
-        const messagesAtStart = [...currentMsgs, continuationUserMessage];
+        const messagesAtStart = [...currentMsgs];
 
         const startTime = Date.now();
 
@@ -1366,10 +1359,13 @@ export default function ChatContainer({
                     try {
                         readResult = await reader.read();
                     } catch (readError) {
-                        console.error('Continuation stream read error:', readError);
-                        inStreamError = readError.name === 'AbortError'
-                            ? 'Request was cancelled'
-                            : 'Connection lost while streaming response';
+                        if (readError.name === 'AbortError') {
+                            // User manually stopped continuation - not an error
+                            lastFinishReason = 'stop_by_user';
+                        } else {
+                            console.error('Continuation stream read error:', readError);
+                            inStreamError = 'Connection lost while streaming response';
+                        }
                         break;
                     }
 
@@ -1459,35 +1455,39 @@ export default function ChatContainer({
             const finalParsed = parseThinkTags(assistantContent);
             const finalContent = finalParsed.content;
             const finalReasoning = finalParsed.reasoning || assistantReasoning || undefined;
+            const stoppedByUser = lastFinishReason === 'stop_by_user';
             const needsContinuation = lastFinishReason === 'length';
 
             // Check if user switched conversations
             const currentActiveId = useChatStore.getState().activeConversationId;
             const userSwitchedConversation = currentActiveId !== conversationId;
 
-            const assistantMessage = {
-                id: crypto.randomUUID(),
-                role: 'assistant',
-                content: finalContent,
-                reasoning: finalReasoning,
-                timestamp: new Date().toISOString(),
-                responseTime,
-                tokenCount: tokenCount > 0 ? tokenCount : undefined,
-                needsContinuation,
-                isPartial: needsContinuation,
-                isContinuation: true,
-            };
+            if (finalContent.trim()) {
+                const assistantMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: finalContent,
+                    reasoning: finalReasoning,
+                    timestamp: new Date().toISOString(),
+                    responseTime,
+                    tokenCount: tokenCount > 0 ? tokenCount : undefined,
+                    needsContinuation,
+                    isPartial: needsContinuation,
+                    isContinuation: true,
+                };
 
-            // Use messages captured at start for proper saving
-            const updatedMsgs = [...messagesAtStart, assistantMessage];
-            // Only update local store if still on same conversation
-            if (!userSwitchedConversation) {
-                addMessage(assistantMessage);
+                // Use messages captured at start for proper saving
+                const updatedMsgs = [...messagesAtStart, assistantMessage];
+                // Only update local store if still on same conversation
+                if (!userSwitchedConversation) {
+                    addMessage(assistantMessage);
+                }
+                saveMessages(conversationId, updatedMsgs);
             }
-            saveMessages(conversationId, updatedMsgs);
 
-            // Show notification if completed in background
-            if (userSwitchedConversation) {
+            if (stoppedByUser) {
+                showSnackbar('Generation stopped', 'info');
+            } else if (userSwitchedConversation) {
                 showSnackbar('Response completed in background', 'success');
             }
 
