@@ -236,7 +236,6 @@ export default function ChatSettings({
         { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm orange tones' },
         { value: 'rose', label: 'Rose', icon: Sparkles, description: 'Soft pink theme' },
         { value: 'jade', label: 'Jade', icon: Sparkles, description: 'Rich deep green' },
-        { value: 'midnight', label: 'Midnight', icon: Moon, description: 'Deep night blue' },
         { value: 'evergreen', label: 'Evergreen', icon: Sparkles, description: 'Deep forest greens' },
         { value: 'mint', label: 'Mint', icon: Sparkles, description: 'Fresh green teal' },
         { value: 'arctic', label: 'Arctic', icon: Moon, description: 'Cold blue white' },
@@ -262,7 +261,6 @@ export default function ChatSettings({
         // Vibrant
         { value: 'matrix', label: 'Matrix', icon: Code, description: 'Hacker terminal' },
         { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon vibes' },
-        { value: 'synthwave', label: 'Synthwave', icon: Zap, description: '80s retro' },
         { value: 'vaporwave', label: 'Vaporwave', icon: Sparkles, description: 'Aesthetic pink' },
         { value: 'neonoir', label: 'Neo Noir', icon: Moon, description: 'Dark neon' },
         { value: 'crimson', label: 'Crimson', icon: Zap, description: 'Deep rich red' },

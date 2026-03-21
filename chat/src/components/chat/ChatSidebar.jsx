@@ -162,20 +162,20 @@ export default function ChatSidebar({
             {collapsed ? (
                 <div className="relative group/icon">
                     <div
-                        className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
+                        className={`w-7 h-7 rounded-md flex items-center justify-center transition-all ${
                             activeConversationId === conv.id
                                 ? 'bg-gradient-to-br from-white/15 to-white/5'
                                 : 'bg-white/5 group-hover:bg-white/10'
                         }`}
-                        style={activeConversationId === conv.id ? { boxShadow: '0 0 12px rgba(var(--primary-rgb), 0.3)' } : {}}
+                        style={activeConversationId === conv.id ? { boxShadow: '0 0 8px rgba(var(--primary-rgb), 0.25)' } : {}}
                     >
                         <MessageSquare
-                            className="w-4 h-4 text-dark-300"
+                            className="w-3.5 h-3.5 text-dark-400"
                             style={activeConversationId === conv.id ? { color: 'var(--accent-primary)' } : {}}
                         />
                     </div>
                     {conv.favorite && (
-                        <Star className="w-2.5 h-2.5 absolute -top-0.5 -right-0.5 fill-yellow-400 text-yellow-400 drop-shadow-sm" />
+                        <Star className="w-2 h-2 absolute -top-0.5 -right-0.5 fill-yellow-400 text-yellow-400 drop-shadow-sm" />
                     )}
                     {/* Tooltip on hover */}
                     <div className="absolute left-full ml-2 px-2 py-1 bg-dark-800 border border-white/10 rounded-lg text-xs text-dark-200 whitespace-nowrap opacity-0 group-hover/icon:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
@@ -296,7 +296,7 @@ export default function ChatSidebar({
                     onClick={handleNewConversation}
                     className={`flex items-center gap-2 rounded-lg font-medium transition-all duration-200 ${
                         collapsed
-                            ? 'justify-center w-8 h-8 mx-auto bg-gradient-to-br from-primary-500/20 to-primary-600/10 hover:from-primary-500/30 hover:to-primary-600/20 border border-primary-500/20 hover:border-primary-500/30'
+                            ? 'justify-center w-7 h-7 mx-auto bg-gradient-to-br from-primary-500/20 to-primary-600/10 hover:from-primary-500/30 hover:to-primary-600/20 border border-primary-500/20 hover:border-primary-500/30'
                             : 'w-full px-3 py-2.5 bg-gradient-to-r from-primary-500/15 to-primary-600/10 hover:from-primary-500/25 hover:to-primary-600/15 border border-primary-500/20 hover:border-primary-500/30'
                     }`}
                     style={{ color: 'var(--accent-primary)' }}
@@ -345,48 +345,48 @@ export default function ChatSidebar({
                     )
                 ) : (
                     <>
-                        {/* Favorites Section */}
-                        {favoriteConversations.length > 0 && !collapsed && (
-                            <div className="mb-2 pt-1">
-                                <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-widest">
-                                    <Star className="w-3 h-3 fill-yellow-400/60 text-yellow-400/60" />
-                                    Favorites
-                                </div>
-                                <div className="space-y-0.5">
-                                    {favoriteConversations.map(conv => renderConversationItem(conv))}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Grouped Conversations */}
-                        {categoryOrder.map(category => {
-                            const convs = groupedConversations[category];
-                            if (!convs || convs.length === 0) return null;
-
-                            return (
-                                <div key={category} className="mb-2 pt-1">
-                                    {!collapsed && (
-                                        <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-widest">
-                                            {category === 'Today' && <Clock className="w-3 h-3" />}
-                                            {category === 'Yesterday' && <Clock className="w-3 h-3" />}
-                                            {(category === 'Previous 7 Days' || category === 'Previous 30 Days' || category === 'Older') && <Calendar className="w-3 h-3" />}
-                                            {category}
-                                        </div>
-                                    )}
-                                    <div className="space-y-0.5">
-                                        {convs.map(conv => renderConversationItem(conv))}
-                                    </div>
-                                </div>
-                            );
-                        })}
-
-                        {/* Collapsed view - just show all */}
-                        {collapsed && (
-                            <div className="space-y-1 pt-2">
+                        {collapsed ? (
+                            /* Collapsed view - single list, no duplicates */
+                            <div className="space-y-0.5 pt-2">
                                 {[...favoriteConversations, ...Object.values(groupedConversations).flat()].map(conv =>
                                     renderConversationItem(conv)
                                 )}
                             </div>
+                        ) : (
+                            <>
+                                {/* Favorites Section */}
+                                {favoriteConversations.length > 0 && (
+                                    <div className="mb-2 pt-1">
+                                        <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-widest">
+                                            <Star className="w-3 h-3 fill-yellow-400/60 text-yellow-400/60" />
+                                            Favorites
+                                        </div>
+                                        <div className="space-y-0.5">
+                                            {favoriteConversations.map(conv => renderConversationItem(conv))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Grouped Conversations */}
+                                {categoryOrder.map(category => {
+                                    const convs = groupedConversations[category];
+                                    if (!convs || convs.length === 0) return null;
+
+                                    return (
+                                        <div key={category} className="mb-2 pt-1">
+                                            <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-widest">
+                                                {category === 'Today' && <Clock className="w-3 h-3" />}
+                                                {category === 'Yesterday' && <Clock className="w-3 h-3" />}
+                                                {(category === 'Previous 7 Days' || category === 'Previous 30 Days' || category === 'Older') && <Calendar className="w-3 h-3" />}
+                                                {category}
+                                            </div>
+                                            <div className="space-y-0.5">
+                                                {convs.map(conv => renderConversationItem(conv))}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </>
                         )}
                     </>
                 )}
@@ -407,7 +407,7 @@ export default function ChatSidebar({
             {/* Desktop Sidebar */}
             <aside
                 className={`hidden md:flex flex-col bg-gradient-to-b from-dark-900 to-dark-950 border-r border-white/[0.06] transition-all duration-300 ease-out ${
-                    collapsed ? 'w-[72px]' : 'w-80'
+                    collapsed ? 'w-[56px]' : 'w-80'
                 }`}
             >
                 {sidebarContent}

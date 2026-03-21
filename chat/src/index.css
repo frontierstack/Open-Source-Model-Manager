@@ -417,63 +417,63 @@
    Neon pink and cyan futuristic theme
    ============================================ */
 .theme-cyberpunk {
-    --primary-rgb: 255, 0, 255;
-    --bg-primary: #0a0014;
-    --bg-secondary: #140020;
-    --bg-tertiary: #1f0030;
-    --bg-elevated: #0f001a;
-    --bg-hover: rgba(255, 0, 255, 0.1);
-    --bg-active: rgba(255, 0, 255, 0.15);
+    --primary-rgb: 236, 72, 153;
+    --bg-primary: #0c0a1a;
+    --bg-secondary: #151228;
+    --bg-tertiary: #1e1a36;
+    --bg-elevated: #100e22;
+    --bg-hover: rgba(236, 72, 153, 0.08);
+    --bg-active: rgba(236, 72, 153, 0.12);
 
-    --surface-primary: rgba(20, 0, 32, 0.9);
-    --surface-secondary: rgba(31, 0, 48, 0.8);
-    --surface-glass: rgba(10, 0, 20, 0.95);
+    --surface-primary: rgba(21, 18, 40, 0.9);
+    --surface-secondary: rgba(30, 26, 54, 0.8);
+    --surface-glass: rgba(12, 10, 26, 0.95);
 
-    --text-primary: #ffffff;
-    --text-secondary: #ff66ff;
-    --text-tertiary: #cc00cc;
-    --text-muted: #880088;
+    --text-primary: #eee8f5;
+    --text-secondary: #c4b5d0;
+    --text-tertiary: #8b7a9e;
+    --text-muted: #5c4f6e;
 
-    --border-primary: rgba(255, 0, 255, 0.25);
-    --border-secondary: rgba(255, 0, 255, 0.12);
-    --border-hover: rgba(255, 0, 255, 0.4);
-    --border-focus: rgba(0, 255, 255, 0.6);
+    --border-primary: rgba(236, 72, 153, 0.2);
+    --border-secondary: rgba(236, 72, 153, 0.1);
+    --border-hover: rgba(236, 72, 153, 0.35);
+    --border-focus: rgba(56, 189, 248, 0.5);
 
-    --accent-primary: #ff00ff;
-    --accent-secondary: #cc00cc;
-    --accent-hover: #ff66ff;
-    --accent-muted: rgba(255, 0, 255, 0.2);
+    --accent-primary: #ec4899;
+    --accent-secondary: #d946a8;
+    --accent-hover: #f472b6;
+    --accent-muted: rgba(236, 72, 153, 0.18);
 
-    /* User message - dark cyberpunk magenta */
-    --user-msg-from: #3a0a3a;
-    --user-msg-to: #280528;
-    --user-msg-hover-from: #4c104c;
-    --user-msg-hover-to: #3a0a3a;
-    --user-msg-text: #ffaaff;
+    /* User message - deep violet-pink */
+    --user-msg-from: #2d1a3e;
+    --user-msg-to: #221435;
+    --user-msg-hover-from: #3a2250;
+    --user-msg-hover-to: #2d1a3e;
+    --user-msg-text: #f0daf0;
 
-    --assistant-bg: rgba(20, 0, 40, 0.8);
-    --assistant-border: rgba(0, 255, 255, 0.2);
-    --assistant-text: #aaffff;
+    --assistant-bg: rgba(21, 18, 40, 0.75);
+    --assistant-border: rgba(56, 189, 248, 0.15);
+    --assistant-text: #ddd6e8;
 
-    --scrollbar-thumb: rgba(255, 0, 255, 0.25);
-    --scrollbar-thumb-hover: rgba(255, 0, 255, 0.4);
+    --scrollbar-thumb: rgba(236, 72, 153, 0.2);
+    --scrollbar-thumb-hover: rgba(236, 72, 153, 0.35);
 
-    --code-bg: #050010;
-    --code-header-bg: rgba(20, 0, 40, 0.7);
-    --code-border: rgba(0, 255, 255, 0.15);
+    --code-bg: #080712;
+    --code-header-bg: rgba(21, 18, 40, 0.7);
+    --code-border: rgba(56, 189, 248, 0.12);
 
-    --input-bg: rgba(15, 0, 25, 0.8);
-    --input-border: rgba(255, 0, 255, 0.3);
-    --input-focus-border: rgba(0, 255, 255, 0.6);
-    --input-focus-ring: rgba(0, 255, 255, 0.2);
+    --input-bg: rgba(16, 14, 34, 0.8);
+    --input-border: rgba(236, 72, 153, 0.25);
+    --input-focus-border: rgba(56, 189, 248, 0.5);
+    --input-focus-ring: rgba(56, 189, 248, 0.15);
 
-    --shadow-accent: rgba(255, 0, 255, 0.35);
-    --shadow-accent-hover: rgba(0, 255, 255, 0.4);
+    --shadow-accent: rgba(236, 72, 153, 0.3);
+    --shadow-accent-hover: rgba(56, 189, 248, 0.3);
 
-    --success: #00ff66;
-    --warning: #ffff00;
-    --error: #ff0066;
-    --info: #00ffff;
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f43f5e;
+    --info: #38bdf8;
 }
 
 /* ============================================
@@ -3773,7 +3773,89 @@ html body.font-family-consolas *:not(code):not(pre):not(.code-content):not(.code
     font-family: Consolas, "Courier New", monospace !important;
 }
 
-/* New Sans-Serif Fonts (Extended) - High Specificity */
+/* New Sans-Serif Fonts - High Specificity */
+html body.font-family-dmsans,
+html body.font-family-dmsans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "DM Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-worksans,
+html body.font-family-worksans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Work Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-plusjakarta,
+html body.font-family-plusjakarta *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Plus Jakarta Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-lexend,
+html body.font-family-lexend *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Lexend", -apple-system, sans-serif !important;
+}
+html body.font-family-outfit,
+html body.font-family-outfit *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Outfit", -apple-system, sans-serif !important;
+}
+html body.font-family-spacegrotesk,
+html body.font-family-spacegrotesk *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Space Grotesk", -apple-system, sans-serif !important;
+}
+html body.font-family-ibmplex,
+html body.font-family-ibmplex *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "IBM Plex Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-manrope,
+html body.font-family-manrope *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Manrope", -apple-system, sans-serif !important;
+}
+html body.font-family-urbanist,
+html body.font-family-urbanist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Urbanist", -apple-system, sans-serif !important;
+}
+html body.font-family-sora,
+html body.font-family-sora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Sora", -apple-system, sans-serif !important;
+}
+
+/* New Serif Fonts - High Specificity */
+html body.font-family-crimsonpro,
+html body.font-family-crimsonpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Crimson Pro", Georgia, serif !important;
+}
+html body.font-family-librebaskerville,
+html body.font-family-librebaskerville *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Libre Baskerville", Georgia, serif !important;
+}
+html body.font-family-lora,
+html body.font-family-lora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Lora", Georgia, serif !important;
+}
+html body.font-family-sourceserpro,
+html body.font-family-sourceserpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Source Serif Pro", Georgia, serif !important;
+}
+
+/* New Monospace Fonts - High Specificity */
+html body.font-family-spacemono,
+html body.font-family-spacemono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Space Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-ubuntumono,
+html body.font-family-ubuntumono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Ubuntu Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-anonymouspro,
+html body.font-family-anonymouspro *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Anonymous Pro", "JetBrains Mono", monospace !important;
+}
+html body.font-family-cascadiacode,
+html body.font-family-cascadiacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Cascadia Code", "JetBrains Mono", monospace !important;
+}
+html body.font-family-victormono,
+html body.font-family-victormono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Victor Mono", "JetBrains Mono", monospace !important;
+}
+
+/* Sans-Serif Fonts (Extended) - High Specificity */
 html body.font-family-atkinson,
 html body.font-family-atkinson *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
     font-family: "Atkinson Hyperlegible", -apple-system, sans-serif !important;

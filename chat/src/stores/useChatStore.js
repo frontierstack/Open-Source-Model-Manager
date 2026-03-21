@@ -91,12 +91,13 @@ export const useChatStore = create(
             temperature: 0.7,
             topP: 1.0,
             maxTokens: null,  // null = use model's context window dynamically
-            webSearchEnabled: false,
-            urlFetchEnabled: false,
             selectedSystemPromptId: null,
             fontSize: 'medium',
             fontFamily: 'system',
-            ...loadFromStorage(STORAGE_KEYS.SETTINGS, {})
+            ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
+            // Always start with web search and URL fetch off
+            webSearchEnabled: false,
+            urlFetchEnabled: false
         },
 
         // ==================== Theme Actions ====================
