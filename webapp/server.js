@@ -6923,6 +6923,19 @@ async function saveConversationMessages(userId, conversationId, messages) {
     const userDir = await ensureUserConversationsDir(userId);
     const messagesPath = path.join(userDir, `${conversationId}.json`);
     await fs.writeFile(messagesPath, JSON.stringify(messages, null, 2));
+
+    // Update messageCount in conversations index
+    try {
+        const conversations = await loadConversationsIndex(userId);
+        const conv = conversations.find(c => c.id === conversationId);
+        if (conv) {
+            conv.messageCount = messages.length;
+            conv.updatedAt = new Date().toISOString();
+            await saveConversationsIndex(userId, conversations);
+        }
+    } catch (e) {
+        // Non-critical - don't fail message save if index update fails
+    }
 }
 
 // List all conversations for a user
@@ -6930,6 +6943,24 @@ app.get('/api/conversations', requireAuth, async (req, res) => {
     try {
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const conversations = await loadConversationsIndex(userId);
+
+        // Backfill messageCount for conversations missing it
+        let needsSave = false;
+        for (const conv of conversations) {
+            if (conv.messageCount === undefined) {
+                try {
+                    const msgs = await loadConversationMessages(userId, conv.id);
+                    conv.messageCount = msgs.length;
+                    needsSave = true;
+                } catch {
+                    conv.messageCount = 0;
+                }
+            }
+        }
+        if (needsSave) {
+            await saveConversationsIndex(userId, conversations).catch(() => {});
+        }
+
         res.json(conversations);
     } catch (error) {
         console.error('Error loading conversations:', error);
@@ -7083,13 +7114,10 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
             return res.status(404).json({ error: 'Conversation not found' });
         }
 
+        // saveConversationMessages also updates messageCount and updatedAt in the index
         await saveConversationMessages(userId, id, messages);
 
-        // Update conversation timestamp
-        conversation.updatedAt = new Date().toISOString();
-        await saveConversationsIndex(userId, conversations);
-
-        res.json({ success: true });
+        res.json({ success: true, messageCount: messages.length });
     } catch (error) {
         console.error('Error saving messages:', error);
         res.status(500).json({ error: 'Failed to save messages' });

@@ -227,7 +227,7 @@ export default function ChatSidebar({
                                     {conv.title || 'New Conversation'}
                                 </span>
                                 <span className="text-[10px] text-dark-500 truncate block">
-                                    {conv.messages?.length || 0} messages
+                                    {conv.messageCount || conv.messages?.length || 0} messages
                                 </span>
                             </div>
                             {conv.favorite && (

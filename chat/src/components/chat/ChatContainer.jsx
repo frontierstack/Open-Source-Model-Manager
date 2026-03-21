@@ -286,6 +286,8 @@ export default function ChatContainer({
                 credentials: 'include',
                 body: JSON.stringify({ messages: msgs }),
             });
+            // Update messageCount in sidebar
+            updateConversation(conversationId, { messageCount: msgs.length });
         } catch (error) {
             console.error('Failed to save messages:', error);
         }
