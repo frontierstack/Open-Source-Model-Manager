@@ -1120,17 +1120,20 @@ async function syncModelInstances() {
             }
 
             const status = inspect.State.Running ? 'running' : 'stopped';
+            const containerName = containerInfo.Names[0].substring(1); // Remove leading /
 
             modelInstances.set(modelName, {
                 containerId: containerInfo.Id,
+                containerName,
                 port,
+                internalPort: port,
                 status,
                 modelName,
                 config,
                 backend
             });
 
-            console.log(`  - Found ${modelName} (${backend}) on port ${port} (${status})`);
+            console.log(`  - Found ${modelName} (${backend}) on port ${port} (${status}) [container: ${containerName}]`);
         }
 
         console.log(`Synced ${modelInstances.size} model instance(s)`);
