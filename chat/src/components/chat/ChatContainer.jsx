@@ -837,8 +837,8 @@ export default function ChatContainer({
                                 }
                                 if (r.content) {
                                     // Include fetched content - generous limit for detailed answers
-                                    const truncatedContent = r.content.length > 6000
-                                        ? r.content.slice(0, 6000) + '...'
+                                    const truncatedContent = r.content.length > 12000
+                                        ? r.content.slice(0, 12000) + '...'
                                         : r.content;
                                     resultText += `Content: ${truncatedContent}\n`;
                                 }

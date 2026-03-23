@@ -6083,6 +6083,81 @@ function cleanExpiredCache() {
     }
 }
 
+/**
+ * Extract focused search query from a natural language message.
+ * Long conversational prompts (e.g. "Give me a threat report for brambleufer.ru")
+ * produce poor search results because the instructional text dilutes the query.
+ * This extracts key entities (domains, IPs, hashes, CVEs) and intent keywords.
+ */
+function extractSearchQuery(rawQuery) {
+    if (!rawQuery || typeof rawQuery !== 'string') return rawQuery;
+
+    const trimmed = rawQuery.trim();
+
+    // Short queries (< 80 chars or < 10 words) are likely already focused
+    const wordCount = trimmed.split(/\s+/).length;
+    if (trimmed.length < 80 && wordCount < 10) return trimmed;
+
+    // Extract key technical entities
+    const entities = [];
+
+    // Domain names (e.g. brambleufer.ru, example.com)
+    const domainRegex = /\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+(?:ru|com|net|org|io|info|biz|xyz|top|cc|tk|cn|de|uk|fr|jp|au|ca|nl|ch|se|no|fi|cz|pl|br|in|co|me|tv|us|eu|gov|edu|mil)\b/gi;
+    const domains = trimmed.match(domainRegex);
+    if (domains) entities.push(...domains.map(d => d.toLowerCase()));
+
+    // IP addresses
+    const ipRegex = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g;
+    const ips = trimmed.match(ipRegex);
+    if (ips) entities.push(...ips);
+
+    // SHA256/SHA1/MD5 hashes
+    const hashRegex = /\b[a-fA-F0-9]{32,64}\b/g;
+    const hashes = trimmed.match(hashRegex);
+    if (hashes) entities.push(...hashes);
+
+    // CVE identifiers
+    const cveRegex = /CVE-\d{4}-\d{4,}/gi;
+    const cves = trimmed.match(cveRegex);
+    if (cves) entities.push(...cves);
+
+    // URLs
+    const urlRegex = /https?:\/\/[^\s,)}\]]+/gi;
+    const urls = trimmed.match(urlRegex);
+    if (urls) entities.push(...urls);
+
+    // If no entities found, return original (might be a general question)
+    if (entities.length === 0) return trimmed;
+
+    // Extract intent keywords from the message
+    const intentKeywords = [];
+    const intentPatterns = [
+        { pattern: /\b(threat|malware|malicious|phishing|spam|abuse|attack|exploit|vulnerability|ransomware|trojan|botnet|c2|c&c|command.and.control)\b/gi, keep: true },
+        { pattern: /\b(report|intelligence|analysis|reputation|score|detection|scan|lookup|whois|dns)\b/gi, keep: true },
+        { pattern: /\b(ioc|indicator|compromise|apt|campaign)\b/gi, keep: true },
+    ];
+
+    for (const { pattern } of intentPatterns) {
+        const matches = trimmed.match(pattern);
+        if (matches) {
+            intentKeywords.push(...matches.map(m => m.toLowerCase()));
+        }
+    }
+
+    // Deduplicate
+    const uniqueKeywords = [...new Set(intentKeywords)].slice(0, 4);
+
+    // Build focused query: entities + top intent keywords
+    const queryParts = [...new Set(entities)];
+    if (uniqueKeywords.length > 0) {
+        queryParts.push(...uniqueKeywords);
+    }
+
+    const extracted = queryParts.join(' ');
+    console.log(`[Search] Query extraction: "${trimmed.slice(0, 80)}..." => "${extracted}"`);
+    return extracted;
+}
+
 // Web search endpoint using DuckDuckGo HTML parsing
 // Now with optional content fetching for richer results
 app.get('/api/search', requireAuth, async (req, res) => {
@@ -6097,8 +6172,11 @@ app.get('/api/search', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'Query parameter "q" is required' });
     }
 
+    // Extract focused search terms from natural language queries
+    const extractedQuery = extractSearchQuery(q);
+
     // Enhance query with current year/month for "recent" or "latest" queries
-    let enhancedQuery = q;
+    let enhancedQuery = extractedQuery;
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.toLocaleString('en-US', { month: 'long' });
