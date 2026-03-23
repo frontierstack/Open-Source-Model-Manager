@@ -6545,7 +6545,7 @@ function isContentTooThin(content, url) {
 // Uses Scrapling → Playwright (with XHR interception) → axios fallback chain
 async function fetchUrlContent(url, options = {}) {
     const timeout = options.timeout || 12000;
-    const maxLength = options.maxLength || 6000;
+    const maxLength = options.maxLength || 12000;
 
     // Try Scrapling first if available (best CAPTCHA evasion)
     if (scraplingService) {

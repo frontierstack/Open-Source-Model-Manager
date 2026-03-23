@@ -97,9 +97,10 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
 
         try:
             # Build fetcher options
+            # StealthyFetcher uses Playwright internally - timeout is in MILLISECONDS
             fetcher_opts = {
                 'headless': headless,
-                'timeout': timeout // 1000,  # Convert to seconds
+                'timeout': timeout,  # Already in milliseconds (Playwright expects ms)
                 'block_images': True,  # Speed up loading
             }
 
@@ -121,7 +122,7 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
                 time.sleep(2)
                 # Try to get text again from a fresh fetch with longer timeout
                 try:
-                    page2 = StealthyFetcher.fetch(url, **{**fetcher_opts, 'timeout': max(fetcher_opts.get('timeout', 30), 45)})
+                    page2 = StealthyFetcher.fetch(url, **{**fetcher_opts, 'timeout': max(fetcher_opts.get('timeout', 30000), 45000)})
                     text_content2 = page2.get_all_text(separator='\n', strip=True)
                     if text_content2 and len(text_content2) > len(text_content or ''):
                         text_content = text_content2
@@ -150,6 +151,7 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
             # Fall back to basic Fetcher if StealthyFetcher fails
             try:
                 # Build fetcher options for fallback
+                # Fetcher uses curl_cffi - timeout is in SECONDS
                 fallback_opts = {'timeout': timeout // 1000}
                 if SSL_BYPASS_ENABLED:
                     fallback_opts['verify'] = False

@@ -3,11 +3,11 @@
  * Provides captcha-evading web scraping with fallback to Playwright
  */
 
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // Path to the Python script
 const SCRAPLING_SCRIPT = path.join(__dirname, 'scrapling_fetch.py');
@@ -18,7 +18,7 @@ const SCRAPLING_SCRIPT = path.join(__dirname, 'scrapling_fetch.py');
  */
 async function isScraplingAvailable() {
     try {
-        await execAsync('python3 -c "import scrapling"', { timeout: 5000 });
+        await execFileAsync('python3', ['-c', 'import scrapling'], { timeout: 5000 });
         return true;
     } catch {
         return false;
@@ -40,16 +40,17 @@ async function fetchUrl(url, options = {}) {
 
     try {
         const args = [
+            SCRAPLING_SCRIPT,
             '--action', 'fetch',
-            '--url', JSON.stringify(url),
+            '--url', url,
             '--timeout', timeout.toString()
         ];
 
         if (!headless) args.push('--headless', 'false');
         if (extractLinks) args.push('--extract-links');
 
-        const { stdout, stderr } = await execAsync(
-            `python3 "${SCRAPLING_SCRIPT}" ${args.join(' ')}`,
+        const { stdout, stderr } = await execFileAsync(
+            'python3', args,
             {
                 timeout: timeout + 10000, // Add buffer for process startup
                 maxBuffer: 10 * 1024 * 1024 // 10MB buffer
@@ -91,13 +92,14 @@ async function fetchUrl(url, options = {}) {
 async function search(query, maxResults = 5) {
     try {
         const args = [
+            SCRAPLING_SCRIPT,
             '--action', 'search',
-            '--query', JSON.stringify(query),
+            '--query', query,
             '--max-results', maxResults.toString()
         ];
 
-        const { stdout, stderr } = await execAsync(
-            `python3 "${SCRAPLING_SCRIPT}" ${args.join(' ')}`,
+        const { stdout, stderr } = await execFileAsync(
+            'python3', args,
             {
                 timeout: 30000,
                 maxBuffer: 10 * 1024 * 1024
