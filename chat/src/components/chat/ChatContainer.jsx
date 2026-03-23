@@ -619,7 +619,7 @@ export default function ChatContainer({
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
-                        body: JSON.stringify({ urls, maxLength: 4000, timeout: 15000 }),
+                        body: JSON.stringify({ urls, maxLength: 12000, timeout: 25000 }),
                     });
 
                     if (fetchResponse.ok) {
@@ -638,8 +638,8 @@ export default function ChatContainer({
                             urlFetchResults = successfulResults;
 
                             // Create a detailed summary for memory persistence (used in follow-up questions)
-                            // Total budget of 3000 chars, divided among URLs to prevent context overflow
-                            const URL_CONTEXT_BUDGET = 3000;
+                            // Total budget of 6000 chars, divided among URLs to prevent context overflow
+                            const URL_CONTEXT_BUDGET = 6000;
                             const charsPerUrl = Math.floor(URL_CONTEXT_BUDGET / successfulResults.length);
 
                             urlContextSummary = successfulResults
@@ -656,8 +656,8 @@ export default function ChatContainer({
                                 .join('\n\n---\n\n');
 
                             // Final safety cap in case of edge cases
-                            if (urlContextSummary.length > URL_CONTEXT_BUDGET + 500) {
-                                urlContextSummary = urlContextSummary.slice(0, URL_CONTEXT_BUDGET + 500) + '... [truncated]';
+                            if (urlContextSummary.length > URL_CONTEXT_BUDGET + 1000) {
+                                urlContextSummary = urlContextSummary.slice(0, URL_CONTEXT_BUDGET + 1000) + '... [truncated]';
                             }
 
                             // Format fetched content for the model
@@ -665,9 +665,9 @@ export default function ChatContainer({
                                 .map((r) => {
                                     let resultText = `[${r.title || 'Untitled'}]\nSource: ${r.url}\n`;
                                     if (r.content) {
-                                        // Truncate content if too long
-                                        const truncatedContent = r.content.length > 3500
-                                            ? r.content.slice(0, 3500) + '...'
+                                        // Generous content limit per URL for detailed answers
+                                        const truncatedContent = r.content.length > 8000
+                                            ? r.content.slice(0, 8000) + '...'
                                             : r.content;
                                         resultText += `Content:\n${truncatedContent}\n`;
                                     }
@@ -675,8 +675,8 @@ export default function ChatContainer({
                                 })
                                 .join('\n---\n');
 
-                            // Prepend URL content to fullContent
-                            fullContent = `The following content was fetched from URLs in the user's message:\n\n` +
+                            // Prepend URL content to fullContent with strong instruction
+                            fullContent = `The following content was fetched from URLs in the user's message. You MUST use the ACTUAL DATA from this fetched content to answer the question. Do NOT make up, hallucinate, or guess information that is not present. If the fetched content is empty or insufficient, say so explicitly. Use specific details: numbers, names, dates, scores, IPs, hashes, etc.\n\n` +
                                 `--- Fetched URL Content ---\n${urlContext}\n--- End of Fetched Content ---\n\n` +
                                 `User message: ${fullContent}`;
                         }
@@ -836,9 +836,9 @@ export default function ChatContainer({
                                     resultText += `Summary: ${r.snippet}\n`;
                                 }
                                 if (r.content) {
-                                    // Include fetched content - use generous limit for detailed answers
-                                    const truncatedContent = r.content.length > 4000
-                                        ? r.content.slice(0, 4000) + '...'
+                                    // Include fetched content - generous limit for detailed answers
+                                    const truncatedContent = r.content.length > 6000
+                                        ? r.content.slice(0, 6000) + '...'
                                         : r.content;
                                     resultText += `Content: ${truncatedContent}\n`;
                                 }
@@ -848,7 +848,7 @@ export default function ChatContainer({
 
                         // Update the last user message with search context
                         apiMessages[apiMessages.length - 1].content =
-                            `The following web search results are provided for reference. Answer the user's question using SPECIFIC details from these results (names, numbers, identifiers, dates, CVEs, versions, etc.). Do not say information is unavailable if it appears in the results. Cite sources by number.\n\n` +
+                            `The following web search results are provided for reference. You MUST answer using ONLY the ACTUAL DATA from these results. Extract and use SPECIFIC details: names, numbers, identifiers, dates, CVEs, versions, IPs, hashes, detection counts, malware families, etc. Do NOT say "no results found" or "information unavailable" if data appears in the results below. Do NOT hallucinate or make up data not present in the results. Cite sources by number [1], [2], etc.\n\n` +
                             `--- Web Search Results ---\n${searchContext}\n--- End of Search Results ---\n\n` +
                             `User question: ${content}`;
 

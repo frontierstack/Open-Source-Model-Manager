@@ -6540,10 +6540,12 @@ function isContentTooThin(content, url) {
     return false;
 }
 
+
 // Helper function to fetch content from a URL with timeout
-// Uses Playwright for advanced bot-detection avoidance, falls back to axios
+// Uses Scrapling → Playwright (with XHR interception) → axios fallback chain
 async function fetchUrlContent(url, options = {}) {
     const timeout = options.timeout || 12000;
+    const maxLength = options.maxLength || 6000;
 
     // Try Scrapling first if available (best CAPTCHA evasion)
     if (scraplingService) {
@@ -6601,7 +6603,7 @@ async function fetchUrlContent(url, options = {}) {
 
 // URL fetch endpoint for chat - fetches content from URLs in messages
 app.post('/api/url/fetch', requireAuth, async (req, res) => {
-    const { urls, maxLength = 4000, timeout = 15000 } = req.body;
+    const { urls, maxLength = 12000, timeout = 25000 } = req.body;
 
     if (!urls || !Array.isArray(urls) || urls.length === 0) {
         return res.status(400).json({ error: 'URLs array required' });
@@ -7063,8 +7065,21 @@ app.put('/api/conversations/:id', requireAuth, async (req, res) => {
         const conversations = await loadConversationsIndex(userId);
         const index = conversations.findIndex(c => c.id === id);
 
+        // Auto-create conversation entry if not found (handles race conditions
+        // where frontend sends update before index is fully saved)
         if (index === -1) {
-            return res.status(404).json({ error: 'Conversation not found' });
+            const newConversation = {
+                id,
+                title: title || 'New Conversation',
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+            if (favorite !== undefined) {
+                newConversation.favorite = Boolean(favorite);
+            }
+            conversations.unshift(newConversation);
+            await saveConversationsIndex(userId, conversations);
+            return res.json(newConversation);
         }
 
         // Build update object

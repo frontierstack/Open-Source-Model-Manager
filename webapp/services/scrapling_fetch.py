@@ -113,6 +113,22 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
             # Extract text content
             # Get the main text content, removing scripts and styles
             text_content = page.get_all_text(separator='\n', strip=True)
+
+            # If content is too thin, try waiting longer and re-fetching
+            # (some sites need extra time for JS to render after CAPTCHA bypass)
+            if not text_content or len(text_content.strip()) < 200:
+                import time
+                time.sleep(2)
+                # Try to get text again from a fresh fetch with longer timeout
+                try:
+                    page2 = StealthyFetcher.fetch(url, **{**fetcher_opts, 'timeout': max(fetcher_opts.get('timeout', 30), 45)})
+                    text_content2 = page2.get_all_text(separator='\n', strip=True)
+                    if text_content2 and len(text_content2) > len(text_content or ''):
+                        text_content = text_content2
+                        page = page2
+                except Exception:
+                    pass  # Keep original thin content
+
             result['content'] = text_content[:50000] if text_content else ''  # Limit content size
 
             # Get title

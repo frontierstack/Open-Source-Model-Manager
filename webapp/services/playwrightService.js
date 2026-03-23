@@ -84,6 +84,85 @@ function stopXvfb() {
 // Check for Xvfb on startup
 const USE_HEADED_MODE = startXvfb();
 
+/**
+ * Flatten a JSON object/array into human-readable text.
+ * Used to extract meaningful data from intercepted SPA API responses.
+ */
+function flattenJsonToText(data, maxLength = 6000, prefix = '', depth = 0) {
+    if (depth > 5 || !data) return '';
+    let output = '';
+
+    if (Array.isArray(data)) {
+        for (let i = 0; i < Math.min(data.length, 20) && output.length < maxLength; i++) {
+            const item = data[i];
+            if (typeof item === 'object' && item !== null) {
+                const attrs = item.attributes || item;
+                if (typeof attrs === 'object') {
+                    output += flattenJsonToText(attrs, maxLength - output.length, `  [${i}] `, depth + 1);
+                }
+            } else if (item !== null && item !== undefined) {
+                output += `${prefix}${item}\n`;
+            }
+        }
+        if (data.length > 20) output += `${prefix}... and ${data.length - 20} more items\n`;
+    } else if (typeof data === 'object') {
+        // For large objects with many similar entries (like scan results),
+        // only show the interesting ones (non-default/non-undetected values)
+        const entries = Object.entries(data);
+        const isLargeHomogeneous = entries.length > 20 && entries.every(([, v]) => typeof v === 'object' && v !== null);
+
+        if (isLargeHomogeneous) {
+            // Filter to only show entries with interesting values (not undetected/clean/unrated)
+            // Check known category/result/status fields specifically
+            const boringValues = new Set(['undetected', 'clean', 'unrated', 'type-unsupported', 'harmless', 'confirmed-timeout']);
+            const categoryKeys = new Set(['category', 'result', 'status', 'verdict']);
+            const interestingEntries = entries.filter(([, v]) => {
+                // Check category-like fields for non-boring values
+                for (const [k, val] of Object.entries(v)) {
+                    if (categoryKeys.has(k) && typeof val === 'string' && val.length > 0 && !boringValues.has(val)) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+
+            if (interestingEntries.length > 0) {
+                output += `${prefix}(${interestingEntries.length} of ${entries.length} entries with notable results):\n`;
+                for (const [key, value] of interestingEntries.slice(0, 30)) {
+                    if (output.length >= maxLength) break;
+                    output += `${prefix}  ${key}: ${JSON.stringify(value)}\n`;
+                }
+            } else {
+                output += `${prefix}(${entries.length} entries, all clean/undetected)\n`;
+            }
+        } else {
+            for (const [key, value] of entries) {
+                if (output.length >= maxLength) break;
+                // Skip noisy/internal keys
+                if (['links', 'meta', 'context_attributes', 'type', 'id'].includes(key) && depth > 0) continue;
+                if (key.startsWith('_') || key === 'self') continue;
+
+                if (value === null || value === undefined) continue;
+                if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                    const strVal = String(value);
+                    if (strVal.length > 0 && strVal.length < 2000) {
+                        output += `${prefix}${key}: ${strVal.length > 500 ? strVal.slice(0, 500) + '...' : strVal}\n`;
+                    }
+                } else if (Array.isArray(value)) {
+                    if (value.length > 0) {
+                        output += `${prefix}${key} (${value.length} items):\n`;
+                        output += flattenJsonToText(value, maxLength - output.length, prefix + '  ', depth + 1);
+                    }
+                } else if (typeof value === 'object') {
+                    output += `${prefix}${key}:\n`;
+                    output += flattenJsonToText(value, maxLength - output.length, prefix + '  ', depth + 1);
+                }
+            }
+        }
+    }
+    return output.slice(0, maxLength);
+}
+
 // Browser pool management
 let browserPool = [];
 const MAX_POOL_SIZE = 3;
@@ -478,13 +557,15 @@ async function extractContent(page, options = {}) {
             }
         });
 
-        // Extract paragraphs
+        // Extract paragraphs from multiple element types (not just p/li)
         const paragraphs = [];
-        mainContent.querySelectorAll('p, li').forEach(p => {
-            const text = p.textContent?.trim()
+        const seenText = new Set();
+        mainContent.querySelectorAll('p, li, td, th, dd, dt, blockquote, pre, figcaption, [class*="description"], [class*="content"], [class*="detail"], [class*="result"], [class*="detection"], [class*="info"], [class*="summary"], [class*="value"], [class*="label"]').forEach(el => {
+            const text = el.textContent?.trim()
                 .replace(/\s+/g, ' ')
                 .replace(/\n+/g, ' ');
-            if (text && text.length > 30) {
+            if (text && text.length > 20 && !seenText.has(text)) {
+                seenText.add(text);
                 paragraphs.push(text);
             }
         });
@@ -500,6 +581,21 @@ async function extractContent(page, options = {}) {
                 }
             });
         }
+
+        // Extract table data (important for sites like VirusTotal)
+        const tables = [];
+        mainContent.querySelectorAll('table').forEach(table => {
+            const rows = [];
+            table.querySelectorAll('tr').forEach(tr => {
+                const cells = [];
+                tr.querySelectorAll('td, th').forEach(cell => {
+                    const text = cell.textContent?.trim().replace(/\s+/g, ' ');
+                    if (text) cells.push(text);
+                });
+                if (cells.length > 0) rows.push(cells.join(' | '));
+            });
+            if (rows.length > 0) tables.push(rows.join('\n'));
+        });
 
         // Build output
         let output = '';
@@ -529,11 +625,55 @@ async function extractContent(page, options = {}) {
             });
         }
 
+        if (tables.length > 0) {
+            output += '\nData:\n';
+            tables.forEach(t => {
+                if (output.length < maxLength - 500) {
+                    output += `${t}\n\n`;
+                }
+            });
+        }
+
         if (includeLinks && links.length > 0) {
             output += '\nLinks:\n';
             links.slice(0, 10).forEach(l => {
                 output += `- ${l.text}: ${l.href}\n`;
             });
+        }
+
+        // If structured extraction returned too little content, fall back to innerText
+        // This handles SPAs, shadow DOM, and sites with non-standard HTML structure
+        if (output.length < 300) {
+            // Recursive function to get text including shadow DOM
+            function getAllText(element) {
+                let text = '';
+                if (element.shadowRoot) {
+                    text += getAllText(element.shadowRoot);
+                }
+                for (const child of (element.childNodes || [])) {
+                    if (child.nodeType === Node.TEXT_NODE) {
+                        const trimmed = child.textContent.trim();
+                        if (trimmed) text += trimmed + ' ';
+                    } else if (child.nodeType === Node.ELEMENT_NODE) {
+                        const tag = child.tagName?.toLowerCase();
+                        if (!['script', 'style', 'noscript', 'svg'].includes(tag)) {
+                            text += getAllText(child);
+                        }
+                    }
+                }
+                return text;
+            }
+
+            const shadowText = getAllText(mainContent);
+            const innerText = mainContent.innerText || '';
+            const fallbackText = shadowText.length > innerText.length ? shadowText : innerText;
+
+            if (fallbackText.length > output.length) {
+                output = '';
+                if (title) output += `Title: ${title}\n\n`;
+                if (metaDesc) output += `Summary: ${metaDesc}\n\n`;
+                output += 'Content:\n' + fallbackText.replace(/\s+/g, ' ').replace(/\n\s*\n/g, '\n\n').trim();
+            }
         }
 
         return output.substring(0, maxLength);
@@ -575,12 +715,37 @@ async function fetchUrlContent(url, options = {}) {
         // Create stealth context
         context = await poolEntry.browser.newContext(getStealthContextOptions());
 
-        // Block unnecessary resources for speed
-        await context.route('**/*', (route) => {
+        // Capture JSON API responses from XHR/fetch calls (SPAs load data this way)
+        const capturedJsonResponses = [];
+        await context.route('**/*', async (route) => {
             const resourceType = route.request().resourceType();
+            // Block heavy resources for speed
             if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
                 if (!screenshot && resourceType !== 'stylesheet') {
                     return route.abort();
+                }
+            }
+            // Intercept XHR/fetch responses that return JSON (SPA data loading)
+            if (resourceType === 'xhr' || resourceType === 'fetch') {
+                try {
+                    const response = await route.fetch();
+                    const contentType = response.headers()['content-type'] || '';
+                    if (contentType.includes('application/json')) {
+                        const body = await response.text();
+                        if (body.length > 100 && body.length < 500000) {
+                            try {
+                                const json = JSON.parse(body);
+                                capturedJsonResponses.push({
+                                    url: route.request().url(),
+                                    data: json,
+                                    size: body.length
+                                });
+                            } catch (e) { /* Not valid JSON */ }
+                        }
+                    }
+                    return route.fulfill({ response });
+                } catch (e) {
+                    return route.continue();
                 }
             }
             return route.continue();
@@ -608,7 +773,7 @@ async function fetchUrlContent(url, options = {}) {
         if (waitForJS) {
             // Wait for networkidle first (best signal that JS frameworks have loaded data)
             try {
-                await page.waitForLoadState('networkidle', { timeout: 5000 });
+                await page.waitForLoadState('networkidle', { timeout: 8000 });
             } catch (e) {
                 // Ignore timeout, continue with what we have
             }
@@ -620,7 +785,14 @@ async function fetchUrlContent(url, options = {}) {
             const bodyTextLength = await page.evaluate(() => (document.body?.innerText || '').trim().length);
             if (bodyTextLength < 200) {
                 // Page likely still rendering - wait extra time for SPA hydration
-                await page.waitForTimeout(randomDelay(3000, 5000));
+                await page.waitForTimeout(randomDelay(5000, 8000));
+
+                // If still thin, try scrolling to trigger lazy loading
+                const stillThin = await page.evaluate(() => (document.body?.innerText || '').trim().length < 200);
+                if (stillThin) {
+                    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+                    await page.waitForTimeout(randomDelay(2000, 3000));
+                }
             }
         }
 
@@ -674,7 +846,29 @@ async function fetchUrlContent(url, options = {}) {
         } else {
             content = await extractContent(page, { includeLinks, maxLength });
         }
+
         const title = await page.title();
+
+        // Supplement with captured JSON API data when available.
+        // SPAs load real data via XHR/fetch - the DOM often has just UI chrome.
+        // Always merge API data if we captured meaningful JSON responses.
+        if (capturedJsonResponses.length > 0) {
+            // Sort by size descending - largest responses likely have the main data
+            capturedJsonResponses.sort((a, b) => b.size - a.size);
+            let apiContent = '';
+            for (const resp of capturedJsonResponses) {
+                if (apiContent.length >= maxLength) break;
+                const flatText = flattenJsonToText(resp.data, maxLength - apiContent.length);
+                if (flatText.length > 80) {
+                    apiContent += flatText + '\n\n';
+                }
+            }
+            if (apiContent.length > 200) {
+                console.log(`[Playwright] Captured ${capturedJsonResponses.length} API responses (${apiContent.length} chars text), enriching content`);
+                const titleLine = title ? `Title: ${title}\n\n` : '';
+                content = titleLine + apiContent.slice(0, maxLength - titleLine.length);
+            }
+        }
 
         // Take screenshot if requested
         let screenshotData = null;
