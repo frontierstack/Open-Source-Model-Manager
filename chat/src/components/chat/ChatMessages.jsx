@@ -84,7 +84,7 @@ export default function ChatMessages({
             <div className="max-w-4xl mx-auto space-y-4">
             {messages.map((message, index) => (
                 <ChatMessage
-                    key={message.id || index}
+                    key={message.id || `msg-${index}-${message.timestamp || index}`}
                     id={message.id}
                     role={message.role}
                     content={message.content}

@@ -606,14 +606,21 @@ async function fetchUrlContent(url, options = {}) {
 
         // Wait for JS to render content
         if (waitForJS) {
-            // Give JS time to hydrate and render (especially for shadow DOM components)
-            await page.waitForTimeout(randomDelay(2500, 4000));
-
-            // Try to wait for networkidle briefly, but don't block
+            // Wait for networkidle first (best signal that JS frameworks have loaded data)
             try {
-                await page.waitForLoadState('networkidle', { timeout: 2000 });
+                await page.waitForLoadState('networkidle', { timeout: 5000 });
             } catch (e) {
                 // Ignore timeout, continue with what we have
+            }
+
+            // Give JS time to hydrate and render (especially for shadow DOM components, SPAs)
+            await page.waitForTimeout(randomDelay(3000, 5000));
+
+            // Check if page has meaningful content, if not wait longer for late-loading SPAs
+            const bodyTextLength = await page.evaluate(() => (document.body?.innerText || '').trim().length);
+            if (bodyTextLength < 200) {
+                // Page likely still rendering - wait extra time for SPA hydration
+                await page.waitForTimeout(randomDelay(3000, 5000));
             }
         }
 

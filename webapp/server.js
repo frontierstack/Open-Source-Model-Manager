@@ -6330,7 +6330,7 @@ app.get('/api/search', requireAuth, async (req, res) => {
             const urlsToFetch = results.slice(0, parseInt(contentLimit));
 
             const fetchPromises = urlsToFetch.map(async (result) => {
-                const fetchResult = await fetchUrlContent(result.url);
+                const fetchResult = await fetchUrlContent(result.url, { waitForJS: true });
                 if (fetchResult.success) {
                     result.content = fetchResult.content;
                     result.contentFetched = true;
@@ -6512,6 +6512,31 @@ async function fetchUrlContentAxios(url, timeout = 8000) {
     }
 }
 
+// Patterns that indicate a page requires JavaScript rendering (content is not useful)
+const JS_REQUIRED_PATTERNS = [
+    /please enable javascript/i,
+    /javascript is required/i,
+    /javascript must be enabled/i,
+    /this page requires javascript/i,
+    /you need to enable javascript/i,
+    /browser does not support javascript/i,
+    /noscript/i,
+    /loading\.\.\./i,
+];
+
+// Check if content is too thin or indicates JS-only page
+function isContentTooThin(content, url) {
+    if (!content) return true;
+    const trimmed = content.trim();
+    // Very short content likely means JS didn't render
+    if (trimmed.length < 200) return true;
+    // Check for JS-required boilerplate patterns
+    for (const pattern of JS_REQUIRED_PATTERNS) {
+        if (pattern.test(trimmed) && trimmed.length < 1000) return true;
+    }
+    return false;
+}
+
 // Helper function to fetch content from a URL with timeout
 // Uses Playwright for advanced bot-detection avoidance, falls back to axios
 async function fetchUrlContent(url, options = {}) {
@@ -6525,7 +6550,7 @@ async function fetchUrlContent(url, options = {}) {
                 extractLinks: options.includeLinks || false
             });
 
-            if (scraplingResult.success && scraplingResult.content) {
+            if (scraplingResult.success && scraplingResult.content && !isContentTooThin(scraplingResult.content, url)) {
                 return {
                     success: true,
                     url,
@@ -6534,6 +6559,10 @@ async function fetchUrlContent(url, options = {}) {
                     links: scraplingResult.links || [],
                     source: 'scrapling'
                 };
+            }
+            // Content too thin or JS-required — fall through to Playwright for JS rendering
+            if (scraplingResult.success && isContentTooThin(scraplingResult.content, url)) {
+                console.log(`[fetchUrlContent] Scrapling returned thin content for ${url} (${(scraplingResult.content || '').length} chars), trying Playwright for JS rendering`);
             }
         } catch (scraplingError) {
             console.log(`Scrapling fetch failed for ${url}: ${scraplingError.message}`);
@@ -6544,7 +6573,7 @@ async function fetchUrlContent(url, options = {}) {
     if (playwrightEnabled && playwrightService) {
         try {
             const result = await playwrightService.fetchUrlContent(url, {
-                timeout,
+                timeout: Math.max(timeout, 20000), // Allow more time for JS-heavy pages
                 waitForJS: options.waitForJS !== false,
                 maxLength: options.maxLength || 6000,
                 includeLinks: options.includeLinks || false

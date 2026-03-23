@@ -166,13 +166,15 @@ export const useChatStore = create(
 
         setConversations: (conversations) => set({ conversations }),
 
-        setActiveConversation: (conversationId) => set({
+        setActiveConversation: (conversationId) => set(state => ({
             activeConversationId: conversationId,
-            messages: [],
+            // Only keep messages if staying on same conversation; otherwise clear streaming
+            // but DON'T clear messages[] - let loadConversationMessages() replace them
+            // This prevents flash of empty state and race conditions during long streaming
             streamingContent: '',
             streamingReasoning: '',
             isStreaming: false
-        }),
+        })),
 
         // Create a new conversation and set it as active
         createNewConversation: (conversation) => set(state => ({

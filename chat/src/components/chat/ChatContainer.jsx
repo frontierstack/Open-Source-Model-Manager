@@ -187,6 +187,9 @@ export default function ChatContainer({
     useEffect(() => {
         if (activeConversationId) {
             loadConversationMessages(activeConversationId);
+        } else {
+            // No active conversation (new chat) - clear messages
+            setMessages([]);
         }
     }, [activeConversationId]);
 
@@ -207,10 +210,14 @@ export default function ChatContainer({
             const response = await fetch(`/api/conversations/${conversationId}`, { credentials: 'include' });
             if (response.ok) {
                 const data = await response.json();
-                setMessages(data.messages || []);
-
-                // Check if there's active streaming for this conversation
-                checkActiveStreaming(conversationId);
+                // Guard against race condition: only update messages if we're still
+                // viewing the same conversation (user may have switched while loading)
+                const currentActiveId = useChatStore.getState().activeConversationId;
+                if (currentActiveId === conversationId) {
+                    setMessages(data.messages || []);
+                    // Check if there's active streaming for this conversation
+                    checkActiveStreaming(conversationId);
+                }
             }
         } catch (error) {
             console.error('Failed to load messages:', error);
@@ -279,6 +286,11 @@ export default function ChatContainer({
     };
 
     const saveMessages = async (conversationId, msgs) => {
+        // Guard: never save empty messages array (prevents accidental data loss)
+        if (!msgs || msgs.length === 0) {
+            console.warn('saveMessages called with empty array, skipping to prevent data loss');
+            return;
+        }
         try {
             await fetch(`/api/conversations/${conversationId}/messages`, {
                 method: 'POST',
