@@ -68,6 +68,75 @@ if SSL_BYPASS_ENABLED:
     except Exception as e:
         print(f'[Scrapling] Warning: Could not patch curl_cffi: {e}', file=sys.stderr)
 
+def extract_main_content(page) -> str:
+    """
+    Extract main content from a page, stripping navigation, headers, footers, sidebars.
+    Falls back to full text if main content extraction yields too little.
+    """
+    # Remove noisy elements first
+    noise_selectors = [
+        'nav', 'header', 'footer', '.nav', '.navbar', '.menu', '.sidebar',
+        '.footer', '.header', '.breadcrumb', '.cookie', '.modal', '.popup',
+        '.ad', '.ads', '.advertisement', '#nav', '#header', '#footer',
+        '#sidebar', '#menu', '.skip-nav', '.skip-to-content',
+        '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]',
+    ]
+    for selector in noise_selectors:
+        try:
+            for elem in page.css(selector):
+                try:
+                    elem.remove()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Try to find main content container
+    content_selectors = [
+        'article', 'main', '[role="main"]',
+        '.content', '.main-content', '#content', '#main',
+        '.article', '.post', '.entry-content',
+        '.page-content', '.body-content',
+    ]
+
+    for selector in content_selectors:
+        try:
+            elems = page.css(selector)
+            if elems and len(elems) > 0:
+                texts = []
+                for elem in elems:
+                    t = elem.get_all_text(separator='\n', strip=True) if hasattr(elem, 'get_all_text') else (elem.text or '')
+                    if t and len(t.strip()) > 100:
+                        texts.append(t.strip())
+                if texts:
+                    combined = '\n\n'.join(texts)
+                    if len(combined) > 300:
+                        return combined
+        except Exception:
+            pass
+
+    # Try extracting from data-heavy elements (tables, data containers)
+    try:
+        table_texts = []
+        for table in page.css('table'):
+            t = table.get_all_text(separator='\n', strip=True) if hasattr(table, 'get_all_text') else (table.text or '')
+            if t and len(t.strip()) > 50:
+                table_texts.append(t.strip())
+        if table_texts and sum(len(t) for t in table_texts) > 300:
+            # Prepend page title context
+            title_text = ''
+            for h in page.css('h1, h2'):
+                ht = h.text or ''
+                if ht.strip():
+                    title_text += ht.strip() + '\n'
+            return title_text + '\n'.join(table_texts)
+    except Exception:
+        pass
+
+    # Fallback: get all text (already had nav/header/footer removed above)
+    return page.get_all_text(separator='\n', strip=True) or ''
+
+
 def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
               timeout: int = 30000, extract_links: bool = False) -> dict:
     """
@@ -111,9 +180,8 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
             # Try StealthyFetcher first for captcha evasion
             page = StealthyFetcher.fetch(url, **fetcher_opts)
 
-            # Extract text content
-            # Get the main text content, removing scripts and styles
-            text_content = page.get_all_text(separator='\n', strip=True)
+            # Extract main content, stripping navigation chrome
+            text_content = extract_main_content(page)
 
             # If content is too thin, try waiting longer and re-fetching
             # (some sites need extra time for JS to render after CAPTCHA bypass)
@@ -123,7 +191,7 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
                 # Try to get text again from a fresh fetch with longer timeout
                 try:
                     page2 = StealthyFetcher.fetch(url, **{**fetcher_opts, 'timeout': max(fetcher_opts.get('timeout', 30000), 45000)})
-                    text_content2 = page2.get_all_text(separator='\n', strip=True)
+                    text_content2 = extract_main_content(page2)
                     if text_content2 and len(text_content2) > len(text_content or ''):
                         text_content = text_content2
                         page = page2
@@ -158,7 +226,7 @@ def fetch_url(url: str, headless: bool = True, solve_cloudflare: bool = True,
 
                 fetcher = Fetcher()
                 page = fetcher.get(url, **fallback_opts)
-                text_content = page.get_all_text(separator='\n', strip=True)
+                text_content = extract_main_content(page)
                 result['content'] = text_content[:50000] if text_content else ''
 
                 title_elems = page.css('title')

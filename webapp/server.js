@@ -6158,6 +6158,24 @@ function extractSearchQuery(rawQuery) {
     return extracted;
 }
 
+/**
+ * Smart truncation that preserves both beginning (context) and end (recent data) of content.
+ * Many data pages (e.g. EIA gas prices, stock tables) have recent data at the end.
+ * Simple .slice(0, maxLength) cuts off exactly the data users most need.
+ */
+function smartTruncate(content, maxLength) {
+    if (!content || content.length <= maxLength) return content;
+
+    // Reserve 30% for the beginning (title, context) and 70% for the end (recent data)
+    const headSize = Math.floor(maxLength * 0.3);
+    const tailSize = maxLength - headSize - 50; // 50 chars for separator
+
+    const head = content.slice(0, headSize);
+    const tail = content.slice(-tailSize);
+
+    return head + '\n\n[... earlier content omitted ...]\n\n' + tail;
+}
+
 // Web search endpoint using DuckDuckGo HTML parsing
 // Now with optional content fetching for richer results
 app.get('/api/search', requireAuth, async (req, res) => {
@@ -6637,7 +6655,7 @@ async function fetchUrlContent(url, options = {}) {
                 return {
                     success: true,
                     url,
-                    content: scraplingResult.content.slice(0, options.maxLength || 6000),
+                    content: smartTruncate(scraplingResult.content, maxLength),
                     title: scraplingResult.title || '',
                     links: scraplingResult.links || [],
                     source: 'scrapling'
