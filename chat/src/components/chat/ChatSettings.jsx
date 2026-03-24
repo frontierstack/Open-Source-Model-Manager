@@ -435,8 +435,8 @@ export default function ChatSettings({
                                             <svg className="w-3.5 h-3.5 text-dark-500 hover:text-dark-300 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                             </svg>
-                                            <span className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1.5 text-[10px] leading-tight text-dark-100 bg-dark-800 border border-dark-700 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
-                                                Controls randomness. Lower values (0.1-0.3) are<br/>more focused and deterministic. Higher values<br/>(0.7-1.5) are more creative and varied.
+                                            <span className="absolute left-0 top-full mt-1.5 px-2.5 py-2 text-[10px] leading-relaxed text-dark-100 bg-dark-800 border border-dark-700 rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none w-52 z-50">
+                                                How "creative" the responses are. Low values give predictable, consistent answers (good for facts, code, math). High values give more varied, imaginative responses (good for stories, brainstorming).
                                             </span>
                                         </span>
                                     </label>
@@ -480,8 +480,8 @@ export default function ChatSettings({
                                             <svg className="w-3.5 h-3.5 text-dark-500 hover:text-dark-300 cursor-help" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                             </svg>
-                                            <span className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-2 py-1.5 text-[10px] leading-tight text-dark-100 bg-dark-800 border border-dark-700 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
-                                                Nucleus sampling. Considers tokens comprising<br/>the top P probability mass. 1.0 = all tokens.<br/>Lower values (0.5-0.9) reduce randomness.
+                                            <span className="absolute left-0 top-full mt-1.5 px-2.5 py-2 text-[10px] leading-relaxed text-dark-100 bg-dark-800 border border-dark-700 rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none w-52 z-50">
+                                                Limits which words the model considers. At 1.0 all words are possible. Lower values (0.5-0.9) make the model only pick from the most likely words, giving more focused and on-topic responses.
                                             </span>
                                         </span>
                                     </label>
