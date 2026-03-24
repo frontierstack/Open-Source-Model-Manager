@@ -828,19 +828,27 @@ export default function ChatContainer({
                             .map((r, i) => `${i + 1}. "${r.title}" - ${r.snippet?.slice(0, 100) || ''}`)
                             .join('; ');
 
-                        // Format search results for the model
+                        // Format search results for the model with total content budget
+                        // Budget prevents exceeding model context window when multiple results have large content
+                        const TOTAL_CONTENT_BUDGET = 24000; // Total chars for all search result content combined
+                        let contentBudgetRemaining = TOTAL_CONTENT_BUDGET;
+                        const resultCount = searchData.results.filter(r => r.content).length || 1;
+                        const perResultBudget = Math.floor(TOTAL_CONTENT_BUDGET / resultCount);
+
                         const searchContext = searchData.results
                             .map((r, i) => {
                                 let resultText = `[${i + 1}] ${r.title}\nURL: ${r.url || r.link}\n`;
                                 if (r.snippet) {
                                     resultText += `Summary: ${r.snippet}\n`;
                                 }
-                                if (r.content) {
-                                    // Include fetched content - generous limit for detailed answers
-                                    const truncatedContent = r.content.length > 12000
-                                        ? r.content.slice(0, 12000) + '...'
+                                if (r.content && contentBudgetRemaining > 0) {
+                                    // Each result gets a fair share, but can use less if content is short
+                                    const maxForThis = Math.min(r.content.length, perResultBudget, contentBudgetRemaining);
+                                    const truncatedContent = r.content.length > maxForThis
+                                        ? r.content.slice(0, maxForThis) + '...'
                                         : r.content;
                                     resultText += `Content: ${truncatedContent}\n`;
+                                    contentBudgetRemaining -= truncatedContent.length;
                                 }
                                 return resultText;
                             })

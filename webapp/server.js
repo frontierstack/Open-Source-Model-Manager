@@ -8334,9 +8334,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
-        // Estimate token count (1 token ≈ 4 chars with small safety margin)
-        const CHARS_PER_TOKEN = 4;
-        const SAFETY_MARGIN = 1.05;  // 5% buffer for tokenizer variance
+        // Estimate token count - use conservative ratio for safety
+        // Number-heavy content (prices, dates) tokenizes at ~2-3 chars/token, not 4
+        // Being conservative here ensures chunking triggers before the model API rejects with 400
+        const CHARS_PER_TOKEN = 3;
+        const SAFETY_MARGIN = 1.1;  // 10% buffer for tokenizer variance
 
         const estimateTokens = (content) => {
             if (typeof content === 'string') {
@@ -8429,6 +8431,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let useMapReduce = false;
         let mapReduceContent = null;
         let mapReduceQuery = null;
+
+        console.log(`[Chat Stream] Context check: totalInputTokens=${totalInputTokens}, contextSize=${contextSize}, responseReserve=${responseReserve}, availableForInput=${availableContextForInput}, needsChunking=${totalInputTokens > availableContextForInput}`);
 
         if (totalInputTokens > availableContextForInput) {
             // Find the last user message (which typically contains the large content)
