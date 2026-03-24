@@ -1633,6 +1633,7 @@ export default function ChatContainer({
                     onContinue={handleContinueResponse}
                     isLoading={isLoading}
                     chatStyle={settings.chatStyle}
+                    messageBorderStrength={settings.messageBorderStrength}
                 />
 
                 {/* Input */}

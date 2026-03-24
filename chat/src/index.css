@@ -860,6 +860,12 @@
     --tw-gradient-via: #fafafa !important;
 }
 
+/* Tailwind hardcodes via color in --tw-gradient-stops, so variable overrides don't work.
+   Override the entire gradient for the input area bottom fade. */
+.theme-light .bg-gradient-to-t.from-dark-950.via-dark-950\/95 {
+    background-image: linear-gradient(to top, #f5f5f5, rgba(250, 250, 250, 0.95), transparent) !important;
+}
+
 /* === Shadows === */
 .theme-light .shadow-dark-950\/30,
 .theme-light .shadow-dark-950\/50 {
@@ -3853,10 +3859,9 @@
 .chat-style-newspaper .message-assistant {
     max-width: 100% !important;
     background: transparent !important;
-    border: none !important;
-    border-top: 1px solid rgba(255, 255, 255, 0.06) !important;
-    border-radius: 0 !important;
-    padding: 1.25rem 0.5rem !important;
+    border: 1px solid rgba(255, 255, 255, var(--message-border-opacity, 0.10)) !important;
+    border-radius: 0.375rem !important;
+    padding: 1.25rem 0.75rem !important;
     line-height: 1.75 !important;
 }
 
@@ -3874,20 +3879,21 @@
 .chat-style-slack .message-assistant {
     max-width: 100% !important;
     width: 100% !important;
-    border-radius: 0 !important;
     background: transparent !important;
-    border: none !important;
     padding: 0.5rem 0.75rem !important;
-    border-left: 2px solid transparent !important;
 }
 
 .chat-style-slack .message-user {
-    border-left-color: var(--accent-primary, #6366f1) !important;
+    border: 1px solid rgba(255, 255, 255, var(--message-border-opacity, 0.10)) !important;
+    border-left: 2px solid var(--accent-primary, #6366f1) !important;
+    border-radius: 0 0.375rem 0.375rem 0 !important;
     background: rgba(var(--primary-rgb, 99, 102, 241), 0.04) !important;
 }
 
 .chat-style-slack .message-assistant {
-    border-left-color: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, var(--message-border-opacity, 0.10)) !important;
+    border-left: 2px solid rgba(255, 255, 255, var(--message-border-opacity, 0.10)) !important;
+    border-radius: 0 0.375rem 0.375rem 0 !important;
 }
 
 .chat-style-slack .space-y-4 > * + * {
@@ -3898,7 +3904,7 @@
 .chat-style-minimal .message-user {
     max-width: 80% !important;
     background: transparent !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, var(--message-border-opacity, 0.10)) !important;
     border-radius: 0.5rem !important;
     color: var(--text-primary) !important;
 }
@@ -3906,10 +3912,9 @@
 .chat-style-minimal .message-assistant {
     max-width: 90% !important;
     background: transparent !important;
-    border: none !important;
-    border-radius: 0 !important;
-    padding: 0.75rem 0 !important;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid rgba(255, 255, 255, var(--message-border-opacity, 0.10)) !important;
+    border-radius: 0.375rem !important;
+    padding: 0.75rem !important;
 }
 
 /* ============================================

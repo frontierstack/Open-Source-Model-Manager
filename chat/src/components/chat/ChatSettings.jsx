@@ -65,6 +65,7 @@ export default function ChatSettings({
         fontSize = 'medium',
         fontFamily = 'system',
         chatStyle = 'default',
+        messageBorderStrength = 10,
     } = settings;
 
     // Chat window style options
@@ -722,6 +723,46 @@ export default function ChatSettings({
                                     })}
                                 </div>
                             </div>
+
+                            {/* Message Border Strength - only show for layouts that use borders */}
+                            {['slack', 'minimal', 'newspaper'].includes(chatStyle) && (
+                                <>
+                                    <div className="border-t border-white/5" />
+                                    <div>
+                                        <div className="flex justify-between items-center mb-2">
+                                            <label className="text-xs font-medium text-dark-200">
+                                                Message Borders
+                                            </label>
+                                            <span className="text-xs font-mono text-primary-400 bg-primary-500/10 px-1.5 py-0.5 rounded">
+                                                {messageBorderStrength}%
+                                            </span>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            value={messageBorderStrength}
+                                            onChange={(e) => onUpdateSettings({ messageBorderStrength: parseInt(e.target.value) })}
+                                            min={0}
+                                            max={40}
+                                            step={1}
+                                            className="w-full h-1.5 bg-dark-800 rounded-full appearance-none cursor-pointer
+                                                       [&::-webkit-slider-thumb]:appearance-none
+                                                       [&::-webkit-slider-thumb]:w-4
+                                                       [&::-webkit-slider-thumb]:h-4
+                                                       [&::-webkit-slider-thumb]:rounded-full
+                                                       [&::-webkit-slider-thumb]:bg-primary-500
+                                                       [&::-webkit-slider-thumb]:shadow-lg
+                                                       [&::-webkit-slider-thumb]:shadow-primary-500/30
+                                                       [&::-webkit-slider-thumb]:cursor-pointer
+                                                       [&::-webkit-slider-thumb]:border-2
+                                                       [&::-webkit-slider-thumb]:border-dark-900"
+                                        />
+                                        <div className="flex justify-between text-[10px] text-dark-500 mt-1.5">
+                                            <span>Subtle</span>
+                                            <span>Strong</span>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
 
                             <div className="border-t border-white/5" />
 

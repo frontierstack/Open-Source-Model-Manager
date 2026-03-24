@@ -16,6 +16,7 @@ export default function ChatMessages({
     onContinue,
     isLoading,
     chatStyle = 'default',
+    messageBorderStrength = 10,
 }) {
     const messagesEndRef = useRef(null);
     const containerRef = useRef(null);
@@ -79,6 +80,7 @@ export default function ChatMessages({
             ref={containerRef}
             onScroll={handleScroll}
             className={`flex-1 overflow-y-auto px-4 py-4 ${chatStyleClass}`}
+            style={{ '--message-border-opacity': (messageBorderStrength || 10) / 100 }}
         >
             {/* Centered container for messages */}
             <div className="max-w-4xl mx-auto space-y-4">
