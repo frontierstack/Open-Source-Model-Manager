@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     X,
     ChevronDown,
@@ -21,7 +21,12 @@ import {
     Minimize2,
     Maximize2,
     AlignCenter,
-    Square
+    Square,
+    Terminal,
+    Newspaper,
+    PanelLeft,
+    Rows3,
+    Type
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
 
@@ -45,6 +50,9 @@ export default function ChatSettings({
     const [newPromptName, setNewPromptName] = useState('');
     const [newPromptContent, setNewPromptContent] = useState('');
     const [isCreatingPrompt, setIsCreatingPrompt] = useState(false);
+    const [fontDropdownOpen, setFontDropdownOpen] = useState(false);
+    const [fontSearch, setFontSearch] = useState('');
+    const fontDropdownRef = useRef(null);
     const confirm = useConfirm();
 
     const {
@@ -110,6 +118,34 @@ export default function ChatSettings({
             description: 'Full width, centered',
             preview: { userAlign: 'center', assistantAlign: 'center', width: 'full' }
         },
+        {
+            value: 'terminal',
+            label: 'Terminal',
+            icon: Terminal,
+            description: 'Monospace, flat style',
+            preview: { userAlign: 'left', assistantAlign: 'left', width: 'full' }
+        },
+        {
+            value: 'newspaper',
+            label: 'Newspaper',
+            icon: Newspaper,
+            description: 'Narrow column, serif feel',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'compact' }
+        },
+        {
+            value: 'slack',
+            label: 'Slack',
+            icon: PanelLeft,
+            description: 'Flat, left-aligned messages',
+            preview: { userAlign: 'left', assistantAlign: 'left', width: 'normal' }
+        },
+        {
+            value: 'minimal',
+            label: 'Minimal',
+            icon: Rows3,
+            description: 'Clean dividers, no bubbles',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'normal' }
+        },
     ];
 
     // Font options with resolution presets
@@ -118,6 +154,34 @@ export default function ChatSettings({
         { value: 'medium', label: 'Medium', description: '2K / Default' },
         { value: 'large', label: 'Large', description: '4K / Spacious' },
     ];
+
+    // Font CSS family mapping for live preview in dropdown
+    const fontCssMap = {
+        system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        inter: '"Inter", sans-serif', roboto: '"Roboto", sans-serif', opensans: '"Open Sans", sans-serif',
+        lato: '"Lato", sans-serif', poppins: '"Poppins", sans-serif', nunito: '"Nunito", sans-serif',
+        sourcesans: '"Source Sans Pro", sans-serif', dmsans: '"DM Sans", sans-serif',
+        worksans: '"Work Sans", sans-serif', plusjakarta: '"Plus Jakarta Sans", sans-serif',
+        lexend: '"Lexend", sans-serif', outfit: '"Outfit", sans-serif',
+        spacegrotesk: '"Space Grotesk", sans-serif', ibmplex: '"IBM Plex Sans", sans-serif',
+        manrope: '"Manrope", sans-serif', urbanist: '"Urbanist", sans-serif', sora: '"Sora", sans-serif',
+        atkinson: '"Atkinson Hyperlegible", sans-serif', geist: '"Geist", sans-serif',
+        figtree: '"Figtree", sans-serif', onest: '"Onest", sans-serif', rubik: '"Rubik", sans-serif',
+        quicksand: '"Quicksand", sans-serif', comfortaa: '"Comfortaa", sans-serif',
+        overpass: '"Overpass", sans-serif', karla: '"Karla", sans-serif', assistant: '"Assistant", sans-serif',
+        exo2: '"Exo 2", sans-serif', barlow: '"Barlow", sans-serif', publicsans: '"Public Sans", sans-serif',
+        redhatdisplay: '"Red Hat Display", sans-serif', readexpro: '"Readex Pro", sans-serif',
+        merriweather: '"Merriweather", serif', playfair: '"Playfair Display", serif', georgia: 'Georgia, serif',
+        crimsonpro: '"Crimson Pro", serif', librebaskerville: '"Libre Baskerville", serif',
+        lora: '"Lora", serif', sourceserpro: '"Source Serif Pro", serif',
+        jetbrains: '"JetBrains Mono", monospace', firacode: '"Fira Code", monospace',
+        consolas: 'Consolas, monospace', spacemono: '"Space Mono", monospace',
+        ubuntumono: '"Ubuntu Mono", monospace', anonymouspro: '"Anonymous Pro", monospace',
+        cascadiacode: '"Cascadia Code", monospace', victormono: '"Victor Mono", monospace',
+        geistmono: '"Geist Mono", monospace', sourcecodepro: '"Source Code Pro", monospace',
+        intelone: '"Intel One Mono", monospace', inconsolata: '"Inconsolata", monospace',
+        martianmono: '"Martian Mono", monospace',
+    };
 
     const fontFamilyOptions = [
         // Sans-Serif - Modern
@@ -185,8 +249,21 @@ export default function ChatSettings({
             setIsCreatingPrompt(false);
             setNewPromptName('');
             setNewPromptContent('');
+            setFontDropdownOpen(false);
+            setFontSearch('');
         }
     }, [open]);
+
+    // Close font dropdown on click outside
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (fontDropdownRef.current && !fontDropdownRef.current.contains(e.target)) {
+                setFontDropdownOpen(false);
+            }
+        };
+        if (fontDropdownOpen) document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [fontDropdownOpen]);
 
     if (!open) return null;
 
@@ -761,24 +838,80 @@ export default function ChatSettings({
                                 </div>
                             </div>
 
-                            {/* Font Family */}
-                            <div>
+                            {/* Font Family - Custom dropdown with live preview */}
+                            <div ref={fontDropdownRef}>
                                 <label className="block text-xs font-medium text-dark-200 mb-1.5">
                                     Font Family
                                 </label>
                                 <div className="relative">
-                                    <select
-                                        value={fontFamily}
-                                        onChange={(e) => onUpdateSettings({ fontFamily: e.target.value })}
-                                        className="w-full px-3 py-1.5 bg-dark-800/80 border border-white/10 rounded-md text-dark-200 text-xs appearance-none cursor-pointer hover:border-white/20 focus:outline-none focus:border-primary-500/50 focus:ring-1 focus:ring-primary-500/20 transition-all"
+                                    {/* Selected font trigger */}
+                                    <button
+                                        type="button"
+                                        onClick={() => setFontDropdownOpen(!fontDropdownOpen)}
+                                        className="w-full flex items-center justify-between px-3 py-2 bg-dark-800/80 border border-white/10 rounded-md text-dark-200 text-sm cursor-pointer hover:border-white/20 transition-all"
+                                        style={{ fontFamily: fontCssMap[fontFamily] || 'inherit' }}
                                     >
-                                        {fontFamilyOptions.map((option) => (
-                                            <option key={option.value} value={option.value}>
-                                                {option.label}
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400 pointer-events-none" />
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <Type className="w-3.5 h-3.5 text-dark-400 flex-shrink-0" />
+                                            <span className="truncate">{fontFamilyOptions.find(f => f.value === fontFamily)?.label || 'System Default'}</span>
+                                            <span className="text-[9px] uppercase px-1 py-0.5 rounded bg-white/5 text-dark-400 flex-shrink-0">
+                                                {fontFamilyOptions.find(f => f.value === fontFamily)?.category || 'sans'}
+                                            </span>
+                                        </div>
+                                        <ChevronDown className={`w-3.5 h-3.5 text-dark-400 flex-shrink-0 transition-transform ${fontDropdownOpen ? 'rotate-180' : ''}`} />
+                                    </button>
+
+                                    {/* Font dropdown list */}
+                                    {fontDropdownOpen && (
+                                        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-dark-900/98 backdrop-blur-xl border border-white/10 rounded-lg shadow-2xl overflow-hidden">
+                                            {/* Search */}
+                                            <div className="p-2 border-b border-white/5">
+                                                <input
+                                                    type="text"
+                                                    value={fontSearch}
+                                                    onChange={(e) => setFontSearch(e.target.value)}
+                                                    placeholder="Search fonts..."
+                                                    className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-white/10 rounded text-xs text-dark-200 placeholder-dark-500 focus:outline-none focus:border-white/20"
+                                                    autoFocus
+                                                />
+                                            </div>
+                                            {/* Font list */}
+                                            <div className="max-h-56 overflow-y-auto">
+                                                {['sans', 'serif', 'mono'].map(cat => {
+                                                    const filtered = fontFamilyOptions
+                                                        .filter(f => f.category === cat)
+                                                        .filter(f => !fontSearch || f.label.toLowerCase().includes(fontSearch.toLowerCase()));
+                                                    if (filtered.length === 0) return null;
+                                                    return (
+                                                        <div key={cat}>
+                                                            <div className="px-3 py-1 text-[9px] uppercase tracking-wider text-dark-500 font-semibold bg-dark-800/40 sticky top-0">
+                                                                {cat === 'sans' ? 'Sans-Serif' : cat === 'serif' ? 'Serif' : 'Monospace'}
+                                                            </div>
+                                                            {filtered.map(option => (
+                                                                <button
+                                                                    key={option.value}
+                                                                    onClick={() => {
+                                                                        onUpdateSettings({ fontFamily: option.value });
+                                                                        setFontDropdownOpen(false);
+                                                                        setFontSearch('');
+                                                                    }}
+                                                                    className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-white/5 transition-colors ${fontFamily === option.value ? 'bg-white/8' : ''}`}
+                                                                    style={{ fontFamily: fontCssMap[option.value] || 'inherit' }}
+                                                                >
+                                                                    <span className={`truncate ${fontFamily === option.value ? 'text-dark-100' : 'text-dark-300'}`}>
+                                                                        {option.label}
+                                                                    </span>
+                                                                    {fontFamily === option.value && (
+                                                                        <Check className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} />
+                                                                    )}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 

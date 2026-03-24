@@ -111,28 +111,26 @@ export default function ChatHeader({
                 <div className="relative" ref={modelDropdownRef}>
                     <button
                         onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-dark-800/60 border border-white/8 hover:border-white/15 transition-all duration-150"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-dark-800/50 border border-white/8 hover:border-white/15 hover:bg-dark-800/70 active:scale-[0.98] transition-all duration-150"
                     >
-                        <div className="flex items-center gap-2">
-                            <Circle
-                                className={`w-2 h-2 ${selectedModelStatus.color} ${selectedModelStatus.animation}`}
-                                title={selectedModelStatus.label}
-                            />
-                            <span className="text-xs font-medium text-dark-100 max-w-[140px] truncate">
-                                {selectedModel || 'Select Model'}
+                        <Circle
+                            className={`w-2 h-2 flex-shrink-0 ${selectedModelStatus.color} ${selectedModelStatus.animation}`}
+                            title={selectedModelStatus.label}
+                        />
+                        <span className="text-xs font-medium text-dark-100 max-w-[160px] truncate">
+                            {selectedModel || 'Select Model'}
+                        </span>
+                        {selectedModelData?.backend && (
+                            <span
+                                className="text-[9px] font-semibold px-1 py-0.5 rounded uppercase leading-none"
+                                style={{
+                                    backgroundColor: 'rgba(var(--primary-rgb), 0.15)',
+                                    color: 'var(--accent-primary)'
+                                }}
+                            >
+                                {formatBackend(selectedModelData.backend)}
                             </span>
-                            {selectedModelData?.backend && (
-                                <span
-                                    className="text-[9px] font-semibold px-1 py-0.5 rounded uppercase"
-                                    style={{
-                                        backgroundColor: 'rgba(var(--primary-rgb), 0.15)',
-                                        color: 'var(--accent-primary)'
-                                    }}
-                                >
-                                    {formatBackend(selectedModelData.backend)}
-                                </span>
-                            )}
-                        </div>
+                        )}
                         <ChevronDown className={`w-3 h-3 text-dark-400 transition-transform duration-150 ${modelDropdownOpen ? 'rotate-180' : ''}`} />
                     </button>
 
@@ -201,38 +199,38 @@ export default function ChatHeader({
             </div>
 
             {/* Right side - Actions */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
                 {/* New Chat */}
                 <button
                     onClick={onNewChat}
-                    className="p-1.5 rounded-md text-dark-400 hover:text-dark-200 hover:bg-white/5 transition-all"
+                    className="p-2 rounded-lg text-dark-400 hover:text-dark-100 hover:bg-white/8 active:scale-95 transition-all duration-150"
                     title="New Chat"
                 >
-                    <Plus className="w-4 h-4" />
+                    <Plus className="w-[18px] h-[18px]" strokeWidth={2} />
                 </button>
 
                 {/* Settings */}
                 <button
                     onClick={onSettingsClick}
-                    className="p-1.5 rounded-md text-dark-400 hover:text-dark-200 hover:bg-white/5 transition-all"
+                    className="p-2 rounded-lg text-dark-400 hover:text-dark-100 hover:bg-white/8 active:scale-95 transition-all duration-150"
                     title="Settings"
                 >
-                    <Settings className="w-4 h-4" />
+                    <Settings className="w-[18px] h-[18px]" strokeWidth={1.8} />
                 </button>
 
                 {/* User Menu */}
                 <div className="relative" ref={userDropdownRef}>
                     <button
                         onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-                        className="flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-white/5 transition-all"
+                        className="flex items-center gap-1.5 pl-1.5 pr-1 py-1 rounded-lg hover:bg-white/8 active:scale-95 transition-all duration-150"
                     >
                         <div
-                            className="w-5 h-5 rounded flex items-center justify-center"
+                            className="w-7 h-7 rounded-md flex items-center justify-center shadow-sm"
                             style={{ background: 'linear-gradient(135deg, var(--accent-hover), var(--accent-secondary))' }}
                         >
-                            <span className="text-[10px] font-bold text-white">{userInitial}</span>
+                            <span className="text-xs font-bold text-white">{userInitial}</span>
                         </div>
-                        <ChevronDown className={`w-3 h-3 text-dark-500 transition-transform ${userDropdownOpen ? 'rotate-180' : ''}`} />
+                        <ChevronDown className={`w-3.5 h-3.5 text-dark-500 transition-transform ${userDropdownOpen ? 'rotate-180' : ''}`} />
                     </button>
 
                     {userDropdownOpen && (
