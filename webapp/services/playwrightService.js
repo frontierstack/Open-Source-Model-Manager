@@ -539,8 +539,15 @@ async function extractContent(page, options = {}) {
         const metaDesc = document.querySelector('meta[name="description"]')?.content ||
                          document.querySelector('meta[property="og:description"]')?.content || '';
 
-        // Get main content area
-        const mainContent = document.querySelector('article') ||
+        // Get main content area - check specific article body selectors first (Blogger, WordPress, news sites)
+        const mainContent = document.querySelector('.post-body') ||
+                           document.querySelector('.articlebody') ||
+                           document.querySelector('.post-body-container') ||
+                           document.querySelector('[itemprop="articleBody"]') ||
+                           document.querySelector('.story-body') ||
+                           document.querySelector('.storycontent') ||
+                           document.querySelector('.entry-content') ||
+                           document.querySelector('article') ||
                            document.querySelector('main') ||
                            document.querySelector('[role="main"]') ||
                            document.querySelector('.content') ||
@@ -783,12 +790,12 @@ async function fetchUrlContent(url, options = {}) {
 
             // Check if page has meaningful content, if not wait longer for late-loading SPAs
             const bodyTextLength = await page.evaluate(() => (document.body?.innerText || '').trim().length);
-            if (bodyTextLength < 200) {
+            if (bodyTextLength < 500) {
                 // Page likely still rendering - wait extra time for SPA hydration
                 await page.waitForTimeout(randomDelay(5000, 8000));
 
                 // If still thin, try scrolling to trigger lazy loading
-                const stillThin = await page.evaluate(() => (document.body?.innerText || '').trim().length < 200);
+                const stillThin = await page.evaluate(() => (document.body?.innerText || '').trim().length < 500);
                 if (stillThin) {
                     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
                     await page.waitForTimeout(randomDelay(2000, 3000));

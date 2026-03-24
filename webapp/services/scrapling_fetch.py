@@ -93,6 +93,8 @@ def extract_main_content(page) -> str:
 
     # Try to find main content container
     content_selectors = [
+        '.post-body', '.articlebody', '.post-body-container',
+        '[itemprop="articleBody"]', '.story-body', '.storycontent',
         'article', 'main', '[role="main"]',
         '.content', '.main-content', '#content', '#main',
         '.article', '.post', '.entry-content',

@@ -6631,8 +6631,8 @@ const JS_REQUIRED_PATTERNS = [
 function isContentTooThin(content, url) {
     if (!content) return true;
     const trimmed = content.trim();
-    // Very short content likely means JS didn't render
-    if (trimmed.length < 200) return true;
+    // Short content likely means JS didn't render or extraction got ads/nav only
+    if (trimmed.length < 500) return true;
     // Check for JS-required boilerplate patterns
     for (const pattern of JS_REQUIRED_PATTERNS) {
         if (pattern.test(trimmed) && trimmed.length < 1000) return true;
@@ -8089,10 +8089,13 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         let messageTokens = estimateTokens(userContent);
         let totalInputTokens = systemTokens + messageTokens;
 
-        // Reserve space for response (default 20% of context or maxTokens if specified)
-        // Cap at 80% of context to always leave room for input
-        const maxResponseReserve = Math.floor(contextSize * 0.8);
-        const responseReserve = Math.min(maxTokens || Math.floor(contextSize * 0.2), maxResponseReserve);
+        // Response reserve: input gets priority, response gets what's left (capped by max_tokens)
+        const desiredResponseTokens = maxTokens || Math.floor(contextSize * 0.2);
+        const minResponseReserve = Math.min(2048, Math.floor(contextSize * 0.2));
+        const responseReserve = Math.max(
+            minResponseReserve,
+            Math.min(desiredResponseTokens, contextSize - totalInputTokens - 200)
+        );
         const availableContextForInput = contextSize - responseReserve;
 
         // Check if input exceeds available context
@@ -8425,13 +8428,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             totalInputTokens += estimateTokens(msg.content);
         }
 
-        // Reserve space for response (default 20% of context or effectiveMaxTokens if specified)
-        // Ensure minimum 2048 tokens for response so small context windows still get useful replies
-        // Cap response reserve at 80% of context to always leave room for input
-        const maxResponseReserve = Math.floor(contextSize * 0.8);
-        const responseReserve = Math.min(
-            effectiveMaxTokens || Math.max(2048, Math.floor(contextSize * 0.2)),
-            maxResponseReserve
+        // Response reserve: input gets priority, response gets what's left (capped by max_tokens)
+        // This matches OpenAI-compatible semantics where max_tokens caps generation length
+        // but does NOT pre-emptively starve input of context space
+        const desiredResponseTokens = effectiveMaxTokens || Math.max(2048, Math.floor(contextSize * 0.2));
+        const minResponseReserve = Math.min(2048, Math.floor(contextSize * 0.2)); // Absolute minimum for a useful response
+        // Give input what it needs, response gets the rest (at least minResponseReserve)
+        const responseReserve = Math.max(
+            minResponseReserve,
+            Math.min(desiredResponseTokens, contextSize - totalInputTokens - 200)
         );
         const availableContextForInput = Math.max(512, contextSize - responseReserve);
 
@@ -8443,7 +8448,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let mapReduceContent = null;
         let mapReduceQuery = null;
 
-        console.log(`[Chat Stream] Context check: totalInputTokens=${totalInputTokens}, contextSize=${contextSize}, responseReserve=${responseReserve}, availableForInput=${availableContextForInput}, needsChunking=${totalInputTokens > availableContextForInput}`);
+        console.log(`[Chat Stream] Context check: totalInputTokens=${totalInputTokens}, contextSize=${contextSize}, responseReserve=${responseReserve}, desiredResponse=${desiredResponseTokens}, availableForInput=${availableContextForInput}, needsChunking=${totalInputTokens > availableContextForInput}`);
 
         if (totalInputTokens > availableContextForInput) {
             // Find the last user message (which typically contains the large content)

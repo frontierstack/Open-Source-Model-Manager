@@ -267,42 +267,6 @@ export default function ChatSettings({
 
     if (!open) return null;
 
-    // Presets use percentages of the model's context window
-    const presets = [
-        {
-            label: 'Precise',
-            icon: Target,
-            temperature: 0.2,
-            maxTokens: Math.floor(contextSize * 0.5),  // 50% of context
-            topP: 0.9,
-            description: 'Focused, deterministic responses'
-        },
-        {
-            label: 'Balanced',
-            icon: Zap,
-            temperature: 0.7,
-            maxTokens: Math.floor(contextSize * 0.75), // 75% of context
-            topP: 1.0,
-            description: 'Good for general tasks'
-        },
-        {
-            label: 'Creative',
-            icon: Sparkles,
-            temperature: 1.0,
-            maxTokens: Math.floor(contextSize * 0.75), // 75% of context (leave room for input)
-            topP: 1.0,
-            description: 'Imaginative, varied outputs'
-        },
-        {
-            label: 'Code',
-            icon: Code,
-            temperature: 0.1,
-            maxTokens: Math.floor(contextSize * 0.75), // 75% of context (leave room for input)
-            topP: 0.95,
-            description: 'Precise code generation'
-        },
-    ];
-
     const themeOptions = [
         // Standard
         { value: 'dark', label: 'Dark', icon: Moon, description: 'Default dark theme' },
@@ -457,44 +421,6 @@ export default function ChatSettings({
                                         ))}
                                     </select>
                                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400 pointer-events-none" />
-                                </div>
-                            </div>
-
-                            <div className="border-t border-white/5" />
-
-                            {/* Quick Presets */}
-                            <div>
-                                <label className="block text-xs font-medium text-dark-200 mb-2">
-                                    Quick Presets
-                                </label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    {presets.map((preset) => {
-                                        const Icon = preset.icon;
-                                        const isActive = temperature === preset.temperature && maxTokens === preset.maxTokens;
-                                        return (
-                                            <button
-                                                key={preset.label}
-                                                onClick={() => onUpdateSettings({
-                                                    temperature: preset.temperature,
-                                                    maxTokens: preset.maxTokens,
-                                                    topP: preset.topP,
-                                                })}
-                                                className={`flex items-start gap-2 p-2.5 rounded-lg border transition-all duration-200 text-left ${
-                                                    isActive
-                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
-                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
-                                                }`}
-                                            >
-                                                <div className={`p-1.5 rounded-md ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
-                                                    <Icon className="w-3.5 h-3.5" />
-                                                </div>
-                                                <div>
-                                                    <div className="text-xs font-medium">{preset.label}</div>
-                                                    <div className="text-[10px] text-dark-500 mt-0.5">{preset.description}</div>
-                                                </div>
-                                            </button>
-                                        );
-                                    })}
                                 </div>
                             </div>
 
