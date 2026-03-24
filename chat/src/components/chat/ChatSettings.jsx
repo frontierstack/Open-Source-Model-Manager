@@ -289,7 +289,7 @@ export default function ChatSettings({
             label: 'Creative',
             icon: Sparkles,
             temperature: 1.0,
-            maxTokens: contextSize,                    // Full context
+            maxTokens: Math.floor(contextSize * 0.75), // 75% of context (leave room for input)
             topP: 1.0,
             description: 'Imaginative, varied outputs'
         },
@@ -297,7 +297,7 @@ export default function ChatSettings({
             label: 'Code',
             icon: Code,
             temperature: 0.1,
-            maxTokens: contextSize,                    // Full context for code
+            maxTokens: Math.floor(contextSize * 0.75), // 75% of context (leave room for input)
             topP: 0.95,
             description: 'Precise code generation'
         },

@@ -591,7 +591,9 @@ async function processWithMapReduce(options) {
     // Calculate available tokens for each chunk
     const systemTokens = systemMessages.reduce((sum, msg) => sum + estimateTokenCount(msg.content), 0);
     const queryTokens = estimateTokenCount(originalQuery);
-    const responseReserve = maxTokens || Math.floor(contextSize * 0.2);
+    // Cap response reserve at 80% of context to always leave room for chunk content
+    const maxResponseReserve = Math.floor(contextSize * 0.8);
+    const responseReserve = Math.min(maxTokens || Math.floor(contextSize * 0.2), maxResponseReserve);
 
     // Available for chunk content = context - system - query wrapper - response reserve - buffer
     const availableForChunkContent = contextSize - systemTokens - queryTokens - responseReserve - 500;
@@ -1095,8 +1097,10 @@ async function syncModelInstances() {
             let config = {};
 
             if (backend === 'vllm') {
+                const maxModelLen = parseInt(getEnvValue('VLLM_MAX_MODEL_LEN') || '4096');
                 config = {
-                    maxModelLen: parseInt(getEnvValue('VLLM_MAX_MODEL_LEN') || '4096'),
+                    maxModelLen,
+                    contextSize: maxModelLen,  // Alias for chat stream compatibility
                     cpuOffloadGb: parseFloat(getEnvValue('VLLM_CPU_OFFLOAD_GB') || '0'),
                     gpuMemoryUtilization: parseFloat(getEnvValue('VLLM_GPU_MEMORY_UTILIZATION') || '0.9'),
                     tensorParallelSize: parseInt(getEnvValue('VLLM_TENSOR_PARALLEL_SIZE') || '1'),
@@ -8064,7 +8068,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Get context size configuration
-        const contextSize = targetInstance.config?.contextSize || 4096;
+        const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
@@ -8086,7 +8090,9 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         let totalInputTokens = systemTokens + messageTokens;
 
         // Reserve space for response (default 20% of context or maxTokens if specified)
-        const responseReserve = maxTokens || Math.floor(contextSize * 0.2);
+        // Cap at 80% of context to always leave room for input
+        const maxResponseReserve = Math.floor(contextSize * 0.8);
+        const responseReserve = Math.min(maxTokens || Math.floor(contextSize * 0.2), maxResponseReserve);
         const availableContextForInput = contextSize - responseReserve;
 
         // Check if input exceeds available context
@@ -8330,7 +8336,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
         // Get context size configuration
-        const contextSize = targetInstance.config?.contextSize || 4096;
+        const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
@@ -8421,7 +8427,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
         // Reserve space for response (default 20% of context or effectiveMaxTokens if specified)
         // Ensure minimum 2048 tokens for response so small context windows still get useful replies
-        const responseReserve = effectiveMaxTokens || Math.max(2048, Math.floor(contextSize * 0.2));
+        // Cap response reserve at 80% of context to always leave room for input
+        const maxResponseReserve = Math.floor(contextSize * 0.8);
+        const responseReserve = Math.min(
+            effectiveMaxTokens || Math.max(2048, Math.floor(contextSize * 0.2)),
+            maxResponseReserve
+        );
         const availableContextForInput = Math.max(512, contextSize - responseReserve);
 
         // Smart content chunking - use map-reduce for large content
