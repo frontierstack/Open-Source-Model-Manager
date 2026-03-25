@@ -7420,7 +7420,8 @@ YOU MUST NOT:
 
             // Determine if the claimed operation type was already executed
             const messageContainsDelete = /\b(delete|remove|rm|erase|clear|wipe)\b/i.test(originalMessage);
-            const messageContainsCreate = /\b(create|save|write|export)\b.*\b(file|pdf|txt)\b/i.test(originalMessage);
+            const messageContainsCreate = /\b(create|save|write|export|make|new)\b.*\b(file|folder|directory|dir|pdf|txt)\b/i.test(originalMessage) ||
+                /\b(file|folder|directory)\b.*\b(called|named)\b/i.test(originalMessage);
             const messageContainsMove = /\b(move|rename)\b/i.test(originalMessage);
             const messageContainsCopy = /\bcopy\b/i.test(originalMessage);
 
@@ -7438,9 +7439,9 @@ YOU MUST NOT:
                 (messageContainsMove && moveOpsExecuted) ||
                 (messageContainsCopy && copyOpsExecuted);
 
-            if (claimsFileOperation && !operationAlreadyCompleted) {
+            if (claimsFileOperation && !operationAlreadyCompleted && iteration <= 2) {
                 // AI claimed to do file operations but didn't execute any skills
-                // Remove the false claim from display
+                // Only retry up to 2 times to prevent infinite loops
                 const lastMsg = chatHistory[chatHistory.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant') {
                     chatHistory.pop();
@@ -7448,11 +7449,13 @@ YOU MUST NOT:
 
                 // Force the AI to actually execute skills
                 let correctionFeedback = '\n\n[EXECUTION REQUIRED]\n';
-                correctionFeedback += 'You claimed to have performed a file operation (save/create/write) but did not execute the create_file skill.\n';
-                correctionFeedback += 'You MUST use skills to perform actual file operations. Do not claim completion without execution.\n\n';
-                correctionFeedback += 'To save content to a file, use this format:\n';
-                correctionFeedback += '[SKILL:create_file(filePath="/path/to/file.txt", content="your content here")]\n\n';
-                correctionFeedback += 'IMPORTANT: Execute the create_file skill NOW with the content you want to save.\n';
+                correctionFeedback += 'You claimed to have performed a file operation but did not execute a skill.\n';
+                correctionFeedback += 'You MUST use skills to perform actual file/directory operations. Do not claim completion without execution.\n\n';
+                correctionFeedback += 'Use the appropriate skill:\n';
+                correctionFeedback += `- To create a file: [SKILL:create_file(filePath="${userWorkingDirectory}/filename", content="content")]\n`;
+                correctionFeedback += `- To create a directory: [SKILL:create_directory(dirPath="${userWorkingDirectory}/dirname")]\n`;
+                correctionFeedback += `- To delete a file: [SKILL:delete_file(filePath="${userWorkingDirectory}/filename")]\n\n`;
+                correctionFeedback += 'Execute the appropriate skill NOW.\n';
 
                 addToHistory('system', 'No file operation executed - asking AI to actually save the file...');
                 displayChatHistory();
