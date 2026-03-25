@@ -1468,7 +1468,7 @@ initializePassport(passport);
 app.use(passport.initialize());
 app.use(passport.session());
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Helper function to parse session ID from cookie string
@@ -7535,10 +7535,10 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // Handle base64-encoded file content
         const { filename, content, mimeType, optimize = true } = req.body;
 
-        // Validate file size (max 10MB)
+        // Validate file size (max 50MB)
         const contentLength = content ? content.length : 0;
-        if (contentLength > 10 * 1024 * 1024) {
-            return res.status(413).json({ error: 'File too large. Maximum size is 10MB.' });
+        if (contentLength > 50 * 1024 * 1024) {
+            return res.status(413).json({ error: 'File too large. Maximum size is 50MB.' });
         }
 
         if (!content) {
@@ -8526,7 +8526,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     condensationInfo = condensationResult;
 
                                     // Check if condensation avoided chunking entirely
-                                    const condensedTokens = estimateTokenCount(finalContent);
+                                    // IMPORTANT: Use the same estimateTokens function (3 chars/token, 1.1x margin)
+                                    // as the overall context check to avoid divergence where estimateTokenCount
+                                    // (4 chars/token) says "fits" but estimateTokens says "doesn't fit"
+                                    const condensedTokens = estimateTokens(finalContent);
                                     if (condensedTokens <= availableForContent) {
                                         // Content now fits! No need for map-reduce
                                         console.log(`[Chat Stream] Condensation avoided chunking: ${contentTokens} -> ${condensedTokens} tokens`);
@@ -8550,7 +8553,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                         break;
                                     }
 
-                                    console.log(`[Chat Stream] Content condensed: ${contentTokens} -> ${estimateTokenCount(finalContent)} tokens (${condensationResult.reductionPercent}% reduction)`);
+                                    console.log(`[Chat Stream] Content condensed: ${contentTokens} -> ${estimateTokens(finalContent)} tokens (${condensationResult.reductionPercent}% reduction)`);
                                 }
                             }
 
@@ -8600,7 +8603,24 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
             // If still over limit after processing and not using map-reduce
             if (!useMapReduce && totalInputTokens > availableContextForInput) {
-                if (contextShift) {
+                // Safety fallback: if chunking should have triggered but didn't (e.g. condensation
+                // thought it fit but recalculation disagrees), fall back to map-reduce for the
+                // last user message rather than returning a hard 400 error
+                const lastUserMsg = [...chatMessages].reverse().find(m => m.role === 'user');
+                const lastUserContent = typeof lastUserMsg?.content === 'string'
+                    ? lastUserMsg.content
+                    : (Array.isArray(lastUserMsg?.content)
+                        ? (lastUserMsg.content.find(p => p.type === 'text')?.text || '')
+                        : '');
+                const lastUserTokens = estimateTokens(lastUserContent);
+
+                if (CHUNKING_CONFIG.enabled && lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
+                    (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce')) {
+                    console.log(`[Chat Stream] Fallback to map-reduce: condensation did not reduce enough (totalInputTokens=${totalInputTokens}, available=${availableContextForInput})`);
+                    useMapReduce = true;
+                    mapReduceContent = lastUserContent;
+                    mapReduceQuery = mapReduceQuery || 'Please analyze and summarize this content.';
+                } else if (contextShift) {
                     // CONTEXT SHIFTING: Remove oldest messages (except system) until input fits
                     // Preserve: system messages, last user message, and as many recent messages as possible
                     console.log(`[Chat Stream] Context shift enabled - trimming ${totalInputTokens} tokens to fit ${availableContextForInput}`);

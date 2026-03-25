@@ -18,12 +18,8 @@ import {
     Code,
     Target,
     Layout,
-    Minimize2,
-    Maximize2,
     AlignCenter,
-    Square,
     Terminal,
-    Newspaper,
     PanelLeft,
     Rows3,
     Type
@@ -85,27 +81,6 @@ export default function ChatSettings({
             preview: { userAlign: 'center', assistantAlign: 'center', width: 'normal' }
         },
         {
-            value: 'bubbles',
-            label: 'Bubbles',
-            icon: Square,
-            description: 'Rounded bubble style',
-            preview: { userAlign: 'right', assistantAlign: 'left', width: 'compact' }
-        },
-        {
-            value: 'cozy',
-            label: 'Cozy',
-            icon: Maximize2,
-            description: 'Extra spacious layout',
-            preview: { userAlign: 'right', assistantAlign: 'left', width: 'wide' }
-        },
-        {
-            value: 'compact',
-            label: 'Compact',
-            icon: Minimize2,
-            description: 'Tight, minimal spacing',
-            preview: { userAlign: 'right', assistantAlign: 'left', width: 'tight' }
-        },
-        {
             value: 'wide',
             label: 'Wide',
             icon: Layout,
@@ -125,13 +100,6 @@ export default function ChatSettings({
             icon: Terminal,
             description: 'Monospace, flat style',
             preview: { userAlign: 'left', assistantAlign: 'left', width: 'full' }
-        },
-        {
-            value: 'newspaper',
-            label: 'Newspaper',
-            icon: Newspaper,
-            description: 'Narrow column, serif feel',
-            preview: { userAlign: 'right', assistantAlign: 'left', width: 'compact' }
         },
         {
             value: 'slack',
@@ -725,7 +693,7 @@ export default function ChatSettings({
                             </div>
 
                             {/* Message Border Strength - only show for layouts that use borders */}
-                            {['slack', 'minimal', 'newspaper'].includes(chatStyle) && (
+                            {['slack', 'minimal'].includes(chatStyle) && (
                                 <>
                                     <div className="border-t border-white/5" />
                                     <div>

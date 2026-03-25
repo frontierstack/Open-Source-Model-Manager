@@ -3739,53 +3739,6 @@
     max-width: 80% !important;
 }
 
-/* Bubbles - Rounded bubble style */
-.chat-style-bubbles .message-user,
-.chat-style-bubbles .message-assistant {
-    border-radius: 1.5rem !important;
-    max-width: 70% !important;
-}
-
-.chat-style-bubbles .message-user {
-    border-bottom-right-radius: 0.375rem !important;
-    padding: 0.875rem 1.25rem !important;
-}
-
-.chat-style-bubbles .message-assistant {
-    border-bottom-left-radius: 0.375rem !important;
-    padding: 1rem 1.5rem !important;
-}
-
-/* Cozy - Extra spacious layout */
-.chat-style-cozy .message-user {
-    max-width: 70% !important;
-    padding: 1rem 1.25rem !important;
-}
-
-.chat-style-cozy .message-assistant {
-    max-width: 95% !important;
-    padding: 1.5rem 2rem !important;
-}
-
-.chat-style-cozy .space-y-4 > * + * {
-    margin-top: 1.5rem !important;
-}
-
-/* Compact - Tight, minimal spacing */
-.chat-style-compact .message-user,
-.chat-style-compact .message-assistant {
-    padding: 0.5rem 0.75rem !important;
-    max-width: 85% !important;
-}
-
-.chat-style-compact .space-y-4 > * + * {
-    margin-top: 0.5rem !important;
-}
-
-.chat-style-compact .mb-4 {
-    margin-bottom: 0.5rem !important;
-}
-
 /* Wide - Full width messages */
 .chat-style-wide .message-user {
     max-width: 85% !important;
@@ -3844,29 +3797,6 @@
     border: none !important;
     border-left: 3px solid rgba(255, 255, 255, 0.1) !important;
     border-radius: 0 !important;
-}
-
-/* Newspaper - Narrow column, elegant */
-.chat-style-newspaper .max-w-4xl {
-    max-width: 640px !important;
-}
-
-.chat-style-newspaper .message-user {
-    max-width: 85% !important;
-    border-radius: 0.25rem !important;
-}
-
-.chat-style-newspaper .message-assistant {
-    max-width: 100% !important;
-    background: transparent !important;
-    border: 1px solid rgba(255, 255, 255, var(--message-border-opacity, 0.10)) !important;
-    border-radius: 0.375rem !important;
-    padding: 1.25rem 0.75rem !important;
-    line-height: 1.75 !important;
-}
-
-.chat-style-newspaper .space-y-4 > * + * {
-    margin-top: 0.25rem !important;
 }
 
 /* Slack - Flat, left-aligned, no bubbles */
