@@ -9382,6 +9382,114 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                     info:    { color: '#6b7280', bg: 'transparent', icon: '│', border: 'transparent' },
                                                 }[level] || { color: '#6b7280', bg: 'transparent', icon: '│', border: 'transparent' };
 
+                                                // Detect special message types for enhanced formatting
+                                                const isStepMsg = /^Step \d+\/\d+:/i.test(message);
+                                                const isSeparator = /^={3,}/.test(message);
+                                                const baseTextColor = level === 'error' ? '#f87171' :
+                                                                      level === 'success' ? '#4ade80' :
+                                                                      level === 'warning' ? '#fbbf24' :
+                                                                      'rgba(255,255,255,0.65)';
+
+                                                // Format message with inline highlights
+                                                const formatMessage = (msg) => {
+                                                    const parts = [];
+                                                    let remaining = msg;
+                                                    let key = 0;
+
+                                                    // Process message patterns sequentially
+                                                    while (remaining.length > 0) {
+                                                        // [ModelName] brackets → cyan badge
+                                                        let match = remaining.match(/^\[([^\]]+)\]/);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.08)', padding: '0 4px', borderRadius: 3, fontSize: '0.72rem' }}>[{match[1]}]</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Step N/M: → indigo badge
+                                                        match = remaining.match(/^(Step \d+\/\d+:)/i);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#a5b4fc', backgroundColor: 'rgba(99,102,241,0.15)', padding: '1px 6px', borderRadius: 3, fontSize: '0.72rem', fontWeight: 600 }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Percentages → amber highlight
+                                                        match = remaining.match(/^(\d+(?:\.\d+)?%)/);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#fbbf24', fontWeight: 600 }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // File sizes (e.g., 2.3 GB, 512 MB, 1024 K)
+                                                        match = remaining.match(/^(\d+(?:\.\d+)?\s*(?:GB|MB|KB|K|B|TB))\b/i);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#c084fc' }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Paths (/path/to/something or C:\path)
+                                                        match = remaining.match(/^((?:\/[\w.\-]+){2,}(?:\/[\w.\-]*)?)/);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#93c5fd', fontSize: '0.73rem' }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Port numbers (port NNNN or :NNNN)
+                                                        match = remaining.match(/^((?:port\s+)\d{2,5}|:\d{2,5})\b/i);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#34d399' }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Keywords: Creating, Stopping, Deleting, Starting, Syncing, Removing
+                                                        match = remaining.match(/^(Creating|Stopping|Deleting|Starting|Syncing|Removing|Restarting|Switching|Checking|Loading|Verifying|Downloading)\b/);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#e2e8f0', fontWeight: 600 }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Error/Warning/ERROR prefix
+                                                        match = remaining.match(/^(ERROR|Error|WARNING|Warning|WARN)(:?\s*)/i);
+                                                        if (match) {
+                                                            const isErr = match[1].toLowerCase().startsWith('err');
+                                                            parts.push(<span key={key++} style={{ color: isErr ? '#f87171' : '#fbbf24', fontWeight: 700, fontSize: '0.72rem', backgroundColor: isErr ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)', padding: '0 4px', borderRadius: 2 }}>{match[1]}</span>);
+                                                            if (match[2]) parts.push(<span key={key++}>{match[2]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Container names (llamacpp-*, vllm-*)
+                                                        match = remaining.match(/^((?:llamacpp|vllm)-[\w\-]+)/);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#22d3ee', fontSize: '0.73rem' }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // "API key" phrases
+                                                        match = remaining.match(/^(API key)\b/i);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: '#c084fc', fontWeight: 500 }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // === SEPARATORS ===
+                                                        match = remaining.match(/^(={3,}[^=]*={3,})/);
+                                                        if (match) {
+                                                            parts.push(<span key={key++} style={{ color: 'rgba(255,255,255,0.35)', letterSpacing: '1px' }}>{match[1]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                            continue;
+                                                        }
+                                                        // Default: consume next character or word
+                                                        match = remaining.match(/^[^\[%\/\\(=ES CWADLRV]*./);
+                                                        if (match) {
+                                                            parts.push(<span key={key++}>{match[0]}</span>);
+                                                            remaining = remaining.slice(match[0].length);
+                                                        } else {
+                                                            parts.push(<span key={key++}>{remaining[0]}</span>);
+                                                            remaining = remaining.slice(1);
+                                                        }
+                                                    }
+                                                    return parts;
+                                                };
+
                                                 return (
                                                     <Box
                                                         key={index}
@@ -9390,21 +9498,23 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             alignItems: 'flex-start',
                                                             gap: 0,
                                                             px: 1.5,
-                                                            py: 0.35,
-                                                            bgcolor: levelConfig.bg,
-                                                            borderLeft: `2px solid ${levelConfig.border}`,
+                                                            py: isStepMsg ? 0.6 : isSeparator ? 0.8 : 0.35,
+                                                            mt: isStepMsg ? 0.5 : 0,
+                                                            bgcolor: isStepMsg ? 'rgba(99,102,241,0.04)' : isSeparator ? 'rgba(255,255,255,0.02)' : levelConfig.bg,
+                                                            borderLeft: `2px solid ${isStepMsg ? 'rgba(99,102,241,0.3)' : levelConfig.border}`,
+                                                            borderTop: isStepMsg ? '1px solid rgba(255,255,255,0.04)' : 'none',
                                                             '&:hover': { bgcolor: 'rgba(255,255,255,0.03)' },
                                                             transition: 'background-color 0.15s',
                                                         }}
                                                     >
                                                         {/* Timestamp */}
                                                         {timeStr && (
-                                                            <Typography sx={{
+                                                            <Typography component="span" sx={{
                                                                 fontFamily: '"Fira Code", monospace',
-                                                                fontSize: '0.7rem',
-                                                                color: 'rgba(255,255,255,0.2)',
+                                                                fontSize: '0.68rem',
+                                                                color: 'rgba(255,255,255,0.18)',
                                                                 mr: 1.5,
-                                                                mt: '1px',
+                                                                mt: '2px',
                                                                 flexShrink: 0,
                                                                 userSelect: 'none',
                                                             }}>
@@ -9412,12 +9522,12 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             </Typography>
                                                         )}
                                                         {/* Level icon */}
-                                                        <Typography sx={{
+                                                        <Typography component="span" sx={{
                                                             fontFamily: '"Fira Code", monospace',
-                                                            fontSize: '0.75rem',
+                                                            fontSize: '0.72rem',
                                                             color: levelConfig.color,
                                                             mr: 1,
-                                                            mt: '1px',
+                                                            mt: '2px',
                                                             flexShrink: 0,
                                                             width: 12,
                                                             textAlign: 'center',
@@ -9425,21 +9535,18 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                         }}>
                                                             {levelConfig.icon}
                                                         </Typography>
-                                                        {/* Message */}
-                                                        <Typography sx={{
+                                                        {/* Formatted Message */}
+                                                        <Box sx={{
                                                             fontFamily: '"Fira Code", monospace',
                                                             fontSize: '0.78rem',
-                                                            color: level === 'error' ? '#f87171' :
-                                                                   level === 'success' ? '#4ade80' :
-                                                                   level === 'warning' ? '#fbbf24' :
-                                                                   'rgba(255,255,255,0.65)',
+                                                            color: baseTextColor,
                                                             lineHeight: 1.55,
-                                                            whiteSpace: 'pre-wrap',
                                                             wordBreak: 'break-word',
                                                             flex: 1,
+                                                            '& span': { whiteSpace: 'pre-wrap' },
                                                         }}>
-                                                            {message}
-                                                        </Typography>
+                                                            {formatMessage(message)}
+                                                        </Box>
                                                     </Box>
                                                 );
                                             })
