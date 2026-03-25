@@ -7589,6 +7589,25 @@ YOU MUST NOT:
             conversationContext.push({ role: 'system', content: userVisibleResults });
         }
 
+        // Check if the user's specifically requested operation completed successfully
+        // This prevents the model from looping with unnecessary verification skills
+        // (e.g., delete succeeds → model calls list_directory to "verify" → loops)
+        // Only break for simple single-purpose operations, not multi-step ones
+        const requestedDeleteDone = /\b(delete|remove)\b.*\b(file|folder|directory|dir)\b/i.test(originalMessage) &&
+            skillResults.some(r => r.success && (r.skill === 'delete_file' || r.skill === 'delete_directory'));
+        const requestedCreateDirDone = /\b(create|make|new)\b.*\b(folder|directory|dir)\b/i.test(originalMessage) &&
+            !/\b(file|\.txt|\.pdf|\.json|\.csv|\.md)\b/i.test(originalMessage) &&
+            skillResults.some(r => r.success && r.skill === 'create_directory');
+        const requestedCreateFileDone = /\b(create|make|write|save)\b.*\b(file|\.txt|\.pdf|\.json|\.csv|\.md)\b/i.test(originalMessage) &&
+            !/\b(search|find|web|browse|fetch)\b/i.test(originalMessage) &&
+            skillResults.some(r => r.success && (r.skill === 'create_file' || r.skill === 'update_file'));
+
+        if (requestedDeleteDone || requestedCreateDirDone || requestedCreateFileDone) {
+            // Simple file operation completed - show results and stop looping
+            displayChatHistory();
+            break;
+        }
+
         // Continue the conversation with skill results
         currentMessage = contextMessage + '\n\nPrevious response: ' + response + feedbackMessage;
 
