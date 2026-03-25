@@ -5325,7 +5325,12 @@ function buildSkillResultsMessage(results) {
             } else if (skillName === 'list_processes') {
                 const count = result.count || result.data?.count || 0;
                 const platform = result.platform || result.data?.platform || 'system';
-                message += `✓ Listed ${count} processes on ${platform}\n`;
+                const procs = result.processes || result.data?.processes || [];
+                // Include top processes so AI can analyze them
+                const topProcs = procs.slice(0, 30).map(p =>
+                    `PID:${p.pid} | ${p.name} | CPU:${p.cpu_percent}% | Mem:${p.memory_mb}MB`
+                ).join('\n');
+                message += `✓ Listed ${count} processes on ${platform}\n${topProcs}\n`;
             } else if (skillName === 'kill_process') {
                 const killed = result.killed || result.data?.killed || [];
                 const desc = killed.map(k => k.pid ? `PID ${k.pid}` : k.name).join(', ');
@@ -5555,6 +5560,118 @@ function buildUserVisibleSkillResults(results) {
                 if (sr.snippet) output += `  ${sr.snippet.substring(0, 150)}...\n`;
                 if (sr.link) output += `  ${sr.link}\n`;
             }
+        } else if (skillName === 'list_processes') {
+            const procs = result.processes || result.data?.processes || [];
+            const count = result.count || result.data?.count || procs.length;
+            const platform = result.platform || result.data?.platform || 'system';
+            output += `\n⚙️  Process List (${count} processes on ${platform})\n`;
+            output += '━'.repeat(72) + '\n';
+            // Table header
+            output += `  ${'PID'.padEnd(8)} ${'PROCESS'.padEnd(30)} ${'CPU %'.padStart(7)} ${'MEMORY'.padStart(10)}\n`;
+            output += '─'.repeat(72) + '\n';
+            // Process rows with visual indicators
+            const displayProcs = procs.slice(0, 30);
+            for (const p of displayProcs) {
+                const cpuStr = (p.cpu_percent || 0).toFixed(1).padStart(6);
+                const memStr = (p.memory_mb >= 1024
+                    ? `${(p.memory_mb / 1024).toFixed(1)} GB`
+                    : `${p.memory_mb} MB`).padStart(9);
+                const name = (p.name || 'unknown').substring(0, 29).padEnd(30);
+                const pid = String(p.pid || 0).padEnd(8);
+                // Highlight high CPU/memory
+                const cpuHigh = (p.cpu_percent || 0) > 50;
+                const memHigh = (p.memory_mb || 0) > 1024;
+                const marker = cpuHigh || memHigh ? '▸' : ' ';
+                output += `${marker} ${pid} ${name} ${cpuStr}% ${memStr}\n`;
+            }
+            if (count > 30) {
+                output += `  ... and ${count - 30} more processes\n`;
+            }
+            output += '━'.repeat(72) + '\n';
+            // Summary stats
+            const totalMem = procs.reduce((sum, p) => sum + (p.memory_mb || 0), 0);
+            const totalCpu = procs.reduce((sum, p) => sum + (p.cpu_percent || 0), 0);
+            output += `  Total: ${count} processes | CPU: ${totalCpu.toFixed(1)}% | Memory: ${totalMem >= 1024 ? (totalMem / 1024).toFixed(1) + ' GB' : totalMem + ' MB'}\n`;
+        } else if (skillName === 'system_info') {
+            const plat = result.platform || result.data?.platform || os.platform();
+            const hostname = result.hostname || result.data?.hostname || os.hostname();
+            const cpuModel = result.cpu?.model || result.data?.cpu?.model || '';
+            const cpuCores = result.cpu?.cores || result.data?.cpu?.cores || os.cpus().length;
+            const memTotal = result.memory?.total_mb || result.data?.memory?.total_mb || 0;
+            const memUsed = result.memory?.used_mb || result.data?.memory?.used_mb || 0;
+            const memPercent = result.memory?.percent || result.data?.memory?.percent || 0;
+            output += `\n💻 System Information\n`;
+            output += '━'.repeat(50) + '\n';
+            output += `  Hostname:  ${hostname}\n`;
+            output += `  Platform:  ${plat}\n`;
+            if (cpuModel) output += `  CPU:       ${cpuModel}\n`;
+            output += `  Cores:     ${cpuCores}\n`;
+            output += `  Memory:    ${memUsed >= 1024 ? (memUsed/1024).toFixed(1) + ' GB' : memUsed + ' MB'} / ${memTotal >= 1024 ? (memTotal/1024).toFixed(1) + ' GB' : memTotal + ' MB'} (${memPercent}%)\n`;
+            output += '━'.repeat(50) + '\n';
+        } else if (skillName === 'list_ports') {
+            const ports = result.ports || result.data?.ports || [];
+            const count = result.count || result.data?.count || ports.length;
+            output += `\n🔌 Open Ports (${count})\n`;
+            output += '━'.repeat(60) + '\n';
+            output += `  ${'PORT'.padEnd(8)} ${'PROTO'.padEnd(6)} ${'STATE'.padEnd(12)} ${'PROCESS'.padEnd(20)}\n`;
+            output += '─'.repeat(60) + '\n';
+            for (const p of ports.slice(0, 30)) {
+                const port = String(p.port || p.localPort || '').padEnd(8);
+                const proto = (p.protocol || p.proto || 'tcp').padEnd(6);
+                const state = (p.state || 'LISTEN').padEnd(12);
+                const proc = (p.process || p.program || '-').substring(0, 19).padEnd(20);
+                output += `  ${port} ${proto} ${state} ${proc}\n`;
+            }
+            if (count > 30) output += `  ... and ${count - 30} more\n`;
+            output += '━'.repeat(60) + '\n';
+        } else if (skillName === 'list_services') {
+            const services = result.services || result.data?.services || [];
+            const count = result.count || result.data?.count || services.length;
+            output += `\n🔧 Services (${count})\n`;
+            output += '━'.repeat(60) + '\n';
+            output += `  ${'SERVICE'.padEnd(30)} ${'STATUS'.padEnd(12)} ${'PID'.padEnd(8)}\n`;
+            output += '─'.repeat(60) + '\n';
+            for (const s of services.slice(0, 25)) {
+                const name = (s.name || s.service || '').substring(0, 29).padEnd(30);
+                const status = (s.status || s.state || '-').padEnd(12);
+                const pid = String(s.pid || '-').padEnd(8);
+                output += `  ${name} ${status} ${pid}\n`;
+            }
+            if (count > 25) output += `  ... and ${count - 25} more\n`;
+            output += '━'.repeat(60) + '\n';
+        } else if (skillName === 'git_status') {
+            const branch = result.branch || result.data?.branch || '';
+            const clean = result.clean || result.data?.clean;
+            const staged = result.staged || result.data?.staged || [];
+            const modified = result.modified || result.data?.modified || [];
+            const untracked = result.untracked || result.data?.untracked || [];
+            output += `\n📋 Git Status: ${branch}\n`;
+            output += '─'.repeat(40) + '\n';
+            if (clean) {
+                output += '  Working tree clean\n';
+            } else {
+                if (staged.length) output += `  Staged:    ${staged.join(', ')}\n`;
+                if (modified.length) output += `  Modified:  ${modified.join(', ')}\n`;
+                if (untracked.length) output += `  Untracked: ${untracked.join(', ')}\n`;
+            }
+        } else if (skillName === 'git_branch') {
+            const current = result.current || result.data?.current || '';
+            const branches = result.branches || result.data?.branches || [];
+            output += `\n🌿 Git Branches (current: ${current})\n`;
+            output += '─'.repeat(40) + '\n';
+            for (const b of branches.slice(0, 15)) {
+                const marker = b === current ? '▸ ' : '  ';
+                output += `${marker}${b}\n`;
+            }
+        } else if (skillName === 'tail_file' || skillName === 'head_file') {
+            const filePath = result.filePath || result.data?.filePath || 'file';
+            const content = result.content || result.data?.content || '';
+            const lines = result.linesReturned || result.data?.linesReturned || 0;
+            const label = skillName === 'tail_file' ? 'Tail' : 'Head';
+            output += `\n📄 ${label}: ${filePath} (${lines} lines)\n`;
+            output += '─'.repeat(40) + '\n';
+            output += content.length > 2000 ? content.substring(0, 2000) + '\n... (truncated)' : content;
+            output += '\n';
         }
     }
 
