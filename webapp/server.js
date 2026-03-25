@@ -4241,11 +4241,12 @@ function checkPermission(keyData, permission) {
 }
 
 // Helper function to filter array data by userId
-// If userId is null (no auth), return all data (backward compatibility)
-// Otherwise, return only items belonging to the user
+// If userId is null (authenticated via API key without userId), return global/system items
+// Otherwise, return items belonging to the user + global items
 function filterByUserId(items, userId) {
     if (!userId) {
-        return []; // Require authentication - no unauthenticated access
+        // API key auth without userId - return global/system items (no userId field)
+        return items.filter(item => !item.userId);
     }
     // Include items without userId (global/system items) or items owned by user
     return items.filter(item => !item.userId || item.userId === userId);
@@ -4366,6 +4367,7 @@ app.post('/api/api-keys', requireAdmin, async (req, res) => {
             permissions: permissions || ['query', 'models'],
             rateLimitRequests: (rateLimitRequests !== undefined && rateLimitRequests !== null && rateLimitRequests > 0) ? rateLimitRequests : 60,
             rateLimitTokens: (rateLimitTokens !== undefined && rateLimitTokens !== null && rateLimitTokens > 0) ? rateLimitTokens : 100000,
+            userId: req.userId || null, // Associate key with creating user
             active: true,
             createdAt: new Date().toISOString()
         };
