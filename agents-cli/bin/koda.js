@@ -54,6 +54,7 @@ const MAX_HISTORY = 50;
 let currentMode = 'standalone'; // 'standalone', 'agent', or 'collab'
 let websearchMode = false; // Web search enhancement mode
 let lastWebModeError = false; // Track if last skill failure was due to web mode requirement
+let cachedSkills = []; // Cache last successful skills fetch for resilience
 const conversationContext = []; // For session awareness
 let userWorkingDirectory = process.cwd(); // Track user's CWD
 
@@ -2691,10 +2692,17 @@ When asked to find or summarize web content:
 === CRITICAL EXECUTION RULES ===
 1. Use ONLY skills from the catalog above. Available: ${availableSkillsList}
 2. DISCOVERY FIRST: For fuzzy requests ("delete that folder", "find the config"), use list_directory FIRST to see what exists, then act.
-3. EXECUTE skills directly - don't just describe what you would do
-4. When fixing code, use update_file immediately - don't just show the fix
-5. STOP LOOPING: After success, confirm briefly. Don't verify with extra skills.
-6. For non-skill tasks (math, explanations, chat), respond conversationally.
+3. ALWAYS EXECUTE skills for file/directory operations - NEVER give shell commands or instructions instead. You have full access to the filesystem.
+4. When the user says "create a file/directory", "delete", "read", "move", "copy" etc - you MUST call the corresponding skill. Do NOT tell the user to run mkdir, touch, or any other command.
+5. When fixing code, use update_file immediately - don't just show the fix
+6. STOP LOOPING: After success, confirm briefly. Don't verify with extra skills.
+7. For non-skill tasks (math, explanations, chat), respond conversationally.
+
+WRONG: "You can create a directory by running: mkdir test"
+RIGHT: [SKILL:create_directory(dirPath="${userWorkingDirectory}/test")]
+
+WRONG: "To create a file, use: echo 'content' > test.txt"
+RIGHT: [SKILL:create_file(filePath="${userWorkingDirectory}/test.txt", content="content")]
 
 === SKILL SYNTAX ===
 - Complete each skill on ONE line: [SKILL:name(param="value")]
@@ -5017,7 +5025,8 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
     const fileModifyingSkills = ['create_file', 'update_file'];
 
     // Fetch enabled skills from API to verify before execution
-    let enabledSkillNames = new Set();
+    // If fetch fails, fall back to cached skills, then fail open (null = allow all)
+    let enabledSkillNames = null; // null = allow all (fail open for client-side skills)
     try {
         const skillsResult = await api.getSkills();
         if (skillsResult.success && skillsResult.data) {
@@ -5026,10 +5035,26 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                     .filter(s => s.enabled)
                     .map(s => s.name)
             );
+            cachedSkills = skillsResult.data; // Update cache
+        } else if (cachedSkills.length > 0) {
+            // API failed but we have cached skills - use those
+            enabledSkillNames = new Set(
+                cachedSkills
+                    .filter(s => s.enabled)
+                    .map(s => s.name)
+            );
         }
+        // If both fail, enabledSkillNames stays null (allow all client-side skills)
     } catch (error) {
-        // If we can't fetch skills, allow execution (fail open for client-side)
-        enabledSkillNames = null;
+        // If we can't fetch skills, try cache, then fail open for client-side
+        if (cachedSkills.length > 0) {
+            enabledSkillNames = new Set(
+                cachedSkills
+                    .filter(s => s.enabled)
+                    .map(s => s.name)
+            );
+        }
+        // else stays null = allow all
     }
 
     // Web-dependent skills that require websearchMode to be enabled
@@ -6882,10 +6907,16 @@ async function handleCollabChat(api, message, selectedAgents) {
         }
     }
 
-    // Fetch tasks and skills for context awareness
+    // Fetch tasks and skills for context awareness (with cache fallback)
     const tasksResult = await api.getTasks();
     const skillsResult = await api.getSkills();
-    const skills = skillsResult.success ? skillsResult.data : [];
+    let skills;
+    if (skillsResult.success && skillsResult.data) {
+        skills = skillsResult.data;
+        cachedSkills = skills;
+    } else {
+        skills = cachedSkills;
+    }
     const skillPrompt = buildSkillSystemPrompt(skills, 'collab', websearchMode, message);
 
     let contextInfo = webSearchContext;
@@ -7033,9 +7064,18 @@ async function handleChat(api, message) {
     // Add to conversation context for session awareness
     conversationContext.push({ role: 'user', content: message });
 
-    // Fetch skills for skill execution capability
+    // Fetch skills for skill execution capability (with cache fallback)
     const skillsResult = await api.getSkills();
-    const skills = skillsResult.success ? skillsResult.data : [];
+    let skills;
+    if (skillsResult.success && skillsResult.data) {
+        skills = skillsResult.data;
+        cachedSkills = skills; // Update cache on success
+    } else {
+        skills = cachedSkills; // Use cached skills if API fails
+        if (skills.length === 0) {
+            addToHistory('system', 'Warning: Could not load skills from server. File operations may not work.');
+        }
+    }
     const skillPrompt = buildSkillSystemPrompt(skills, currentMode, websearchMode, message);
 
     // Build context-aware message for the API
@@ -7415,6 +7455,36 @@ YOU MUST NOT:
                 correctionFeedback += 'IMPORTANT: Execute the create_file skill NOW with the content you want to save.\n';
 
                 addToHistory('system', 'No file operation executed - asking AI to actually save the file...');
+                displayChatHistory();
+
+                currentMessage = contextMessage + '\n\nPrevious response: ' + response + correctionFeedback;
+                continue;
+            }
+
+            // Check if AI gave shell commands/instructions instead of using skills for file/directory operations
+            // This catches cases where the AI says "run mkdir test" instead of calling create_directory
+            const userRequestsFileOp = /\b(create|make|new|delete|remove|move|rename|copy|read|list)\b.*\b(file|folder|directory|dir)\b/i.test(originalMessage) ||
+                /\bcreate\b.*\b(called|named)\b.*\.\w{1,5}\b/i.test(originalMessage);
+            const givesShellCommands = /\b(mkdir|touch|echo\s*>|rm\s|mv\s|cp\s|cat\s|New-Item|Remove-Item)\b/i.test(response);
+            const hasNoSkillCalls = !response.includes('[SKILL:');
+
+            if (userRequestsFileOp && givesShellCommands && hasNoSkillCalls && !operationAlreadyCompleted && iteration <= 2) {
+                // AI gave shell instructions instead of using skills - force retry
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    chatHistory.pop();
+                }
+
+                let correctionFeedback = '\n\n[SKILL EXECUTION REQUIRED]\n';
+                correctionFeedback += 'You gave shell commands/instructions, but you have skills to do this directly. Do NOT tell the user to run commands.\n';
+                correctionFeedback += 'You MUST execute the appropriate skill NOW. Available skills:\n';
+                correctionFeedback += `- [SKILL:create_file(filePath="${userWorkingDirectory}/filename", content="content")]\n`;
+                correctionFeedback += `- [SKILL:create_directory(dirPath="${userWorkingDirectory}/dirname")]\n`;
+                correctionFeedback += `- [SKILL:delete_file(filePath="/path/to/file")]\n`;
+                correctionFeedback += `- [SKILL:list_directory(dirPath="${userWorkingDirectory}")]\n\n`;
+                correctionFeedback += 'Execute the skill NOW - do not explain, just call the skill.\n';
+
+                addToHistory('system', 'Redirecting to use skills instead of shell commands...');
                 displayChatHistory();
 
                 currentMessage = contextMessage + '\n\nPrevious response: ' + response + correctionFeedback;
