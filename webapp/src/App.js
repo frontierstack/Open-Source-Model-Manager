@@ -8775,21 +8775,21 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                     </AccordionDetails>
                                 </Accordion>
 
-                                {/* Chat Web Search */}
+                                {/* Chat Web Search & URL Fetch */}
                                 <Accordion sx={docAccordionSx}>
                                     <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<SearchIcon />} color="secondary" />
                                             <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Chat Web Search</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Built-in web search integration</Typography>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Chat Web Search & URL Fetch</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Web search, URL fetching, and content extraction</Typography>
                                             </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
                                             <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
-                                            <Typography sx={{ fontSize: '0.85rem' }}>Powered by DuckDuckGo + Playwright content fetching</Typography>
+                                            <Typography sx={{ fontSize: '0.85rem' }}>Powered by DuckDuckGo, Scrapling (StealthyFetcher), Playwright, and Brave Search</Typography>
                                         </Box>
 
                                         <Grid container spacing={2}>
@@ -8797,21 +8797,62 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How to Use</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Go to the Chat tab</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Click the search icon in the header to enable web search</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Ask questions that require current information</Typography>
-                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>4.</strong> Search results are automatically included in context</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Open the Chat interface (port 3002)</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Click the <strong>globe icon</strong> to enable web search</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Click the <strong>link icon</strong> to enable URL fetching</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>4.</strong> Ask questions — results are auto-injected into context</Typography>
+                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>5.</strong> Pasted URLs are automatically fetched when URL Fetch is on</Typography>
                                                     </Box>
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search Engine Stack</Typography>
+                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                                        <Chip label="DuckDuckGo (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Scrapling fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="Brave Search fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
+                                                        <Chip label="Smart query extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Time-range filtering" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                    </Box>
+                                                </Box>
+                                            </Grid>
+                                            <Grid item xs={12} md={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Content Fetching Stack</Typography>
+                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                                        <Chip label="Scrapling StealthyFetcher (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Axios fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
+                                                        <Chip label="CAPTCHA evasion" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="XHR/SPA interception" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Smart content extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
+                                                    </Box>
+                                                </Box>
+                                            </Grid>
+                                            <Grid item xs={12} md={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL Fetch Feature</Typography>
+                                                    <Box sx={{ fontSize: '0.8rem' }}>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'rgba(99,102,241,0.12)' }}>POST /api/url/fetch</code></Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Up to 3 URLs per request, 12k chars/URL</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Smart truncation: 30% beginning + 70% end</Typography>
+                                                        <Typography variant="body2" sx={{ fontSize: '0.78rem' }}>Toggle via link icon in chat toolbar</Typography>
+                                                    </Box>
+                                                </Box>
+                                            </Grid>
+                                            <Grid item xs={12}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="DuckDuckGo search" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
-                                                        <Chip label="Content extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
-                                                        <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Auto context injection" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
+                                                        <Chip label="5 results with full content" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="24k char content budget" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Smart query extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="Content condensation" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="Source citations" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
+                                                        <Chip label="Article body extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Shadow DOM traversal" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+                                                        <Chip label="Smart truncation (30/70 split)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
                                                     </Box>
                                                 </Box>
                                             </Grid>

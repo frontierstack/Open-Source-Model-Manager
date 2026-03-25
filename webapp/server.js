@@ -4339,12 +4339,8 @@ app.get('/api/api-keys', requireAdmin, async (req, res) => {
                 }
             };
         });
-        // Mask secrets - only show last 4 characters
-        const maskedKeys = keysWithStats.map(k => ({
-            ...k,
-            secret: k.secret ? `${'*'.repeat(Math.max(0, k.secret.length - 4))}${k.secret.slice(-4)}` : null,
-        }));
-        res.json(maskedKeys);
+        // Send full secrets - endpoint is admin-only (requireAdmin), frontend handles show/hide
+        res.json(keysWithStats);
     } catch (error) {
         console.error('Error getting API keys:', error);
         res.status(500).json({ error: 'Failed to load API keys' });
