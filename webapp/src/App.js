@@ -9507,33 +9507,18 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             transition: 'background-color 0.15s',
                                                         }}
                                                     >
-                                                        {/* Timestamp */}
-                                                        {timeStr && (
-                                                            <Typography component="span" sx={{
-                                                                fontFamily: '"Fira Code", monospace',
-                                                                fontSize: '0.68rem',
-                                                                color: 'rgba(255,255,255,0.18)',
-                                                                mr: 1.5,
-                                                                mt: '2px',
-                                                                flexShrink: 0,
-                                                                userSelect: 'none',
-                                                            }}>
-                                                                {timeStr}
-                                                            </Typography>
-                                                        )}
-                                                        {/* Level icon */}
+                                                        {/* Timestamp + Level icon: "22:39:48 │" */}
                                                         <Typography component="span" sx={{
                                                             fontFamily: '"Fira Code", monospace',
-                                                            fontSize: '0.72rem',
-                                                            color: levelConfig.color,
+                                                            fontSize: '0.68rem',
+                                                            color: 'rgba(255,255,255,0.18)',
                                                             mr: 1,
                                                             mt: '2px',
                                                             flexShrink: 0,
-                                                            width: 12,
-                                                            textAlign: 'center',
                                                             userSelect: 'none',
+                                                            whiteSpace: 'pre',
                                                         }}>
-                                                            {levelConfig.icon}
+                                                            {timeStr ? `${timeStr} ` : '         '}<span style={{ color: levelConfig.color, fontSize: '0.72rem' }}>{levelConfig.icon}</span>
                                                         </Typography>
                                                         {/* Formatted Message */}
                                                         <Box sx={{
