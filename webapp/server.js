@@ -2721,15 +2721,22 @@ async function streamContainerLogs(container, modelName) {
                 // Strip the header and decode the message
                 const lines = chunk.toString('utf8').split('\n').filter(line => line.trim());
                 for (const line of lines) {
-                    // Clean up the line (remove non-printable chars from header)
-                    const cleanLine = line.replace(/[\x00-\x08]/g, '').trim();
+                    // Clean up the line (remove non-printable chars from Docker multiplex header)
+                    let cleanLine = line.replace(/[\x00-\x08]/g, '').trim();
                     if (cleanLine) {
+                        // Strip Docker timestamps (e.g., "2026-03-20T21:30:01.179299893Z ")
+                        // These appear at the start, sometimes preceded by a stray char from the header
+                        cleanLine = cleanLine.replace(/^.?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?\s*/, '');
+                        if (!cleanLine) continue; // Skip empty lines after timestamp removal
+
                         // Detect error patterns
                         const isError = /error|failed|fatal|exception|cannot|unable|oom|out of memory|killed/i.test(cleanLine);
+                        // Detect success patterns
+                        const isSuccess = /ready|started|listening|loaded|complete|running/i.test(cleanLine) && !isError;
                         broadcast({
                             type: 'log',
                             message: `[${modelName}] ${cleanLine}`,
-                            level: isError ? 'error' : 'info'
+                            level: isError ? 'error' : isSuccess ? 'success' : 'info'
                         });
                     }
                 }

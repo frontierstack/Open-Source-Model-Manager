@@ -611,7 +611,15 @@ const App = () => {
                 try {
                     const data = JSON.parse(message.data);
                     if (data.type === 'log') {
-                        const msg = data.message.trim();
+                        let msg = data.message.trim();
+                        // Strip Docker container timestamps from message content
+                        // These appear as "X2026-03-20T21:30:01.179Z text" where X is a stray char
+                        let dockerTime = null;
+                        const tsClean = msg.match(/^(.{0,2}?)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s*/);
+                        if (tsClean) {
+                            dockerTime = new Date(tsClean[2]);
+                            msg = msg.slice(tsClean[0].length);
+                        }
                         // Auto-detect level from message content if not provided
                         let level = data.level || 'info';
                         if (!data.level) {
@@ -623,7 +631,7 @@ const App = () => {
                         setLogs(prevLogs => [...prevLogs, {
                             message: msg,
                             level: level,
-                            timestamp: Date.now()
+                            timestamp: dockerTime ? dockerTime.getTime() : Date.now()
                         }]);
                     } else if (data.type === 'status') {
                         const severity = data.level === 'error' ? 'error' :
@@ -9371,10 +9379,27 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                             </Box>
                                         ) : (
                                             filteredLogs.map((log, index) => {
-                                                const message = typeof log === 'string' ? log : log.message;
+                                                let message = typeof log === 'string' ? log : log.message;
                                                 const level = typeof log === 'string' ? 'info' : (log.level || 'info');
-                                                const timestamp = log.timestamp ? new Date(log.timestamp) : null;
-                                                const timeStr = timestamp ? timestamp.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+
+                                                // Extract Docker container timestamps from message and clean them
+                                                // Patterns: "2026-03-20T21:30:01.179Z" or stray chars before timestamps
+                                                let extractedTime = null;
+                                                const dockerTsMatch = message.match(/^(.{0,2}?)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s*/);
+                                                if (dockerTsMatch) {
+                                                    extractedTime = new Date(dockerTsMatch[2]);
+                                                    // Remove the timestamp (and any stray leading char) from message
+                                                    message = (dockerTsMatch[1] && /\w/.test(dockerTsMatch[1]) ? '' : '') + message.slice(dockerTsMatch[0].length);
+                                                }
+                                                // Also clean timestamps that appear after [ModelName] prefix
+                                                message = message.replace(/^(\[[^\]]+\])\s*.?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?\s*/g, '$1 ');
+                                                // Clean stray single characters that precede Docker timestamps mid-line
+                                                message = message.replace(/.(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s*/g, ' ');
+
+                                                const timestamp = log.timestamp ? new Date(log.timestamp) : extractedTime;
+                                                const timeStr = timestamp && !isNaN(timestamp.getTime())
+                                                    ? timestamp.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                                                    : '';
                                                 const levelConfig = {
                                                     error:   { color: '#ef4444', bg: 'rgba(239,68,68,0.06)', icon: '✗', border: 'rgba(239,68,68,0.15)' },
                                                     warning: { color: '#f59e0b', bg: 'rgba(245,158,11,0.04)', icon: '▲', border: 'rgba(245,158,11,0.1)' },
