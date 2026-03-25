@@ -8843,8 +8843,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // =====================================================================
         // NORMAL STREAMING PATH (with automatic continuation)
         // =====================================================================
-        const MAX_AUTO_CONTINUATIONS = 5; // Safety cap to prevent infinite loops
-        const CONTINUATION_CONTEXT_CHARS = 2000; // ~500 tokens of tail context for continuations
+        const MAX_AUTO_CONTINUATIONS = 8; // Safety cap to prevent infinite loops
+        const CONTINUATION_CONTEXT_CHARS = 3000; // ~750 tokens of tail context for better continuation pickup
 
         let fullResponse = '';
         let fullReasoning = '';
@@ -9008,9 +9008,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                 // Build a slim continuation request:
                 // - Keep system prompt
-                // - Keep original user message (last one only)
-                // - Add a tail of the response so far as assistant context
-                // - Add a continuation instruction as the new user message
+                // - Truncated original user message (NOT full content - it was already processed)
+                // - Tail of the response so far as assistant context
+                // - Continuation instruction
                 const systemMsg = chatMessages.find(m => m.role === 'system');
                 const lastUserMsg = [...chatMessages].reverse().find(m => m.role === 'user');
 
@@ -9019,9 +9019,20 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     ? fullResponse.slice(-CONTINUATION_CONTEXT_CHARS)
                     : fullResponse;
 
+                // Truncate user message to avoid blowing the context on continuation
+                // The model already processed the full content; it just needs a reminder of the task
+                const maxUserMsgChars = Math.min(800, Math.floor(contextSize * 0.3));
+                let userMsgContent = '';
+                if (lastUserMsg) {
+                    const content = typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '';
+                    userMsgContent = content.length > maxUserMsgChars
+                        ? content.substring(0, maxUserMsgChars) + '\n[...original content truncated for continuation...]'
+                        : content;
+                }
+
                 const continuationMessages = [];
                 if (systemMsg) continuationMessages.push(systemMsg);
-                if (lastUserMsg) continuationMessages.push(lastUserMsg);
+                if (userMsgContent) continuationMessages.push({ role: 'user', content: userMsgContent });
                 continuationMessages.push({
                     role: 'assistant',
                     content: responseTail
@@ -9032,16 +9043,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 });
 
                 // Calculate available tokens for this continuation
-                // Estimate the continuation prompt size to leave room for response
                 const continuationInputTokens = continuationMessages.reduce(
                     (sum, msg) => sum + estimateTokens(msg.content), 0
                 );
                 const continuationMaxTokens = Math.max(
                     512, // minimum useful response
-                    contextSize - continuationInputTokens - 100 // leave small buffer
+                    contextSize - continuationInputTokens - 200 // leave buffer
                 );
 
-                finishReason = await streamOneRequest(continuationMessages, continuationMaxTokens);
+                try {
+                    finishReason = await streamOneRequest(continuationMessages, continuationMaxTokens);
+                } catch (contErr) {
+                    // Continuation failed (e.g., 400 from model) - stop gracefully instead of crashing
+                    console.error(`[Chat Stream] Auto-continuation ${continuationCount} failed:`, contErr.message);
+                    finishReason = 'stop'; // Break the loop gracefully
+                }
             }
 
             if (continuationCount > 0) {

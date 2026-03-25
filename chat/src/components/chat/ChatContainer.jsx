@@ -1244,6 +1244,17 @@ export default function ChatContainer({
                 }
                 saveMessages(conversationId, finalMessages);
 
+                // Auto-continue if response was cut off by length limit
+                // The server already auto-continues up to 8 times, so this only fires
+                // if the server hit its max or the continuation failed
+                if (needsContinuation && !userSwitchedConversation && finalContent.length > 0) {
+                    console.log('[Chat] Auto-continuing response from frontend...');
+                    // Small delay to let state settle, then auto-continue
+                    setTimeout(() => {
+                        handleContinueResponse(assistantMessage.id, finalContent);
+                    }, 500);
+                }
+
                 if (stoppedByUser) {
                     showSnackbar('Generation stopped', 'info');
                 } else if (userSwitchedConversation) {
