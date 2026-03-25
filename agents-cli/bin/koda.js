@@ -2573,11 +2573,16 @@ IMPORTANT FILE PLACEMENT RULES:
         FILE_OPS: `
 📁 FILE OPERATIONS EXAMPLES:
 [SKILL:create_file(filePath="${userWorkingDirectory}/project/file.txt", content="content here")]
+[SKILL:create_directory(dirPath="${userWorkingDirectory}/new_folder")]
 [SKILL:read_file(filePath="${userWorkingDirectory}/path/to/file")]
 [SKILL:update_file(filePath="${userWorkingDirectory}/path/to/file", content="new content")]
 [SKILL:delete_file(filePath="${userWorkingDirectory}/path/to/file")]
+[SKILL:delete_directory(dirPath="${userWorkingDirectory}/path/to/dir")]
 [SKILL:list_directory(dirPath="${userWorkingDirectory}")]
-[SKILL:search_files(dirPath="${userWorkingDirectory}", pattern="*.js")]
+[SKILL:move_file(sourcePath="/path/to/file", destPath="/path/to/new/location")]
+[SKILL:copy_file(sourcePath="/path/to/file", destPath="/path/to/copy")]
+[SKILL:append_to_file(filePath="${userWorkingDirectory}/file.txt", content="appended content")]
+[SKILL:search_files(directory="${userWorkingDirectory}", pattern="*.js")]
 [SKILL:diff_files(filePath1="/path/to/file1", filePath2="/path/to/file2")]
 [SKILL:search_replace_file(filePath="/path/to/file", search="old", replace="new")]
 `,
@@ -2594,7 +2599,6 @@ IMPORTANT FILE PLACEMENT RULES:
 [SKILL:get_uptime()]
 [SKILL:list_ports()]
 [SKILL:list_services()]
-[SKILL:screenshot(outputPath="${userWorkingDirectory}/screenshot.png")]
 `,
         GIT: `
 📝 GIT EXAMPLES:
@@ -2627,7 +2631,7 @@ When asked to find or summarize web content:
 [SKILL:check_port(host="localhost", port="8080", timeout="5")]
 [SKILL:ping_host(host="google.com", count="4")]
 [SKILL:http_request(url="https://api.example.com", method="POST", body="{\\"key\\":\\"value\\"}")]
-[SKILL:download_file(url="https://example.com/file.zip", outputPath="${userWorkingDirectory}/file.zip")]
+[SKILL:download_file(url="https://example.com/file.zip", destPath="${userWorkingDirectory}/file.zip")]
 `,
         PDF: `
 📄 PDF & DOCUMENT EXAMPLES:
@@ -2640,17 +2644,20 @@ When asked to find or summarize web content:
         ARCHIVE: `
 📦 ARCHIVE EXAMPLES:
 [SKILL:zip_files(files="['/path/file1.txt', '/path/file2.txt']", outputPath="/path/archive.zip")]
-[SKILL:unzip_file(zipPath="/path/archive.zip", outputDir="/path/extracted/")]
-[SKILL:tar_create(sourcePath="/path/to/dir", outputPath="/path/archive.tar.gz")]
-[SKILL:tar_extract(tarPath="/path/archive.tar.gz", outputDir="/path/extracted/")]
+[SKILL:unzip_file(zipPath="/path/archive.zip", destPath="/path/extracted/")]
+[SKILL:tar_create(files="/path/to/dir", outputPath="/path/archive.tar.gz")]
+[SKILL:tar_extract(tarPath="/path/archive.tar.gz", destPath="/path/extracted/")]
 `,
         DATA: `
 📊 DATA PROCESSING EXAMPLES:
 [SKILL:parse_json(content="{\\"key\\": \\"value\\"}")]
-[SKILL:parse_csv(filePath="/path/to/data.csv")]
+[SKILL:parse_csv(content="name,age\\nAlice,30\\nBob,25", delimiter=",")]
 [SKILL:base64_encode(data="text to encode")]
 [SKILL:base64_decode(data="dGV4dCB0byBkZWNvZGU=")]
 [SKILL:hash_data(data="text to hash", algorithm="sha256")]
+[SKILL:generate_uuid()]
+[SKILL:get_timestamp()]
+[SKILL:count_words(content="count the words in this text")]
 `,
         SHELL: `
 🖥️ SHELL EXECUTION EXAMPLES:
@@ -2659,12 +2666,9 @@ When asked to find or summarize web content:
 `,
         IMAGE: `
 🖼️ IMAGE EXAMPLES:
+[SKILL:screenshot(outputPath="${userWorkingDirectory}/screenshot.png")]
 [SKILL:ocr_image(imagePath="/path/to/image.png")]
 [SKILL:convert_image(inputPath="/path/image.png", outputPath="/path/image.jpg", format="jpeg")]
-`,
-        MEDIA: `
-🎬 MEDIA EXAMPLES:
-[SKILL:analyze_video(videoPath="/path/to/video.mp4", extractFrames="true", frameInterval="30")]
 `,
         DATABASE: `
 🗄️ DATABASE EXAMPLES:
@@ -2673,8 +2677,11 @@ When asked to find or summarize web content:
 `,
         CODE: `
 🔬 CODE ANALYSIS EXAMPLES:
-[SKILL:analyze_code(filePath="/path/to/code.js")]
-[SKILL:find_patterns(dirPath="${userWorkingDirectory}", pattern="TODO|FIXME", filePattern="*.js")]
+[SKILL:analyze_code(code="function hello() { return 'world'; }")]
+[SKILL:find_patterns(content="TODO: fix this\\nFIXME: broken", pattern="TODO|FIXME")]
+
+Note: analyze_code and find_patterns work on inline text content, not file paths.
+To analyze a file, first read_file then pass its content to analyze_code.
 `
     };
 
@@ -3788,7 +3795,7 @@ async function executeNetworkSkill(skillName, params) {
             }
 
             case 'dns_lookup': {
-                const hostname = params.hostname;
+                const hostname = params.hostname || params.domain;
                 if (!hostname) return { success: false, error: 'hostname parameter is required' };
 
                 try {
@@ -4006,8 +4013,8 @@ async function executeDataSkill(skillName, params) {
             }
 
             case 'parse_csv': {
-                const content = params.content || params.csv;
-                if (!content) return { success: false, error: 'content parameter is required' };
+                const content = params.content || params.csv || params.csvString;
+                if (!content) return { success: false, error: 'content parameter is required (pass CSV data as string, not a file path)' };
                 const delimiter = params.delimiter || ',';
                 const lines = content.trim().split('\n');
                 const headers = lines[0].split(delimiter).map(h => h.trim());
@@ -4075,7 +4082,7 @@ async function executeDataSkill(skillName, params) {
             case 'find_patterns': {
                 const content = params.content || params.text;
                 const pattern = params.pattern;
-                if (!content || !pattern) return { success: false, error: 'content and pattern parameters are required' };
+                if (!content || !pattern) return { success: false, error: 'content (text string) and pattern (regex) parameters are required' };
                 try {
                     const regex = new RegExp(pattern, 'g');
                     const matches = content.match(regex) || [];
@@ -4087,7 +4094,7 @@ async function executeDataSkill(skillName, params) {
 
             case 'analyze_code': {
                 const content = params.content || params.code;
-                if (!content) return { success: false, error: 'content parameter is required' };
+                if (!content) return { success: false, error: 'content parameter is required (pass code as string, not a file path)' };
                 const lines = content.split('\n');
                 const totalLines = lines.length;
                 const codeLines = lines.filter(l => l.trim() && !l.trim().startsWith('//')).length;
@@ -4233,7 +4240,7 @@ async function executeArchiveSkill(skillName, params) {
         switch (skillName) {
             case 'unzip_file': {
                 const filePath = params.filePath || params.zipPath;
-                const destPath = params.destPath || params.destination || '.';
+                const destPath = params.destPath || params.destination || params.outputDir || params.extractPath || '.';
                 if (!filePath) return { success: false, error: 'filePath parameter is required' };
 
                 try {
@@ -4260,7 +4267,7 @@ async function executeArchiveSkill(skillName, params) {
 
             case 'tar_extract': {
                 const filePath = params.filePath || params.tarPath;
-                const destPath = params.destPath || params.destination || '.';
+                const destPath = params.destPath || params.destination || params.outputDir || params.extractPath || '.';
                 if (!filePath) return { success: false, error: 'filePath parameter is required' };
 
                 let cmd = `tar -xf "${filePath}" -C "${destPath}"`;
@@ -4277,7 +4284,7 @@ async function executeArchiveSkill(skillName, params) {
             }
 
             case 'tar_create': {
-                const files = params.files;
+                const files = params.files || params.sourcePath || params.sourcePaths;
                 const outputPath = params.outputPath || params.tarPath;
                 const compress = params.compress || 'none';
                 if (!files || !outputPath) return { success: false, error: 'files and outputPath parameters are required' };
@@ -4414,7 +4421,7 @@ async function executeFileExtraSkill(skillName, params) {
 
             case 'search_files': {
                 const pattern = params.pattern;
-                const directory = params.directory || '.';
+                const directory = params.directory || params.dirPath || '.';
                 if (!pattern) return { success: false, error: 'pattern parameter is required' };
 
                 try {
@@ -4428,7 +4435,7 @@ async function executeFileExtraSkill(skillName, params) {
 
             case 'download_file': {
                 const url = params.url;
-                const destPath = params.destPath || params.destination;
+                const destPath = params.destPath || params.destination || params.outputPath || params.savePath;
                 if (!url || !destPath) return { success: false, error: 'url and destPath parameters are required' };
 
                 try {
