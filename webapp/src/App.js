@@ -313,6 +313,8 @@ const App = () => {
     });
     const [wsConnected, setWsConnected] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [logFilter, setLogFilter] = useState('all'); // 'all', 'error', 'warning', 'success', 'info'
+    const [logSearch, setLogSearch] = useState('');
 
     // Auth state
     const { user } = useAuthStore();
@@ -609,9 +611,19 @@ const App = () => {
                 try {
                     const data = JSON.parse(message.data);
                     if (data.type === 'log') {
+                        const msg = data.message.trim();
+                        // Auto-detect level from message content if not provided
+                        let level = data.level || 'info';
+                        if (!data.level) {
+                            const lower = msg.toLowerCase();
+                            if (lower.includes('error') || lower.includes('failed') || lower.includes('fatal') || lower.startsWith('error:')) level = 'error';
+                            else if (lower.includes('warning') || lower.includes('⚠️') || lower.includes('warn')) level = 'warning';
+                            else if (lower.includes('✓') || lower.includes('success') || lower.includes('complete') || lower.includes('ready') || lower.includes('started') || lower.includes('running')) level = 'success';
+                        }
                         setLogs(prevLogs => [...prevLogs, {
-                            message: data.message.trim(),
-                            level: data.level || 'info'
+                            message: msg,
+                            level: level,
+                            timestamp: Date.now()
                         }]);
                     } else if (data.type === 'status') {
                         const severity = data.level === 'error' ? 'error' :
@@ -9263,69 +9275,172 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                         )}
 
                         {/* Logs Tab */}
-                        {visibleTabOrder[activeTab] === 5 && (
+                        {visibleTabOrder[activeTab] === 5 && (() => {
+                            const logCounts = { all: logs.length, error: 0, warning: 0, success: 0, info: 0 };
+                            logs.forEach(l => { const lv = (typeof l === 'string' ? 'info' : l.level) || 'info'; if (logCounts[lv] !== undefined) logCounts[lv]++; });
+                            const filteredLogs = logs.filter(log => {
+                                const message = typeof log === 'string' ? log : log.message;
+                                const level = typeof log === 'string' ? 'info' : log.level;
+                                if (logFilter !== 'all' && level !== logFilter) return false;
+                                if (logSearch && !message.toLowerCase().includes(logSearch.toLowerCase())) return false;
+                                return true;
+                            });
+                            return (
                             <Card sx={{ height: 'calc(100vh - 220px)' }}>
-                                <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                    <SectionHeader
-                                        icon={<TerminalIcon />}
-                                        title="Process Logs"
-                                        subtitle="Real-time logs from model downloads and instance operations"
-                                        action={
-                                            <Button
+                                <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 2 }}>
+                                    {/* Header */}
+                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <TerminalIcon sx={{ fontSize: 22, color: 'primary.main' }} />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '1rem' }}>Process Logs</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Real-time system, model, and operation logs</Typography>
+                                            </Box>
+                                        </Box>
+                                        <Button size="small" variant="outlined" onClick={() => setLogs([])} startIcon={<ClearIcon />}>Clear</Button>
+                                    </Box>
+
+                                    {/* Filter bar */}
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
+                                        {/* Level filter chips */}
+                                        {[
+                                            { key: 'all', label: `All (${logCounts.all})`, color: 'default' },
+                                            { key: 'error', label: `Errors (${logCounts.error})`, color: '#ef4444' },
+                                            { key: 'warning', label: `Warnings (${logCounts.warning})`, color: '#f59e0b' },
+                                            { key: 'success', label: `Success (${logCounts.success})`, color: '#22c55e' },
+                                            { key: 'info', label: `Info (${logCounts.info})`, color: '#a1a1aa' },
+                                        ].map(f => (
+                                            <Chip
+                                                key={f.key}
+                                                label={f.label}
                                                 size="small"
-                                                variant="outlined"
-                                                onClick={() => setLogs([])}
-                                                startIcon={<ClearIcon />}
-                                            >
-                                                Clear
-                                            </Button>
-                                        }
-                                    />
+                                                onClick={() => setLogFilter(f.key)}
+                                                sx={{
+                                                    fontSize: '0.7rem', height: 24, cursor: 'pointer',
+                                                    bgcolor: logFilter === f.key ? (f.color === 'default' ? 'rgba(99,102,241,0.2)' : `${f.color}22`) : 'rgba(255,255,255,0.04)',
+                                                    border: logFilter === f.key ? `1px solid ${f.color === 'default' ? 'rgba(99,102,241,0.5)' : f.color + '66'}` : '1px solid transparent',
+                                                    color: logFilter === f.key ? (f.color === 'default' ? 'primary.main' : f.color) : 'text.secondary',
+                                                    '&:hover': { bgcolor: f.color === 'default' ? 'rgba(99,102,241,0.1)' : `${f.color}15` }
+                                                }}
+                                            />
+                                        ))}
+                                        {/* Search input */}
+                                        <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center', bgcolor: 'rgba(255,255,255,0.04)', borderRadius: 1, px: 1, py: 0.25, border: '1px solid', borderColor: 'divider', minWidth: 180 }}>
+                                            <SearchIcon sx={{ fontSize: 14, color: 'text.secondary', mr: 0.5 }} />
+                                            <input
+                                                type="text"
+                                                placeholder="Search logs..."
+                                                value={logSearch}
+                                                onChange={(e) => setLogSearch(e.target.value)}
+                                                style={{ background: 'transparent', border: 'none', outline: 'none', color: 'inherit', fontSize: '0.75rem', fontFamily: '"Fira Code", monospace', width: '100%' }}
+                                            />
+                                            {logSearch && (
+                                                <IconButton size="small" onClick={() => setLogSearch('')} sx={{ p: 0.25 }}>
+                                                    <ClearIcon sx={{ fontSize: 12 }} />
+                                                </IconButton>
+                                            )}
+                                        </Box>
+                                    </Box>
+
+                                    {/* Showing count */}
+                                    {(logFilter !== 'all' || logSearch) && (
+                                        <Typography variant="caption" sx={{ color: 'text.secondary', mb: 0.5, fontSize: '0.7rem' }}>
+                                            Showing {filteredLogs.length} of {logs.length} entries
+                                        </Typography>
+                                    )}
+
+                                    {/* Log display */}
                                     <Paper
                                         ref={logsContainerRef}
                                         onScroll={handleLogsScroll}
                                         sx={{
                                             flex: 1,
-                                            p: 2,
-                                            mt: 2,
+                                            px: 0,
+                                            py: 0.5,
                                             overflow: 'auto',
-                                            bgcolor: '#000',
-                                            borderRadius: 1,
-                                            border: '1px solid',
-                                            borderColor: 'divider',
+                                            bgcolor: '#0a0a0f',
+                                            borderRadius: 1.5,
+                                            border: '1px solid rgba(255,255,255,0.08)',
                                         }}
                                     >
-                                        {logs.length === 0 ? (
-                                            <Typography sx={{
-                                                fontFamily: '"Fira Code", monospace',
-                                                fontSize: '0.8125rem',
-                                                color: 'text.secondary',
-                                            }}>
-                                                Waiting for activity...
-                                            </Typography>
+                                        {filteredLogs.length === 0 ? (
+                                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', minHeight: 120 }}>
+                                                <Typography sx={{ fontFamily: '"Fira Code", monospace', fontSize: '0.8rem', color: 'rgba(255,255,255,0.25)' }}>
+                                                    {logs.length === 0 ? '● Waiting for activity...' : 'No matching log entries'}
+                                                </Typography>
+                                            </Box>
                                         ) : (
-                                            logs.map((log, index) => {
+                                            filteredLogs.map((log, index) => {
                                                 const message = typeof log === 'string' ? log : log.message;
-                                                const level = typeof log === 'string' ? 'info' : log.level;
-                                                const color = level === 'error' ? '#ef4444' :
-                                                              level === 'success' ? '#22c55e' :
-                                                              level === 'warning' ? '#f59e0b' :
-                                                              '#a1a1aa';
+                                                const level = typeof log === 'string' ? 'info' : (log.level || 'info');
+                                                const timestamp = log.timestamp ? new Date(log.timestamp) : null;
+                                                const timeStr = timestamp ? timestamp.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+                                                const levelConfig = {
+                                                    error:   { color: '#ef4444', bg: 'rgba(239,68,68,0.06)', icon: '✗', border: 'rgba(239,68,68,0.15)' },
+                                                    warning: { color: '#f59e0b', bg: 'rgba(245,158,11,0.04)', icon: '▲', border: 'rgba(245,158,11,0.1)' },
+                                                    success: { color: '#22c55e', bg: 'rgba(34,197,94,0.04)', icon: '✓', border: 'rgba(34,197,94,0.1)' },
+                                                    info:    { color: '#6b7280', bg: 'transparent', icon: '│', border: 'transparent' },
+                                                }[level] || { color: '#6b7280', bg: 'transparent', icon: '│', border: 'transparent' };
+
                                                 return (
-                                                    <Typography
+                                                    <Box
                                                         key={index}
                                                         sx={{
-                                                            fontFamily: '"Fira Code", monospace',
-                                                            fontSize: '0.8125rem',
-                                                            color: color,
-                                                            mb: 0.25,
-                                                            lineHeight: 1.5,
-                                                            whiteSpace: 'pre-wrap',
-                                                            wordBreak: 'break-all',
+                                                            display: 'flex',
+                                                            alignItems: 'flex-start',
+                                                            gap: 0,
+                                                            px: 1.5,
+                                                            py: 0.35,
+                                                            bgcolor: levelConfig.bg,
+                                                            borderLeft: `2px solid ${levelConfig.border}`,
+                                                            '&:hover': { bgcolor: 'rgba(255,255,255,0.03)' },
+                                                            transition: 'background-color 0.15s',
                                                         }}
                                                     >
-                                                        {message}
-                                                    </Typography>
+                                                        {/* Timestamp */}
+                                                        {timeStr && (
+                                                            <Typography sx={{
+                                                                fontFamily: '"Fira Code", monospace',
+                                                                fontSize: '0.7rem',
+                                                                color: 'rgba(255,255,255,0.2)',
+                                                                mr: 1.5,
+                                                                mt: '1px',
+                                                                flexShrink: 0,
+                                                                userSelect: 'none',
+                                                            }}>
+                                                                {timeStr}
+                                                            </Typography>
+                                                        )}
+                                                        {/* Level icon */}
+                                                        <Typography sx={{
+                                                            fontFamily: '"Fira Code", monospace',
+                                                            fontSize: '0.75rem',
+                                                            color: levelConfig.color,
+                                                            mr: 1,
+                                                            mt: '1px',
+                                                            flexShrink: 0,
+                                                            width: 12,
+                                                            textAlign: 'center',
+                                                            userSelect: 'none',
+                                                        }}>
+                                                            {levelConfig.icon}
+                                                        </Typography>
+                                                        {/* Message */}
+                                                        <Typography sx={{
+                                                            fontFamily: '"Fira Code", monospace',
+                                                            fontSize: '0.78rem',
+                                                            color: level === 'error' ? '#f87171' :
+                                                                   level === 'success' ? '#4ade80' :
+                                                                   level === 'warning' ? '#fbbf24' :
+                                                                   'rgba(255,255,255,0.65)',
+                                                            lineHeight: 1.55,
+                                                            whiteSpace: 'pre-wrap',
+                                                            wordBreak: 'break-word',
+                                                            flex: 1,
+                                                        }}>
+                                                            {message}
+                                                        </Typography>
+                                                    </Box>
                                                 );
                                             })
                                         )}
@@ -9333,7 +9448,8 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                     </Paper>
                                 </CardContent>
                             </Card>
-                        )}
+                            );
+                        })()}
 
                         {/* Apps Tab (Admin Only) */}
                         {visibleTabOrder[activeTab] === 6 && isAdmin && (
