@@ -7212,7 +7212,10 @@ YOU MUST NOT:
 
     if (conversationContext.length > 1) {
         // Include recent context (last 5 exchanges, but skip the current message we just added)
-        const recentContext = conversationContext.slice(-11, -1);
+        // Filter out system messages (skill results, directory listings) - they are stale noise
+        // that confuses the model on subsequent unrelated queries
+        const recentContext = conversationContext.slice(-11, -1)
+            .filter(msg => msg.role === 'user' || msg.role === 'assistant');
         if (recentContext.length > 0) {
             const contextStr = recentContext.map(msg =>
                 `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`
