@@ -5330,8 +5330,6 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                     if (skipUntilNextSection) {
                         if (line.trim() === '' && i + 1 < lines.length) {
                             const nextLine = lines[i + 1].toLowerCase().trim();
-                            // Stop skipping if next line is actual code (not part of headers block)
-                            // Headers block lines start with quotes, whitespace+quotes, or closing brace
                             const isHeaderLine = nextLine.startsWith('"') || nextLine.startsWith("'") ||
                                                 nextLine === '}' || nextLine.startsWith('$headers');
                             if (!isHeaderLine && nextLine !== '') {
@@ -5375,6 +5373,41 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
             // Clean up leading/trailing blank lines
             let result = filteredLines.join('\n');
             result = result.replace(/^\n+/, '').replace(/\n+$/, '');
+
+            // Post-processing pass: replace any remaining Bearer auth with API Key auth
+            // This handles endpoints that only have Bearer auth (no "# OR API Key" section)
+            if (apiBuilderAuthType === 'apikey') {
+                // PowerShell: "Authorization" = "Bearer ..." → X-API-Key + X-API-Secret
+                result = result.replace(
+                    /^(\s*)"Authorization"\s*=\s*"Bearer\s+[^"]*"/gm,
+                    '$1"X-API-Key" = "your_api_key"\n$1"X-API-Secret" = "your_api_secret"'
+                );
+                // Python/JS single quotes: 'Authorization': 'Bearer ...' → X-API-Key + X-API-Secret
+                result = result.replace(
+                    /^(\s*)'Authorization':\s*'Bearer\s+[^']*',?/gm,
+                    "$1'X-API-Key': 'your_api_key',\n$1'X-API-Secret': 'your_api_secret',"
+                );
+                // Python/JS double quotes: "Authorization": "Bearer ..." (in fetch headers)
+                result = result.replace(
+                    /^(\s*)"Authorization":\s*"Bearer\s+[^"]*",?/gm,
+                    '$1"X-API-Key": "your_api_key",\n$1"X-API-Secret": "your_api_secret",'
+                );
+                // curl: -H "Authorization: Bearer ..." → -H "X-API-Key: ..." + -H "X-API-Secret: ..."
+                result = result.replace(
+                    /^(\s*)-H\s*"Authorization:\s*Bearer\s+[^"]*"\s*\\?/gm,
+                    '$1-H "X-API-Key: your_api_key" \\\n$1-H "X-API-Secret: your_api_secret" \\'
+                );
+                // Remove leftover "# Bearer Token Authentication" comments
+                result = result.replace(/^[ \t]*#\s*Bearer Token Authentication\s*\n?/gm, '');
+                result = result.replace(/^[ \t]*\/\/\s*Bearer Token Authentication\s*\n?/gm, '');
+            }
+
+            // PowerShell: Add SSL certificate bypass for self-signed certs
+            if (apiBuilderLang === 'powershell') {
+                result = '# Bypass SSL certificate validation (self-signed certs)\n[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }\n\n' + result;
+                result = result + '\n\n# Restore default SSL certificate validation\n[System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null';
+            }
+
             return result;
         }
 
