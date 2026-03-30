@@ -619,7 +619,7 @@ export default function ChatContainer({
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
-                        body: JSON.stringify({ urls, maxLength: 12000, timeout: 25000 }),
+                        body: JSON.stringify({ urls, maxLength: 50000, timeout: 30000 }),
                     });
 
                     if (fetchResponse.ok) {
@@ -665,9 +665,9 @@ export default function ChatContainer({
                                 .map((r) => {
                                     let resultText = `[${r.title || 'Untitled'}]\nSource: ${r.url}\n`;
                                     if (r.content) {
-                                        // Generous content limit per URL for detailed answers
-                                        const truncatedContent = r.content.length > 8000
-                                            ? r.content.slice(0, 8000) + '...'
+                                        // Large content limit per URL - map-reduce handles overflow
+                                        const truncatedContent = r.content.length > 40000
+                                            ? r.content.slice(0, 40000) + '...'
                                             : r.content;
                                         resultText += `Content:\n${truncatedContent}\n`;
                                     }

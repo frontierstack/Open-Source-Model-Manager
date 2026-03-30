@@ -6646,11 +6646,158 @@ function isContentTooThin(content, url) {
 }
 
 
+// File extensions and content-types that should be downloaded as binary/text files
+// instead of scraped as HTML pages
+const DIRECT_DOWNLOAD_EXTENSIONS = {
+    // Documents
+    pdf: 'application/pdf',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc: 'application/msword',
+    // Text/code
+    txt: 'text/plain', csv: 'text/csv', json: 'application/json',
+    xml: 'application/xml', md: 'text/markdown', log: 'text/plain',
+    yaml: 'text/yaml', yml: 'text/yaml', toml: 'text/plain',
+    ini: 'text/plain', cfg: 'text/plain', conf: 'text/plain',
+    // Code
+    js: 'text/plain', ts: 'text/plain', py: 'text/plain',
+    java: 'text/plain', go: 'text/plain', rs: 'text/plain',
+    c: 'text/plain', cpp: 'text/plain', h: 'text/plain',
+    cs: 'text/plain', rb: 'text/plain', php: 'text/plain',
+    sh: 'text/plain', sql: 'text/plain', jsx: 'text/plain', tsx: 'text/plain',
+    // Spreadsheets
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+};
+
+const DIRECT_DOWNLOAD_CONTENT_TYPES = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+    'text/plain', 'text/csv', 'text/markdown',
+    'application/json', 'application/xml',
+];
+
+/**
+ * Download a URL as a file and extract text content.
+ * Handles PDF, DOCX, TXT, CSV, JSON, code files, etc.
+ * Returns null if the URL is not a downloadable file type.
+ */
+async function fetchUrlAsFile(url, options = {}) {
+    const timeout = options.timeout || 30000;
+    const maxLength = options.maxLength || 50000; // Files need much more than HTML pages
+
+    // Check extension from URL (strip query params)
+    const urlPath = url.split('?')[0].split('#')[0];
+    const ext = urlPath.split('.').pop().toLowerCase();
+    const isKnownFileExt = ext in DIRECT_DOWNLOAD_EXTENSIONS;
+
+    if (!isKnownFileExt) return null;
+
+    try {
+        // Download the file as binary
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+            },
+            timeout,
+            maxRedirects: 5,
+            responseType: 'arraybuffer',
+            validateStatus: (status) => status < 400,
+            maxContentLength: 50 * 1024 * 1024, // 50MB limit
+        });
+
+        const contentType = (response.headers['content-type'] || '').toLowerCase();
+        const buffer = Buffer.from(response.data);
+        const filename = decodeURIComponent(urlPath.split('/').pop() || `download.${ext}`);
+        let extractedText = '';
+        let title = filename;
+
+        console.log(`[fetchUrlAsFile] Downloaded ${filename} (${buffer.length} bytes, type: ${contentType})`);
+
+        // PDF parsing
+        if (ext === 'pdf' || contentType.includes('application/pdf')) {
+            try {
+                const pdfParse = require('pdf-parse');
+                const data = await pdfParse(buffer);
+                extractedText = data.text || '';
+                title = data.info?.Title || filename;
+                if (data.numpages) {
+                    title += ` (${data.numpages} pages)`;
+                }
+            } catch (e) {
+                console.error(`[fetchUrlAsFile] PDF parse failed: ${e.message}`);
+                return { success: false, error: `PDF parse failed: ${e.message}`, url };
+            }
+        }
+        // DOCX parsing
+        else if (ext === 'docx' || contentType.includes('wordprocessingml')) {
+            try {
+                const mammoth = require('mammoth');
+                const result = await mammoth.extractRawText({ buffer });
+                extractedText = result.value || '';
+                title = filename;
+            } catch (e) {
+                console.error(`[fetchUrlAsFile] DOCX parse failed: ${e.message}`);
+                return { success: false, error: `DOCX parse failed: ${e.message}`, url };
+            }
+        }
+        // XLSX/XLS - extract as text
+        else if (ext === 'xlsx' || ext === 'xls' || contentType.includes('spreadsheetml') || contentType.includes('ms-excel')) {
+            try {
+                // xlsx package may not be installed, fall back gracefully
+                const XLSX = require('xlsx');
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                const sheets = [];
+                for (const sheetName of workbook.SheetNames) {
+                    const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+                    if (csv.trim()) {
+                        sheets.push(`=== Sheet: ${sheetName} ===\n${csv}`);
+                    }
+                }
+                extractedText = sheets.join('\n\n');
+                title = filename;
+            } catch (e) {
+                console.warn(`[fetchUrlAsFile] XLSX parse not available: ${e.message}`);
+                return { success: false, error: 'XLSX parsing not available', url };
+            }
+        }
+        // Text-based files (txt, csv, json, xml, md, code files, etc.)
+        else {
+            extractedText = buffer.toString('utf-8');
+            title = filename;
+        }
+
+        if (!extractedText || !extractedText.trim()) {
+            return { success: false, error: 'No text content extracted from file', url };
+        }
+
+        return {
+            success: true,
+            url,
+            content: smartTruncate(extractedText, maxLength),
+            title,
+            source: 'direct-download',
+        };
+    } catch (error) {
+        console.error(`[fetchUrlAsFile] Download failed for ${url}: ${error.message}`);
+        // Return null to fall through to HTML scraping pipeline
+        return null;
+    }
+}
+
 // Helper function to fetch content from a URL with timeout
-// Uses Scrapling → Playwright (with XHR interception) → axios fallback chain
+// Uses direct file download → Scrapling → Playwright (with XHR interception) → axios fallback chain
 async function fetchUrlContent(url, options = {}) {
     const timeout = options.timeout || 12000;
     const maxLength = options.maxLength || 12000;
+
+    // Try direct file download first (PDF, DOCX, TXT, code files, etc.)
+    // This avoids wasting time on Scrapling/Playwright for binary files
+    const fileResult = await fetchUrlAsFile(url, { timeout, maxLength });
+    if (fileResult) return fileResult;
 
     // Try Scrapling first if available (best CAPTCHA evasion)
     if (scraplingService) {
@@ -6708,7 +6855,7 @@ async function fetchUrlContent(url, options = {}) {
 
 // URL fetch endpoint for chat - fetches content from URLs in messages
 app.post('/api/url/fetch', requireAuth, async (req, res) => {
-    const { urls, maxLength = 12000, timeout = 25000 } = req.body;
+    const { urls, maxLength = 50000, timeout = 30000 } = req.body;
 
     if (!urls || !Array.isArray(urls) || urls.length === 0) {
         return res.status(400).json({ error: 'URLs array required' });
