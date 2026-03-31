@@ -56,7 +56,7 @@ export default function ChatInput({
     };
 
     // Convert large pasted text into a file attachment to keep chat clean
-    const PASTE_AS_FILE_THRESHOLD = 1500; // ~500 tokens (≈3 chars/token)
+    const PASTE_AS_FILE_THRESHOLD = 500; // characters
     const handlePaste = useCallback(async (e) => {
         const pastedText = e.clipboardData?.getData('text/plain');
         if (!pastedText || pastedText.length < PASTE_AS_FILE_THRESHOLD) return;
