@@ -1469,7 +1469,13 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.js') || filePath.endsWith('.css')) {
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+    },
+}));
 
 // Helper function to parse session ID from cookie string
 function parseSessionCookie(cookieHeader) {

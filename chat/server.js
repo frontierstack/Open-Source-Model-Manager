@@ -51,8 +51,14 @@ app.use(session(sessionConfig));
 // because it would consume the request body before the proxy can forward it.
 // All API requests are proxied to the main webapp which handles body parsing.
 
-// Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static files (no-cache on JS/CSS so rebuilds are picked up immediately)
+app.use(express.static(path.join(__dirname, 'public'), {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.js') || filePath.endsWith('.css')) {
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+    },
+}));
 
 // Proxy all /api/* requests to the main webapp
 const apiProxy = createProxyMiddleware({
