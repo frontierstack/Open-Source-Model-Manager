@@ -5,8 +5,8 @@ WORKDIR /usr/src/app
 # Install openssl for generating self-signed certificates
 RUN apk add --no-cache openssl
 
-# Copy package files
-COPY package*.json ./
+# Copy package files and npm config (ignore-scripts for supply chain safety)
+COPY package*.json .npmrc ./
 
 # Install dependencies
 RUN npm install

@@ -26,7 +26,7 @@ ENV PIP_CERT=${PIP_CERT}
 
 WORKDIR /usr/src/app
 
-COPY package*.json ./
+COPY package*.json .npmrc ./
 ENV PATH=/usr/local/bin:$PATH
 
 # Install system dependencies for Playwright Chromium and Koda skills
