@@ -4,6 +4,7 @@ import ChatContainer from './components/chat/ChatContainer';
 import { useChatStore } from './stores/useChatStore';
 import { ToastProvider, useShowSnackbar } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
+import { loadGoogleFont } from './fontLoader';
 
 // Password Reset Form
 function PasswordResetForm({ onBack, onSuccess }) {
@@ -337,6 +338,9 @@ function AppContent() {
         const fontSize = settings?.fontSize || 'medium';
         const fontFamily = settings?.fontFamily || 'system';
         document.body.className = `theme-${theme} font-size-${fontSize} font-family-${fontFamily}`;
+
+        // Dynamically load Google Font when font family changes
+        loadGoogleFont(fontFamily);
     }, [theme, settings?.fontSize, settings?.fontFamily]);
 
     // Check authentication status on mount

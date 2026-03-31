@@ -25,6 +25,7 @@ import {
     Type
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
+import { loadGoogleFonts } from '../../fontLoader';
 
 /**
  * ChatSettings - Modern tabbed settings modal with chat, prompts, and appearance (Tailwind)
@@ -129,7 +130,7 @@ export default function ChatSettings({
         system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         inter: '"Inter", sans-serif', roboto: '"Roboto", sans-serif', opensans: '"Open Sans", sans-serif',
         lato: '"Lato", sans-serif', poppins: '"Poppins", sans-serif', nunito: '"Nunito", sans-serif',
-        sourcesans: '"Source Sans Pro", sans-serif', dmsans: '"DM Sans", sans-serif',
+        sourcesans: '"Source Sans 3", "Source Sans Pro", sans-serif', dmsans: '"DM Sans", sans-serif',
         worksans: '"Work Sans", sans-serif', plusjakarta: '"Plus Jakarta Sans", sans-serif',
         lexend: '"Lexend", sans-serif', outfit: '"Outfit", sans-serif',
         spacegrotesk: '"Space Grotesk", sans-serif', ibmplex: '"IBM Plex Sans", sans-serif',
@@ -142,7 +143,7 @@ export default function ChatSettings({
         redhatdisplay: '"Red Hat Display", sans-serif', readexpro: '"Readex Pro", sans-serif',
         merriweather: '"Merriweather", serif', playfair: '"Playfair Display", serif', georgia: 'Georgia, serif',
         crimsonpro: '"Crimson Pro", serif', librebaskerville: '"Libre Baskerville", serif',
-        lora: '"Lora", serif', sourceserpro: '"Source Serif Pro", serif',
+        lora: '"Lora", serif', sourceserpro: '"Source Serif 4", "Source Serif Pro", serif',
         jetbrains: '"JetBrains Mono", monospace', firacode: '"Fira Code", monospace',
         consolas: 'Consolas, monospace', spacemono: '"Space Mono", monospace',
         ubuntumono: '"Ubuntu Mono", monospace', anonymouspro: '"Anonymous Pro", monospace',
@@ -782,7 +783,12 @@ export default function ChatSettings({
                                     {/* Selected font trigger */}
                                     <button
                                         type="button"
-                                        onClick={() => setFontDropdownOpen(!fontDropdownOpen)}
+                                        onClick={() => {
+                                            if (!fontDropdownOpen) {
+                                                loadGoogleFonts(fontFamilyOptions.map(f => f.value));
+                                            }
+                                            setFontDropdownOpen(!fontDropdownOpen);
+                                        }}
                                         className="w-full flex items-center justify-between px-3 py-2 bg-dark-800/80 border border-white/10 rounded-md text-dark-200 text-sm cursor-pointer hover:border-white/20 transition-all"
                                         style={{ fontFamily: fontCssMap[fontFamily] || 'inherit' }}
                                     >

@@ -2521,7 +2521,7 @@
     }
     body.font-family-sourcesans,
     body.font-family-sourcesans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
-        font-family: "Source Sans Pro", -apple-system, sans-serif !important;
+        font-family: "Source Sans 3", "Source Sans Pro", -apple-system, sans-serif !important;
     }
     body.font-family-merriweather,
     body.font-family-merriweather *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
@@ -2605,7 +2605,7 @@
     }
     body.font-family-sourceserpro,
     body.font-family-sourceserpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
-        font-family: "Source Serif Pro", Georgia, serif !important;
+        font-family: "Source Serif 4", "Source Serif Pro", Georgia, serif !important;
     }
 
     /* New Monospace Fonts */
@@ -2653,7 +2653,7 @@
     /* New Sans-Serif Fonts (Extended) */
     body.font-family-atkinson,
     body.font-family-atkinson *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
-        font-family: "Atkinson Hyperlegible", -apple-system, sans-serif !important;
+        font-family: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", -apple-system, sans-serif !important;
     }
     body.font-family-geist,
     body.font-family-geist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
@@ -3880,7 +3880,7 @@ html body.font-family-nunito *:not(code):not(pre):not(.code-content):not(.code-h
 }
 html body.font-family-sourcesans,
 html body.font-family-sourcesans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
-    font-family: "Source Sans Pro", -apple-system, sans-serif !important;
+    font-family: "Source Sans 3", "Source Sans Pro", -apple-system, sans-serif !important;
 }
 html body.font-family-merriweather,
 html body.font-family-merriweather *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
@@ -3964,7 +3964,7 @@ html body.font-family-lora *:not(code):not(pre):not(.code-content):not(.code-hea
 }
 html body.font-family-sourceserpro,
 html body.font-family-sourceserpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
-    font-family: "Source Serif Pro", Georgia, serif !important;
+    font-family: "Source Serif 4", "Source Serif Pro", Georgia, serif !important;
 }
 
 /* New Monospace Fonts - High Specificity */
@@ -3992,7 +3992,7 @@ html body.font-family-victormono *:not(code):not(pre):not(.code-content):not(.co
 /* Sans-Serif Fonts (Extended) - High Specificity */
 html body.font-family-atkinson,
 html body.font-family-atkinson *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
-    font-family: "Atkinson Hyperlegible", -apple-system, sans-serif !important;
+    font-family: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", -apple-system, sans-serif !important;
 }
 html body.font-family-geist,
 html body.font-family-geist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
