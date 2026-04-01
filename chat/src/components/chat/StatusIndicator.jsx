@@ -37,72 +37,48 @@ export default function StatusIndicator({ status, message }) {
                 return {
                     icon: Loader2,
                     label: message || 'Thinking',
-                    color: 'text-purple-400',
-                    bgColor: 'bg-purple-500/10',
-                    borderColor: 'border-purple-500/20',
                     iconAnimation: 'animate-spin',
                 };
             case StatusType.SEARCHING:
                 return {
                     icon: Globe,
                     label: message || 'Searching web',
-                    color: 'text-blue-400',
-                    bgColor: 'bg-blue-500/10',
-                    borderColor: 'border-blue-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             case StatusType.PARSING:
                 return {
                     icon: FileSearch,
                     label: message || 'Parsing files',
-                    color: 'text-amber-400',
-                    bgColor: 'bg-amber-500/10',
-                    borderColor: 'border-amber-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             case StatusType.PROCESSING:
                 return {
                     icon: Zap,
                     label: message || 'Processing',
-                    color: 'text-emerald-400',
-                    bgColor: 'bg-emerald-500/10',
-                    borderColor: 'border-emerald-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             case StatusType.GENERATING:
                 return {
                     icon: Sparkles,
                     label: message || 'Generating',
-                    color: 'text-primary-400',
-                    bgColor: 'bg-primary-500/10',
-                    borderColor: 'border-primary-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             case StatusType.CHUNKING:
                 return {
                     icon: Layers,
                     label: message || 'Processing chunks',
-                    color: 'text-cyan-400',
-                    bgColor: 'bg-cyan-500/10',
-                    borderColor: 'border-cyan-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             case StatusType.SYNTHESIZING:
                 return {
                     icon: GitMerge,
                     label: message || 'Synthesizing',
-                    color: 'text-violet-400',
-                    bgColor: 'bg-violet-500/10',
-                    borderColor: 'border-violet-500/20',
                     iconAnimation: 'animate-pulse',
                 };
             default:
                 return {
                     icon: Loader2,
                     label: message || 'Loading',
-                    color: 'text-dark-400',
-                    bgColor: 'bg-dark-800/50',
-                    borderColor: 'border-dark-700/30',
                     iconAnimation: 'animate-spin',
                 };
         }
@@ -111,12 +87,16 @@ export default function StatusIndicator({ status, message }) {
     const config = getStatusConfig();
     const Icon = config.icon;
 
+    const themeStyles = {
+        backgroundColor: 'rgba(var(--primary-rgb), 0.1)',
+        borderColor: 'rgba(var(--primary-rgb), 0.2)',
+        color: 'var(--accent-primary)',
+    };
+
     return (
         <span
-            className={`
-                inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium
-                ${config.bgColor} ${config.borderColor} border ${config.color}
-            `}
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border"
+            style={themeStyles}
         >
             <Icon className={`w-3 h-3 ${config.iconAnimation}`} />
             <span>{config.label}</span>

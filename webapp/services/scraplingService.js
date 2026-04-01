@@ -143,30 +143,52 @@ async function fetchWithFallback(url, options = {}, playwrightService = null) {
     // Try Scrapling first
     const result = await fetchUrl(url, options);
 
-    if (result.success && result.content) {
+    if (result.success && result.content && result.content.length >= 1500) {
         result.source = 'scrapling';
         return result;
     }
 
-    // If Scrapling failed and Playwright is available, try that
+    // If Scrapling returned thin content or failed, try Playwright for better extraction
     if (playwrightService) {
-        console.log('[Scrapling] Falling back to Playwright for:', url);
+        console.log('[Scrapling] Falling back to Playwright for:', url, result.content ? `(thin content: ${result.content.length} chars)` : '(no content)');
         try {
             const pwResult = await playwrightService.fetchUrlContent(url, {
                 timeout: options.timeout || 15000,
                 waitForJS: true,
                 includeLinks: options.extractLinks || false
             });
+            const pwContent = pwResult.content || '';
+            const scrapContent = result.content || '';
+            // Use whichever source got more content
+            if (pwContent.length > scrapContent.length) {
+                return {
+                    success: true,
+                    url,
+                    content: pwContent,
+                    title: pwResult.title || result.title || '',
+                    links: pwResult.links || [],
+                    source: 'playwright',
+                    scraplingError: result.error
+                };
+            } else if (scrapContent.length > 0) {
+                result.source = 'scrapling';
+                return result;
+            }
             return {
-                success: true,
+                success: pwContent.length > 0,
                 url,
-                content: pwResult.content || '',
+                content: pwContent,
                 title: pwResult.title || '',
                 links: pwResult.links || [],
                 source: 'playwright',
                 scraplingError: result.error
             };
         } catch (pwErr) {
+            // If Scrapling had thin content, return it rather than nothing
+            if (result.success && result.content) {
+                result.source = 'scrapling';
+                return result;
+            }
             return {
                 success: false,
                 url,

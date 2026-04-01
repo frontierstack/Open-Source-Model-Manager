@@ -10,12 +10,7 @@ import {
     Trash2,
     Edit3,
     Check,
-    Sun,
-    Moon,
     Monitor,
-    Zap,
-    Sparkles,
-    Code,
     Target,
     Layout,
     AlignCenter,
@@ -238,43 +233,49 @@ export default function ChatSettings({
     if (!open) return null;
 
     const themeOptions = [
-        // Standard
-        { value: 'dark', label: 'Dark', icon: Moon, description: 'Default dark theme' },
-        { value: 'light', label: 'Light', icon: Sun, description: 'Clean white theme' },
-        // Nature
-        { value: 'ocean', label: 'Ocean', icon: Sparkles, description: 'Deep blue theme' },
-        { value: 'forest', label: 'Forest', icon: Sparkles, description: 'Natural greens' },
-        { value: 'sunset', label: 'Sunset', icon: Sun, description: 'Warm orange tones' },
-        { value: 'rose', label: 'Rose', icon: Sparkles, description: 'Soft pink theme' },
-        { value: 'jade', label: 'Jade', icon: Sparkles, description: 'Rich deep green' },
-        { value: 'evergreen', label: 'Evergreen', icon: Sparkles, description: 'Deep forest greens' },
-        { value: 'mint', label: 'Mint', icon: Sparkles, description: 'Fresh green teal' },
-        { value: 'arctic', label: 'Arctic', icon: Moon, description: 'Cold blue white' },
-        { value: 'sand', label: 'Sand', icon: Sun, description: 'Warm beige tan' },
-        { value: 'terracotta', label: 'Terracotta', icon: Sun, description: 'Earthy red orange' },
-        // Warm Tones
-        { value: 'coffee', label: 'Coffee', icon: Moon, description: 'Warm brown tones' },
-        { value: 'ember', label: 'Ember', icon: Zap, description: 'Warm red orange' },
-        { value: 'copper', label: 'Copper', icon: Sparkles, description: 'Warm metallic' },
-        { value: 'amber', label: 'Amber', icon: Sun, description: 'Warm golden amber' },
-        // Neutral
-        { value: 'slate', label: 'Slate', icon: Moon, description: 'Blue-gray neutral' },
-        { value: 'graphite', label: 'Graphite', icon: Moon, description: 'Dark neutral gray' },
-        { value: 'storm', label: 'Storm', icon: Moon, description: 'Dark blue-gray moody' },
-        // Classic Dev
-        { value: 'nord', label: 'Nord', icon: Moon, description: 'Arctic palette' },
-        { value: 'solarized', label: 'Solarized', icon: Sun, description: 'Solarized Dark' },
-        { value: 'gruvbox', label: 'Gruvbox', icon: Moon, description: 'Retro groove' },
-        { value: 'dracula', label: 'Dracula', icon: Moon, description: 'Dark theme' },
-        { value: 'sapphire', label: 'Sapphire', icon: Moon, description: 'Deep blue premium' },
-        { value: 'onedark', label: 'One Dark', icon: Moon, description: 'Atom inspired' },
-        { value: 'tokyo', label: 'Tokyo Night', icon: Moon, description: 'Neon city' },
-        // Vibrant
-        { value: 'matrix', label: 'Matrix', icon: Code, description: 'Hacker terminal' },
-        { value: 'cyberpunk', label: 'Cyberpunk', icon: Zap, description: 'Neon vibes' },
-        { value: 'vaporwave', label: 'Vaporwave', icon: Sparkles, description: 'Aesthetic pink' },
-        { value: 'neonoir', label: 'Neo Noir', icon: Moon, description: 'Dark neon' },
-        { value: 'crimson', label: 'Crimson', icon: Zap, description: 'Deep rich red' },
+        { label: 'Standard', options: [
+            { value: 'dark', label: 'Dark' },
+            { value: 'light', label: 'Light' },
+        ]},
+        { label: 'Nature', options: [
+            { value: 'ocean', label: 'Ocean' },
+            { value: 'sunset', label: 'Sunset' },
+            { value: 'jade', label: 'Jade' },
+            { value: 'mint', label: 'Mint' },
+            { value: 'arctic', label: 'Arctic' },
+            { value: 'sand', label: 'Sand' },
+        ]},
+        { label: 'Warm Tones', options: [
+            { value: 'coffee', label: 'Coffee' },
+            { value: 'ember', label: 'Ember' },
+            { value: 'copper', label: 'Copper' },
+            { value: 'amber', label: 'Amber' },
+            { value: 'vesper', label: 'Vesper' },
+            { value: 'horizon', label: 'Horizon' },
+        ]},
+        { label: 'Neutral', options: [
+            { value: 'slate', label: 'Slate' },
+            { value: 'graphite', label: 'Graphite' },
+            { value: 'storm', label: 'Storm' },
+        ]},
+        { label: 'Dev Classics', options: [
+            { value: 'solarized', label: 'Solarized' },
+            { value: 'catppuccin', label: 'Catppuccin' },
+            { value: 'rosepine', label: 'Ros\u00e9 Pine' },
+            { value: 'kanagawa', label: 'Kanagawa' },
+            { value: 'palenight', label: 'Palenight' },
+            { value: 'ayu', label: 'Ayu' },
+        ]},
+        { label: 'Vibrant', options: [
+            { value: 'matrix', label: 'Matrix' },
+            { value: 'moonlight', label: 'Moonlight' },
+            { value: 'andromeda', label: 'Andromeda' },
+            { value: 'poimandres', label: 'Poimandres' },
+            { value: 'nightowl', label: 'Night Owl' },
+            { value: 'oxocarbon', label: 'Oxocarbon' },
+            { value: 'vaporwave', label: 'Vaporwave' },
+            { value: 'crimson', label: 'Crimson' },
+        ]},
     ];
 
     const currentTheme = theme || 'system';
@@ -625,32 +626,35 @@ export default function ChatSettings({
                                 <label className="block text-xs font-medium text-dark-200 mb-2">
                                     Theme
                                 </label>
-                                <div className="grid grid-cols-4 gap-2">
-                                    {themeOptions.map((option) => {
-                                        const Icon = option.icon;
-                                        const isActive = currentTheme === option.value;
-                                        return (
-                                            <button
-                                                key={option.value}
-                                                onClick={() => onThemeChange?.(option.value)}
-                                                className={`flex flex-col items-center gap-1.5 p-2 rounded-lg border transition-all duration-200 ${
-                                                    isActive
-                                                        ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
-                                                        : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
-                                                }`}
-                                            >
-                                                <div className={`p-1.5 rounded-md ${isActive ? 'bg-primary-500/20' : 'bg-dark-700'}`}>
-                                                    <Icon className="w-4 h-4" />
-                                                </div>
-                                                <div className="text-center">
-                                                    <div className="text-[10px] font-medium flex items-center gap-1 justify-center">
-                                                        {option.label}
-                                                        {isActive && <Check className="w-2.5 h-2.5" />}
-                                                    </div>
-                                                </div>
-                                            </button>
-                                        );
-                                    })}
+                                <div className="space-y-3">
+                                    {themeOptions.map((group) => (
+                                        <div key={group.label}>
+                                            <div className="text-[10px] font-medium text-dark-400 uppercase tracking-wider mb-1.5">{group.label}</div>
+                                            <div className="grid grid-cols-4 gap-2">
+                                                {group.options.map((option) => {
+                                                    const isActive = currentTheme === option.value;
+                                                    return (
+                                                        <button
+                                                            key={option.value}
+                                                            onClick={() => onThemeChange?.(option.value)}
+                                                            className={`flex flex-col items-center gap-1.5 p-2 rounded-lg border transition-all duration-200 ${
+                                                                isActive
+                                                                    ? 'bg-primary-500/15 border-primary-500/40 text-primary-300'
+                                                                    : 'bg-dark-800/50 border-white/5 text-dark-300 hover:bg-dark-800 hover:border-white/10'
+                                                            }`}
+                                                        >
+                                                            <div className="text-center">
+                                                                <div className="text-[10px] font-medium flex items-center gap-1 justify-center">
+                                                                    {option.label}
+                                                                    {isActive && <Check className="w-2.5 h-2.5" />}
+                                                                </div>
+                                                            </div>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
 

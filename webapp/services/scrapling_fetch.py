@@ -92,13 +92,15 @@ def extract_main_content(page) -> str:
             pass
 
     # Try to find main content container
+    # Specific class selectors first (WordPress, CMS article bodies), then generic tags
     content_selectors = [
-        '.post-body', '.articlebody', '.post-body-container',
+        '.entry-content', '.post-body', '.post-content',
+        '.articlebody', '.post-body-container',
         '[itemprop="articleBody"]', '.story-body', '.storycontent',
-        'article', 'main', '[role="main"]',
+        '.article-body', '.article-content', '.article__body',
         '.content', '.main-content', '#content', '#main',
-        '.article', '.post', '.entry-content',
-        '.page-content', '.body-content',
+        '.article', '.post', '.page-content', '.body-content',
+        'article', 'main', '[role="main"]',
     ]
 
     for selector in content_selectors:

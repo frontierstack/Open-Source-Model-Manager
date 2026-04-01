@@ -604,9 +604,6 @@ export default function ChatContainer({
                 fullContent = `${attachmentContext}\n---\n\n${content}`;
             }
         }
-        // Save attachment-enriched content before URL fetch/search may further modify fullContent
-        const contentWithAttachments = fullContent;
-
         // Handle URL fetching if enabled
         let urlFetchResults = null;
         let urlContextSummary = null;
@@ -707,13 +704,16 @@ export default function ChatContainer({
             }
         }
 
+        // Save enriched content (attachments + URL fetch) for follow-up message context
+        const enrichedContent = fullContent;
+
         // Add user message (display version without file content embedded)
-        // apiContent preserves attachment text so follow-up messages retain file context
+        // apiContent preserves full enriched text so follow-up messages retain context
         const userMessage = {
             id: crypto.randomUUID(),
             role: 'user',
             content,
-            ...(contentWithAttachments !== content && { apiContent: contentWithAttachments }),
+            ...(enrichedContent !== content && { apiContent: enrichedContent }),
             attachments: attachedFiles?.map(a => ({ filename: a.filename, type: a.type })),
             timestamp: new Date().toISOString(),
             // Add URL context metadata if URLs were fetched
@@ -753,14 +753,15 @@ export default function ChatContainer({
             let msgContent = idx === updatedMessages.length - 1 ? fullContent : (m.apiContent || m.content);
             const isRecentUserMessage = recentUserIndices.has(idx);
 
-            // If this is a recent previous user message with search context, include it
-            if (m.role === 'user' && m.searchContext && idx !== updatedMessages.length - 1 && isRecentUserMessage) {
-                msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
-            }
-
-            // If this is a recent previous user message with URL context, include it
-            if (m.role === 'user' && m.urlContext && idx !== updatedMessages.length - 1 && isRecentUserMessage) {
-                msgContent = `[Previous URL context: ${m.urlContext}]\n\n${msgContent}`;
+            // If this is a recent previous user message, include search/URL context
+            // Skip if apiContent already has the full enriched content baked in
+            if (m.role === 'user' && idx !== updatedMessages.length - 1 && isRecentUserMessage && !m.apiContent) {
+                if (m.searchContext) {
+                    msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
+                }
+                if (m.urlContext) {
+                    msgContent = `[Previous URL context: ${m.urlContext}]\n\n${msgContent}`;
+                }
             }
 
             // For the current message with image attachments, use OpenAI vision format
@@ -865,8 +866,10 @@ export default function ChatContainer({
                             `User question: ${content}`;
 
                         // Update the user message in store with search context for memory
+                        // Save the full search-enriched content as apiContent for follow-up context
                         const updatedUserMessage = {
                             ...userMessage,
+                            apiContent: apiMessages[apiMessages.length - 1].content,
                             searchContext: searchContextSummary,
                             hadWebSearch: true,
                         };
