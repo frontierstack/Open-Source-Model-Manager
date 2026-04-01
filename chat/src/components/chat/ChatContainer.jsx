@@ -604,6 +604,8 @@ export default function ChatContainer({
                 fullContent = `${attachmentContext}\n---\n\n${content}`;
             }
         }
+        // Save attachment-enriched content before URL fetch/search may further modify fullContent
+        const contentWithAttachments = fullContent;
 
         // Handle URL fetching if enabled
         let urlFetchResults = null;
@@ -706,10 +708,12 @@ export default function ChatContainer({
         }
 
         // Add user message (display version without file content embedded)
+        // apiContent preserves attachment text so follow-up messages retain file context
         const userMessage = {
             id: crypto.randomUUID(),
             role: 'user',
             content,
+            ...(contentWithAttachments !== content && { apiContent: contentWithAttachments }),
             attachments: attachedFiles?.map(a => ({ filename: a.filename, type: a.type })),
             timestamp: new Date().toISOString(),
             // Add URL context metadata if URLs were fetched
@@ -746,7 +750,7 @@ export default function ChatContainer({
         const recentUserIndices = new Set(userMessageIndices.slice(-MAX_CONTEXT_MESSAGES));
 
         const apiMessages = updatedMessages.map((m, idx) => {
-            let msgContent = idx === updatedMessages.length - 1 ? fullContent : m.content;
+            let msgContent = idx === updatedMessages.length - 1 ? fullContent : (m.apiContent || m.content);
             const isRecentUserMessage = recentUserIndices.has(idx);
 
             // If this is a recent previous user message with search context, include it
