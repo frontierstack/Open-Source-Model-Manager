@@ -1356,6 +1356,34 @@ export default function ChatContainer({
             // Only clear loading/streaming UI if we're still on the same conversation
             const currentActiveId = useChatStore.getState().activeConversationId;
             if (currentActiveId === conversationId) {
+                // Safety net: rescue any streaming content that wasn't saved as a message.
+                // This catches edge cases where the response was visible during streaming
+                // but an error/abort prevented the normal save path from running.
+                const residualContent = useChatStore.getState().streamingContent;
+                if (residualContent && residualContent.trim()) {
+                    const currentMsgs = useChatStore.getState().messages;
+                    const lastMsg = currentMsgs[currentMsgs.length - 1];
+                    // Only rescue if the last message isn't already this content
+                    const alreadySaved = lastMsg?.role === 'assistant' &&
+                        lastMsg.content === residualContent;
+                    if (!alreadySaved) {
+                        const parsed = parseThinkTags(residualContent);
+                        if (parsed.content.trim()) {
+                            const rescuedMessage = {
+                                id: crypto.randomUUID(),
+                                role: 'assistant',
+                                content: parsed.content,
+                                reasoning: parsed.reasoning || undefined,
+                                timestamp: new Date().toISOString(),
+                                isPartial: true,
+                            };
+                            addMessage(rescuedMessage);
+                            saveMessages(conversationId, [...currentMsgs, rescuedMessage]);
+                            console.log(`[Chat] Rescued ${residualContent.length} chars of streaming content`);
+                        }
+                    }
+                }
+
                 setIsLoading(false);
                 clearStreaming();
                 clearProcessingStatus();
@@ -1607,6 +1635,32 @@ export default function ChatContainer({
             // Only clear loading/streaming UI if still on same conversation
             const currentActiveId = useChatStore.getState().activeConversationId;
             if (currentActiveId === conversationId) {
+                // Safety net: rescue unsaved streaming content (same as main handler)
+                const residualContent = useChatStore.getState().streamingContent;
+                if (residualContent && residualContent.trim()) {
+                    const currentMsgs = useChatStore.getState().messages;
+                    const lastMsg = currentMsgs[currentMsgs.length - 1];
+                    const alreadySaved = lastMsg?.role === 'assistant' &&
+                        lastMsg.content === residualContent;
+                    if (!alreadySaved) {
+                        const parsed = parseThinkTags(residualContent);
+                        if (parsed.content.trim()) {
+                            const rescuedMessage = {
+                                id: crypto.randomUUID(),
+                                role: 'assistant',
+                                content: parsed.content,
+                                reasoning: parsed.reasoning || undefined,
+                                timestamp: new Date().toISOString(),
+                                isPartial: true,
+                                isContinuation: true,
+                            };
+                            addMessage(rescuedMessage);
+                            saveMessages(conversationId, [...currentMsgs, rescuedMessage]);
+                            console.log(`[Chat] Rescued ${residualContent.length} chars of continuation content`);
+                        }
+                    }
+                }
+
                 setIsLoading(false);
                 clearStreaming();
                 clearProcessingStatus();
