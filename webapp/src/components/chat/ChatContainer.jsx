@@ -473,6 +473,7 @@ export default function ChatContainer({
                     }
                 }
             } catch (error) {
+                if (error.name === 'AbortError') throw error;
                 console.error('Web search failed:', error);
             }
             // Clear search state after a delay

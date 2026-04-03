@@ -705,6 +705,7 @@ export default function ChatContainer({
                         showSnackbar(`${statusMsg}, proceeding without fetched content`, 'warning');
                     }
                 } catch (error) {
+                    if (error.name === 'AbortError') throw error;
                     console.error('URL fetch failed:', error);
                     const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
                         ? 'Network error - unable to reach URL fetch service'
@@ -902,6 +903,7 @@ export default function ChatContainer({
                     showSnackbar(`${statusMsg}, proceeding without search results`, 'warning');
                 }
             } catch (error) {
+                if (error.name === 'AbortError') throw error;
                 console.error('Web search failed:', error);
                 const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
                     ? 'Network error - unable to reach web search service'
