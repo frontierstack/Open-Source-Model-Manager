@@ -619,6 +619,9 @@ async function processWithMapReduce(options) {
     // MAP PHASE: Process chunks in parallel (with concurrency limit)
     const chunkResponses = [];
     const chunkErrors = [];
+    let completedChunks = 0;
+    let failedChunks = 0;
+    const mapStartTime = Date.now();
 
     // Process in batches to limit concurrency
     for (let batchStart = 0; batchStart < chunks.length; batchStart += maxParallelChunks) {
@@ -631,8 +634,10 @@ async function processWithMapReduce(options) {
             onProgress({
                 phase: 'map',
                 totalChunks,
+                completedChunks,
+                failedChunks,
                 currentChunk: batchStart,
-                message: `Processing chunks ${batchStart + 1}-${batchEnd} of ${totalChunks}...`
+                elapsedMs: Date.now() - mapStartTime,
             });
         }
 
@@ -671,7 +676,20 @@ async function processWithMapReduce(options) {
                     });
 
                     const responseContent = response.data?.choices?.[0]?.message?.content || '';
+                    completedChunks++;
                     console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} completed (${responseContent.length} chars)${attempt > 1 ? ` after ${attempt} attempts` : ''}`);
+
+                    // Send per-chunk completion progress
+                    if (onProgress) {
+                        onProgress({
+                            phase: 'map',
+                            totalChunks,
+                            completedChunks,
+                            failedChunks,
+                            currentChunk: chunk.index,
+                            elapsedMs: Date.now() - mapStartTime,
+                        });
+                    }
 
                     return {
                         chunkIndex: chunk.index,
@@ -686,11 +704,38 @@ async function processWithMapReduce(options) {
                     if (attempt < maxRetries && isRetryable) {
                         const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
                         console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} attempt ${attempt} failed (${error.message}), retrying in ${delay/1000}s...`);
+
+                        // Send retry progress
+                        if (onProgress) {
+                            onProgress({
+                                phase: 'map',
+                                totalChunks,
+                                completedChunks,
+                                failedChunks,
+                                currentChunk: chunk.index,
+                                elapsedMs: Date.now() - mapStartTime,
+                                retrying: { chunk: chunk.index + 1, attempt, maxRetries },
+                            });
+                        }
+
                         await new Promise(resolve => setTimeout(resolve, delay));
                         continue;
                     }
 
+                    failedChunks++;
                     console.error(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} failed after ${attempt} attempts:`, error.message);
+
+                    if (onProgress) {
+                        onProgress({
+                            phase: 'map',
+                            totalChunks,
+                            completedChunks,
+                            failedChunks,
+                            currentChunk: chunk.index,
+                            elapsedMs: Date.now() - mapStartTime,
+                        });
+                    }
+
                     return {
                         chunkIndex: chunk.index,
                         response: `[Error processing chunk ${chunk.index + 1}: ${error.message}]`,
@@ -740,12 +785,14 @@ async function processWithMapReduce(options) {
     console.log(`[Map-Reduce] Map phase complete: ${chunkResponses.length - chunkErrors.length}/${totalChunks} chunks successful`);
 
     // REDUCE PHASE: Synthesize chunk responses
+    const mapElapsedMs = Date.now() - mapStartTime;
     if (onProgress) {
         onProgress({
             phase: 'reduce',
             totalChunks,
-            currentChunk: totalChunks,
-            message: 'Synthesizing responses...'
+            completedChunks,
+            failedChunks,
+            elapsedMs: mapElapsedMs,
         });
     }
 
@@ -800,8 +847,9 @@ async function processWithMapReduce(options) {
             onProgress({
                 phase: 'complete',
                 totalChunks,
-                currentChunk: totalChunks,
-                message: 'Processing complete'
+                completedChunks,
+                failedChunks,
+                elapsedMs: Date.now() - mapStartTime,
             });
         }
 

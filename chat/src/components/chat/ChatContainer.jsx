@@ -628,6 +628,7 @@ export default function ChatContainer({
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
                         body: JSON.stringify({ urls, maxLength: 50000, timeout: 30000 }),
+                        signal: abortControllerRef.current?.signal,
                     });
 
                     if (fetchResponse.ok) {
@@ -743,6 +744,7 @@ export default function ChatContainer({
 
         // Start streaming - track which conversation this stream belongs to
         streamingConversationRef.current = conversationId;
+        abortControllerRef.current = new AbortController();
         setStreaming(true);
         setStreamingContent('');
         setStreamingReasoning('');
@@ -822,6 +824,7 @@ export default function ChatContainer({
                 setProcessingStatus('searching', 'Searching the web');
                 const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=5`, {
                     credentials: 'include',
+                    signal: abortControllerRef.current?.signal,
                 });
 
                 if (searchResponse.ok) {
@@ -907,8 +910,7 @@ export default function ChatContainer({
             }
         }
 
-        // Create abort controller for cancellation
-        abortControllerRef.current = new AbortController();
+
 
         // Track response time
         const startTime = Date.now();
@@ -1073,20 +1075,24 @@ export default function ChatContainer({
 
                             // Handle map-reduce chunking progress events
                             if (parsed.type === 'chunking_progress') {
-                                const { phase, totalChunks, currentChunk, message } = parsed;
+                                const { phase, totalChunks, completedChunks = 0, failedChunks = 0, elapsedMs = 0, retrying } = parsed;
+                                const elapsed = elapsedMs > 0 ? ` (${Math.round(elapsedMs / 1000)}s)` : '';
 
                                 if (phase === 'starting' || phase === 'chunking') {
-                                    setProcessingStatus('chunking', message || 'Splitting content into chunks...');
+                                    setProcessingStatus('chunking', `Splitting content into ${totalChunks || ''} chunks...`);
                                 } else if (phase === 'map') {
-                                    const percentComplete = totalChunks > 0
-                                        ? Math.round((currentChunk / totalChunks) * 100)
-                                        : 0;
-                                    setProcessingStatus(
-                                        'processing',
-                                        message || `Processing chunks (${percentComplete}% complete)`
-                                    );
+                                    const done = completedChunks + failedChunks;
+                                    let msg;
+                                    if (retrying) {
+                                        msg = `Retrying chunk ${retrying.chunk} (attempt ${retrying.attempt}/${retrying.maxRetries})${elapsed}`;
+                                    } else if (done === 0) {
+                                        msg = `Analyzing ${totalChunks} chunks...`;
+                                    } else {
+                                        msg = `Analyzed ${completedChunks}/${totalChunks} chunks${failedChunks ? ` (${failedChunks} failed)` : ''}${elapsed}`;
+                                    }
+                                    setProcessingStatus('processing', msg);
                                 } else if (phase === 'reduce') {
-                                    setProcessingStatus('synthesizing', message || 'Synthesizing responses...');
+                                    setProcessingStatus('synthesizing', `Combining ${completedChunks} chunk results into final response...${elapsed}`);
                                 } else if (phase === 'complete') {
                                     setProcessingStatus('generating', 'Streaming response...');
                                 }
@@ -1362,6 +1368,9 @@ export default function ChatContainer({
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
+        // Immediate UI feedback — don't wait for the async cleanup
+        setIsLoading(false);
+        setProcessingStatus(null, null);
     };
 
     /**

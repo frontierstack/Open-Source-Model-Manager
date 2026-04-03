@@ -425,6 +425,7 @@ export default function ChatContainer({
         clearAttachments();
 
         // Start streaming
+        abortControllerRef.current = new AbortController();
         setStreaming(true);
         setStreamingContent('');
         setStreamingReasoning('');
@@ -451,6 +452,7 @@ export default function ChatContainer({
             try {
                 const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=3`, {
                     credentials: 'include',
+                    signal: abortControllerRef.current?.signal,
                 });
                 if (searchResponse.ok) {
                     const searchData = await searchResponse.json();
@@ -476,9 +478,6 @@ export default function ChatContainer({
             // Clear search state after a delay
             setTimeout(() => setWebSearchState({ searching: false, sites: [], query: '' }), 3000);
         }
-
-        // Create abort controller for cancellation
-        abortControllerRef.current = new AbortController();
 
         // Clear any previous chunking info
         clearChunkingInfo();
@@ -527,15 +526,25 @@ export default function ChatContainer({
 
                             // Handle map-reduce chunking progress events
                             if (parsed.type === 'chunking_progress') {
-                                const { phase, totalChunks, currentChunk, message } = parsed;
-                                let statusMsg = message;
-                                if (phase === 'map' && totalChunks > 0) {
-                                    const percent = Math.round((currentChunk / totalChunks) * 100);
-                                    statusMsg = `Processing chunks (${percent}% complete)`;
+                                const { phase, totalChunks, completedChunks = 0, failedChunks = 0, elapsedMs = 0, retrying } = parsed;
+                                const elapsed = elapsedMs > 0 ? ` (${Math.round(elapsedMs / 1000)}s)` : '';
+                                let statusMsg;
+                                if (phase === 'starting' || phase === 'chunking') {
+                                    statusMsg = `Splitting content into ${totalChunks || ''} chunks...`;
+                                } else if (phase === 'map') {
+                                    const done = completedChunks + failedChunks;
+                                    if (retrying) {
+                                        statusMsg = `Retrying chunk ${retrying.chunk} (attempt ${retrying.attempt}/${retrying.maxRetries})${elapsed}`;
+                                    } else if (done === 0) {
+                                        statusMsg = `Analyzing ${totalChunks} chunks...`;
+                                    } else {
+                                        statusMsg = `Analyzed ${completedChunks}/${totalChunks} chunks${failedChunks ? ` (${failedChunks} failed)` : ''}${elapsed}`;
+                                    }
                                 } else if (phase === 'reduce') {
-                                    statusMsg = 'Synthesizing responses...';
+                                    statusMsg = `Combining ${completedChunks} chunk results into final response...${elapsed}`;
+                                } else if (phase === 'complete') {
+                                    statusMsg = 'Streaming response...';
                                 }
-                                // Update UI with progress (if you have a status indicator)
                                 console.log(`[Map-Reduce] ${phase}: ${statusMsg}`);
                                 continue; // Don't process as content
                             }
@@ -698,6 +707,8 @@ export default function ChatContainer({
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
+        // Immediate UI feedback — don't wait for the async cleanup
+        setIsLoading(false);
     };
 
     const handleModelChange = (modelName) => {
