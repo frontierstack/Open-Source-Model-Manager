@@ -9095,13 +9095,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Track this streaming job for background processing
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const streamingConversationId = conversationId || req.body.conversationId;
+        const streamStartTime = Date.now();
 
         if (streamingConversationId) {
             activeStreamingJobs.set(streamingConversationId, {
                 userId,
                 content: '',
                 reasoning: '',
-                startTime: Date.now(),
+                startTime: streamStartTime,
                 model: targetModel,
                 clientConnected: true,
                 inputMessages: inputMessages
@@ -9321,7 +9322,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     content: fullResponse,
                     reasoning: fullReasoning || undefined,
                     timestamp: new Date().toISOString(),
-                    responseTime: Date.now() - (activeStreamingJobs.get(streamingConversationId)?.startTime || Date.now()),
+                    responseTime: Date.now() - streamStartTime,
                     tokenCount: completionTokens,
                     backgroundCompleted: true
                 };
@@ -9409,11 +9410,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
 
             // Broadcast chat request completion to logs
-            const chatResponseTimeMs = Date.now() - (activeStreamingJobs.get(streamingConversationId)?.startTime || Date.now());
+            const chatResponseTimeMs = Date.now() - streamStartTime;
             const chatTotalTokens = promptTokens + completionTokens;
             broadcast({
                 type: 'log',
-                message: `[Chat] ${targetModel} | ${chatTotalTokens} tokens (${promptTokens} prompt + ${completionTokens} completion) | ${chatResponseTimeMs}ms | Conversation: ${streamingConversationId?.substring(0, 8) || 'N/A'}`,
+                message: `[Chat] ${targetModel} | ${chatTotalTokens} tokens (${promptTokens} prompt + ${completionTokens} completion) | ${chatResponseTimeMs >= 1000 ? (chatResponseTimeMs / 1000).toFixed(1) + 's' : chatResponseTimeMs + 'ms'} | Conversation: ${streamingConversationId?.substring(0, 8) || 'N/A'}`,
                 level: 'info'
             });
 
