@@ -9,7 +9,7 @@ import CodeBlock from './CodeBlock';
 /**
  * MessageContent - Renders markdown content with proper styling
  */
-export default function MessageContent({ content }) {
+export default React.memo(function MessageContent({ content }) {
     if (!content) return null;
 
     return (
@@ -231,4 +231,4 @@ export default function MessageContent({ content }) {
             {content}
         </ReactMarkdown>
     );
-}
+});

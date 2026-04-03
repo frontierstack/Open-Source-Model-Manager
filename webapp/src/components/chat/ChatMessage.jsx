@@ -23,7 +23,7 @@ import ThinkingIndicator from './ThinkingIndicator';
 /**
  * ChatMessage - Individual chat message bubble with export support
  */
-export default function ChatMessage({
+export default React.memo(function ChatMessage({
     role,
     content,
     reasoning,
@@ -345,4 +345,4 @@ export default function ChatMessage({
             )}
         </Box>
     );
-}
+});

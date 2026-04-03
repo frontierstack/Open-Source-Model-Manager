@@ -6,7 +6,7 @@ import CodeBlock from './CodeBlock';
 /**
  * MessageContent - Renders markdown content with Tailwind styling
  */
-export default function MessageContent({ content }) {
+export default React.memo(function MessageContent({ content }) {
     if (!content) return null;
 
     // Pre-process content to convert <br> tags to markdown line breaks
@@ -187,4 +187,4 @@ export default function MessageContent({ content }) {
             </ReactMarkdown>
         </div>
     );
-}
+});

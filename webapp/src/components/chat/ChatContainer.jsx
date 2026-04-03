@@ -75,6 +75,10 @@ export default function ChatContainer({
         query: ''
     });
     const abortControllerRef = useRef(null);
+    const switchingConversationRef = useRef(false); // Track if abort was due to conversation switch
+    const throttleTimerRef = useRef(null); // Throttle streaming UI updates to reduce jitter
+    const pendingContentRef = useRef(''); // Buffer for throttled content updates
+    const pendingReasoningRef = useRef(''); // Buffer for throttled reasoning updates
 
     // Chat store
     const {
@@ -236,6 +240,15 @@ export default function ChatContainer({
     };
 
     const handleNewConversation = async () => {
+        // Abort any active stream to prevent responses leaking into new conversation
+        // The server continues processing in background and saves the result
+        if (abortControllerRef.current) {
+            switchingConversationRef.current = true;
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        clearStreaming();
+
         try {
             const response = await fetch('/api/conversations', {
                 method: 'POST',
@@ -259,6 +272,13 @@ export default function ChatContainer({
 
     const handleSelectConversation = (conversationId) => {
         if (conversationId !== activeConversationId) {
+            // Abort any active stream to prevent responses leaking into other conversation
+            // The server continues processing in background and saves the result
+            if (abortControllerRef.current) {
+                switchingConversationRef.current = true;
+                abortControllerRef.current.abort();
+                abortControllerRef.current = null;
+            }
             clearStreaming();
             clearAttachments();
             setActiveConversation(conversationId);
@@ -535,17 +555,40 @@ export default function ChatContainer({
                                 assistantContent += delta.content;
                                 // Parse <think> tags from content and separate reasoning
                                 const thinkParsed = parseThinkTags(assistantContent);
-                                setStreamingContent(thinkParsed.content);
+                                pendingContentRef.current = thinkParsed.content;
                                 if (thinkParsed.reasoning) {
                                     assistantReasoning = thinkParsed.reasoning;
-                                    setStreamingReasoning(assistantReasoning);
+                                    pendingReasoningRef.current = assistantReasoning;
+                                }
+                                // Throttled UI update (~50ms) to reduce jitter from per-chunk re-renders
+                                if (!throttleTimerRef.current) {
+                                    throttleTimerRef.current = setTimeout(() => {
+                                        const currentActiveId = useChatStore.getState().activeConversationId;
+                                        if (currentActiveId === conversationId) {
+                                            setStreamingContent(pendingContentRef.current);
+                                            if (pendingReasoningRef.current) {
+                                                setStreamingReasoning(pendingReasoningRef.current);
+                                            }
+                                        }
+                                        throttleTimerRef.current = null;
+                                    }, 50);
                                 }
                             }
 
                             // Handle explicit reasoning field from model API
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
-                                setStreamingReasoning(assistantReasoning);
+                                pendingReasoningRef.current = assistantReasoning;
+                                // Throttled UI update for reasoning
+                                if (!throttleTimerRef.current) {
+                                    throttleTimerRef.current = setTimeout(() => {
+                                        const currentActiveId = useChatStore.getState().activeConversationId;
+                                        if (currentActiveId === conversationId) {
+                                            setStreamingReasoning(pendingReasoningRef.current);
+                                        }
+                                        throttleTimerRef.current = null;
+                                    }, 50);
+                                }
                             }
 
                             // Check for continuation info in final event
@@ -558,6 +601,23 @@ export default function ChatContainer({
                     }
                 }
             }
+
+            // Final flush of any pending throttled content
+            if (throttleTimerRef.current) {
+                clearTimeout(throttleTimerRef.current);
+                throttleTimerRef.current = null;
+            }
+            const currentActiveIdFlush = useChatStore.getState().activeConversationId;
+            if (currentActiveIdFlush === conversationId) {
+                if (pendingContentRef.current) {
+                    setStreamingContent(pendingContentRef.current);
+                }
+                if (pendingReasoningRef.current) {
+                    setStreamingReasoning(pendingReasoningRef.current);
+                }
+            }
+            pendingContentRef.current = '';
+            pendingReasoningRef.current = '';
 
             // Store chunking info if content was truncated
             if (continuationInfo && continuationInfo.hasMore) {
@@ -610,7 +670,13 @@ export default function ChatContainer({
 
         } catch (error) {
             if (error.name === 'AbortError') {
-                showSnackbar('Generation stopped', 'info');
+                // Only show "Generation stopped" for explicit user stop, not conversation switch
+                if (switchingConversationRef.current) {
+                    // Silently handle - user switched conversations, server continues in background
+                    switchingConversationRef.current = false;
+                } else {
+                    showSnackbar('Generation stopped', 'info');
+                }
             } else {
                 console.error('Streaming error:', error);
                 // Check for context window error
@@ -624,6 +690,7 @@ export default function ChatContainer({
         } finally {
             clearStreaming();
             abortControllerRef.current = null;
+            switchingConversationRef.current = false;
         }
     };
 

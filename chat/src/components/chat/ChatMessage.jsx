@@ -7,7 +7,7 @@ import StatusIndicator from './StatusIndicator';
 /**
  * ChatMessage - Individual chat message bubble (Tailwind)
  */
-export default function ChatMessage({
+export default React.memo(function ChatMessage({
     id,
     role,
     content,
@@ -51,7 +51,7 @@ export default function ChatMessage({
     };
 
     return (
-        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} mb-4 max-w-full animate-fade-in`}>
+        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} mb-4 max-w-full ${isStreaming ? '' : 'animate-fade-in'}`}>
             {/* File attachments for user messages */}
             {isUser && attachments && attachments.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mb-2 max-w-[85%] justify-end">
@@ -194,4 +194,4 @@ export default function ChatMessage({
             </div>
         </div>
     );
-}
+});

@@ -5580,7 +5580,6 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
             return;
         }
         setLoading(true);
-        setLogs([]);
         fetch('/api/models/pull', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -5605,7 +5604,6 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
     // Model instance handlers
     const handleLoadModel = (modelName) => {
         showSnackbar(`Starting ${modelName} with ${selectedBackend}...`, 'info');
-        setLogs([]);
 
         // Build config based on selected backend
         const config = selectedBackend === 'vllm'

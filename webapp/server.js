@@ -1000,7 +1000,7 @@ process.on('unhandledRejection', (reason, promise) => {
         if (typeof broadcast === 'function') {
             broadcast({
                 type: 'log',
-                message: 'Internal error occurred. Check server logs.',
+                message: `[Error] Unhandled rejection: ${reason?.message || reason || 'Unknown error'}`,
                 level: 'error'
             });
         }
@@ -1021,7 +1021,7 @@ process.on('uncaughtException', (error) => {
         if (typeof broadcast === 'function') {
             broadcast({
                 type: 'log',
-                message: 'Critical error occurred. Server may be unstable.',
+                message: `[Error] Uncaught exception: ${error.message || 'Unknown error'}`,
                 level: 'error'
             });
         }
@@ -1141,6 +1141,7 @@ async function syncModelInstances() {
         }
 
         console.log(`Synced ${modelInstances.size} model instance(s)`);
+        if (modelInstances.size > 0) startSystemMonitoring();
     } catch (error) {
         console.error('Error syncing model instances:', error);
     }
@@ -2591,6 +2592,7 @@ async function createVllmInstance(modelName, modelPath, config) {
             config,
             backend: 'vllm'
         });
+        startSystemMonitoring();
 
         // Broadcast structured status update for frontend
         broadcast({
@@ -2687,6 +2689,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             config,
             backend: 'llamacpp'
         });
+        startSystemMonitoring();
 
         // Broadcast structured status update for frontend
         broadcast({
@@ -2810,6 +2813,7 @@ async function monitorContainerHealth(container, modelName, port) {
 
                 // Clean up the instance
                 modelInstances.delete(modelName);
+                if (modelInstances.size === 0) stopSystemMonitoring();
                 try {
                     await container.remove();
                 } catch (e) {
@@ -2950,6 +2954,81 @@ async function monitorContainerHealth(container, modelName, port) {
     setTimeout(healthCheck, 500);
 }
 
+// ====== Periodic System & Model Monitoring ======
+let monitoringInterval = null;
+
+async function broadcastSystemMonitoring() {
+    // Only run if there are active model instances
+    if (modelInstances.size === 0) return;
+
+    try {
+        // GPU utilization monitoring
+        try {
+            const { stdout } = await execPromise('nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits');
+            const lines = stdout.trim().split('\n');
+            for (const line of lines) {
+                const parts = line.split(',').map(s => s.trim());
+                const [index, name, gpuUtil, memUtil, memUsed, memTotal, temp, power] = parts;
+                const memUsedGB = (parseInt(memUsed) / 1024).toFixed(1);
+                const memTotalGB = (parseInt(memTotal) / 1024).toFixed(1);
+                broadcast({
+                    type: 'log',
+                    message: `[GPU ${index}] ${name} | Utilization: ${gpuUtil}% | VRAM: ${memUsedGB}/${memTotalGB} GB (${memUtil}%) | Temp: ${temp}°C | Power: ${parseFloat(power).toFixed(0)}W`,
+                    level: 'info'
+                });
+            }
+        } catch (err) {
+            // No NVIDIA GPU available
+        }
+
+        // System memory monitoring
+        const totalMem = os.totalmem();
+        const freeMem = os.freemem();
+        const usedMem = totalMem - freeMem;
+        const memPercent = ((usedMem / totalMem) * 100).toFixed(1);
+        const usedGB = (usedMem / (1024 * 1024 * 1024)).toFixed(1);
+        const totalGB = (totalMem / (1024 * 1024 * 1024)).toFixed(1);
+
+        const memLevel = parseFloat(memPercent) > 90 ? 'warning' : 'info';
+        broadcast({
+            type: 'log',
+            message: `[System] RAM: ${usedGB}/${totalGB} GB (${memPercent}%)`,
+            level: memLevel
+        });
+
+        // Active model instances status
+        const instances = Array.from(modelInstances.entries());
+        if (instances.length > 0) {
+            for (const [name, info] of instances) {
+                const statusEmoji = info.status === 'running' ? '●' : info.status === 'loading' ? '◐' : '○';
+                const backend = info.backend || 'unknown';
+                const ctx = info.config?.contextSize || info.config?.maxModelLen || 'N/A';
+                broadcast({
+                    type: 'log',
+                    message: `[Model] ${statusEmoji} ${name} | Backend: ${backend} | Context: ${ctx} | Status: ${info.status} | Port: ${info.port}`,
+                    level: info.status === 'running' ? 'info' : info.status === 'unhealthy' ? 'warning' : 'info'
+                });
+            }
+        }
+    } catch (error) {
+        console.error('System monitoring error:', error.message);
+    }
+}
+
+function startSystemMonitoring() {
+    if (monitoringInterval) return; // Already running
+    monitoringInterval = setInterval(broadcastSystemMonitoring, 60000); // Every 60 seconds
+    console.log('[Monitoring] System monitoring started (60s interval)');
+}
+
+function stopSystemMonitoring() {
+    if (monitoringInterval) {
+        clearInterval(monitoringInterval);
+        monitoringInterval = null;
+        console.log('[Monitoring] System monitoring stopped');
+    }
+}
+
 // List all running vLLM instances
 app.get('/api/vllm/instances', requireAuth, (req, res) => {
     // Check permission
@@ -2989,6 +3068,7 @@ app.delete('/api/vllm/instances/:modelName', requireAuth, async (req, res) => {
             // Container doesn't exist, just clean up our state
             console.log(`Container for ${modelName} not found, cleaning up state`);
             modelInstances.delete(modelName);
+            if (modelInstances.size === 0) stopSystemMonitoring();
             broadcast({ type: 'status', message: `Instance ${modelName} cleaned up` });
             return res.json({ message: 'Instance cleaned up' });
         }
@@ -3023,6 +3103,7 @@ app.delete('/api/vllm/instances/:modelName', requireAuth, async (req, res) => {
 
         // Clean up our state
         modelInstances.delete(modelName);
+        if (modelInstances.size === 0) stopSystemMonitoring();
 
         // Broadcast structured status update for frontend
         broadcast({
@@ -3036,6 +3117,7 @@ app.delete('/api/vllm/instances/:modelName', requireAuth, async (req, res) => {
         console.error(`Error stopping instance:`, error);
         // Even on error, try to clean up our state to prevent stale entries
         modelInstances.delete(modelName);
+        if (modelInstances.size === 0) stopSystemMonitoring();
         res.status(500).json({ error: error.message });
     }
 });
@@ -3088,6 +3170,7 @@ app.delete('/api/llamacpp/instances/:modelName', requireAuth, async (req, res) =
             // Container doesn't exist, just clean up our state
             console.log(`Container for ${modelName} not found, cleaning up state`);
             modelInstances.delete(modelName);
+            if (modelInstances.size === 0) stopSystemMonitoring();
             broadcast({ type: 'status', message: `Instance ${modelName} cleaned up` });
             return res.json({ message: 'Instance cleaned up' });
         }
@@ -3116,6 +3199,7 @@ app.delete('/api/llamacpp/instances/:modelName', requireAuth, async (req, res) =
         }
 
         modelInstances.delete(modelName);
+        if (modelInstances.size === 0) stopSystemMonitoring();
 
         // Broadcast structured status update for frontend
         broadcast({
@@ -3128,6 +3212,7 @@ app.delete('/api/llamacpp/instances/:modelName', requireAuth, async (req, res) =
     } catch (error) {
         console.error(`Error stopping instance:`, error);
         modelInstances.delete(modelName);
+        if (modelInstances.size === 0) stopSystemMonitoring();
         res.status(500).json({ error: error.message });
     }
 });
@@ -9323,6 +9408,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 }
             }
 
+            // Broadcast chat request completion to logs
+            const chatResponseTimeMs = Date.now() - (activeStreamingJobs.get(streamingConversationId)?.startTime || Date.now());
+            const chatTotalTokens = promptTokens + completionTokens;
+            broadcast({
+                type: 'log',
+                message: `[Chat] ${targetModel} | ${chatTotalTokens} tokens (${promptTokens} prompt + ${completionTokens} completion) | ${chatResponseTimeMs}ms | Conversation: ${streamingConversationId?.substring(0, 8) || 'N/A'}`,
+                level: 'info'
+            });
+
             try {
                 res.end();
             } catch (endErr) { /* client disconnected */ }
@@ -9582,6 +9676,7 @@ app.delete('/api/models/:modelName', requireAuth, async (req, res) => {
             }
 
             modelInstances.delete(modelName);
+            if (modelInstances.size === 0) stopSystemMonitoring();
             broadcast({ type: 'log', message: `Instance stopped.` });
         }
 
@@ -9947,6 +10042,7 @@ app.post('/api/backend/active', requireAuth, async (req, res) => {
                         await container.stop();
                         await container.remove();
                         modelInstances.delete(modelName);
+                        if (modelInstances.size === 0) stopSystemMonitoring();
                         instancesStopped++;
                         broadcast({ type: 'model_stopped', modelName, instancesStopped });
                     } catch (err) {
@@ -10024,6 +10120,7 @@ app.post('/api/system/reset', requireAuth, async (req, res) => {
                     }
 
                     modelInstances.delete(modelName);
+                    if (modelInstances.size === 0) stopSystemMonitoring();
                 }
             } catch (error) {
                 broadcast({ type: 'log', message: `  Warning: ${error.message}` });

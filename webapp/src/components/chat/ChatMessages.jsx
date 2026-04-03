@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import ChatMessage from './ChatMessage';
@@ -15,13 +15,42 @@ export default function ChatMessages({
 }) {
     const messagesEndRef = useRef(null);
     const containerRef = useRef(null);
+    const [userHasScrolled, setUserHasScrolled] = useState(false);
+    const prevMessagesLengthRef = useRef(messages.length);
+    const prevStreamingRef = useRef(isStreaming);
 
-    // Auto-scroll to bottom when messages change or during streaming
+    // Track if user manually scrolled up
+    const handleScroll = () => {
+        if (!containerRef.current) return;
+        const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+        const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+        setUserHasScrolled(!isNearBottom);
+    };
+
+    // Auto-scroll only when:
+    // 1. New message is added (messages.length increases)
+    // 2. Streaming just started
+    // 3. User hasn't manually scrolled up
     useEffect(() => {
-        if (messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        const messagesLengthChanged = messages.length !== prevMessagesLengthRef.current;
+        const streamingJustStarted = isStreaming && !prevStreamingRef.current;
+
+        if ((messagesLengthChanged || streamingJustStarted) && !userHasScrolled) {
+            if (messagesEndRef.current) {
+                messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+            }
         }
-    }, [messages, streamingContent, streamingReasoning]);
+
+        prevMessagesLengthRef.current = messages.length;
+        prevStreamingRef.current = isStreaming;
+    }, [messages.length, isStreaming, userHasScrolled]);
+
+    // Reset scroll tracking when streaming ends
+    useEffect(() => {
+        if (!isStreaming) {
+            setUserHasScrolled(false);
+        }
+    }, [isStreaming]);
 
     // Show empty state
     if (messages.length === 0 && !isStreaming) {
@@ -50,6 +79,7 @@ export default function ChatMessages({
     return (
         <Box
             ref={containerRef}
+            onScroll={handleScroll}
             sx={{
                 flexGrow: 1,
                 overflow: 'auto',

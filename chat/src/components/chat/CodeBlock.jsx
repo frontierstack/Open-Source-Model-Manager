@@ -5,7 +5,7 @@ import { Highlight, themes } from 'prism-react-renderer';
 /**
  * CodeBlock - Syntax-highlighted code block with copy functionality (Tailwind)
  */
-export default function CodeBlock({ code, language = 'text' }) {
+export default React.memo(function CodeBlock({ code, language = 'text' }) {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
@@ -74,4 +74,4 @@ export default function CodeBlock({ code, language = 'text' }) {
             </Highlight>
         </div>
     );
-}
+});
