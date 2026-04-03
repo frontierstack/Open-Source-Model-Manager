@@ -1101,6 +1101,7 @@ async function syncModelInstances() {
                 config = {
                     maxModelLen,
                     contextSize: maxModelLen,  // Alias for chat stream compatibility
+                    contextShift: getEnvValue('VLLM_CTX_SHIFT') !== 'false',
                     cpuOffloadGb: parseFloat(getEnvValue('VLLM_CPU_OFFLOAD_GB') || '0'),
                     gpuMemoryUtilization: parseFloat(getEnvValue('VLLM_GPU_MEMORY_UTILIZATION') || '0.9'),
                     tensorParallelSize: parseInt(getEnvValue('VLLM_TENSOR_PARALLEL_SIZE') || '1'),
@@ -1111,6 +1112,7 @@ async function syncModelInstances() {
                 config = {
                     nGpuLayers: parseInt(getEnvValue('LLAMA_N_GPU_LAYERS') || '-1'),
                     contextSize: parseInt(getEnvValue('LLAMA_CTX_SIZE') || '4096'),
+                    contextShift: getEnvValue('LLAMA_CTX_SHIFT') !== 'false',
                     flashAttention: getEnvValue('LLAMA_FLASH_ATTN') === 'true',
                     cacheTypeK: getEnvValue('LLAMA_CACHE_TYPE_K') || 'f16',
                     cacheTypeV: getEnvValue('LLAMA_CACHE_TYPE_V') || 'f16',
@@ -2550,7 +2552,8 @@ async function createVllmInstance(modelName, modelPath, config) {
             `VLLM_MAX_NUM_SEQS=${config.maxNumSeqs}`,
             `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
             `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
-            `VLLM_ENFORCE_EAGER=${config.enforceEager}`
+            `VLLM_ENFORCE_EAGER=${config.enforceEager}`,
+            `VLLM_CTX_SHIFT=${config.contextShift}`
         ];
 
         // Add tokenizer if specified (helps with GGUF models)
@@ -6781,8 +6784,83 @@ async function fetchUrlAsFile(url, options = {}) {
 
     // Check extension from URL (strip query params)
     const urlPath = url.split('?')[0].split('#')[0];
-    const ext = urlPath.split('.').pop().toLowerCase();
-    const isKnownFileExt = ext in DIRECT_DOWNLOAD_EXTENSIONS;
+    let ext = urlPath.split('.').pop().toLowerCase();
+    let isKnownFileExt = ext in DIRECT_DOWNLOAD_EXTENSIONS;
+
+    // If URL extension doesn't match, check query parameters for file type hints
+    // Handles URLs like ?pdf=download, ?format=pdf, ?type=csv, ?output=xlsx
+    if (!isKnownFileExt) {
+        try {
+            const urlObj = new URL(url);
+            for (const [key, value] of urlObj.searchParams) {
+                const keyLower = key.toLowerCase();
+                const valueLower = value.toLowerCase();
+                // Param key IS a file type (e.g., ?pdf=download)
+                if (keyLower in DIRECT_DOWNLOAD_EXTENSIONS) {
+                    ext = keyLower;
+                    isKnownFileExt = true;
+                    console.log(`[fetchUrlAsFile] Detected file type '${ext}' from query param key: ${key}=${value}`);
+                    break;
+                }
+                // Param value IS a file type (e.g., ?format=pdf, ?output=csv)
+                if (valueLower in DIRECT_DOWNLOAD_EXTENSIONS) {
+                    ext = valueLower;
+                    isKnownFileExt = true;
+                    console.log(`[fetchUrlAsFile] Detected file type '${ext}' from query param value: ${key}=${value}`);
+                    break;
+                }
+            }
+        } catch (e) {
+            // Invalid URL, skip query param check
+        }
+    }
+
+    // If still no match, try a HEAD request to check Content-Type / Content-Disposition
+    if (!isKnownFileExt) {
+        try {
+            const headResponse = await axios.head(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                },
+                timeout: 5000,
+                maxRedirects: 5,
+                validateStatus: (status) => status < 400,
+            });
+
+            // Check Content-Disposition for filename (most reliable indicator)
+            const disposition = headResponse.headers['content-disposition'] || '';
+            const filenameMatch = disposition.match(/filename[*]?=(?:UTF-8''|"?)([^";\n]+)/i);
+            if (filenameMatch) {
+                const fileExt = filenameMatch[1].trim().split('.').pop().toLowerCase();
+                if (fileExt in DIRECT_DOWNLOAD_EXTENSIONS) {
+                    ext = fileExt;
+                    isKnownFileExt = true;
+                    console.log(`[fetchUrlAsFile] HEAD detected file type '${ext}' from Content-Disposition: ${disposition}`);
+                }
+            }
+
+            // Fall back to Content-Type header
+            if (!isKnownFileExt) {
+                const contentType = (headResponse.headers['content-type'] || '').toLowerCase();
+                if (DIRECT_DOWNLOAD_CONTENT_TYPES.some(ct => contentType.includes(ct)) && !contentType.includes('text/html')) {
+                    if (contentType.includes('application/pdf')) ext = 'pdf';
+                    else if (contentType.includes('wordprocessingml')) ext = 'docx';
+                    else if (contentType.includes('msword')) ext = 'doc';
+                    else if (contentType.includes('spreadsheetml')) ext = 'xlsx';
+                    else if (contentType.includes('ms-excel')) ext = 'xls';
+                    else if (contentType.includes('text/csv')) ext = 'csv';
+                    else if (contentType.includes('application/json')) ext = 'json';
+                    else if (contentType.includes('application/xml')) ext = 'xml';
+                    else if (contentType.includes('text/markdown')) ext = 'md';
+                    else if (contentType.includes('text/plain')) ext = 'txt';
+                    isKnownFileExt = true;
+                    console.log(`[fetchUrlAsFile] HEAD detected file type '${ext}' from Content-Type: ${contentType}`);
+                }
+            }
+        } catch (e) {
+            // HEAD failed (405, timeout, etc.) — fall through to HTML scraping
+        }
+    }
 
     if (!isKnownFileExt) return null;
 
@@ -6802,6 +6880,14 @@ async function fetchUrlAsFile(url, options = {}) {
 
         const contentType = (response.headers['content-type'] || '').toLowerCase();
         const buffer = Buffer.from(response.data);
+
+        // If response is HTML but we expected a file (from query params or HEAD),
+        // the server returned an error/login page instead — fall through to HTML scraping
+        if (contentType.includes('text/html')) {
+            console.log(`[fetchUrlAsFile] Expected file type '${ext}' but server returned HTML — falling through to HTML scraping`);
+            return null;
+        }
+
         const filename = decodeURIComponent(urlPath.split('/').pop() || `download.${ext}`);
         let extractedText = '';
         let title = filename;
@@ -6819,8 +6905,8 @@ async function fetchUrlAsFile(url, options = {}) {
                     title += ` (${data.numpages} pages)`;
                 }
             } catch (e) {
-                console.error(`[fetchUrlAsFile] PDF parse failed: ${e.message}`);
-                return { success: false, error: `PDF parse failed: ${e.message}`, url };
+                console.error(`[fetchUrlAsFile] PDF parse failed: ${e.message} — falling through to HTML scraping`);
+                return null;
             }
         }
         // DOCX parsing
@@ -6831,8 +6917,8 @@ async function fetchUrlAsFile(url, options = {}) {
                 extractedText = result.value || '';
                 title = filename;
             } catch (e) {
-                console.error(`[fetchUrlAsFile] DOCX parse failed: ${e.message}`);
-                return { success: false, error: `DOCX parse failed: ${e.message}`, url };
+                console.error(`[fetchUrlAsFile] DOCX parse failed: ${e.message} — falling through to HTML scraping`);
+                return null;
             }
         }
         // XLSX/XLS - extract as text
@@ -6851,8 +6937,8 @@ async function fetchUrlAsFile(url, options = {}) {
                 extractedText = sheets.join('\n\n');
                 title = filename;
             } catch (e) {
-                console.warn(`[fetchUrlAsFile] XLSX parse not available: ${e.message}`);
-                return { success: false, error: 'XLSX parsing not available', url };
+                console.warn(`[fetchUrlAsFile] XLSX parse not available: ${e.message} — falling through to HTML scraping`);
+                return null;
             }
         }
         // Text-based files (txt, csv, json, xml, md, code files, etc.)

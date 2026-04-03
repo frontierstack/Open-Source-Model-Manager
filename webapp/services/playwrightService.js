@@ -547,6 +547,10 @@ async function extractContent(page, options = {}) {
                            document.querySelector('.story-body') ||
                            document.querySelector('.storycontent') ||
                            document.querySelector('.entry-content') ||
+                           document.querySelector('.be__contents') ||
+                           document.querySelector('.be__contents-wrapper') ||
+                           document.querySelector('.blog-contents') ||
+                           document.querySelector('.section--article') ||
                            document.querySelector('article') ||
                            document.querySelector('main') ||
                            document.querySelector('[role="main"]') ||

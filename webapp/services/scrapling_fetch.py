@@ -98,6 +98,8 @@ def extract_main_content(page) -> str:
         '.articlebody', '.post-body-container',
         '[itemprop="articleBody"]', '.story-body', '.storycontent',
         '.article-body', '.article-content', '.article__body',
+        '.be__contents', '.be__contents-wrapper',
+        '.blog-contents', '.section--article',
         '.content', '.main-content', '#content', '#main',
         '.article', '.post', '.page-content', '.body-content',
         'article', 'main', '[role="main"]',
