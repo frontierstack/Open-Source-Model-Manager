@@ -13,7 +13,6 @@ import {
     Clock,
     Calendar,
     Menu,
-    Sparkles
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
 
@@ -152,11 +151,11 @@ export default function ChatSidebar({
         <div
             key={conv.id}
             onClick={() => handleSelectConversation(conv.id)}
-            className={`group relative flex items-center rounded-xl cursor-pointer transition-all duration-200 ${
+            className={`group relative flex items-center rounded-lg cursor-pointer transition-all duration-150 ${
                 activeConversationId === conv.id
-                    ? 'bg-gradient-to-r from-white/10 to-white/5 border-l-[3px] shadow-lg shadow-black/10'
-                    : 'hover:bg-white/[0.06] border-l-[3px] border-transparent hover:border-white/20'
-            } ${collapsed ? 'justify-center p-2.5 mx-1' : 'px-3 py-2.5 mx-1'}`}
+                    ? 'bg-white/[0.08] border-l-2'
+                    : 'hover:bg-white/[0.05] border-l-2 border-transparent'
+            } ${collapsed ? 'justify-center p-2.5 mx-1.5' : 'px-3 py-2 mx-1.5'}`}
             style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)', backgroundColor: 'rgba(var(--primary-rgb), 0.12)' } : {}}
         >
             {collapsed ? (
@@ -272,12 +271,9 @@ export default function ChatSidebar({
     const sidebarContent = (
         <>
             {/* Header */}
-            <div className="flex items-center justify-between p-3 border-b border-white/[0.06]">
+            <div className="flex items-center justify-between px-3 py-3.5 border-b border-white/[0.06]">
                 {!collapsed && (
-                    <h2 className="text-sm font-semibold text-dark-100 flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-lg flex items-center justify-center bg-gradient-to-br from-primary-500/20 to-primary-600/10">
-                            <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} />
-                        </div>
+                    <h2 className="text-[13px] font-semibold text-dark-100 tracking-tight">
                         Chats
                     </h2>
                 )}
@@ -294,16 +290,15 @@ export default function ChatSidebar({
             <div className={`p-2 ${collapsed ? 'px-1.5' : 'px-3'}`}>
                 <button
                     onClick={handleNewConversation}
-                    className={`flex items-center gap-2 rounded-lg font-medium transition-all duration-200 ${
+                    className={`flex items-center gap-2 rounded-lg font-medium transition-all duration-150 ${
                         collapsed
-                            ? 'justify-center w-7 h-7 mx-auto bg-gradient-to-br from-primary-500/20 to-primary-600/10 hover:from-primary-500/30 hover:to-primary-600/20 border border-primary-500/20 hover:border-primary-500/30'
-                            : 'w-full px-3 py-2.5 bg-gradient-to-r from-primary-500/15 to-primary-600/10 hover:from-primary-500/25 hover:to-primary-600/15 border border-primary-500/20 hover:border-primary-500/30'
+                            ? 'justify-center w-8 h-8 mx-auto hover:bg-white/10 text-dark-300 hover:text-dark-100'
+                            : 'w-full px-3 py-2 hover:bg-white/[0.07] text-dark-300 hover:text-dark-100'
                     }`}
-                    style={{ color: 'var(--accent-primary)' }}
                     title="New Chat"
                 >
-                    <Plus className={`flex-shrink-0 ${collapsed ? 'w-4 h-4' : 'w-4 h-4'}`} />
-                    {!collapsed && <span className="text-sm">New Chat</span>}
+                    <Plus className="flex-shrink-0 w-4 h-4" />
+                    {!collapsed && <span className="text-[13px]">New Chat</span>}
                 </button>
             </div>
 
@@ -317,7 +312,7 @@ export default function ChatSidebar({
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                             placeholder="Search conversations..."
-                            className="w-full pl-9 pr-8 py-2 text-sm bg-dark-800/50 border border-white/[0.06] rounded-xl text-dark-200 placeholder-dark-500 focus:outline-none focus:border-white/15 focus:ring-2 focus:ring-primary-500/10 transition-all"
+                            className="w-full pl-9 pr-8 py-2 text-sm bg-dark-800/50 border border-white/[0.06] rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-white/15 focus:ring-2 focus:ring-primary-500/10 transition-all"
                         />
                         {searchQuery && (
                             <button
@@ -357,7 +352,7 @@ export default function ChatSidebar({
                                 {/* Favorites Section */}
                                 {favoriteConversations.length > 0 && (
                                     <div className="mb-2 pt-1">
-                                        <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-widest">
+                                        <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-medium text-dark-500/70 uppercase tracking-wider">
                                             <Star className="w-3 h-3 fill-yellow-400/60 text-yellow-400/60" />
                                             Favorites
                                         </div>
@@ -374,7 +369,7 @@ export default function ChatSidebar({
 
                                     return (
                                         <div key={category} className="mb-2 pt-1">
-                                            <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold text-dark-500 uppercase tracking-widest">
+                                            <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-medium text-dark-500/70 uppercase tracking-wider">
                                                 {category === 'Today' && <Clock className="w-3 h-3" />}
                                                 {category === 'Yesterday' && <Clock className="w-3 h-3" />}
                                                 {(category === 'Previous 7 Days' || category === 'Previous 30 Days' || category === 'Older') && <Calendar className="w-3 h-3" />}
@@ -406,7 +401,7 @@ export default function ChatSidebar({
 
             {/* Desktop Sidebar */}
             <aside
-                className={`hidden md:flex flex-col bg-gradient-to-b from-dark-900 to-dark-950 border-r border-white/[0.06] transition-all duration-300 ease-out ${
+                className={`hidden md:flex flex-col bg-dark-900 border-r border-white/[0.06] transition-all duration-300 ease-out ${
                     collapsed ? 'w-[56px]' : 'w-80'
                 }`}
             >
@@ -415,7 +410,7 @@ export default function ChatSidebar({
 
             {/* Mobile Sidebar (Drawer) */}
             <aside
-                className={`fixed md:hidden inset-y-0 left-0 z-50 flex flex-col w-80 bg-gradient-to-b from-dark-900 to-dark-950 border-r border-white/[0.06] transition-transform duration-300 ease-out ${
+                className={`fixed md:hidden inset-y-0 left-0 z-50 flex flex-col w-80 bg-dark-900 border-r border-white/[0.06] transition-transform duration-300 ease-out ${
                     isMobileOpen ? 'translate-x-0' : '-translate-x-full'
                 }`}
             >

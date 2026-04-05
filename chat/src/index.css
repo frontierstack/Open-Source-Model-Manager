@@ -231,69 +231,6 @@
 }
 
 /* ============================================
-   Theme: Catppuccin
-   Soothing pastel theme (Mocha variant)
-   ============================================ */
-.theme-catppuccin {
-    --primary-rgb: 203, 166, 247;
-    --bg-primary: #1e1e2e;
-    --bg-secondary: #181825;
-    --bg-tertiary: #313244;
-    --bg-elevated: #1c1c2c;
-    --bg-hover: rgba(203, 166, 247, 0.06);
-    --bg-active: rgba(203, 166, 247, 0.10);
-
-    --surface-primary: rgba(24, 24, 37, 0.9);
-    --surface-secondary: rgba(49, 50, 68, 0.8);
-    --surface-glass: rgba(30, 30, 46, 0.95);
-
-    --text-primary: #cdd6f4;
-    --text-secondary: #bac2de;
-    --text-tertiary: #a6adc8;
-    --text-muted: #585b70;
-
-    --border-primary: rgba(203, 166, 247, 0.12);
-    --border-secondary: rgba(203, 166, 247, 0.06);
-    --border-hover: rgba(203, 166, 247, 0.22);
-    --border-focus: rgba(203, 166, 247, 0.5);
-
-    --accent-primary: #cba6f7;
-    --accent-secondary: #f5c2e7;
-    --accent-hover: #d8baf8;
-    --accent-muted: rgba(203, 166, 247, 0.15);
-
-    --user-msg-from: #332e50;
-    --user-msg-to: #282440;
-    --user-msg-hover-from: #3e3860;
-    --user-msg-hover-to: #332e50;
-    --user-msg-text: #e8ddf8;
-
-    --assistant-bg: rgba(24, 24, 37, 0.8);
-    --assistant-border: rgba(203, 166, 247, 0.10);
-    --assistant-text: #cdd6f4;
-
-    --scrollbar-thumb: rgba(203, 166, 247, 0.18);
-    --scrollbar-thumb-hover: rgba(203, 166, 247, 0.30);
-
-    --code-bg: #181826;
-    --code-header-bg: rgba(24, 24, 37, 0.7);
-    --code-border: rgba(203, 166, 247, 0.08);
-
-    --input-bg: rgba(28, 28, 44, 0.8);
-    --input-border: rgba(203, 166, 247, 0.15);
-    --input-focus-border: rgba(203, 166, 247, 0.5);
-    --input-focus-ring: rgba(203, 166, 247, 0.12);
-
-    --shadow-accent: rgba(203, 166, 247, 0.2);
-    --shadow-accent-hover: rgba(245, 194, 231, 0.3);
-
-    --success: #a6e3a1;
-    --warning: #f9e2af;
-    --error: #f38ba8;
-    --info: #89b4fa;
-}
-
-/* ============================================
    Theme: Sunset
    Warm orange/brown dusk theme
    ============================================ */
@@ -414,69 +351,6 @@
     --warning: #ffff00;
     --error: #ff0000;
     --info: #00ffff;
-}
-
-/* ============================================
-   Theme: Rosé Pine
-   Elegant warm rose and pine palette
-   ============================================ */
-.theme-rosepine {
-    --primary-rgb: 196, 167, 231;
-    --bg-primary: #191724;
-    --bg-secondary: #1f1d2e;
-    --bg-tertiary: #26233a;
-    --bg-elevated: #1c1a28;
-    --bg-hover: rgba(196, 167, 231, 0.06);
-    --bg-active: rgba(196, 167, 231, 0.10);
-
-    --surface-primary: rgba(31, 29, 46, 0.9);
-    --surface-secondary: rgba(38, 35, 58, 0.8);
-    --surface-glass: rgba(25, 23, 36, 0.95);
-
-    --text-primary: #e0def4;
-    --text-secondary: #908caa;
-    --text-tertiary: #6e6a86;
-    --text-muted: #524f67;
-
-    --border-primary: rgba(196, 167, 231, 0.12);
-    --border-secondary: rgba(196, 167, 231, 0.06);
-    --border-hover: rgba(196, 167, 231, 0.22);
-    --border-focus: rgba(196, 167, 231, 0.5);
-
-    --accent-primary: #c4a7e7;
-    --accent-secondary: #ebbcba;
-    --accent-hover: #d4bef0;
-    --accent-muted: rgba(196, 167, 231, 0.15);
-
-    --user-msg-from: #302842;
-    --user-msg-to: #262036;
-    --user-msg-hover-from: #3c3252;
-    --user-msg-hover-to: #302842;
-    --user-msg-text: #e8def8;
-
-    --assistant-bg: rgba(31, 29, 46, 0.8);
-    --assistant-border: rgba(196, 167, 231, 0.10);
-    --assistant-text: #e0def4;
-
-    --scrollbar-thumb: rgba(196, 167, 231, 0.18);
-    --scrollbar-thumb-hover: rgba(196, 167, 231, 0.30);
-
-    --code-bg: #14121f;
-    --code-header-bg: rgba(31, 29, 46, 0.7);
-    --code-border: rgba(196, 167, 231, 0.08);
-
-    --input-bg: rgba(28, 26, 40, 0.8);
-    --input-border: rgba(196, 167, 231, 0.15);
-    --input-focus-border: rgba(196, 167, 231, 0.5);
-    --input-focus-ring: rgba(196, 167, 231, 0.12);
-
-    --shadow-accent: rgba(196, 167, 231, 0.2);
-    --shadow-accent-hover: rgba(235, 188, 186, 0.3);
-
-    --success: #9ccfd8;
-    --warning: #f6c177;
-    --error: #eb6f92;
-    --info: #c4a7e7;
 }
 
 /* ============================================
@@ -1129,132 +1003,6 @@
 }
 
 /* ============================================
-   Theme: Moonlight
-   Soft lunar blue-purple palette
-   ============================================ */
-.theme-moonlight {
-    --primary-rgb: 130, 170, 255;
-    --bg-primary: #1b1e2b;
-    --bg-secondary: #212337;
-    --bg-tertiary: #2f334d;
-    --bg-elevated: #1e2130;
-    --bg-hover: rgba(130, 170, 255, 0.06);
-    --bg-active: rgba(130, 170, 255, 0.10);
-
-    --surface-primary: rgba(33, 35, 55, 0.9);
-    --surface-secondary: rgba(47, 51, 77, 0.8);
-    --surface-glass: rgba(27, 30, 43, 0.95);
-
-    --text-primary: #c8d3f5;
-    --text-secondary: #b4c2f0;
-    --text-tertiary: #7a88cf;
-    --text-muted: #444a73;
-
-    --border-primary: rgba(130, 170, 255, 0.12);
-    --border-secondary: rgba(130, 170, 255, 0.06);
-    --border-hover: rgba(130, 170, 255, 0.22);
-    --border-focus: rgba(130, 170, 255, 0.5);
-
-    --accent-primary: #82aaff;
-    --accent-secondary: #c099ff;
-    --accent-hover: #a8c8ff;
-    --accent-muted: rgba(130, 170, 255, 0.15);
-
-    --user-msg-from: #252850;
-    --user-msg-to: #1e2040;
-    --user-msg-hover-from: #303462;
-    --user-msg-hover-to: #252850;
-    --user-msg-text: #d8e0f8;
-
-    --assistant-bg: rgba(33, 35, 55, 0.8);
-    --assistant-border: rgba(130, 170, 255, 0.10);
-    --assistant-text: #c8d3f5;
-
-    --scrollbar-thumb: rgba(130, 170, 255, 0.18);
-    --scrollbar-thumb-hover: rgba(130, 170, 255, 0.30);
-
-    --code-bg: #161828;
-    --code-header-bg: rgba(33, 35, 55, 0.7);
-    --code-border: rgba(130, 170, 255, 0.08);
-
-    --input-bg: rgba(30, 33, 48, 0.8);
-    --input-border: rgba(130, 170, 255, 0.15);
-    --input-focus-border: rgba(130, 170, 255, 0.5);
-    --input-focus-ring: rgba(130, 170, 255, 0.12);
-
-    --shadow-accent: rgba(130, 170, 255, 0.2);
-    --shadow-accent-hover: rgba(192, 153, 255, 0.3);
-
-    --success: #c3e88d;
-    --warning: #ffc777;
-    --error: #ff757f;
-    --info: #82aaff;
-}
-
-/* ============================================
-   Theme: Horizon
-   Warm red-orange horizon palette
-   ============================================ */
-.theme-horizon {
-    --primary-rgb: 233, 86, 120;
-    --bg-primary: #1c1e26;
-    --bg-secondary: #232530;
-    --bg-tertiary: #2e303e;
-    --bg-elevated: #1f2129;
-    --bg-hover: rgba(233, 86, 120, 0.06);
-    --bg-active: rgba(233, 86, 120, 0.10);
-
-    --surface-primary: rgba(35, 37, 48, 0.9);
-    --surface-secondary: rgba(46, 48, 62, 0.8);
-    --surface-glass: rgba(28, 30, 38, 0.95);
-
-    --text-primary: #d5d8da;
-    --text-secondary: #bbbbbb;
-    --text-tertiary: #6c6f93;
-    --text-muted: #55576b;
-
-    --border-primary: rgba(233, 86, 120, 0.12);
-    --border-secondary: rgba(233, 86, 120, 0.06);
-    --border-hover: rgba(233, 86, 120, 0.22);
-    --border-focus: rgba(233, 86, 120, 0.5);
-
-    --accent-primary: #e95678;
-    --accent-secondary: #fab795;
-    --accent-hover: #f07090;
-    --accent-muted: rgba(233, 86, 120, 0.15);
-
-    --user-msg-from: #3a2030;
-    --user-msg-to: #2e1825;
-    --user-msg-hover-from: #48283a;
-    --user-msg-hover-to: #3a2030;
-    --user-msg-text: #f5d8e0;
-
-    --assistant-bg: rgba(35, 37, 48, 0.8);
-    --assistant-border: rgba(233, 86, 120, 0.10);
-    --assistant-text: #d5d8da;
-
-    --scrollbar-thumb: rgba(233, 86, 120, 0.18);
-    --scrollbar-thumb-hover: rgba(233, 86, 120, 0.30);
-
-    --code-bg: #171920;
-    --code-header-bg: rgba(35, 37, 48, 0.7);
-    --code-border: rgba(233, 86, 120, 0.08);
-
-    --input-bg: rgba(31, 33, 41, 0.8);
-    --input-border: rgba(233, 86, 120, 0.15);
-    --input-focus-border: rgba(233, 86, 120, 0.5);
-    --input-focus-ring: rgba(233, 86, 120, 0.12);
-
-    --shadow-accent: rgba(233, 86, 120, 0.2);
-    --shadow-accent-hover: rgba(250, 183, 149, 0.3);
-
-    --success: #09f7a0;
-    --warning: #fab795;
-    --error: #e95678;
-    --info: #26bbd9;
-}
-
-/* ============================================
    Theme: Synthwave
    80s retro synthwave theme
    ============================================ */
@@ -1316,70 +1064,6 @@
     --warning: #ffff00;
     --error: #ff3860;
     --info: #00ffff;
-}
-
-/* ============================================
-   Theme: Vaporwave
-   Aesthetic vaporwave theme
-   ============================================ */
-.theme-vaporwave {
-    --primary-rgb: 255, 113, 206;
-    --bg-primary: #1a1033;
-    --bg-secondary: #251848;
-    --bg-tertiary: #32205c;
-    --bg-elevated: #1e1440;
-    --bg-hover: rgba(255, 113, 206, 0.1);
-    --bg-active: rgba(255, 113, 206, 0.15);
-
-    --surface-primary: rgba(37, 24, 72, 0.9);
-    --surface-secondary: rgba(50, 32, 92, 0.8);
-    --surface-glass: rgba(26, 16, 51, 0.95);
-
-    --text-primary: #f8f0ff;
-    --text-secondary: #ff71ce;
-    --text-tertiary: #b967ff;
-    --text-muted: #5a4a7a;
-
-    --border-primary: rgba(255, 113, 206, 0.2);
-    --border-secondary: rgba(255, 113, 206, 0.1);
-    --border-hover: rgba(255, 113, 206, 0.35);
-    --border-focus: rgba(1, 205, 254, 0.5);
-
-    --accent-primary: #ff71ce;
-    --accent-secondary: #01cdfe;
-    --accent-hover: #b967ff;
-    --accent-muted: rgba(255, 113, 206, 0.2);
-
-    /* User message - vaporwave pink */
-    --user-msg-from: #4a1850;
-    --user-msg-to: #3a1040;
-    --user-msg-hover-from: #5c2262;
-    --user-msg-hover-to: #4a1850;
-    --user-msg-text: #ffe0f8;
-
-    --assistant-bg: rgba(37, 24, 72, 0.8);
-    --assistant-border: rgba(1, 205, 254, 0.15);
-    --assistant-text: #f0e8f8;
-
-    --scrollbar-thumb: rgba(255, 113, 206, 0.25);
-    --scrollbar-thumb-hover: rgba(255, 113, 206, 0.4);
-
-    --code-bg: #120a25;
-    --code-header-bg: rgba(37, 24, 72, 0.7);
-    --code-border: rgba(1, 205, 254, 0.12);
-
-    --input-bg: rgba(30, 20, 64, 0.8);
-    --input-border: rgba(255, 113, 206, 0.25);
-    --input-focus-border: rgba(1, 205, 254, 0.5);
-    --input-focus-ring: rgba(1, 205, 254, 0.2);
-
-    --shadow-accent: rgba(255, 113, 206, 0.35);
-    --shadow-accent-hover: rgba(1, 205, 254, 0.4);
-
-    --success: #05ffa1;
-    --warning: #fffb96;
-    --error: #ff3860;
-    --info: #01cdfe;
 }
 
 /* ============================================
@@ -1509,70 +1193,6 @@
 }
 
 /* ============================================
-   Theme: Coffee
-   Warm brown and tan tones
-   ============================================ */
-.theme-coffee {
-    --primary-rgb: 141, 110, 99;
-    --bg-primary: #1a1412;
-    --bg-secondary: #2a221e;
-    --bg-tertiary: #3a302a;
-    --bg-elevated: #211a16;
-    --bg-hover: rgba(141, 110, 99, 0.08);
-    --bg-active: rgba(141, 110, 99, 0.12);
-
-    --surface-primary: rgba(42, 34, 30, 0.9);
-    --surface-secondary: rgba(58, 48, 42, 0.8);
-    --surface-glass: rgba(26, 20, 18, 0.95);
-
-    --text-primary: #efebe9;
-    --text-secondary: #bcaaa4;
-    --text-tertiary: #a1887f;
-    --text-muted: #8d6e63;
-
-    --border-primary: rgba(141, 110, 99, 0.2);
-    --border-secondary: rgba(141, 110, 99, 0.1);
-    --border-hover: rgba(141, 110, 99, 0.3);
-    --border-focus: rgba(161, 136, 127, 0.5);
-
-    --accent-primary: #8d6e63;
-    --accent-secondary: #6d4c41;
-    --accent-hover: #a1887f;
-    --accent-muted: rgba(141, 110, 99, 0.15);
-
-    /* User message - warm coffee brown */
-    --user-msg-from: #3e3028;
-    --user-msg-to: #2e221c;
-    --user-msg-hover-from: #4e3e34;
-    --user-msg-hover-to: #3e3028;
-    --user-msg-text: #f0e8e4;
-
-    --assistant-bg: rgba(42, 34, 30, 0.8);
-    --assistant-border: rgba(141, 110, 99, 0.15);
-    --assistant-text: #e0d6d0;
-
-    --scrollbar-thumb: rgba(141, 110, 99, 0.2);
-    --scrollbar-thumb-hover: rgba(141, 110, 99, 0.35);
-
-    --code-bg: #120e0c;
-    --code-header-bg: rgba(42, 34, 30, 0.7);
-    --code-border: rgba(141, 110, 99, 0.12);
-
-    --input-bg: rgba(33, 26, 22, 0.8);
-    --input-border: rgba(141, 110, 99, 0.2);
-    --input-focus-border: rgba(161, 136, 127, 0.5);
-    --input-focus-ring: rgba(161, 136, 127, 0.15);
-
-    --shadow-accent: rgba(141, 110, 99, 0.25);
-    --shadow-accent-hover: rgba(161, 136, 127, 0.35);
-
-    --success: #66bb6a;
-    --warning: #ffa726;
-    --error: #ef5350;
-    --info: #42a5f5;
-}
-
-/* ============================================
    Theme: Slate
    Neutral grays with subtle blue undertone
    ============================================ */
@@ -1634,134 +1254,6 @@
     --warning: #f59e0b;
     --error: #ef4444;
     --info: #3b82f6;
-}
-
-/* ============================================
-   Theme: Ember
-   Warm red and orange tones
-   ============================================ */
-.theme-ember {
-    --primary-rgb: 220, 38, 38;
-    --bg-primary: #1a0f0f;
-    --bg-secondary: #2a1818;
-    --bg-tertiary: #3d2525;
-    --bg-elevated: #211414;
-    --bg-hover: rgba(220, 38, 38, 0.08);
-    --bg-active: rgba(220, 38, 38, 0.12);
-
-    --surface-primary: rgba(42, 24, 24, 0.9);
-    --surface-secondary: rgba(61, 37, 37, 0.8);
-    --surface-glass: rgba(26, 15, 15, 0.95);
-
-    --text-primary: #fef2f2;
-    --text-secondary: #fca5a5;
-    --text-tertiary: #f87171;
-    --text-muted: #dc2626;
-
-    --border-primary: rgba(220, 38, 38, 0.2);
-    --border-secondary: rgba(220, 38, 38, 0.1);
-    --border-hover: rgba(220, 38, 38, 0.3);
-    --border-focus: rgba(248, 113, 113, 0.5);
-
-    --accent-primary: #dc2626;
-    --accent-secondary: #b91c1c;
-    --accent-hover: #ef4444;
-    --accent-muted: rgba(220, 38, 38, 0.15);
-
-    /* User message - warm ember red */
-    --user-msg-from: #4a1a1a;
-    --user-msg-to: #3a1212;
-    --user-msg-hover-from: #5c2424;
-    --user-msg-hover-to: #4a1a1a;
-    --user-msg-text: #fee2e2;
-
-    --assistant-bg: rgba(42, 24, 24, 0.8);
-    --assistant-border: rgba(220, 38, 38, 0.15);
-    --assistant-text: #f8e0e0;
-
-    --scrollbar-thumb: rgba(220, 38, 38, 0.2);
-    --scrollbar-thumb-hover: rgba(220, 38, 38, 0.35);
-
-    --code-bg: #120a0a;
-    --code-header-bg: rgba(42, 24, 24, 0.7);
-    --code-border: rgba(220, 38, 38, 0.12);
-
-    --input-bg: rgba(33, 20, 20, 0.8);
-    --input-border: rgba(220, 38, 38, 0.2);
-    --input-focus-border: rgba(248, 113, 113, 0.5);
-    --input-focus-ring: rgba(248, 113, 113, 0.15);
-
-    --shadow-accent: rgba(220, 38, 38, 0.3);
-    --shadow-accent-hover: rgba(248, 113, 113, 0.4);
-
-    --success: #22c55e;
-    --warning: #f59e0b;
-    --error: #dc2626;
-    --info: #3b82f6;
-}
-
-/* ============================================
-   Theme: Mint
-   Fresh green and teal tones
-   ============================================ */
-.theme-mint {
-    --primary-rgb: 16, 185, 129;
-    --bg-primary: #0a1814;
-    --bg-secondary: #122620;
-    --bg-tertiary: #1a3530;
-    --bg-elevated: #0e1e1a;
-    --bg-hover: rgba(16, 185, 129, 0.08);
-    --bg-active: rgba(16, 185, 129, 0.12);
-
-    --surface-primary: rgba(18, 38, 32, 0.9);
-    --surface-secondary: rgba(26, 53, 48, 0.8);
-    --surface-glass: rgba(10, 24, 20, 0.95);
-
-    --text-primary: #ecfdf5;
-    --text-secondary: #6ee7b7;
-    --text-tertiary: #34d399;
-    --text-muted: #10b981;
-
-    --border-primary: rgba(16, 185, 129, 0.2);
-    --border-secondary: rgba(16, 185, 129, 0.1);
-    --border-hover: rgba(16, 185, 129, 0.3);
-    --border-focus: rgba(52, 211, 153, 0.5);
-
-    --accent-primary: #10b981;
-    --accent-secondary: #059669;
-    --accent-hover: #34d399;
-    --accent-muted: rgba(16, 185, 129, 0.15);
-
-    /* User message - fresh mint green */
-    --user-msg-from: #143832;
-    --user-msg-to: #0e2824;
-    --user-msg-hover-from: #1c4840;
-    --user-msg-hover-to: #143832;
-    --user-msg-text: #d1fae5;
-
-    --assistant-bg: rgba(18, 38, 32, 0.8);
-    --assistant-border: rgba(16, 185, 129, 0.15);
-    --assistant-text: #d0f0e8;
-
-    --scrollbar-thumb: rgba(16, 185, 129, 0.2);
-    --scrollbar-thumb-hover: rgba(16, 185, 129, 0.35);
-
-    --code-bg: #06100c;
-    --code-header-bg: rgba(18, 38, 32, 0.7);
-    --code-border: rgba(16, 185, 129, 0.12);
-
-    --input-bg: rgba(14, 30, 26, 0.8);
-    --input-border: rgba(16, 185, 129, 0.2);
-    --input-focus-border: rgba(52, 211, 153, 0.5);
-    --input-focus-ring: rgba(52, 211, 153, 0.15);
-
-    --shadow-accent: rgba(16, 185, 129, 0.25);
-    --shadow-accent-hover: rgba(52, 211, 153, 0.35);
-
-    --success: #10b981;
-    --warning: #f59e0b;
-    --error: #ef4444;
-    --info: #06b6d4;
 }
 
 /* ============================================
@@ -1829,70 +1321,6 @@
 }
 
 /* ============================================
-   Theme: Arctic
-   Cold blue and white tones
-   ============================================ */
-.theme-arctic {
-    --primary-rgb: 56, 189, 248;
-    --bg-primary: #0c1620;
-    --bg-secondary: #142230;
-    --bg-tertiary: #1c3040;
-    --bg-elevated: #101c28;
-    --bg-hover: rgba(56, 189, 248, 0.08);
-    --bg-active: rgba(56, 189, 248, 0.12);
-
-    --surface-primary: rgba(20, 34, 48, 0.9);
-    --surface-secondary: rgba(28, 48, 64, 0.8);
-    --surface-glass: rgba(12, 22, 32, 0.95);
-
-    --text-primary: #f0f9ff;
-    --text-secondary: #7dd3fc;
-    --text-tertiary: #38bdf8;
-    --text-muted: #0ea5e9;
-
-    --border-primary: rgba(56, 189, 248, 0.2);
-    --border-secondary: rgba(56, 189, 248, 0.1);
-    --border-hover: rgba(56, 189, 248, 0.3);
-    --border-focus: rgba(125, 211, 252, 0.5);
-
-    --accent-primary: #38bdf8;
-    --accent-secondary: #0ea5e9;
-    --accent-hover: #7dd3fc;
-    --accent-muted: rgba(56, 189, 248, 0.15);
-
-    /* User message - icy arctic blue */
-    --user-msg-from: #1a3548;
-    --user-msg-to: #122638;
-    --user-msg-hover-from: #224558;
-    --user-msg-hover-to: #1a3548;
-    --user-msg-text: #e0f2fe;
-
-    --assistant-bg: rgba(20, 34, 48, 0.8);
-    --assistant-border: rgba(56, 189, 248, 0.15);
-    --assistant-text: #e0f0f8;
-
-    --scrollbar-thumb: rgba(56, 189, 248, 0.2);
-    --scrollbar-thumb-hover: rgba(56, 189, 248, 0.35);
-
-    --code-bg: #081018;
-    --code-header-bg: rgba(20, 34, 48, 0.7);
-    --code-border: rgba(56, 189, 248, 0.12);
-
-    --input-bg: rgba(16, 28, 40, 0.8);
-    --input-border: rgba(56, 189, 248, 0.2);
-    --input-focus-border: rgba(125, 211, 252, 0.5);
-    --input-focus-ring: rgba(125, 211, 252, 0.15);
-
-    --shadow-accent: rgba(56, 189, 248, 0.25);
-    --shadow-accent-hover: rgba(125, 211, 252, 0.35);
-
-    --success: #22c55e;
-    --warning: #f59e0b;
-    --error: #ef4444;
-    --info: #38bdf8;
-}
-
-/* ============================================
    Theme: Sand
    Warm beige and tan tones
    ============================================ */
@@ -1957,133 +1385,6 @@
 }
 
 /* ============================================
-   Theme: Graphite
-   Dark neutral gray theme
-   ============================================ */
-.theme-graphite {
-    --primary-rgb: 115, 115, 115;
-    --bg-primary: #141414;
-    --bg-secondary: #1f1f1f;
-    --bg-tertiary: #2a2a2a;
-    --bg-elevated: #1a1a1a;
-    --bg-hover: rgba(115, 115, 115, 0.08);
-    --bg-active: rgba(115, 115, 115, 0.12);
-
-    --surface-primary: rgba(31, 31, 31, 0.9);
-    --surface-secondary: rgba(42, 42, 42, 0.8);
-    --surface-glass: rgba(20, 20, 20, 0.95);
-
-    --text-primary: #e8e8e8;
-    --text-secondary: #b0b0b0;
-    --text-tertiary: #808080;
-    --text-muted: #606060;
-
-    --border-primary: rgba(115, 115, 115, 0.2);
-    --border-secondary: rgba(115, 115, 115, 0.1);
-    --border-hover: rgba(115, 115, 115, 0.3);
-    --border-focus: rgba(160, 160, 160, 0.5);
-
-    --accent-primary: #737373;
-    --accent-secondary: #5c5c5c;
-    --accent-hover: #a0a0a0;
-    --accent-muted: rgba(115, 115, 115, 0.15);
-
-    /* User message - neutral graphite */
-    --user-msg-from: #383838;
-    --user-msg-to: #2a2a2a;
-    --user-msg-hover-from: #454545;
-    --user-msg-hover-to: #383838;
-    --user-msg-text: #f0f0f0;
-
-    --assistant-bg: rgba(31, 31, 31, 0.8);
-    --assistant-border: rgba(115, 115, 115, 0.15);
-    --assistant-text: #e0e0e0;
-
-    --scrollbar-thumb: rgba(115, 115, 115, 0.2);
-    --scrollbar-thumb-hover: rgba(115, 115, 115, 0.35);
-
-    --code-bg: #0c0c0c;
-    --code-header-bg: rgba(31, 31, 31, 0.7);
-    --code-border: rgba(115, 115, 115, 0.12);
-
-    --input-bg: rgba(26, 26, 26, 0.8);
-    --input-border: rgba(115, 115, 115, 0.2);
-    --input-focus-border: rgba(160, 160, 160, 0.5);
-    --input-focus-ring: rgba(160, 160, 160, 0.15);
-
-    --shadow-accent: rgba(115, 115, 115, 0.25);
-    --shadow-accent-hover: rgba(160, 160, 160, 0.35);
-
-    --success: #4caf50;
-    --warning: #ff9800;
-    --error: #f44336;
-    --info: #2196f3;
-}
-
-/* ============================================
-   Theme: Night Owl
-   Sarah Drasner's deep blue theme
-   ============================================ */
-.theme-nightowl {
-    --primary-rgb: 127, 219, 202;
-    --bg-primary: #011627;
-    --bg-secondary: #01243a;
-    --bg-tertiary: #0b3650;
-    --bg-elevated: #011a2e;
-    --bg-hover: rgba(127, 219, 202, 0.07);
-    --bg-active: rgba(127, 219, 202, 0.12);
-
-    --surface-primary: rgba(1, 36, 58, 0.9);
-    --surface-secondary: rgba(11, 54, 80, 0.8);
-    --surface-glass: rgba(1, 22, 39, 0.95);
-
-    --text-primary: #d6deeb;
-    --text-secondary: #a7bfc8;
-    --text-tertiary: #637777;
-    --text-muted: #4f6479;
-
-    --border-primary: rgba(127, 219, 202, 0.15);
-    --border-secondary: rgba(127, 219, 202, 0.08);
-    --border-hover: rgba(127, 219, 202, 0.25);
-    --border-focus: rgba(127, 219, 202, 0.5);
-
-    --accent-primary: #7fdbca;
-    --accent-secondary: #c792ea;
-    --accent-hover: #addb67;
-    --accent-muted: rgba(127, 219, 202, 0.15);
-
-    --user-msg-from: #0b3a50;
-    --user-msg-to: #062a3e;
-    --user-msg-hover-from: #104860;
-    --user-msg-hover-to: #0b3a50;
-    --user-msg-text: #d6f0eb;
-
-    --assistant-bg: rgba(1, 36, 58, 0.8);
-    --assistant-border: rgba(127, 219, 202, 0.12);
-    --assistant-text: #d6deeb;
-
-    --scrollbar-thumb: rgba(127, 219, 202, 0.2);
-    --scrollbar-thumb-hover: rgba(127, 219, 202, 0.35);
-
-    --code-bg: #001122;
-    --code-header-bg: rgba(1, 36, 58, 0.7);
-    --code-border: rgba(127, 219, 202, 0.1);
-
-    --input-bg: rgba(1, 26, 46, 0.8);
-    --input-border: rgba(127, 219, 202, 0.2);
-    --input-focus-border: rgba(127, 219, 202, 0.5);
-    --input-focus-ring: rgba(127, 219, 202, 0.15);
-
-    --shadow-accent: rgba(127, 219, 202, 0.25);
-    --shadow-accent-hover: rgba(127, 219, 202, 0.35);
-
-    --success: #addb67;
-    --warning: #ecc48d;
-    --error: #ef5350;
-    --info: #82aaff;
-}
-
-/* ============================================
    Theme: Oxocarbon
    IBM Carbon Design inspired theme
    ============================================ */
@@ -2144,134 +1445,6 @@
     --warning: #f1c21b;
     --error: #ff8389;
     --info: #78a9ff;
-}
-
-/* ============================================
-   Theme: Amber
-   Warm golden amber theme
-   ============================================ */
-.theme-amber {
-    --primary-rgb: 245, 158, 11;
-    --bg-primary: #1a1408;
-    --bg-secondary: #231c0e;
-    --bg-tertiary: #2d2414;
-    --bg-elevated: #1e180b;
-    --bg-hover: rgba(245, 158, 11, 0.08);
-    --bg-active: rgba(245, 158, 11, 0.12);
-
-    --surface-primary: rgba(35, 28, 14, 0.9);
-    --surface-secondary: rgba(45, 36, 20, 0.8);
-    --surface-glass: rgba(26, 20, 8, 0.95);
-
-    --text-primary: #f5ecd8;
-    --text-secondary: #c4a86c;
-    --text-tertiary: #9a7f48;
-    --text-muted: #7a6338;
-
-    --border-primary: rgba(245, 158, 11, 0.2);
-    --border-secondary: rgba(245, 158, 11, 0.1);
-    --border-hover: rgba(245, 158, 11, 0.3);
-    --border-focus: rgba(245, 158, 11, 0.5);
-
-    --accent-primary: #f59e0b;
-    --accent-secondary: #d97706;
-    --accent-hover: #b45309;
-    --accent-muted: rgba(245, 158, 11, 0.15);
-
-    /* User message - warm amber */
-    --user-msg-from: #6b4106;
-    --user-msg-to: #4d2f04;
-    --user-msg-hover-from: #845008;
-    --user-msg-hover-to: #6b4106;
-    --user-msg-text: #fef3c7;
-
-    --assistant-bg: rgba(35, 28, 14, 0.8);
-    --assistant-border: rgba(245, 158, 11, 0.12);
-    --assistant-text: #f5ecd8;
-
-    --scrollbar-thumb: rgba(245, 158, 11, 0.3);
-    --scrollbar-thumb-hover: rgba(245, 158, 11, 0.45);
-
-    --code-bg: #141005;
-    --code-header-bg: rgba(26, 20, 8, 0.7);
-    --code-border: rgba(245, 158, 11, 0.1);
-
-    --input-bg: rgba(35, 28, 14, 0.8);
-    --input-border: rgba(245, 158, 11, 0.25);
-    --input-focus-border: rgba(245, 158, 11, 0.5);
-    --input-focus-ring: rgba(245, 158, 11, 0.15);
-
-    --shadow-accent: rgba(245, 158, 11, 0.3);
-    --shadow-accent-hover: rgba(217, 119, 6, 0.4);
-
-    --success: #34d399;
-    --warning: #fbbf24;
-    --error: #f87171;
-    --info: #60a5fa;
-}
-
-/* ============================================
-   Theme: Jade
-   Rich deep green theme
-   ============================================ */
-.theme-jade {
-    --primary-rgb: 0, 168, 107;
-    --bg-primary: #081a12;
-    --bg-secondary: #0e231a;
-    --bg-tertiary: #142d22;
-    --bg-elevated: #0b1e16;
-    --bg-hover: rgba(0, 168, 107, 0.08);
-    --bg-active: rgba(0, 168, 107, 0.12);
-
-    --surface-primary: rgba(14, 35, 26, 0.9);
-    --surface-secondary: rgba(20, 45, 34, 0.8);
-    --surface-glass: rgba(8, 26, 18, 0.95);
-
-    --text-primary: #d8f5e8;
-    --text-secondary: #6cc4a0;
-    --text-tertiary: #48a07c;
-    --text-muted: #357a5c;
-
-    --border-primary: rgba(0, 168, 107, 0.2);
-    --border-secondary: rgba(0, 168, 107, 0.1);
-    --border-hover: rgba(0, 168, 107, 0.3);
-    --border-focus: rgba(0, 168, 107, 0.5);
-
-    --accent-primary: #00a86b;
-    --accent-secondary: #00c77b;
-    --accent-hover: #008f5a;
-    --accent-muted: rgba(0, 168, 107, 0.15);
-
-    /* User message - rich jade green */
-    --user-msg-from: #006844;
-    --user-msg-to: #004d32;
-    --user-msg-hover-from: #008055;
-    --user-msg-hover-to: #006844;
-    --user-msg-text: #d8f5e8;
-
-    --assistant-bg: rgba(14, 35, 26, 0.8);
-    --assistant-border: rgba(0, 168, 107, 0.12);
-    --assistant-text: #d8f5e8;
-
-    --scrollbar-thumb: rgba(0, 168, 107, 0.3);
-    --scrollbar-thumb-hover: rgba(0, 168, 107, 0.45);
-
-    --code-bg: #05120c;
-    --code-header-bg: rgba(8, 26, 18, 0.7);
-    --code-border: rgba(0, 168, 107, 0.1);
-
-    --input-bg: rgba(14, 35, 26, 0.8);
-    --input-border: rgba(0, 168, 107, 0.25);
-    --input-focus-border: rgba(0, 168, 107, 0.5);
-    --input-focus-ring: rgba(0, 168, 107, 0.15);
-
-    --shadow-accent: rgba(0, 168, 107, 0.3);
-    --shadow-accent-hover: rgba(0, 199, 123, 0.4);
-
-    --success: #34d399;
-    --warning: #fbbf24;
-    --error: #f87171;
-    --info: #60a5fa;
 }
 
 /* ============================================
@@ -3751,21 +2924,53 @@
     max-width: 100% !important;
 }
 
-/* Wide Centered - Full width container, messages centered */
-.chat-style-wide-centered .max-w-4xl {
-    max-width: 100% !important;
+/* Timeline - Vertical timeline with connected messages */
+.chat-style-timeline .flex.flex-col.items-end,
+.chat-style-timeline .flex.flex-col.items-start {
+    align-items: flex-start !important;
+    padding-left: 2rem !important;
+    position: relative !important;
 }
 
-.chat-style-wide-centered .flex.flex-col.items-end,
-.chat-style-wide-centered .flex.flex-col.items-start {
-    align-items: center !important;
+/* Timeline line */
+.chat-style-timeline .flex.flex-col.items-end::before,
+.chat-style-timeline .flex.flex-col.items-start::before {
+    content: '' !important;
+    position: absolute !important;
+    left: 0.45rem !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    width: 2px !important;
+    background: linear-gradient(to bottom, rgba(var(--primary-rgb, 99, 102, 241), 0.3), rgba(var(--primary-rgb, 99, 102, 241), 0.08)) !important;
 }
 
-.chat-style-wide-centered .message-user,
-.chat-style-wide-centered .message-assistant {
-    max-width: 100% !important;
-    width: 100% !important;
-    padding: 1.25rem 1.5rem !important;
+/* Timeline dots - on same parent as line so they align */
+.chat-style-timeline .flex.flex-col.items-end::after,
+.chat-style-timeline .flex.flex-col.items-start::after {
+    content: '' !important;
+    position: absolute !important;
+    left: calc(0.45rem - 4px) !important;
+    top: 0 !important;
+    width: 10px !important;
+    height: 10px !important;
+    border-radius: 50% !important;
+    z-index: 1 !important;
+}
+
+.chat-style-timeline .flex.flex-col.items-end::after {
+    background: var(--accent-primary, #6366f1) !important;
+    box-shadow: 0 0 6px rgba(var(--primary-rgb, 99, 102, 241), 0.4) !important;
+}
+
+.chat-style-timeline .flex.flex-col.items-start::after {
+    background: rgba(255, 255, 255, 0.15) !important;
+    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.3) !important;
+}
+
+.chat-style-timeline .message-user,
+.chat-style-timeline .message-assistant {
+    max-width: 90% !important;
+    border-radius: 0.5rem !important;
 }
 
 /* Terminal - Monospace, flat, left-aligned */

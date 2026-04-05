@@ -14,6 +14,7 @@ import {
     Target,
     Layout,
     AlignCenter,
+    GitCommitVertical,
     Terminal,
     PanelLeft,
     Rows3,
@@ -84,11 +85,11 @@ export default function ChatSettings({
             preview: { userAlign: 'right', assistantAlign: 'left', width: 'full' }
         },
         {
-            value: 'wide-centered',
-            label: 'Wide Centered',
-            icon: AlignCenter,
-            description: 'Full width, centered',
-            preview: { userAlign: 'center', assistantAlign: 'center', width: 'full' }
+            value: 'timeline',
+            label: 'Timeline',
+            icon: GitCommitVertical,
+            description: 'Vertical timeline flow',
+            preview: { userAlign: 'left', assistantAlign: 'left', width: 'normal' }
         },
         {
             value: 'terminal',
@@ -240,40 +241,27 @@ export default function ChatSettings({
         { label: 'Nature', options: [
             { value: 'ocean', label: 'Ocean' },
             { value: 'sunset', label: 'Sunset' },
-            { value: 'jade', label: 'Jade' },
-            { value: 'mint', label: 'Mint' },
-            { value: 'arctic', label: 'Arctic' },
             { value: 'sand', label: 'Sand' },
         ]},
         { label: 'Warm Tones', options: [
-            { value: 'coffee', label: 'Coffee' },
-            { value: 'ember', label: 'Ember' },
             { value: 'copper', label: 'Copper' },
-            { value: 'amber', label: 'Amber' },
             { value: 'vesper', label: 'Vesper' },
-            { value: 'horizon', label: 'Horizon' },
         ]},
         { label: 'Neutral', options: [
             { value: 'slate', label: 'Slate' },
-            { value: 'graphite', label: 'Graphite' },
             { value: 'storm', label: 'Storm' },
         ]},
         { label: 'Dev Classics', options: [
             { value: 'solarized', label: 'Solarized' },
-            { value: 'catppuccin', label: 'Catppuccin' },
-            { value: 'rosepine', label: 'Ros\u00e9 Pine' },
             { value: 'kanagawa', label: 'Kanagawa' },
             { value: 'palenight', label: 'Palenight' },
             { value: 'ayu', label: 'Ayu' },
         ]},
         { label: 'Vibrant', options: [
             { value: 'matrix', label: 'Matrix' },
-            { value: 'moonlight', label: 'Moonlight' },
             { value: 'andromeda', label: 'Andromeda' },
             { value: 'poimandres', label: 'Poimandres' },
-            { value: 'nightowl', label: 'Night Owl' },
             { value: 'oxocarbon', label: 'Oxocarbon' },
-            { value: 'vaporwave', label: 'Vaporwave' },
             { value: 'crimson', label: 'Crimson' },
         ]},
     ];

@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
     ChevronDown,
     Settings,
-    Plus,
     LogOut,
     Circle,
     Loader2,
@@ -18,7 +17,6 @@ export default function ChatHeader({
     selectedModel,
     onModelChange,
     onSettingsClick,
-    onNewChat,
     isLoading,
     user,
     onLogout,
@@ -200,15 +198,6 @@ export default function ChatHeader({
 
             {/* Right side - Actions */}
             <div className="flex items-center gap-1.5">
-                {/* New Chat */}
-                <button
-                    onClick={onNewChat}
-                    className="p-2 rounded-lg text-dark-400 hover:text-dark-100 hover:bg-white/8 active:scale-95 transition-all duration-150"
-                    title="New Chat"
-                >
-                    <Plus className="w-[18px] h-[18px]" strokeWidth={2} />
-                </button>
-
                 {/* Settings */}
                 <button
                     onClick={onSettingsClick}

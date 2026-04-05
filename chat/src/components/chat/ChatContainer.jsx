@@ -1745,7 +1745,7 @@ export default function ChatContainer({
                     selectedModel={settings.model}
                     onModelChange={handleModelChange}
                     onSettingsClick={() => setSettingsOpen(true)}
-                    onNewChat={handleNewConversation}
+
                     isLoading={isLoading}
                     user={user}
                     onLogout={onLogout}
