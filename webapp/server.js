@@ -9339,6 +9339,27 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
 
         // =====================================================================
+        // SANITIZE IMAGE CONTENT FOR NON-VISION MODELS
+        // =====================================================================
+        // Strip image_url parts from messages — if OCR text was extracted, it's already
+        // in the text part. Non-vision models reject image_url content with 500 errors.
+        for (let i = 0; i < chatMessages.length; i++) {
+            const msg = chatMessages[i];
+            if (Array.isArray(msg.content)) {
+                const textParts = msg.content.filter(p => p.type === 'text');
+                const hasImages = msg.content.some(p => p.type === 'image_url');
+                if (hasImages) {
+                    // Collapse to plain text string (image data already converted to OCR text at upload)
+                    const combinedText = textParts.map(p => p.text || '').join('\n').trim();
+                    if (combinedText) {
+                        chatMessages[i].content = combinedText;
+                        console.log(`[Chat Stream] Stripped image_url parts from message ${i}, kept ${combinedText.length} chars of text`);
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
         // NORMAL STREAMING PATH (with automatic continuation)
         // =====================================================================
         const MAX_AUTO_CONTINUATIONS = 8; // Safety cap to prevent infinite loops
