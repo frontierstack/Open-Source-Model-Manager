@@ -1282,6 +1282,9 @@ body.font-size-large .markdown-content,
 .min-w-0{
   min-width: 0px;
 }
+.min-w-\[220px\]{
+  min-width: 220px;
+}
 .min-w-\[320px\]{
   min-width: 320px;
 }
@@ -2373,6 +2376,12 @@ body.font-size-large .markdown-content,
 }
 .duration-300{
   transition-duration: 300ms;
+}
+.duration-500{
+  transition-duration: 500ms;
+}
+.ease-in-out{
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 .ease-out{
   transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
@@ -4150,6 +4159,13 @@ body.font-size-large .markdown-content,
 
 .animate-toast-exit {
     animation: toastExit 0.2s cubic-bezier(0.06, 0.71, 0.55, 1) forwards;
+}
+
+/* Indeterminate progress bar for chunking */
+@keyframes indeterminate-progress {
+    0% { width: 15%; margin-left: 0; }
+    50% { width: 40%; margin-left: 30%; }
+    100% { width: 15%; margin-left: 85%; }
 }
 
 /* ============================================

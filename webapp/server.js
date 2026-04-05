@@ -612,8 +612,9 @@ async function processWithMapReduce(options) {
 
     console.log(`[Map-Reduce] Splitting content into ${totalChunks} chunks (${availableForChunkContent} tokens each, ${overlapTokens} token overlap)`);
 
+    const totalTokens = estimateTokenCount(largeContent);
     if (onProgress) {
-        onProgress({ phase: 'chunking', totalChunks, currentChunk: 0, message: `Splitting content into ${totalChunks} chunks...` });
+        onProgress({ phase: 'chunking', totalChunks, totalTokens, chunkTokens: availableForChunkContent, currentChunk: 0 });
     }
 
     // MAP PHASE: Process chunks in parallel (with concurrency limit)
@@ -634,6 +635,7 @@ async function processWithMapReduce(options) {
             onProgress({
                 phase: 'map',
                 totalChunks,
+                totalTokens,
                 completedChunks,
                 failedChunks,
                 currentChunk: batchStart,
@@ -684,10 +686,12 @@ async function processWithMapReduce(options) {
                         onProgress({
                             phase: 'map',
                             totalChunks,
+                            totalTokens,
                             completedChunks,
                             failedChunks,
                             currentChunk: chunk.index,
                             elapsedMs: Date.now() - mapStartTime,
+                            chunkChars: responseContent.length,
                         });
                     }
 
@@ -710,6 +714,7 @@ async function processWithMapReduce(options) {
                             onProgress({
                                 phase: 'map',
                                 totalChunks,
+                                totalTokens,
                                 completedChunks,
                                 failedChunks,
                                 currentChunk: chunk.index,
@@ -729,6 +734,7 @@ async function processWithMapReduce(options) {
                         onProgress({
                             phase: 'map',
                             totalChunks,
+                            totalTokens,
                             completedChunks,
                             failedChunks,
                             currentChunk: chunk.index,
@@ -790,6 +796,7 @@ async function processWithMapReduce(options) {
         onProgress({
             phase: 'reduce',
             totalChunks,
+            totalTokens,
             completedChunks,
             failedChunks,
             elapsedMs: mapElapsedMs,
@@ -847,6 +854,7 @@ async function processWithMapReduce(options) {
             onProgress({
                 phase: 'complete',
                 totalChunks,
+                totalTokens,
                 completedChunks,
                 failedChunks,
                 elapsedMs: Date.now() - mapStartTime,
@@ -7670,6 +7678,52 @@ app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
     }
 });
 
+// Cancel an active streaming job for a conversation
+app.delete('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const job = activeStreamingJobs.get(id);
+
+        if (!job) {
+            return res.json({ cancelled: false, reason: 'No active stream found' });
+        }
+
+        // Abort the underlying model request
+        if (job.abortController) {
+            job.abortController.abort();
+        }
+
+        // Save partial response if there is content
+        if (job.content) {
+            try {
+                const conversationMsgs = await loadConversationMessages(job.userId, id);
+                const assistantMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: job.content,
+                    reasoning: job.reasoning || undefined,
+                    timestamp: new Date().toISOString(),
+                    responseTime: Date.now() - job.startTime,
+                    stoppedByUser: true
+                };
+                conversationMsgs.push(assistantMessage);
+                await saveConversationMessages(job.userId, id, conversationMsgs);
+                console.log(`[Chat Stream] Cancelled stream for conversation ${id}, partial response saved (${job.content.length} chars)`);
+            } catch (saveErr) {
+                console.error(`[Chat Stream] Failed to save partial response on cancel:`, saveErr);
+            }
+        }
+
+        // Clean up the job
+        activeStreamingJobs.delete(id);
+
+        res.json({ cancelled: true, hadContent: !!job.content });
+    } catch (error) {
+        console.error('Error cancelling stream:', error);
+        res.status(500).json({ error: 'Failed to cancel stream' });
+    }
+});
+
 // Smart content optimizer - removes unnecessary whitespace to save tokens
 function optimizeContent(text, options = {}) {
     if (!text || typeof text !== 'string') return text;
@@ -8824,6 +8878,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let useMapReduce = false;
         let mapReduceContent = null;
         let mapReduceQuery = null;
+        let mapReduceCondensationInfo = null;
 
         console.log(`[Chat Stream] Context check: totalInputTokens=${totalInputTokens}, contextSize=${contextSize}, responseReserve=${responseReserve}, desiredResponse=${desiredResponseTokens}, availableForInput=${availableContextForInput}, needsChunking=${totalInputTokens > availableContextForInput}`);
 
@@ -8937,6 +8992,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             useMapReduce = true;
                             mapReduceContent = finalContent;
                             mapReduceQuery = queryPart;
+                            mapReduceCondensationInfo = condensationInfo;
 
                             console.log(`[Chat Stream] Using map-reduce chunking for ${estimateTokenCount(finalContent)} tokens (query: "${queryPart.substring(0, 50)}...")`);
                         } else {
@@ -9108,10 +9164,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (useMapReduce && mapReduceContent && mapReduceQuery) {
             console.log(`[Chat Stream] Starting map-reduce processing...`);
 
-            // Send initial progress event
+            // Send initial progress event with token and condensation details
+            const mapReduceTokens = estimateTokens(mapReduceContent);
             const progressEvent = {
                 type: 'chunking_progress',
                 phase: 'starting',
+                totalTokens: mapReduceTokens,
+                contentLength: mapReduceContent.length,
+                condensation: mapReduceCondensationInfo ? {
+                    originalLength: mapReduceCondensationInfo.originalLength,
+                    condensedLength: mapReduceCondensationInfo.condensedLength,
+                    reductionPercent: mapReduceCondensationInfo.reductionPercent,
+                } : null,
                 message: 'Splitting content into chunks for parallel processing...'
             };
             res.write(`data: ${JSON.stringify(progressEvent)}\n\n`);
@@ -9231,6 +9295,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const streamingConversationId = conversationId || req.body.conversationId;
         const streamStartTime = Date.now();
 
+        const streamAbortController = new AbortController();
         if (streamingConversationId) {
             activeStreamingJobs.set(streamingConversationId, {
                 userId,
@@ -9239,7 +9304,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 startTime: streamStartTime,
                 model: targetModel,
                 clientConnected: true,
-                inputMessages: inputMessages
+                inputMessages: inputMessages,
+                abortController: streamAbortController
             });
         }
 
@@ -9261,7 +9327,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         method: 'post',
                         url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
                         data: requestBody,
-                        responseType: 'stream'
+                        responseType: 'stream',
+                        signal: streamAbortController.signal
                     });
 
                     response.data.on('data', (chunk) => {
@@ -9437,17 +9504,24 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 console.log(`[Chat Stream] Auto-continuation complete after ${continuationCount} continuation(s), total ${fullResponse.length} chars`);
             }
         } catch (streamError) {
-            console.error('Stream error:', streamError);
-            if (clientConnected && !res.writableEnded) {
-                const errorEvent = { error: streamError.message, done: true };
-                try {
-                    res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
-                } catch (writeErr) { /* client disconnected */ }
+            const isAborted = streamAbortController.signal.aborted || streamError.name === 'AbortError' || streamError.code === 'ERR_CANCELED';
+            if (isAborted) {
+                console.log(`[Chat Stream] Stream aborted by user for conversation ${streamingConversationId}`);
+            } else {
+                console.error('Stream error:', streamError);
+                if (clientConnected && !res.writableEnded) {
+                    const errorEvent = { error: streamError.message, done: true };
+                    try {
+                        res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+                    } catch (writeErr) { /* client disconnected */ }
+                }
             }
         }
 
         // Save response to conversation if client disconnected (background completion)
-        if (!clientConnected && streamingConversationId && fullResponse) {
+        // Skip if aborted — the cancel endpoint handles saving partial content
+        const wasAborted = streamAbortController.signal.aborted;
+        if (!wasAborted && !clientConnected && streamingConversationId && fullResponse) {
             try {
                 const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
                 const assistantMessage = {

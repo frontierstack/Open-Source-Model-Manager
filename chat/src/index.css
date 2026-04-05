@@ -2756,6 +2756,13 @@
     animation: toastExit 0.2s cubic-bezier(0.06, 0.71, 0.55, 1) forwards;
 }
 
+/* Indeterminate progress bar for chunking */
+@keyframes indeterminate-progress {
+    0% { width: 15%; margin-left: 0; }
+    50% { width: 40%; margin-left: 30%; }
+    100% { width: 15%; margin-left: 85%; }
+}
+
 /* ============================================
    Responsive Utilities
    ============================================ */

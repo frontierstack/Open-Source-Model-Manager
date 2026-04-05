@@ -1077,26 +1077,44 @@ export default function ChatContainer({
 
                             // Handle map-reduce chunking progress events
                             if (parsed.type === 'chunking_progress') {
-                                const { phase, totalChunks, completedChunks = 0, failedChunks = 0, elapsedMs = 0, retrying } = parsed;
-                                const elapsed = elapsedMs > 0 ? ` (${Math.round(elapsedMs / 1000)}s)` : '';
+                                const { phase, totalChunks, totalTokens, completedChunks = 0, failedChunks = 0, elapsedMs = 0, retrying, condensation, chunkTokens } = parsed;
+                                const elapsed = elapsedMs > 0 ? `${Math.round(elapsedMs / 1000)}s` : '';
+                                const tokenStr = totalTokens ? `${totalTokens.toLocaleString()} tokens` : '';
+                                const chunkWord = (n) => n === 1 ? 'chunk' : 'chunks';
 
-                                if (phase === 'starting' || phase === 'chunking') {
-                                    setProcessingStatus('chunking', `Splitting content into ${totalChunks || ''} chunks...`);
+                                if (phase === 'starting') {
+                                    let msg = 'Preparing content for parallel processing...';
+                                    if (tokenStr) msg = `Preparing ${tokenStr} for parallel processing...`;
+                                    if (condensation) {
+                                        msg += ` (condensed ${condensation.reductionPercent}%)`;
+                                    }
+                                    setProcessingStatus('chunking', msg);
+                                } else if (phase === 'chunking') {
+                                    let msg = `Splitting into ${totalChunks} ${chunkWord(totalChunks)}`;
+                                    if (tokenStr) msg += ` — ${tokenStr}`;
+                                    if (chunkTokens) msg += ` (~${chunkTokens.toLocaleString()} tokens/chunk)`;
+                                    setProcessingStatus('chunking', msg);
                                 } else if (phase === 'map') {
                                     const done = completedChunks + failedChunks;
+                                    const pct = totalChunks > 0 ? Math.round((done / totalChunks) * 100) : 0;
                                     let msg;
                                     if (retrying) {
-                                        msg = `Retrying chunk ${retrying.chunk} (attempt ${retrying.attempt}/${retrying.maxRetries})${elapsed}`;
+                                        msg = `Retrying chunk ${retrying.chunk}/${totalChunks} (attempt ${retrying.attempt}/${retrying.maxRetries}) — ${elapsed}`;
                                     } else if (done === 0) {
-                                        msg = `Analyzing ${totalChunks} chunks...`;
+                                        msg = `Analyzing ${totalChunks} ${chunkWord(totalChunks)} in parallel`;
+                                        if (tokenStr) msg += ` — ${tokenStr} total`;
                                     } else {
-                                        msg = `Analyzed ${completedChunks}/${totalChunks} chunks${failedChunks ? ` (${failedChunks} failed)` : ''}${elapsed}`;
+                                        msg = `Analyzed ${completedChunks}/${totalChunks} ${chunkWord(totalChunks)} (${pct}%)`;
+                                        if (failedChunks) msg += ` — ${failedChunks} failed`;
+                                        if (elapsed) msg += ` — ${elapsed}`;
                                     }
                                     setProcessingStatus('processing', msg);
                                 } else if (phase === 'reduce') {
-                                    setProcessingStatus('synthesizing', `Combining ${completedChunks} chunk results into final response...${elapsed}`);
+                                    let msg = `Synthesizing ${completedChunks} ${chunkWord(completedChunks)} into final response`;
+                                    if (elapsed) msg += ` — ${elapsed} elapsed`;
+                                    setProcessingStatus('synthesizing', msg);
                                 } else if (phase === 'complete') {
-                                    setProcessingStatus('generating', 'Streaming response...');
+                                    setProcessingStatus('generating', `Streaming synthesized response${elapsed ? ` — completed in ${elapsed}` : ''}...`);
                                 }
                                 continue; // Don't process this as a content event
                             }
@@ -1394,13 +1412,40 @@ export default function ChatContainer({
         }
     };
 
-    const handleStopGeneration = () => {
+    const handleStopGeneration = async () => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
         // Immediate UI feedback — don't wait for the async cleanup
         setIsLoading(false);
         setProcessingStatus(null, null);
+
+        // Also cancel the server-side background stream
+        const convId = streamingConversationRef.current || activeConversationId;
+        if (convId) {
+            try {
+                const cancelRes = await fetch(`/api/conversations/${convId}/streaming`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+                if (cancelRes.ok) {
+                    const result = await cancelRes.json();
+                    if (result.cancelled) {
+                        // Reload messages to pick up the saved partial response
+                        if (result.hadContent) {
+                            const msgResponse = await fetch(`/api/conversations/${convId}`, { credentials: 'include' });
+                            if (msgResponse.ok) {
+                                const msgData = await msgResponse.json();
+                                setMessages(msgData.messages || []);
+                            }
+                        }
+                        clearStreaming();
+                    }
+                }
+            } catch (e) {
+                // Cancel request failed — not critical
+            }
+        }
     };
 
     /**
@@ -1745,8 +1790,6 @@ export default function ChatContainer({
                     selectedModel={settings.model}
                     onModelChange={handleModelChange}
                     onSettingsClick={() => setSettingsOpen(true)}
-
-                    isLoading={isLoading}
                     user={user}
                     onLogout={onLogout}
                     onMobileMenuClick={() => setMobileSidebarOpen(true)}

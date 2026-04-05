@@ -5147,6 +5147,168 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}/messages\`, {
 .catch(err => console.error(err));`
             },
             // ============================================================================
+            // STREAMING STATUS & CONTROL
+            // ============================================================================
+            '/api/conversations/:id/streaming': {
+                curl: `# Check if a conversation has an active background stream
+curl -k -X GET "${baseUrl}/api/conversations/conv_abc123/streaming" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET "${baseUrl}/api/conversations/conv_abc123/streaming" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Response when streaming:
+# { "streaming": true, "content": "partial response...", "reasoning": "",
+#   "startTime": 1712345678000, "model": "llama-7b", "clientConnected": false }
+
+# Response when not streaming:
+# { "streaming": false }`,
+                python: `import requests
+import time
+
+conversation_id = "conv_abc123"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/conversations/{conversation_id}/streaming',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/conversations/{conversation_id}/streaming',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+data = response.json()
+if data['streaming']:
+    print(f"Active stream: {len(data['content'])} chars, model: {data['model']}")
+    print(f"Client connected: {data['clientConnected']}")
+    print(f"Elapsed: {(time.time() * 1000 - data['startTime']) / 1000:.1f}s")
+else:
+    print("No active stream")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$conversationId = "conv_abc123"
+
+$status = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/streaming" -Headers $headers
+if ($status.streaming) {
+    Write-Output "Active stream: $($status.content.Length) chars, model: $($status.model)"
+    Write-Output "Client connected: $($status.clientConnected)"
+} else {
+    Write-Output "No active stream"
+}`,
+                javascript: `const conversationId = 'conv_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}/streaming\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => {
+  if (data.streaming) {
+    console.log(\`Active stream: \${data.content.length} chars, model: \${data.model}\`);
+    console.log(\`Client connected: \${data.clientConnected}\`);
+  } else {
+    console.log('No active stream');
+  }
+})
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id/streaming/cancel': {
+                curl: `# Cancel an active background stream and save partial response
+curl -k -X DELETE "${baseUrl}/api/conversations/conv_abc123/streaming" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X DELETE "${baseUrl}/api/conversations/conv_abc123/streaming" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Response: { "cancelled": true, "hadContent": true }
+# If no active stream: { "cancelled": false, "reason": "No active stream found" }`,
+                python: `import requests
+
+conversation_id = "conv_abc123"
+
+# Bearer Token Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}/streaming',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}/streaming',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+result = response.json()
+if result.get('cancelled'):
+    print(f"Stream cancelled (had content: {result['hadContent']})")
+    if result['hadContent']:
+        print("Partial response was saved to the conversation")
+else:
+    print(f"Not cancelled: {result.get('reason', 'unknown')}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$conversationId = "conv_abc123"
+
+$result = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/streaming" -Method Delete -Headers $headers
+if ($result.cancelled) {
+    Write-Output "Stream cancelled (had content: $($result.hadContent))"
+} else {
+    Write-Output "Not cancelled: $($result.reason)"
+}`,
+                javascript: `const conversationId = 'conv_abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}/streaming\`, {
+  method: 'DELETE',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(result => {
+  if (result.cancelled) {
+    console.log(\`Stream cancelled (had content: \${result.hadContent})\`);
+    if (result.hadContent) {
+      console.log('Partial response was saved to the conversation');
+    }
+  } else {
+    console.log(\`Not cancelled: \${result.reason}\`);
+  }
+})
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
             // APPS - START/STOP/RESTART
             // ============================================================================
             '/api/apps/:name/start': {
@@ -8650,6 +8812,8 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             <MenuItem value="/api/conversations/:id/update">PUT /api/conversations/:id - Update Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/delete">DELETE /api/conversations/:id - Delete Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/messages">POST /api/conversations/:id/messages - Add Message</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/streaming/cancel">DELETE /api/conversations/:id/streaming - Cancel Stream</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>
                                                             <MenuItem value="/api/apps">GET /api/apps - List Apps</MenuItem>
                                                             <MenuItem value="/api/apps/:name/start">POST /api/apps/:name/start - Start App</MenuItem>

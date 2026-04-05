@@ -4,7 +4,6 @@ import {
     Settings,
     LogOut,
     Circle,
-    Loader2,
     Check,
     Menu
 } from 'lucide-react';
@@ -17,7 +16,6 @@ export default function ChatHeader({
     selectedModel,
     onModelChange,
     onSettingsClick,
-    isLoading,
     user,
     onLogout,
     onMobileMenuClick,
@@ -186,13 +184,7 @@ export default function ChatHeader({
                     )}
                 </div>
 
-                {/* Loading indicator */}
-                {isLoading && (
-                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md" style={{ backgroundColor: 'rgba(var(--primary-rgb), 0.1)' }}>
-                        <Loader2 className="w-3 h-3 animate-spin" style={{ color: 'var(--accent-primary)' }} />
-                        <span className="text-[10px] font-medium" style={{ color: 'var(--accent-primary)' }}>Generating</span>
-                    </div>
-                )}
+
 
             </div>
 
