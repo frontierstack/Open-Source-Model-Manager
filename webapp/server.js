@@ -8412,14 +8412,76 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             }
         }
 
-        // For images, return as base64 data URL (for vision models)
+        // For images: convert to PNG if needed, run OCR, return both image and text
         if (mimeType?.startsWith('image/')) {
-            return res.json({
+            let imageDataUrl = `data:${mimeType};base64,${content}`;
+            let imageMimeType = mimeType;
+            let ocrText = '';
+
+            // Convert GIF/BMP/TIFF to PNG for model compatibility (most vision APIs only accept JPEG/PNG/WebP)
+            const needsConversion = ['image/gif', 'image/bmp', 'image/tiff'].includes(mimeType);
+            if (needsConversion) {
+                try {
+                    const { Jimp } = require('jimp');
+                    const buffer = Buffer.from(content, 'base64');
+                    const image = await Jimp.read(buffer);
+                    const pngBuffer = await image.getBuffer('image/png');
+                    const pngBase64 = pngBuffer.toString('base64');
+                    imageDataUrl = `data:image/png;base64,${pngBase64}`;
+                    imageMimeType = 'image/png';
+                    console.log(`[Chat Upload] Converted ${mimeType} to PNG (${pngBase64.length} base64 chars)`);
+                } catch (convErr) {
+                    console.error(`[Chat Upload] Image conversion failed for ${mimeType}:`, convErr.message);
+                    // Fall back to original format
+                }
+            }
+
+            // Attempt OCR text extraction via Tesseract CLI
+            try {
+                const { execFile } = require('child_process');
+                const { promisify } = require('util');
+                const execFileAsync = promisify(execFile);
+                const ocrTmpPath = `/tmp/ocr_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+
+                // Write image to temp file
+                const imgBuffer = Buffer.from(content, 'base64');
+                // Tesseract needs a file extension it recognizes
+                const ocrExt = ext || mimeType.split('/')[1] || 'png';
+                const ocrInputPath = `${ocrTmpPath}.${ocrExt}`;
+                await fs.writeFile(ocrInputPath, imgBuffer);
+
+                try {
+                    const { stdout } = await execFileAsync('tesseract', [ocrInputPath, 'stdout', '--psm', '3'], {
+                        timeout: 30000,
+                        maxBuffer: 5 * 1024 * 1024
+                    });
+                    ocrText = (stdout || '').trim();
+                    if (ocrText) {
+                        console.log(`[Chat Upload] OCR extracted ${ocrText.length} chars from ${filename}`);
+                    }
+                } finally {
+                    // Clean up temp file
+                    try { await fs.unlink(ocrInputPath); } catch (e) { /* ignore */ }
+                }
+            } catch (ocrErr) {
+                console.error(`[Chat Upload] OCR failed for ${filename}:`, ocrErr.message);
+                // OCR failure is not critical — continue without text
+            }
+
+            const result = {
                 type: 'image',
                 filename,
-                dataUrl: `data:${mimeType};base64,${content}`,
-                mimeType
-            });
+                dataUrl: imageDataUrl,
+                mimeType: imageMimeType
+            };
+
+            // If OCR extracted text, include it so the model can use it
+            if (ocrText) {
+                result.ocrText = ocrText;
+                result.content = `[OCR extracted text from ${filename}]\n${ocrText}`;
+            }
+
+            return res.json(result);
         }
 
         // Catch-all: Try to decode as text first, fallback to binary
