@@ -378,13 +378,18 @@ export default function ChatContainer({
         const textAttachments = attachedFiles?.filter(att => att.type !== 'image') || [];
         const imageAttachments = attachedFiles?.filter(att => att.type === 'image') || [];
 
-        // Build text content with embedded text attachments
+        // Build text content with embedded text attachments + OCR text from images
         let fullTextContent = content;
+        const textParts = [];
         if (textAttachments.length > 0) {
-            const attachmentContext = textAttachments
-                .map(att => `--- ${att.filename} ---\n${att.content}\n`)
-                .join('\n');
-            fullTextContent = `${attachmentContext}\n---\n\n${content}`;
+            textAttachments.forEach(att => textParts.push(`--- ${att.filename} ---\n${att.content}\n`));
+        }
+        // Include OCR text from images when available
+        imageAttachments.filter(att => att.content).forEach(att => {
+            textParts.push(`--- ${att.filename} ---\n${att.content}\n`);
+        });
+        if (textParts.length > 0) {
+            fullTextContent = `${textParts.join('\n')}\n---\n\n${content}`;
         }
 
         // Build API content - use vision format if there are images, otherwise string
@@ -473,7 +478,16 @@ export default function ChatContainer({
                     }
                 }
             } catch (error) {
-                if (error.name === 'AbortError') throw error;
+                if (error.name === 'AbortError') {
+                    // User stopped during web search - clean up and exit
+                    if (!switchingConversationRef.current) {
+                        showSnackbar('Generation stopped', 'info');
+                    }
+                    clearStreaming();
+                    abortControllerRef.current = null;
+                    switchingConversationRef.current = false;
+                    return;
+                }
                 console.error('Web search failed:', error);
             }
             // Clear search state after a delay

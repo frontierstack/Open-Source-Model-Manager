@@ -604,13 +604,20 @@ export default function ChatContainer({
         // Build message with attachments
         let fullContent = content;
         if (attachedFiles && attachedFiles.length > 0) {
-            const attachmentContext = attachedFiles
-                .filter(att => att.type !== 'image')
-                .map(att => `--- ${att.filename} ---\n${att.content}\n`)
-                .join('\n');
+            const textParts = [];
 
-            if (attachmentContext) {
-                fullContent = `${attachmentContext}\n---\n\n${content}`;
+            // Include non-image file content
+            attachedFiles
+                .filter(att => att.type !== 'image')
+                .forEach(att => textParts.push(`--- ${att.filename} ---\n${att.content}\n`));
+
+            // Include OCR text from images (if available)
+            attachedFiles
+                .filter(att => att.type === 'image' && att.content)
+                .forEach(att => textParts.push(`--- ${att.filename} ---\n${att.content}\n`));
+
+            if (textParts.length > 0) {
+                fullContent = `${textParts.join('\n')}\n---\n\n${content}`;
             }
         }
         // Handle URL fetching if enabled
@@ -705,7 +712,19 @@ export default function ChatContainer({
                         showSnackbar(`${statusMsg}, proceeding without fetched content`, 'warning');
                     }
                 } catch (error) {
-                    if (error.name === 'AbortError') throw error;
+                    if (error.name === 'AbortError') {
+                        // User stopped during URL fetch - clean up and exit
+                        if (!switchingConversationRef.current) {
+                            showSnackbar('Generation stopped', 'info');
+                        }
+                        setIsLoading(false);
+                        clearStreaming();
+                        clearProcessingStatus();
+                        streamingConversationRef.current = null;
+                        abortControllerRef.current = null;
+                        switchingConversationRef.current = false;
+                        return;
+                    }
                     console.error('URL fetch failed:', error);
                     const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
                         ? 'Network error - unable to reach URL fetch service'
@@ -903,7 +922,19 @@ export default function ChatContainer({
                     showSnackbar(`${statusMsg}, proceeding without search results`, 'warning');
                 }
             } catch (error) {
-                if (error.name === 'AbortError') throw error;
+                if (error.name === 'AbortError') {
+                    // User stopped during web search - clean up and exit
+                    if (!switchingConversationRef.current) {
+                        showSnackbar('Generation stopped', 'info');
+                    }
+                    setIsLoading(false);
+                    clearStreaming();
+                    clearProcessingStatus();
+                    streamingConversationRef.current = null;
+                    abortControllerRef.current = null;
+                    switchingConversationRef.current = false;
+                    return;
+                }
                 console.error('Web search failed:', error);
                 const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
                     ? 'Network error - unable to reach web search service'
