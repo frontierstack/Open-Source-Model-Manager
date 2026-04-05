@@ -8477,8 +8477,11 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
             // If OCR extracted text, include it so the model can use it
             if (ocrText) {
+                const ocrContent = `[OCR extracted text from ${filename}]\n${ocrText}`;
                 result.ocrText = ocrText;
-                result.content = `[OCR extracted text from ${filename}]\n${ocrText}`;
+                result.content = ocrContent;
+                result.charCount = ocrContent.length;
+                result.estimatedTokens = Math.ceil(ocrContent.length / 4);
             }
 
             return res.json(result);
