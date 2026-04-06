@@ -206,58 +206,6 @@ export default function ChatInput({
         }
     };
 
-    // Convert large pasted text into a file attachment to keep chat clean
-    const PASTE_AS_FILE_THRESHOLD = 500; // characters
-    const handlePaste = useCallback(async (e) => {
-        const pastedText = e.clipboardData?.getData('text/plain');
-        if (!pastedText || pastedText.length < PASTE_AS_FILE_THRESHOLD) return;
-
-        // Don't intercept if it contains files (e.g. pasting images)
-        if (e.clipboardData?.files?.length > 0) return;
-
-        e.preventDefault();
-
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        const filename = `pasted-text-${timestamp}.txt`;
-        const base64 = btoa(unescape(encodeURIComponent(pastedText)));
-
-        // Show uploading indicator
-        const uploadId = crypto.randomUUID();
-        setUploadingFiles(prev => [...prev, { id: uploadId, filename, size: pastedText.length }]);
-
-        try {
-            const response = await fetch('/api/chat/upload', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({
-                    filename,
-                    content: base64,
-                    mimeType: 'text/plain',
-                }),
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                onAddAttachment({
-                    id: crypto.randomUUID(),
-                    filename,
-                    size: pastedText.length,
-                    type: data.type,
-                    content: data.content,
-                    charCount: data.charCount,
-                    estimatedTokens: data.estimatedTokens,
-                    requiresChunking: data.requiresChunking,
-                    totalChunks: data.totalChunks,
-                });
-            }
-        } catch (error) {
-            console.error('Paste-as-file upload error:', error);
-        } finally {
-            setUploadingFiles(prev => prev.filter(f => f.id !== uploadId));
-        }
-    }, [onAddAttachment]);
-
     const handleFileSelect = useCallback(async (files) => {
         const fileArray = Array.from(files);
         // All file types are now allowed - no filtering
@@ -319,6 +267,67 @@ export default function ChatInput({
             reader.readAsDataURL(file);
         }
     }, [onAddAttachment]);
+
+    // Convert large pasted text or clipboard images into file attachments
+    const PASTE_AS_FILE_THRESHOLD = 500; // characters
+    const handlePaste = useCallback(async (e) => {
+        // Handle image/file paste from clipboard (e.g. screenshots, copied images)
+        if (e.clipboardData?.files?.length > 0) {
+            const files = Array.from(e.clipboardData.files);
+            const imageFiles = files.filter(f => f.type.startsWith('image/'));
+            if (imageFiles.length > 0) {
+                e.preventDefault();
+                handleFileSelect(imageFiles);
+                return;
+            }
+        }
+
+        // Large text paste → convert to file attachment
+        const pastedText = e.clipboardData?.getData('text/plain');
+        if (!pastedText || pastedText.length < PASTE_AS_FILE_THRESHOLD) return;
+
+        e.preventDefault();
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `pasted-text-${timestamp}.txt`;
+        const base64 = btoa(unescape(encodeURIComponent(pastedText)));
+
+        // Show uploading indicator
+        const uploadId = crypto.randomUUID();
+        setUploadingFiles(prev => [...prev, { id: uploadId, filename, size: pastedText.length }]);
+
+        try {
+            const response = await fetch('/api/chat/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    filename,
+                    content: base64,
+                    mimeType: 'text/plain',
+                }),
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                onAddAttachment({
+                    id: crypto.randomUUID(),
+                    filename,
+                    size: pastedText.length,
+                    type: data.type,
+                    content: data.content,
+                    charCount: data.charCount,
+                    estimatedTokens: data.estimatedTokens,
+                    requiresChunking: data.requiresChunking,
+                    totalChunks: data.totalChunks,
+                });
+            }
+        } catch (error) {
+            console.error('Paste-as-file upload error:', error);
+        } finally {
+            setUploadingFiles(prev => prev.filter(f => f.id !== uploadId));
+        }
+    }, [onAddAttachment, handleFileSelect]);
 
     const handleDrop = useCallback((e) => {
         e.preventDefault();

@@ -7784,6 +7784,46 @@ function optimizeContent(text, options = {}) {
 }
 
 // Extract links from text/HTML content - extracts both HTML anchor tags and plain URLs
+/**
+ * Convert HTML email body to readable plain text, preserving table data and structure
+ */
+function htmlToPlainText(html) {
+    if (!html || typeof html !== 'string') return '';
+    return html
+        // Table handling - preserve cell data with separators
+        .replace(/<\/th>/gi, ' | ')
+        .replace(/<\/td>/gi, ' | ')
+        .replace(/<\/tr>/gi, '\n')
+        .replace(/<\/table>/gi, '\n')
+        // List handling
+        .replace(/<li[^>]*>/gi, '• ')
+        .replace(/<\/li>/gi, '\n')
+        // Block elements
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<\/div>/gi, '\n')
+        .replace(/<\/h[1-6]>/gi, '\n\n')
+        .replace(/<hr[^>]*>/gi, '\n---\n')
+        // Strip remaining tags
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<[^>]+>/g, '')
+        // Decode common HTML entities
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/&dollar;/gi, '$')
+        .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)))
+        .replace(/&[a-zA-Z]+;/g, ' ')
+        // Clean up whitespace
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 function extractLinksFromText(text) {
     if (!text || typeof text !== 'string') return [];
 
@@ -8205,13 +8245,12 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 }
 
                 emailContent += '\n---\n\n';
-                // Convert HTML line breaks to newlines and strip remaining HTML tags
-                let cleanBodyText = bodyText
-                    .replace(/<br\s*\/?>/gi, '\n')
-                    .replace(/<\/p>/gi, '\n\n')
-                    .replace(/<\/div>/gi, '\n')
-                    .replace(/<[^>]+>/g, '');
-                emailContent += cleanBodyText;
+                // Use HTML body when available (contains tables, dollar amounts, details)
+                // Fall back to plain text body if no HTML
+                const htmlText = bodyHtml ? htmlToPlainText(bodyHtml) : '';
+                const plainText = bodyText.replace(/<[^>]+>/g, '').trim();
+                // Use whichever has more content (HTML usually has full details)
+                emailContent += (htmlText.length > plainText.length) ? htmlText : plainText;
 
                 // Include attachments info and extract content from attachments
                 if (fileData.attachments?.length > 0) {
@@ -8297,13 +8336,12 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 }
 
                 emailContent += '\n---\n\n';
-                // Convert HTML to clean text
-                let cleanBody = (bodyText || bodyHtml || '')
-                    .replace(/<br\s*\/?>/gi, '\n')
-                    .replace(/<\/p>/gi, '\n\n')
-                    .replace(/<\/div>/gi, '\n')
-                    .replace(/<[^>]+>/g, '');
-                emailContent += cleanBody;
+                // Use HTML body when available (contains tables, dollar amounts, details)
+                // Fall back to plain text body if no HTML
+                const htmlText = bodyHtml ? htmlToPlainText(bodyHtml) : '';
+                const plainText = (bodyText || '').trim();
+                // Use whichever has more content (HTML usually has full details)
+                emailContent += (htmlText.length > plainText.length) ? htmlText : plainText;
 
                 // Include attachments info and extract content from attachments
                 if (parsed.attachments?.length > 0) {
