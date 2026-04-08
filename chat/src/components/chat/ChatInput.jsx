@@ -708,12 +708,12 @@ export default function ChatInput({
                                     onClick={handleSend}
                                     disabled={!canSend}
                                     className={`
-                                        w-7 h-7 rounded-md
+                                        send-btn w-7 h-7 rounded-md
                                         flex items-center justify-center
                                         transition-all duration-150
                                         ${canSend
-                                            ? 'bg-primary-600 text-white hover:bg-primary-500 active:scale-95'
-                                            : 'bg-dark-700/30 text-dark-600 cursor-not-allowed'
+                                            ? 'send-btn-active active:scale-95'
+                                            : 'send-btn-disabled cursor-not-allowed'
                                         }
                                     `}
                                     aria-label="Send"

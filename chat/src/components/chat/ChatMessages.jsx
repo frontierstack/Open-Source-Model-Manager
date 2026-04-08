@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Sparkles } from 'lucide-react';
+import { MessageSquare } from 'lucide-react';
 import ChatMessage from './ChatMessage';
 import StatusIndicator from './StatusIndicator';
 
@@ -57,19 +57,9 @@ export default function ChatMessages({
         }
     }, [isStreaming]);
 
-    // Show empty state
+    // Empty state handled by ChatContainer for centered layout
     if (messages.length === 0 && !isStreaming) {
-        return (
-            <div className="flex-1 flex flex-col items-center justify-center p-6">
-                <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-primary-500/15 to-accent-500/15 flex items-center justify-center mb-3">
-                    <Sparkles className="w-5 h-5 text-primary-400/80" />
-                </div>
-                <h2 className="text-base font-medium text-dark-200 mb-1">Start a conversation</h2>
-                <p className="text-dark-500 text-center text-sm max-w-xs">
-                    Type a message below to begin
-                </p>
-            </div>
-        );
+        return null;
     }
 
     // Get chat style class

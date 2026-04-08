@@ -757,6 +757,30 @@ body.font-size-large .markdown-content,
         cursor: not-allowed;
         transform: none;
     }
+/* Send button - uses accent color, guaranteed visible across all themes */
+.send-btn-active {
+        background-color: var(--accent-primary);
+        color: #ffffff;
+    }
+.send-btn-active:hover {
+        background-color: var(--accent-hover);
+    }
+.send-btn-disabled {
+        background-color: var(--bg-hover);
+        color: var(--text-muted);
+    }
+/* Light theme send button override — accent-primary is gray, use blue */
+.theme-light .send-btn-active {
+        background-color: #3b82f6 !important;
+        color: #ffffff !important;
+    }
+.theme-light .send-btn-active:hover {
+        background-color: #2563eb !important;
+    }
+.theme-light .send-btn-disabled {
+        background-color: #e5e5e5 !important;
+        color: #a3a3a3 !important;
+    }
 /* Send button - compact */
 /* Sidebar styling - compact */
 .sidebar {
@@ -1144,9 +1168,6 @@ body.font-size-large .markdown-content,
 .h-10{
   height: 2.5rem;
 }
-.h-11{
-  height: 2.75rem;
-}
 .h-16{
   height: 4rem;
 }
@@ -1224,9 +1245,6 @@ body.font-size-large .markdown-content,
 }
 .w-10{
   width: 2.5rem;
-}
-.w-11{
-  width: 2.75rem;
 }
 .w-16{
   width: 4rem;
@@ -1306,6 +1324,9 @@ body.font-size-large .markdown-content,
 .min-w-max{
   min-width: -moz-max-content;
   min-width: max-content;
+}
+.max-w-2xl{
+  max-width: 42rem;
 }
 .max-w-4xl{
   max-width: 56rem;
@@ -1786,9 +1807,6 @@ body.font-size-large .markdown-content,
   --tw-bg-opacity: 1;
   background-color: rgb(63 63 70 / var(--tw-bg-opacity, 1));
 }
-.bg-dark-700\/30{
-  background-color: rgb(63 63 70 / 0.3);
-}
 .bg-dark-800{
   --tw-bg-opacity: 1;
   background-color: rgb(39 39 42 / var(--tw-bg-opacity, 1));
@@ -1856,9 +1874,6 @@ body.font-size-large .markdown-content,
 }
 .bg-primary-500{
   background-color: var(--accent-primary);
-}
-.bg-primary-600{
-  background-color: var(--accent-secondary);
 }
 .bg-purple-500\/15{
   background-color: rgb(168 85 247 / 0.15);
@@ -2069,6 +2084,9 @@ body.font-size-large .markdown-content,
 .pb-4{
   padding-bottom: 1rem;
 }
+.pb-\[10vh\]{
+  padding-bottom: 10vh;
+}
 .pl-1{
   padding-left: 0.25rem;
 }
@@ -2138,6 +2156,9 @@ body.font-size-large .markdown-content,
 }
 .text-\[13px\]{
   font-size: 13px;
+}
+.text-\[15px\]{
+  font-size: 15px;
 }
 .text-\[8px\]{
   font-size: 8px;
@@ -2397,6 +2418,11 @@ body.font-size-large .markdown-content,
 .backdrop-blur-xl{
   --tw-backdrop-blur: blur(24px);
   backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);
+}
+.transition{
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
 }
 .transition-all{
   transition-property: all;
@@ -3031,17 +3057,17 @@ body.font-size-large .markdown-content,
     --accent-hover: #71717a;
     --accent-muted: rgba(82, 82, 91, 0.08);
 
-    /* User messages - subtle warm gray tint */
-    --user-msg-from: #e8e8ec;
-    --user-msg-to: #dddde2;
-    --user-msg-hover-from: #dddde2;
-    --user-msg-hover-to: #d2d2d8;
-    --user-msg-text: #1a1a1a;
+    /* User messages - visible blue-gray tint that stands out from white bg */
+    --user-msg-from: #d5dce8;
+    --user-msg-to: #c8d2e2;
+    --user-msg-hover-from: #cad3e2;
+    --user-msg-hover-to: #bec9dc;
+    --user-msg-text: #1a1a2e;
 
-    /* Assistant message styling - slight warm gray to stand out from white page */
-    --assistant-bg: #f8f8f8;
-    --assistant-border: #e0e0e0;
-    --assistant-text: #2d2d2d;
+    /* Assistant message styling - visible distinction from page background */
+    --assistant-bg: #f0f1f4;
+    --assistant-border: #d4d6dc;
+    --assistant-text: #1f1f1f;
 
     /* Minimal scrollbar */
     --scrollbar-thumb: rgba(0, 0, 0, 0.15);
@@ -3327,6 +3353,68 @@ body.font-size-large .markdown-content,
 
 .theme-light .shadow-2xl {
     box-shadow: 0 8px 16px -4px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04) !important;
+}
+
+/* === Light theme: new opacity classes from modernized layout === */
+.theme-light .bg-white\/\[0\.04\],
+.theme-light .bg-white\/\[0\.05\] {
+    background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+.theme-light .bg-dark-700\/30,
+.theme-light .bg-dark-700\/40 {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+.theme-light .bg-dark-800\/70 {
+    background-color: #f0f0f0 !important;
+}
+
+.theme-light .border-dark-700\/40,
+.theme-light .border-white\/\[0\.04\] {
+    border-color: #d4d4d4 !important;
+}
+
+.theme-light .border-dark-600\/40 {
+    border-color: #c4c4c4 !important;
+}
+
+.theme-light .text-dark-600 {
+    color: #8a8a8a !important;
+}
+
+.theme-light .hover\\:bg-white\\/\[0\\.04\]:hover,
+.theme-light .hover\\:bg-white\\/\[0\\.05\]:hover {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+.theme-light .hover\\:text-dark-300:hover {
+    color: #404040 !important;
+}
+
+.theme-light .hover\\:border-dark-600\\/40:hover {
+    border-color: #b0b0b0 !important;
+}
+
+.theme-light .focus-within\\:border-primary-500\\/30:focus-within {
+    border-color: #3b82f6 !important;
+}
+
+.theme-light .placeholder\\:text-dark-600::-moz-placeholder {
+    color: #a3a3a3 !important;
+}
+
+.theme-light .placeholder\\:text-dark-600::placeholder {
+    color: #a3a3a3 !important;
+}
+
+/* === Light theme: input bar toggle buttons === */
+.theme-light .bg-blue-500\/12 {
+    background-color: rgba(59, 130, 246, 0.12) !important;
+}
+
+.theme-light .bg-emerald-500\/12 {
+    background-color: rgba(16, 185, 129, 0.12) !important;
 }
 
 /* ============================================
@@ -4083,6 +4171,44 @@ body.font-size-large .markdown-content,
     }
 }
 
+/* Chat input slide-down: centered position → bottom */
+@keyframes inputSlideDown {
+    0% {
+        transform: translateY(-35vh);
+        opacity: 0.5;
+    }
+    40% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Messages enter from slight offset */
+@keyframes messagesEnter {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-input-slide-down {
+    animation: inputSlideDown 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-messages-enter {
+    animation: messagesEnter 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
 @keyframes thinking {
     0%, 80%, 100% {
         transform: scale(0.8);
@@ -4796,9 +4922,6 @@ html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.c
 }
 .hover\:bg-green-500\/15:hover{
   background-color: rgb(34 197 94 / 0.15);
-}
-.hover\:bg-primary-500:hover{
-  background-color: var(--accent-primary);
 }
 .hover\:bg-primary-600:hover{
   background-color: var(--accent-secondary);

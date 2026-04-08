@@ -5,6 +5,24 @@ import ChatSidebar from './ChatSidebar';
 import ChatMessages from './ChatMessages';
 import ChatInput from './ChatInput';
 import ChatSettings from './ChatSettings';
+import { Sparkles } from 'lucide-react';
+
+// Track empty→messages transition for slide-down animation
+function useSlideTransition(isEmpty) {
+    const prevIsEmptyRef = useRef(isEmpty);
+    const [slideDown, setSlideDown] = useState(false);
+
+    useEffect(() => {
+        if (prevIsEmptyRef.current && !isEmpty) {
+            setSlideDown(true);
+            const timer = setTimeout(() => setSlideDown(false), 900);
+            return () => clearTimeout(timer);
+        }
+        prevIsEmptyRef.current = isEmpty;
+    }, [isEmpty]);
+
+    return slideDown;
+}
 
 /**
  * Parse <think> tags from content and separate thinking from response
@@ -126,6 +144,10 @@ export default function ChatContainer({
 
     // Use system prompts from store, falling back to initial props
     const systemPrompts = storeSystemPrompts?.length > 0 ? storeSystemPrompts : initialSystemPrompts;
+
+    // Slide-down animation when transitioning from empty to messages
+    const chatIsEmpty = messages.length === 0 && !isStreaming;
+    const slideDown = useSlideTransition(chatIsEmpty);
 
     // Load conversations on mount
     useEffect(() => {
@@ -1826,40 +1848,80 @@ export default function ChatContainer({
                     onMobileMenuClick={() => setMobileSidebarOpen(true)}
                 />
 
-                {/* Messages */}
-                <ChatMessages
-                    messages={messages}
-                    isStreaming={isStreaming}
-                    streamingContent={streamingContent}
-                    streamingReasoning={streamingReasoning}
-                    processingStatus={processingStatus}
-                    processingMessage={processingMessage}
-                    onContinue={handleContinueResponse}
-                    isLoading={isLoading}
-                    chatStyle={settings.chatStyle}
-                    messageBorderStrength={settings.messageBorderStrength}
-                />
+                {/* Content area - centered when empty, normal when messages */}
+                {chatIsEmpty ? (
+                    <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[10vh]">
+                        <div className="text-center mb-6">
+                            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500/12 to-accent-500/12 flex items-center justify-center mx-auto mb-3">
+                                <Sparkles className="w-5 h-5 text-primary-400/60" />
+                            </div>
+                            <h2 className="text-[15px] font-medium text-dark-300">Start a conversation</h2>
+                            <p className="text-dark-600 text-sm mt-0.5">Type a message below</p>
+                        </div>
+                        <div className="w-full max-w-2xl">
+                            <ChatInput
+                                onSend={handleSendMessage}
+                                onStop={handleStopGeneration}
+                                isStreaming={isStreaming}
+                                disabled={!settings.model}
+                                attachments={attachments}
+                                onAddAttachment={addAttachment}
+                                onRemoveAttachment={removeAttachment}
+                                onClearAllAttachments={clearAttachments}
+                                systemPrompts={systemPrompts}
+                                selectedSystemPromptId={settings.selectedSystemPromptId}
+                                onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
+                                webSearchEnabled={settings.webSearchEnabled}
+                                onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
+                                urlFetchEnabled={settings.urlFetchEnabled}
+                                onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
+                                messages={messages}
+                                maxContextTokens={selectedModelContextSize}
+                            />
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        {/* Messages */}
+                        <div className={slideDown ? 'flex-1 overflow-hidden animate-messages-enter' : 'flex-1 overflow-hidden flex flex-col'}>
+                            <ChatMessages
+                                messages={messages}
+                                isStreaming={isStreaming}
+                                streamingContent={streamingContent}
+                                streamingReasoning={streamingReasoning}
+                                processingStatus={processingStatus}
+                                processingMessage={processingMessage}
+                                onContinue={handleContinueResponse}
+                                isLoading={isLoading}
+                                chatStyle={settings.chatStyle}
+                                messageBorderStrength={settings.messageBorderStrength}
+                            />
+                        </div>
 
-                {/* Input */}
-                <ChatInput
-                    onSend={handleSendMessage}
-                    onStop={handleStopGeneration}
-                    isStreaming={isStreaming}
-                    disabled={!settings.model}
-                    attachments={attachments}
-                    onAddAttachment={addAttachment}
-                    onRemoveAttachment={removeAttachment}
-                    onClearAllAttachments={clearAttachments}
-                    systemPrompts={systemPrompts}
-                    selectedSystemPromptId={settings.selectedSystemPromptId}
-                    onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
-                    webSearchEnabled={settings.webSearchEnabled}
-                    onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
-                    urlFetchEnabled={settings.urlFetchEnabled}
-                    onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
-                    messages={messages}
-                    maxContextTokens={selectedModelContextSize}
-                />
+                        {/* Input - slides down from center on first message */}
+                        <div className={slideDown ? 'animate-input-slide-down' : ''}>
+                            <ChatInput
+                                onSend={handleSendMessage}
+                                onStop={handleStopGeneration}
+                                isStreaming={isStreaming}
+                                disabled={!settings.model}
+                                attachments={attachments}
+                                onAddAttachment={addAttachment}
+                                onRemoveAttachment={removeAttachment}
+                                onClearAllAttachments={clearAttachments}
+                                systemPrompts={systemPrompts}
+                                selectedSystemPromptId={settings.selectedSystemPromptId}
+                                onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
+                                webSearchEnabled={settings.webSearchEnabled}
+                                onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
+                                urlFetchEnabled={settings.urlFetchEnabled}
+                                onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
+                                messages={messages}
+                                maxContextTokens={selectedModelContextSize}
+                            />
+                        </div>
+                    </>
+                )}
             </div>
 
             {/* Settings drawer */}
