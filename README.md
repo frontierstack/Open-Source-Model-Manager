@@ -186,58 +186,57 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| Webapp | 3001 | HTTPS — Web UI & API |
-| Chat | 3002 | HTTPS — Chat interface |
-| Models | 8001+ | Dynamic model instances (localhost only) |
-
-### Backend Settings
-
-**llama.cpp** — Older GPUs, CPU offload
-```
-GPU Layers: -1 (all) | Context: 4096 | Cache: f16/q8_0/q4_0 | Parallel Slots: 1-8
-```
-
-**vLLM** — Newer GPUs, high throughput
-```
-Max Model Len: 4096 | GPU Memory: 0.9 | Tensor Parallel: 1 | Max Seqs: 256
-```
+| Webapp | 3001 | HTTPS — Management UI, REST API, WebSocket, OpenAI-compatible endpoints |
+| Chat | 3002 | HTTPS — Lightweight chat-only interface (proxies to Webapp API) |
+| Models | 8001+ | Model inference instances, bound to localhost only (not network-exposed) |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          Client Layer                           │
-│                                                                 │
-│  Browser ─── HTTPS ──→ Web UI (:3001)                          │
-│  Browser ─── HTTPS ──→ Chat UI (:3002)                         │
-│  Terminal ── HTTPS ──→ Koda TUI (:3001/api)                    │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                       Application Layer                         │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              Webapp Container (:3001)                    │   │
-│  │  React Frontend · Express API · WebSocket Server        │   │
-│  │  Auth & Sessions · Agent & Skills (77 skills)           │   │
-│  │  Docker Integration · OpenAI-Compatible Endpoints       │   │
-│  │  Map-Reduce Chunking · Web Scraping (Scrapling)         │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              Chat Container (:3002)                      │   │
-│  │  React + Tailwind · 20 Themes · 7 Layouts               │   │
-│  │  Vision & Thinking Models · File Attachments · OCR      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                    Container Orchestration                       │
-│                                                                 │
-│  Docker Engine ──┬── llamacpp-* (Maxwell 5.2+, GGUF)           │
-│                  └── vllm-* (Pascal 6.0+, GGUF/HuggingFace)   │
-│                                                                 │
-│  NVIDIA GPU(s) · CUDA 12.1 · Shared VRAM                      │
-└─────────────────────────────────────────────────────────────────┘
+                    ┌───────────┐  ┌───────────┐  ┌───────────┐
+                    │  Browser  │  │  Browser  │  │ Terminal  │
+                    └─────┬─────┘  └─────┬─────┘  └─────┬─────┘
+                          │              │              │
+                        HTTPS          HTTPS          HTTPS
+                          │              │              │
+          ┌───────────────┼──────────────┼──────────────┼───────────────┐
+          │               ▼              ▼              ▼               │
+          │  ┌────────────────────┐ ┌──────────┐ ┌───────────────┐     │
+          │  │   Webapp  :3001   │ │Chat :3002│ │  Koda TUI     │     │
+          │  │                    │ │          │ │  (API client) │     │
+          │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
+          │  │  Express API       │ │ Tailwind │         │             │
+          │  │  WebSocket Server  │ │ 20 Themes│   :3001/api           │
+          │  │  77 Skills Engine  │ │ 7 Layouts│         │             │
+          │  │  OpenAI Endpoints  │ │ OCR/File │         │             │
+          │  │  Web Scraping      │ │ Uploads  │         │             │
+          │  │  Map-Reduce        │ └────┬─────┘         │             │
+          │  │  Docker Integration│      │               │             │
+          │  └─────────┬──────────┘      │               │             │
+          │            │◄────────────────┘───────────────┘             │
+          │            │                                               │
+          │            ▼                                               │
+          │  ┌──────────────────┐                                      │
+          │  │  Docker Engine   │                                      │
+          │  └────────┬─────────┘                                      │
+          │           │                                                │
+          │     ┌─────┴──────┐                                         │
+          │     ▼            ▼                                         │
+          │  ┌────────┐  ┌────────┐                                    │
+          │  │llamacpp│  │  vllm  │  Dynamic instances on :8001+       │
+          │  │Maxwell │  │Pascal  │  Bound to localhost only           │
+          │  │ 5.2+   │  │ 6.0+  │  Models mounted read-only          │
+          │  └────┬───┘  └───┬────┘                                    │
+          │       └─────┬────┘                                         │
+          │             ▼                                               │
+          │  ┌──────────────────┐                                      │
+          │  │  NVIDIA GPU(s)   │                                      │
+          │  │  CUDA 12.1       │                                      │
+          │  │  Shared VRAM     │                                      │
+          │  └──────────────────┘                                      │
+          └────────────────────────────────────────────────────────────┘
 ```
 
 **Data Persistence:** All user data stored in `./models/.modelserver/` as JSON files (agents, skills, conversations, API keys with AES-256-GCM encryption). Model containers mount `./models` read-only.
