@@ -151,25 +151,24 @@ export default function ChatSidebar({
         <div
             key={conv.id}
             onClick={() => handleSelectConversation(conv.id)}
-            className={`group relative flex items-center rounded-lg cursor-pointer transition-all duration-150 ${
+            className={`group relative flex items-center rounded-md cursor-pointer transition-all duration-150 ${
                 activeConversationId === conv.id
-                    ? 'bg-white/[0.08] border-l-2'
-                    : 'hover:bg-white/[0.05] border-l-2 border-transparent'
-            } ${collapsed ? 'justify-center p-2.5 mx-1.5' : 'px-3 py-2 mx-1.5'}`}
-            style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)', backgroundColor: 'rgba(var(--primary-rgb), 0.12)' } : {}}
+                    ? 'bg-white/[0.07] border-l-2'
+                    : 'hover:bg-white/[0.04] border-l-2 border-transparent'
+            } ${collapsed ? 'justify-center p-2 mx-1' : 'px-2 py-1.5 mx-1'}`}
+            style={activeConversationId === conv.id ? { borderColor: 'var(--accent-primary)', backgroundColor: 'rgba(var(--primary-rgb), 0.10)' } : {}}
         >
             {collapsed ? (
                 <div className="relative group/icon">
                     <div
-                        className={`w-7 h-7 rounded-md flex items-center justify-center transition-all ${
+                        className={`w-6 h-6 rounded flex items-center justify-center transition-all ${
                             activeConversationId === conv.id
-                                ? 'bg-gradient-to-br from-white/15 to-white/5'
-                                : 'bg-white/5 group-hover:bg-white/10'
+                                ? 'bg-white/10'
+                                : 'bg-white/[0.04] group-hover:bg-white/[0.08]'
                         }`}
-                        style={activeConversationId === conv.id ? { boxShadow: '0 0 8px rgba(var(--primary-rgb), 0.25)' } : {}}
                     >
                         <MessageSquare
-                            className="w-3.5 h-3.5 text-dark-400"
+                            className="w-3 h-3 text-dark-400"
                             style={activeConversationId === conv.id ? { color: 'var(--accent-primary)' } : {}}
                         />
                     </div>
@@ -204,63 +203,51 @@ export default function ChatSidebar({
             ) : (
                 <>
                     <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2.5">
-                            <div
-                                className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-all ${
-                                    activeConversationId === conv.id
-                                        ? 'bg-gradient-to-br from-white/15 to-white/5'
-                                        : 'bg-white/5'
-                                }`}
-                            >
-                                <MessageSquare
-                                    className="w-4 h-4 text-dark-400"
-                                    style={activeConversationId === conv.id ? { color: 'var(--accent-primary)' } : {}}
-                                />
-                            </div>
+                        <div className="flex items-center gap-2">
                             <div className="flex-1 min-w-0">
                                 <span
-                                    className={`text-sm truncate block font-medium ${
-                                        activeConversationId === conv.id ? 'text-dark-100' : 'text-dark-200'
+                                    className={`text-[13px] truncate block ${
+                                        activeConversationId === conv.id ? 'font-medium text-dark-100' : 'text-dark-300'
                                     }`}
                                 >
                                     {conv.title || 'New Conversation'}
                                 </span>
-                                <span className="text-[10px] text-dark-500 truncate block">
-                                    {conv.messageCount || conv.messages?.length || 0} messages
+                                <span className="text-[10px] text-dark-600 truncate block">
+                                    {conv.messageCount || conv.messages?.length || 0} msgs
                                 </span>
                             </div>
                             {conv.favorite && (
-                                <Star className="w-3.5 h-3.5 flex-shrink-0 fill-yellow-400 text-yellow-400" />
+                                <Star className="w-3 h-3 flex-shrink-0 fill-yellow-400/80 text-yellow-400/80" />
                             )}
                         </div>
                     </div>
 
                     {/* Action buttons - show on hover */}
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all bg-dark-900/95 backdrop-blur-md rounded-lg p-1 border border-white/10 shadow-xl">
+                    <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-px opacity-0 group-hover:opacity-100 transition-all bg-dark-900/95 backdrop-blur-md rounded-md p-0.5 border border-white/[0.08] shadow-lg">
                         <button
                             onClick={(e) => handleToggleFavorite(conv.id, e)}
-                            className={`p-1.5 rounded-md transition-all ${
+                            className={`p-1 rounded transition-all ${
                                 conv.favorite
                                     ? 'text-yellow-400 hover:bg-yellow-500/20'
-                                    : 'text-dark-400 hover:text-yellow-400 hover:bg-white/10'
+                                    : 'text-dark-500 hover:text-yellow-400 hover:bg-white/[0.08]'
                             }`}
-                            title={conv.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                            title={conv.favorite ? 'Unfavorite' : 'Favorite'}
                         >
-                            <Star className={`w-3.5 h-3.5 ${conv.favorite ? 'fill-current' : ''}`} />
+                            <Star className={`w-3 h-3 ${conv.favorite ? 'fill-current' : ''}`} />
                         </button>
                         <button
                             onClick={(e) => handleStartEdit(conv, e)}
-                            className="p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-all"
+                            className="p-1 rounded hover:bg-white/[0.08] text-dark-500 hover:text-dark-200 transition-all"
                             title="Rename"
                         >
-                            <Edit3 className="w-3.5 h-3.5" />
+                            <Edit3 className="w-3 h-3" />
                         </button>
                         <button
                             onClick={(e) => handleDelete(conv.id, e)}
-                            className="p-1.5 rounded-md hover:bg-red-500/20 text-dark-400 hover:text-red-400 transition-all"
+                            className="p-1 rounded hover:bg-red-500/15 text-dark-500 hover:text-red-400 transition-all"
                             title="Delete"
                         >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="w-3 h-3" />
                         </button>
                     </div>
                 </>
@@ -271,55 +258,55 @@ export default function ChatSidebar({
     const sidebarContent = (
         <>
             {/* Header */}
-            <div className="flex items-center justify-between px-3 py-3.5 border-b border-white/[0.06]">
+            <div className="flex items-center justify-between px-2.5 py-2 border-b border-white/[0.04]">
                 {!collapsed && (
-                    <h2 className="text-[13px] font-semibold text-dark-100 tracking-tight">
+                    <h2 className="text-[12px] font-semibold text-dark-200 tracking-tight uppercase">
                         Chats
                     </h2>
                 )}
                 <button
                     onClick={() => setCollapsed(!collapsed)}
-                    className={`p-2 rounded-lg hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-all ${collapsed ? 'mx-auto' : 'ml-auto'}`}
+                    className={`p-1.5 rounded-md hover:bg-white/[0.06] text-dark-500 hover:text-dark-300 transition-all ${collapsed ? 'mx-auto' : 'ml-auto'}`}
                     title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                 >
-                    {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+                    {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronLeft className="w-3.5 h-3.5" />}
                 </button>
             </div>
 
             {/* New Chat Button */}
-            <div className={`p-2 ${collapsed ? 'px-1.5' : 'px-3'}`}>
+            <div className={`px-1.5 py-1.5 ${collapsed ? 'px-1' : ''}`}>
                 <button
                     onClick={handleNewConversation}
-                    className={`flex items-center gap-2 rounded-lg font-medium transition-all duration-150 ${
+                    className={`flex items-center gap-1.5 rounded-md font-medium transition-all duration-150 ${
                         collapsed
-                            ? 'justify-center w-8 h-8 mx-auto hover:bg-white/10 text-dark-300 hover:text-dark-100'
-                            : 'w-full px-3 py-2 hover:bg-white/[0.07] text-dark-300 hover:text-dark-100'
+                            ? 'justify-center w-7 h-7 mx-auto hover:bg-white/[0.06] text-dark-400 hover:text-dark-200'
+                            : 'w-full px-2.5 py-1.5 hover:bg-white/[0.05] text-dark-400 hover:text-dark-200'
                     }`}
                     title="New Chat"
                 >
-                    <Plus className="flex-shrink-0 w-4 h-4" />
-                    {!collapsed && <span className="text-[13px]">New Chat</span>}
+                    <Plus className="flex-shrink-0 w-3.5 h-3.5" strokeWidth={2} />
+                    {!collapsed && <span className="text-[12px]">New Chat</span>}
                 </button>
             </div>
 
             {/* Search */}
             {!collapsed && (
-                <div className="px-3 pb-2">
+                <div className="px-2 pb-1.5">
                     <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" />
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-600" />
                         <input
                             type="text"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder="Search conversations..."
-                            className="w-full pl-9 pr-8 py-2 text-sm bg-dark-800/50 border border-white/[0.06] rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-white/15 focus:ring-2 focus:ring-primary-500/10 transition-all"
+                            placeholder="Search..."
+                            className="w-full pl-8 pr-7 py-1.5 text-[12px] bg-dark-800/40 border border-white/[0.04] rounded-md text-dark-200 placeholder-dark-600 focus:outline-none focus:border-white/[0.1] focus:ring-1 focus:ring-primary-500/10 transition-all"
                         />
                         {searchQuery && (
                             <button
                                 onClick={() => setSearchQuery('')}
-                                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 hover:bg-white/10 rounded-lg text-dark-400 hover:text-dark-200 transition-colors"
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 hover:bg-white/[0.08] rounded text-dark-500 hover:text-dark-300 transition-colors"
                             >
-                                <X className="w-3.5 h-3.5" />
+                                <X className="w-3 h-3" />
                             </button>
                         )}
                     </div>
@@ -327,15 +314,13 @@ export default function ChatSidebar({
             )}
 
             {/* Conversation List */}
-            <div className="flex-1 overflow-y-auto pb-3 space-y-0.5 scrollbar-thin scrollbar-thumb-dark-700 scrollbar-track-transparent">
+            <div className="flex-1 overflow-y-auto pb-2 scrollbar-thin scrollbar-thumb-dark-700 scrollbar-track-transparent">
                 {!conversations || conversations.length === 0 ? (
                     !collapsed && (
-                        <div className="px-4 py-16 text-center">
-                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-dark-800/80 to-dark-800/40 flex items-center justify-center mx-auto mb-4 border border-white/5">
-                                <MessageSquare className="w-8 h-8 text-dark-500" />
-                            </div>
-                            <p className="text-sm font-medium text-dark-300">No conversations yet</p>
-                            <p className="text-xs text-dark-500 mt-1.5">Start a new chat to begin</p>
+                        <div className="px-3 py-10 text-center">
+                            <MessageSquare className="w-6 h-6 text-dark-600 mx-auto mb-2" />
+                            <p className="text-[12px] text-dark-400">No conversations</p>
+                            <p className="text-[11px] text-dark-600 mt-0.5">Start a new chat</p>
                         </div>
                     )
                 ) : (
@@ -351,14 +336,12 @@ export default function ChatSidebar({
                             <>
                                 {/* Favorites Section */}
                                 {favoriteConversations.length > 0 && (
-                                    <div className="mb-2 pt-1">
-                                        <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-medium text-dark-500/70 uppercase tracking-wider">
-                                            <Star className="w-3 h-3 fill-yellow-400/60 text-yellow-400/60" />
+                                    <div className="mb-1">
+                                        <div className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-medium text-dark-600 uppercase tracking-wider">
+                                            <Star className="w-2.5 h-2.5 fill-yellow-400/50 text-yellow-400/50" />
                                             Favorites
                                         </div>
-                                        <div className="space-y-0.5">
-                                            {favoriteConversations.map(conv => renderConversationItem(conv))}
-                                        </div>
+                                        {favoriteConversations.map(conv => renderConversationItem(conv))}
                                     </div>
                                 )}
 
@@ -368,16 +351,13 @@ export default function ChatSidebar({
                                     if (!convs || convs.length === 0) return null;
 
                                     return (
-                                        <div key={category} className="mb-2 pt-1">
-                                            <div className="flex items-center gap-2 px-4 py-2 text-[10px] font-medium text-dark-500/70 uppercase tracking-wider">
-                                                {category === 'Today' && <Clock className="w-3 h-3" />}
-                                                {category === 'Yesterday' && <Clock className="w-3 h-3" />}
-                                                {(category === 'Previous 7 Days' || category === 'Previous 30 Days' || category === 'Older') && <Calendar className="w-3 h-3" />}
+                                        <div key={category} className="mb-1">
+                                            <div className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-medium text-dark-600 uppercase tracking-wider">
+                                                {(category === 'Today' || category === 'Yesterday') && <Clock className="w-2.5 h-2.5" />}
+                                                {(category === 'Previous 7 Days' || category === 'Previous 30 Days' || category === 'Older') && <Calendar className="w-2.5 h-2.5" />}
                                                 {category}
                                             </div>
-                                            <div className="space-y-0.5">
-                                                {convs.map(conv => renderConversationItem(conv))}
-                                            </div>
+                                            {convs.map(conv => renderConversationItem(conv))}
                                         </div>
                                     );
                                 })}
@@ -401,8 +381,8 @@ export default function ChatSidebar({
 
             {/* Desktop Sidebar */}
             <aside
-                className={`hidden md:flex flex-col bg-dark-900 border-r border-white/[0.06] transition-all duration-300 ease-out ${
-                    collapsed ? 'w-[56px]' : 'w-80'
+                className={`hidden md:flex flex-col bg-dark-900/95 border-r border-white/[0.04] transition-all duration-300 ease-out ${
+                    collapsed ? 'w-[48px]' : 'w-72'
                 }`}
             >
                 {sidebarContent}
@@ -410,7 +390,7 @@ export default function ChatSidebar({
 
             {/* Mobile Sidebar (Drawer) */}
             <aside
-                className={`fixed md:hidden inset-y-0 left-0 z-50 flex flex-col w-80 bg-dark-900 border-r border-white/[0.06] transition-transform duration-300 ease-out ${
+                className={`fixed md:hidden inset-y-0 left-0 z-50 flex flex-col w-72 bg-dark-900/95 border-r border-white/[0.04] transition-transform duration-300 ease-out ${
                     isMobileOpen ? 'translate-x-0' : '-translate-x-full'
                 }`}
             >

@@ -431,14 +431,14 @@ export default function ChatInput({
             )}
 
             {/* Floating input container */}
-            <div className="p-3 pb-4 bg-gradient-to-t from-dark-950 via-dark-950/95 to-transparent">
-                <div className="max-w-3xl mx-auto">
+            <div className="px-3 pt-1.5 pb-2.5 bg-gradient-to-t from-dark-950 via-dark-950/95 to-transparent">
+                <div className="max-w-4xl mx-auto">
                     {/* Attachment preview cards */}
                     {(attachments.length > 0 || uploadingFiles.length > 0) && (
-                        <div className="mb-2">
-                            <div className="flex items-center justify-between mb-1">
+                        <div className="mb-1.5">
+                            <div className="flex items-center justify-between mb-0.5">
                                 <span className="text-[10px] text-dark-500 font-medium">
-                                    {attachments.length} file{attachments.length !== 1 ? 's' : ''} attached
+                                    {attachments.length} file{attachments.length !== 1 ? 's' : ''}
                                     {attachments.length > 0 && (
                                         <span className="ml-1 text-dark-600">
                                             ({(attachments.reduce((sum, a) => sum + (a.charCount || 0), 0) / 1000).toFixed(1)}k chars)
@@ -448,13 +448,13 @@ export default function ChatInput({
                                 {attachments.length > 1 && onClearAllAttachments && (
                                     <button
                                         onClick={onClearAllAttachments}
-                                        className="text-[10px] text-red-400 hover:text-red-300 transition-colors"
+                                        className="text-[10px] text-red-400/80 hover:text-red-300 transition-colors"
                                     >
                                         Clear all
                                     </button>
                                 )}
                             </div>
-                            <div className="flex flex-wrap gap-1.5" role="list">
+                            <div className="flex flex-wrap gap-1" role="list">
                                 {/* Uploading files */}
                                 {uploadingFiles.map((file) => (
                                     <div
@@ -498,12 +498,12 @@ export default function ChatInput({
                     {/* Main input bar */}
                     <div
                         className={`
-                            relative flex items-end gap-1.5 p-1.5 pl-2 rounded-xl
-                            bg-dark-800/80 backdrop-blur-xl
-                            border transition-all duration-200 shadow-lg shadow-dark-950/30
+                            relative flex items-end gap-0.5 p-1 pl-1.5 rounded-lg
+                            bg-dark-800/70 backdrop-blur-xl
+                            border transition-all duration-200 shadow-md shadow-dark-950/20
                             ${isDragOver
-                                ? 'border-primary-500/60 ring-2 ring-primary-500/15 bg-primary-500/5'
-                                : 'border-dark-700/50 hover:border-dark-600/50 focus-within:border-primary-500/40'
+                                ? 'border-primary-500/50 ring-1 ring-primary-500/10 bg-primary-500/5'
+                                : 'border-dark-700/40 hover:border-dark-600/40 focus-within:border-primary-500/30'
                             }
                         `}
                         onDrop={handleDrop}
@@ -525,46 +525,46 @@ export default function ChatInput({
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             disabled={disabled || isStreaming}
-                            className="flex-shrink-0 p-1.5 rounded-lg text-dark-400
-                                       hover:text-dark-200 hover:bg-dark-700/50
-                                       disabled:opacity-40 disabled:cursor-not-allowed
+                            className="flex-shrink-0 p-1.5 rounded-md text-dark-500
+                                       hover:text-dark-300 hover:bg-white/[0.05]
+                                       disabled:opacity-30 disabled:cursor-not-allowed
                                        transition-all duration-150"
                             aria-label="Attach files"
                             title="Attach files"
                         >
-                            <Paperclip className="w-4 h-4" />
+                            <Paperclip className="w-[15px] h-[15px]" strokeWidth={1.75} />
                         </button>
 
                         {/* Web search toggle */}
                         <button
                             onClick={onWebSearchToggle}
                             disabled={disabled || isStreaming}
-                            className={`flex-shrink-0 p-1.5 rounded-lg transition-all duration-150
-                                       disabled:opacity-40 disabled:cursor-not-allowed
+                            className={`flex-shrink-0 p-1.5 rounded-md transition-all duration-150
+                                       disabled:opacity-30 disabled:cursor-not-allowed
                                        ${webSearchEnabled
-                                           ? 'text-blue-400 bg-blue-500/15'
-                                           : 'text-dark-400 hover:text-dark-200 hover:bg-dark-700/50'
+                                           ? 'text-blue-400 bg-blue-500/12'
+                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/[0.05]'
                                        }`}
                             aria-label={webSearchEnabled ? 'Disable web search' : 'Enable web search'}
                             title={webSearchEnabled ? 'Web search on' : 'Web search off'}
                         >
-                            <Globe className="w-4 h-4" />
+                            <Globe className="w-[15px] h-[15px]" strokeWidth={1.75} />
                         </button>
 
                         {/* URL fetch toggle */}
                         <button
                             onClick={onUrlFetchToggle}
                             disabled={disabled || isStreaming}
-                            className={`flex-shrink-0 p-1.5 rounded-lg transition-all duration-150
-                                       disabled:opacity-40 disabled:cursor-not-allowed
+                            className={`flex-shrink-0 p-1.5 rounded-md transition-all duration-150
+                                       disabled:opacity-30 disabled:cursor-not-allowed
                                        ${urlFetchEnabled
-                                           ? 'text-emerald-400 bg-emerald-500/15'
-                                           : 'text-dark-400 hover:text-dark-200 hover:bg-dark-700/50'
+                                           ? 'text-emerald-400 bg-emerald-500/12'
+                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/[0.05]'
                                        }`}
                             aria-label={urlFetchEnabled ? 'Disable URL fetch' : 'Enable URL fetch'}
-                            title={urlFetchEnabled ? 'URL fetch on - URLs in messages will be fetched' : 'URL fetch off'}
+                            title={urlFetchEnabled ? 'URL fetch on' : 'URL fetch off'}
                         >
-                            <Link2 className="w-4 h-4" />
+                            <Link2 className="w-[15px] h-[15px]" strokeWidth={1.75} />
                         </button>
 
                         {/* System prompt selector */}
@@ -574,19 +574,19 @@ export default function ChatInput({
                                     onClick={() => setPromptDropdownOpen(!promptDropdownOpen)}
                                     disabled={disabled || isStreaming}
                                     className={`
-                                        flex items-center gap-1 px-1.5 py-1 rounded-lg
+                                        flex items-center gap-0.5 px-1.5 py-1 rounded-md
                                         text-[10px] font-medium
                                         transition-all duration-150
-                                        disabled:opacity-40 disabled:cursor-not-allowed
+                                        disabled:opacity-30 disabled:cursor-not-allowed
                                         ${selectedPrompt
-                                            ? 'bg-primary-500/15 text-primary-300'
-                                            : 'text-dark-400 hover:text-dark-200 hover:bg-dark-700/50'
+                                            ? 'bg-primary-500/12 text-primary-300'
+                                            : 'text-dark-500 hover:text-dark-300 hover:bg-white/[0.05]'
                                         }
                                     `}
                                     aria-label="Select system prompt"
                                     title={selectedPrompt ? selectedPrompt.name : 'System prompt'}
                                 >
-                                    <ScrollText className="w-3 h-3" />
+                                    <ScrollText className="w-3 h-3" strokeWidth={1.75} />
                                     <span className="max-w-[60px] truncate hidden sm:inline">
                                         {selectedPrompt ? selectedPrompt.name : 'Prompt'}
                                     </span>
@@ -680,40 +680,40 @@ export default function ChatInput({
                             placeholder={isDragOver ? 'Drop files...' : 'Message...'}
                             disabled={disabled}
                             rows={1}
-                            className="flex-1 bg-transparent text-dark-100 placeholder:text-dark-500
-                                       resize-y focus:outline-none py-2 px-1 text-sm
-                                       max-h-[400px] min-h-[36px] leading-relaxed"
+                            className="flex-1 bg-transparent text-dark-100 placeholder:text-dark-600
+                                       resize-y focus:outline-none py-1.5 px-1.5 text-sm
+                                       max-h-[400px] min-h-[32px] leading-relaxed"
                             style={{ height: 'auto' }}
                             aria-label="Message input"
                         />
 
                         {/* Send/Stop button */}
-                        <div className="flex-shrink-0">
+                        <div className="flex-shrink-0 mb-px">
                             {isStreaming ? (
                                 <button
                                     onClick={onStop}
-                                    className="w-7 h-7 rounded-lg
-                                               bg-red-500/20 text-red-400
-                                               hover:bg-red-500/30
+                                    className="w-7 h-7 rounded-md
+                                               bg-red-500/15 text-red-400
+                                               hover:bg-red-500/25
                                                active:scale-95
                                                flex items-center justify-center
                                                transition-all duration-150"
                                     aria-label="Stop"
                                     title="Stop"
                                 >
-                                    <Square className="w-3 h-3 fill-current" />
+                                    <Square className="w-2.5 h-2.5 fill-current" />
                                 </button>
                             ) : (
                                 <button
                                     onClick={handleSend}
                                     disabled={!canSend}
                                     className={`
-                                        w-8 h-8 rounded-lg
+                                        w-7 h-7 rounded-md
                                         flex items-center justify-center
                                         transition-all duration-150
                                         ${canSend
                                             ? 'bg-primary-600 text-white hover:bg-primary-500 active:scale-95'
-                                            : 'bg-dark-700/50 text-dark-500 cursor-not-allowed'
+                                            : 'bg-dark-700/30 text-dark-600 cursor-not-allowed'
                                         }
                                     `}
                                     aria-label="Send"
@@ -741,37 +741,34 @@ export default function ChatInput({
                     </div>
 
                     {/* Context window status */}
-                    <div className="flex items-center justify-between mt-1.5 px-1">
-                        <div className="flex items-center gap-2 text-[10px] text-dark-500">
-                            <MessageCircle className="w-3 h-3" />
-                            <span>{contextStats.messageCount} messages</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <div className="flex items-center gap-1.5">
-                                <div className="w-20 h-1.5 bg-dark-800 rounded-full overflow-hidden">
-                                    <div
-                                        className={`h-full rounded-full transition-all duration-300 ${
-                                            contextStats.usagePercent > 90
-                                                ? 'bg-red-500'
-                                                : contextStats.usagePercent > 70
-                                                ? 'bg-amber-500'
-                                                : 'bg-emerald-500'
-                                        }`}
-                                        style={{ width: `${contextStats.usagePercent}%` }}
-                                    />
-                                </div>
-                                <span className={`text-[10px] ${
-                                    contextStats.isUnlimited
-                                        ? 'text-dark-500'
-                                        : contextStats.usagePercent > 90
-                                        ? 'text-red-400'
-                                        : contextStats.usagePercent > 70
-                                        ? 'text-amber-400'
-                                        : 'text-dark-500'
-                                }`}>
-                                    ~{(contextStats.estimatedTokens / 1000).toFixed(1)}k / {contextStats.isUnlimited ? '∞' : `${(contextStats.maxTokens / 1000).toFixed(0)}k`}
-                                </span>
+                    <div className="flex items-center justify-between mt-1 px-0.5">
+                        <span className="text-[10px] text-dark-600">
+                            {contextStats.messageCount} msgs
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                            <div className="w-16 h-1 bg-dark-800/80 rounded-full overflow-hidden">
+                                <div
+                                    className={`h-full rounded-full transition-all duration-300 ${
+                                        contextStats.usagePercent > 90
+                                            ? 'bg-red-500'
+                                            : contextStats.usagePercent > 70
+                                            ? 'bg-amber-500'
+                                            : 'bg-emerald-500/80'
+                                    }`}
+                                    style={{ width: `${contextStats.usagePercent}%` }}
+                                />
                             </div>
+                            <span className={`text-[10px] ${
+                                contextStats.isUnlimited
+                                    ? 'text-dark-600'
+                                    : contextStats.usagePercent > 90
+                                    ? 'text-red-400'
+                                    : contextStats.usagePercent > 70
+                                    ? 'text-amber-400'
+                                    : 'text-dark-600'
+                            }`}>
+                                ~{(contextStats.estimatedTokens / 1000).toFixed(1)}k / {contextStats.isUnlimited ? '∞' : `${(contextStats.maxTokens / 1000).toFixed(0)}k`}
+                            </span>
                         </div>
                     </div>
                 </div>
