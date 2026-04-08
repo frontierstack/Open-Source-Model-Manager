@@ -1241,6 +1241,9 @@ body.font-size-large .markdown-content,
 .max-h-\[400px\]{
   max-height: 400px;
 }
+.min-h-0{
+  min-height: 0px;
+}
 .min-h-\[120px\]{
   min-height: 120px;
 }
@@ -4263,9 +4266,6 @@ body.font-size-large .markdown-content,
 
 .animate-messages-enter {
     animation: messagesEnter 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
 }
 
 @keyframes thinking {

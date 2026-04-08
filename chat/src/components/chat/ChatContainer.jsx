@@ -1875,7 +1875,7 @@ export default function ChatContainer({
                 ) : (
                     <>
                         {/* Messages */}
-                        <div className={slideDown ? 'flex-1 overflow-hidden animate-messages-enter' : 'flex-1 overflow-hidden flex flex-col'}>
+                        <div className={`flex-1 min-h-0 overflow-hidden flex flex-col${slideDown ? ' animate-messages-enter' : ''}`}>
                             <ChatMessages
                                 messages={messages}
                                 isStreaming={isStreaming}
@@ -1891,7 +1891,7 @@ export default function ChatContainer({
                         </div>
 
                         {/* Input - slides down from center on first message */}
-                        <div className={slideDown ? 'animate-input-slide-down' : ''}>
+                        <div className={`flex-shrink-0 ${slideDown ? 'animate-input-slide-down' : ''}`}>
                             <ChatInput
                                 onSend={handleSendMessage}
                                 onStop={handleStopGeneration}
