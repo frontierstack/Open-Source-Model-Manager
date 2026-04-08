@@ -25,7 +25,8 @@ Complete command reference for Open Source Model Manager utilities, management s
 ```
 
 Starts all services in detached mode:
-- Webapp (port 3001)
+- Webapp (port 3001) - Main management UI
+- Chat (port 3002) - Lightweight chat-only UI
 - Base model containers (llamacpp, vllm)
 
 ### Stop Services
@@ -417,7 +418,7 @@ koda
 - AI executes skills automatically when needed
 - Format: `[SKILL:skill_name(param="value")]`
 - Works in standalone, agent, and collab modes
-- 55+ built-in skills including:
+- 77 built-in skills across 20 categories including:
   - File operations (create, read, update, delete, list)
   - Email parsing (.eml and .msg) with nested attachment extraction
   - PDF generation and reading
@@ -460,8 +461,10 @@ When enabled, URLs pasted in your message will be automatically fetched and incl
 - Click the link icon (🔗) to toggle
 - Automatically detects URLs in your message (up to 3 per message)
 - Fetches page content using Scrapling/Playwright/axios fallback chain
-- Content is truncated to ~4000 characters per URL
+- Direct file download for known file types (PDF, DOCX, XLSX, CSV, etc.) - up to 50,000 chars
+- HTML page content up to 12,000 chars per URL
 - Fetched content is included in the model context
+- Map-reduce chunking handles overflow if content exceeds model context window
 
 **Example usage:**
 ```
@@ -478,10 +481,77 @@ The system will:
 ### File Attachments (Paperclip Icon)
 
 Upload files to include in the conversation:
-- Images (PNG, JPG, etc.) - sent to vision-capable models
+- Images (PNG, JPG, etc.) - sent to vision-capable models with OCR text extraction
 - Documents (PDF, DOCX, TXT, MD)
+- Email files (.eml, .msg) with nested attachment extraction
 - Code files (JS, PY, etc.)
 - Drag-and-drop or click to browse
+- GIF/BMP/TIFF images auto-converted to PNG for vision API compatibility
+
+### Clipboard Image Paste
+
+Paste images directly from your clipboard into the chat:
+- Screenshots (PrtSc/Cmd+Shift+4) paste automatically
+- Copied images from other applications paste automatically
+- Pasted images are uploaded as file attachments with OCR text extraction
+- Non-vision models receive OCR-extracted text instead of the image
+
+### Paste-as-File (Large Text)
+
+When pasting 500+ characters, text is automatically converted to a file attachment:
+- Creates a `pasted-text-{timestamp}.txt` file
+- Keeps the chat input clean for large pastes (code blocks, logs, documents)
+- Short pastes (< 500 chars) work normally as inline text
+
+### Vision Model Support
+
+Send images to vision-capable models:
+- Images included using OpenAI vision format (base64 data URLs)
+- Non-vision models automatically receive OCR-extracted text instead
+- Prevents errors when switching between vision and non-vision models
+
+### Thinking Model Support
+
+Models that use `<think>` tags (Qwen, DeepSeek R1, etc.):
+- Reasoning content displayed in a collapsible "thinking" area
+- Supports both streaming and final message processing
+- Continue button for length-limited responses
+
+### Chat Layouts
+
+Select from 7 layout options in Settings:
+- **Default** - Classic chat layout
+- **Centered** - Messages centered
+- **Wide** - Full width messages
+- **Timeline** - Vertical timeline flow
+- **Terminal** - Monospace, flat style
+- **Slack** - Flat, left-aligned messages
+- **Minimal** - Clean dividers, no bubbles
+- Slack/Minimal layouts include a Message Borders slider (0-40%)
+
+### Themes
+
+20 themes available in Settings:
+- **Standard**: dark, light, midnight
+- **Nature**: ocean, sunset, sand
+- **Warm Tones**: copper, vesper
+- **Neutral**: slate, storm
+- **Dev Classics**: solarized, kanagawa, palenight, ayu
+- **Vibrant**: matrix, andromeda, poimandres, oxocarbon, crimson, synthwave
+
+### Background Streaming
+
+If you refresh the page or switch conversations during model generation:
+- The server continues processing in the background
+- Response is saved to the conversation when complete
+- You see the completed response when returning to the conversation
+
+### Auto-Continuation
+
+When a model response is cut off due to length limits:
+- Server automatically continues generation (up to 8 times)
+- Continue button shown as fallback UI
+- Partial responses preserved if continuation fails
 
 ### System Prompts (Document Icon)
 
