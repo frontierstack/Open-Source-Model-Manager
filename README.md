@@ -2,7 +2,7 @@
 
 > **A Production-Ready MLOps Platform for Large Language Models**
 
-Containerized platform for serving and managing LLMs with dual backend support, web UI, and autonomous AI agent system.
+Containerized platform for serving and managing LLMs with dual backend support, web UI, chat interface, and an autonomous AI agent system.
 
 <p align="center">
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-24.0%2B-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
@@ -23,29 +23,44 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 | **llama.cpp** | Maxwell 5.2+ (GTX 900, Quadro M4000) | GGUF models, older GPUs, CPU offload |
 | **vLLM** | Pascal 6.0+ (GTX 1000+, Quadro P+) | High throughput, newer GPUs |
 
-- Seamless backend switching per model
-- Optimized for GGUF quantized models
-
 ### Core Capabilities
 
 - **HuggingFace Integration** — Search and download GGUF models directly
 - **Auto-Configuration** — Optimal settings based on hardware detection
-- **Real-time Monitoring** — WebSocket-based live logs and status
-- **Multi-User Support** — Authentication with session management
+- **Real-time Monitoring** — WebSocket-based live logs, status, and download progress
+- **Multi-User Support** — Authentication with session management and API keys
 - **OpenAI-Compatible API** — Drop-in replacement for OpenAI endpoints
-- **Production-Ready** — Comprehensive error handling prevents crashes
-- **Thinking Model Support** — Parse and display reasoning from models like DeepSeek R1, Qwen QwQ
-- **Vision Model Support** — Send images to vision-capable models (LLaVA, Qwen-VL)
+- **Vision Models** — Send images to vision-capable models (LLaVA, Qwen-VL) with OCR fallback for non-vision models
+- **Thinking Models** — Parse and display reasoning from models like DeepSeek R1 and Qwen QwQ
+- **Map-Reduce Chunking** — Automatically splits large content across multiple model calls and synthesizes results
+- **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
+- **Auto-Continuation** — Automatically continues truncated responses up to 8 times
 
 ### Web Scraping & Search
 
 - **[Scrapling](https://github.com/D4Vinci/Scrapling) Integration** — CAPTCHA-evading web scraping with StealthyFetcher
-- **Multi-Engine Fallback** — DuckDuckGo → Scrapling → Brave Search → Playwright
-- **Robust Content Fetching** — Scrapling → Playwright → axios fallback chain
+- **Multi-Engine Search** — DuckDuckGo → Scrapling → Brave Search → Playwright
+- **Smart Content Extraction** — Playwright SPA/XHR interception, direct file download for PDFs/DOCX/XLSX
 
-### Koda — AI Agent System
+### Chat Interface
 
-Your autonomous AI project assistant with direct skill execution:
+Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
+
+- 20 themes and 7 chat layouts (Default, Centered, Wide, Timeline, Terminal, Slack, Minimal)
+- 54 font choices with dynamic Google Fonts loading
+- Clipboard image paste and drag-and-drop file attachments
+- Paste-as-file for large text (500+ chars auto-converted to attachment)
+- Web search and URL fetch toggles with smart query extraction
+- Email file parsing (.eml, .msg) with nested attachment extraction
+- OCR text extraction for uploaded images via Tesseract
+
+<p align="center">
+  <img src="docs/images/chat-ui.png" alt="Model Chat Interface" width="800">
+</p>
+
+### Koda — AI Agent TUI
+
+Your autonomous AI project assistant running as an interactive terminal user interface:
 
 ```
   ██╗  ██╗ ██████╗ ██████╗  █████╗
@@ -55,67 +70,49 @@ Your autonomous AI project assistant with direct skill execution:
   ██║  ██╗╚██████╔╝██████╔╝██║  ██║
   ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝
   Your AI project assistant
-
-[2:18:15 PM] You: Hello Koda!
-[2:18:16 PM] Koda: Hi! I'm ready to help with your project.
 ```
 
-**Key Features:**
-- Autonomous skill execution (55+ built-in skills)
+- 77 built-in skills across 20 categories (file ops, git, web, email, OCR, PDF, system info, and more)
 - Multi-agent collaboration for complex tasks
-- Email parsing (.eml and .msg) with nested attachment extraction
-- OCR for images and scanned documents
+- Autonomous skill execution with false-completion detection
 - AES-256 encrypted credentials
 - Cross-platform (Linux, macOS, Windows)
-
-### Chat Interface
-
-<p align="center">
-  <img src="docs/images/chat-ui.png" alt="Model Chat Interface" width="800">
-</p>
 
 ---
 
 ## Prerequisites
 
-### Required
+**Required:** Docker 24.0+ with Compose v2, Linux (Ubuntu 20.04+), 4GB RAM minimum (8GB+ recommended)
 
-- **Docker** 24.0+ with Compose v2
-- **Linux** (Ubuntu 20.04+)
-- **4GB RAM** minimum (8GB+ recommended)
-
-### Optional
-
-- **NVIDIA GPU** with Container Toolkit
-- **HuggingFace Token** (for gated models)
+**Optional:** NVIDIA GPU with Container Toolkit, HuggingFace token (for gated models)
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Clone repository
+# Clone and build
 git clone https://github.com/frontierstack/Open-Source-Model-Manager.git
 cd Open-Source-Model-Manager
 
-# 2. Create environment file
-cat > .env << EOF
-HUGGING_FACE_HUB_TOKEN=your_token_here
-EOF
+# Optional: set HuggingFace token
+echo "HUGGING_FACE_HUB_TOKEN=hf_xxx" > .env
 
-# 3. Build and start
-./build.sh    # Parallel build (~20-25 min)
-./start.sh    # Start services (auto-generates SSL certs)
+# Build and start (~20-25 min first time)
+./build.sh && ./start.sh
 ```
 
-**Access:** https://localhost:3001
+| Interface | URL |
+|-----------|-----|
+| Web UI | https://localhost:3001 |
+| Chat UI | https://localhost:3002 |
 
 ### Build Options
 
 ```bash
 ./build.sh                         # Parallel build (default)
 ./build.sh --no-parallel           # Sequential (low memory)
-./build.sh --no-cache --no-resume  # Force rebuild
+./build.sh --no-cache --no-resume  # Force full rebuild
 ```
 
 ---
@@ -126,34 +123,36 @@ EOF
 
 1. Navigate to https://localhost:3001
 2. Register account (first user = admin)
-3. **Discover** → Search/download models
-4. **My Models** → Launch instances
-5. **API Keys** → Generate access tokens
+3. **Discover** — Search and download models
+4. **My Models** — Launch and manage instances
+5. **API Keys** — Generate access tokens
+6. **Docs** — API code builder with 70+ endpoints in 4 languages
 
-### Koda CLI
+### Koda TUI
 
 ```bash
-# Install
+# Install and start
 curl -sk https://localhost:3001/api/cli/install | bash
-
-# Start and authenticate
 koda
-/auth    # Enter API key from Web UI
-/init    # Analyze project
 
-# Common commands
+# Authenticate and initialize
+/auth    # Enter API key from Web UI
+/init    # Analyze project structure
+
+# Key commands
 /help              # Show all commands
-/file-read <path>  # Read file
-/agents            # List agents
+/mode agent        # Switch to agent mode
+/web               # Toggle web search
 /quit              # Exit
 ```
 
 See [COMMANDS.md](COMMANDS.md) for complete command reference.
 
-### API Usage
+### API
+
+OpenAI-compatible endpoints work with any OpenAI SDK client:
 
 ```bash
-# OpenAI-compatible endpoint
 curl -sk https://localhost:3001/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
@@ -161,7 +160,6 @@ curl -sk https://localhost:3001/v1/chat/completions \
 ```
 
 ```python
-# Python OpenAI SDK
 from openai import OpenAI
 client = OpenAI(base_url="https://localhost:3001/v1", api_key="YOUR_API_KEY")
 response = client.chat.completions.create(
@@ -177,35 +175,31 @@ response = client.chat.completions.create(
 ### Environment Variables
 
 ```bash
-HUGGING_FACE_HUB_TOKEN=hf_xxx    # For model downloads
-SESSION_SECRET=your-secret        # Auto-generated if not set
-HOST_IP=192.168.1.100            # Container networking
+HUGGING_FACE_HUB_TOKEN=hf_xxx         # For gated model downloads
+HOST_IP=192.168.1.100                  # Container networking (auto-detected)
+HOST_MODELS_PATH=/mnt/d/models         # Override models path (Windows+WSL)
+NODE_TLS_REJECT_UNAUTHORIZED=0         # SSL bypass for corporate proxies
+SESSION_SECRET=your-secret             # Auto-generated if not set
 ```
 
 ### Ports
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| Webapp | 3001 | HTTPS Web UI & API |
-| Webapp | 3080 | HTTP Internal API |
-| Models | 8001+ | Dynamic model instances |
+| Webapp | 3001 | HTTPS — Web UI & API |
+| Chat | 3002 | HTTPS — Chat interface |
+| Models | 8001+ | Dynamic model instances (localhost only) |
 
 ### Backend Settings
 
-**llama.cpp** — Best for older GPUs, CPU offload
+**llama.cpp** — Older GPUs, CPU offload
 ```
-GPU Layers: -1 (all)
-Context: 4096
-Cache Type: f16/q8_0/q4_0
-Parallel Slots: 1-8
+GPU Layers: -1 (all) | Context: 4096 | Cache: f16/q8_0/q4_0 | Parallel Slots: 1-8
 ```
 
-**vLLM** — Best for newer GPUs, high throughput
+**vLLM** — Newer GPUs, high throughput
 ```
-Max Model Len: 4096
-GPU Memory: 0.9
-Tensor Parallel: 1
-Max Seqs: 256
+Max Model Len: 4096 | GPU Memory: 0.9 | Tensor Parallel: 1 | Max Seqs: 256
 ```
 
 ---
@@ -213,164 +207,95 @@ Max Seqs: 256
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                            Client Layer                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  User Browser                          Terminal (Koda CLI)          │
-│       │                                       │                     │
-│       └── HTTPS (3001) ──→ Web UI             │                     │
-│                                               │                     │
-│                                        API (HTTPS/3001)             │
-│                                               │                     │
-└───────────────────────────────────────────────┼─────────────────────┘
-                                                │
-┌───────────────────────────────────────────────┼─────────────────────┐
-│                         Application Layer                           │
-├─────────────────────────────────────────────────────────────────────┤
-│                                               │                     │
-│                    ┌──────────────────────────▼──────────────────┐  │
-│                    │        Webapp Container (3001/3080)         │  │
-│                    │  ┌──────────────────────────────────────┐   │  │
-│                    │  │  React Frontend (Web UI)             │   │  │
-│                    │  └──────────────────────────────────────┘   │  │
-│                    │  ┌──────────────────────────────────────┐   │  │
-│                    │  │  Express API Server                  │   │  │
-│                    │  │  • Authentication & Sessions         │   │  │
-│                    │  │  • Model Management                  │   │  │
-│                    │  │  • Agent & Skills System (55+ skills)│   │  │
-│                    │  │  • Docker API Integration            │   │  │
-│                    │  │  • OpenAI-Compatible Endpoints       │   │  │
-│                    │  └──────────────────────────────────────┘   │  │
-│                    └─────────────────────────────────────────────┘  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-┌─────────────────────────────────┼───────────────────────────────────┐
-│                        Container Orchestration                      │
-├─────────────────────────────────────────────────────────────────────┤
-│                                 │                                   │
-│                    ┌────────────▼──────────────┐                    │
-│                    │   Docker Engine API       │                    │
-│                    └────────────┬──────────────┘                    │
-│                                 │                                   │
-│         ┌───────────────────────┴────────────────────┐              │
-│         │                                            │              │
-│    ┌────▼──────┐                              ┌─────▼──────┐        │
-│    │llamacpp-* │ (ports 8001+)                │  vllm-*    │        │
-│    │Container  │                              │  Container │        │
-│    │           │                              │            │        │
-│    │ • CUDA    │                              │ • Python   │        │
-│    │ • Maxwell │                              │ • Pascal   │        │
-│    │   5.2+    │                              │   6.0+     │        │
-│    │ • GGUF    │                              │ • GGUF     │        │
-│    └─────┬─────┘                              └──────┬─────┘        │
-│          │                                           │              │
-│          └───────────────────┬───────────────────────┘              │
-│                              │                                      │
-│                      ┌───────▼────────┐                             │
-│                      │  NVIDIA GPU(s) │                             │
-│                      │  • Shared VRAM │                             │
-│                      │  • CUDA 12.1   │                             │
-│                      └────────────────┘                             │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                          Client Layer                           │
+│                                                                 │
+│  Browser ─── HTTPS ──→ Web UI (:3001)                          │
+│  Browser ─── HTTPS ──→ Chat UI (:3002)                         │
+│  Terminal ── HTTPS ──→ Koda TUI (:3001/api)                    │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                       Application Layer                         │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              Webapp Container (:3001)                    │   │
+│  │  React Frontend · Express API · WebSocket Server        │   │
+│  │  Auth & Sessions · Agent & Skills (77 skills)           │   │
+│  │  Docker Integration · OpenAI-Compatible Endpoints       │   │
+│  │  Map-Reduce Chunking · Web Scraping (Scrapling)         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              Chat Container (:3002)                      │   │
+│  │  React + Tailwind · 20 Themes · 7 Layouts               │   │
+│  │  Vision & Thinking Models · File Attachments · OCR      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                    Container Orchestration                       │
+│                                                                 │
+│  Docker Engine ──┬── llamacpp-* (Maxwell 5.2+, GGUF)           │
+│                  └── vllm-* (Pascal 6.0+, GGUF/HuggingFace)   │
+│                                                                 │
+│  NVIDIA GPU(s) · CUDA 12.1 · Shared VRAM                      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Components
-
-**Client Layer**
-- **Web UI (Browser)** — React-based management interface for models, agents, and settings
-- **Koda CLI (Terminal)** — Cross-platform AI assistant with autonomous skill execution
-
-**Application Layer**
-- **Webapp Container**
-  - **React Frontend** — Model discovery, launch configuration, API key management
-  - **Express Backend** — RESTful API, authentication, session management
-  - **Skills System** — Skill execution engine (55+ skills)
-  - **Docker Integration** — Dynamic model instance creation and management
-  - **OpenAI Compatibility** — `/v1/chat/completions` and `/v1/completions` endpoints
-
-**Container Orchestration**
-- **Docker Engine** — Container lifecycle management, networking, volume management
-- **llama.cpp Instances** — CUDA-enabled C++ inference (Maxwell 5.2+)
-- **vLLM Instances** — High-throughput Python inference (Pascal 6.0+)
-
-**Hardware Layer**
-- **NVIDIA GPU** — Shared across all model instances with automatic VRAM management
+**Data Persistence:** All user data stored in `./models/.modelserver/` as JSON files (agents, skills, conversations, API keys with AES-256-GCM encryption). Model containers mount `./models` read-only.
 
 ---
 
 ## Troubleshooting
 
-### Build Issues
-```bash
-./build.sh                # Resume interrupted build
-./build.sh --no-parallel  # Low memory systems
-rm -rf .build-state/      # Clear corrupted state
-```
+| Problem | Solution |
+|---------|----------|
+| Build fails / interrupted | `./build.sh` (auto-resumes) |
+| Out of memory during build | `./build.sh --no-parallel` |
+| Corrupted build state | `rm -rf .build-state/ && ./build.sh` |
+| Model OOM errors | Reduce GPU layers, use q8_0/q4_0 cache type |
+| Port 3001 in use | `netstat -tulpn \| grep 3001` to find conflict |
+| GPU not detected | Reinstall NVIDIA Container Toolkit, test with `nvidia-smi` |
+| Koda not found | `export PATH="$HOME/.local/bin:$PATH"` |
+| SSL/corporate proxy errors | `echo "NODE_TLS_REJECT_UNAUTHORIZED=0" >> .env` |
 
-### Model Issues
-- **OOM errors** — Reduce GPU layers, use q8_0/q4_0 cache
-- **Wrong backend** — Switch between llama.cpp and vLLM
-- **VLM crashes** — Some models unsupported (Qwen3-VL, Qwen2-VL)
-
-### Service Issues
 ```bash
-docker compose restart webapp       # Restart webapp
-docker compose logs -f webapp       # View logs
+# Common diagnostic commands
+docker compose logs -f webapp       # View webapp logs
+docker compose ps                   # Check service status
 nvidia-smi                          # Check GPU
+docker stats                        # Container resource usage
 ```
-
-### Common Solutions
-- **Port conflicts** — Check `netstat -tulpn | grep 3001`
-- **GPU not detected** — Reinstall NVIDIA Container Toolkit
-- **Koda not found** — `export PATH="$HOME/.local/bin:$PATH"`
 
 ---
 
 ## Documentation
 
-- **[COMMANDS.md](COMMANDS.md)** — Complete command reference
-- **[API Documentation](https://localhost:3001)** — Interactive API docs in Web UI
+- **[COMMANDS.md](COMMANDS.md)** — Complete command and feature reference
+- **[Docs Tab](https://localhost:3001)** — Interactive API code builder (70+ endpoints, 4 languages)
 
 ---
 
 ## Contributing
 
-Contributions welcome! Please:
-
 1. Fork the repository
-2. Create feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
+2. Create feature branch (`git checkout -b feature/name`)
+3. Commit and push changes
+4. Open Pull Request
 
 ---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
+MIT License — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) — LLM inference in C++
-- [vLLM](https://github.com/vllm-project/vllm) — High-throughput serving
-- [HuggingFace](https://huggingface.co/) — Model hosting
-- [Material-UI](https://mui.com/) — React components
-- [Scrapling](https://github.com/D4Vinci/Scrapling) — CAPTCHA-evading web scraping
-- [Playwright](https://playwright.dev/) — Browser automation
+[llama.cpp](https://github.com/ggerganov/llama.cpp) | [vLLM](https://github.com/vllm-project/vllm) | [HuggingFace](https://huggingface.co/) | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
 
 ---
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/frontierstack/Open-Source-Model-Manager/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/frontierstack/Open-Source-Model-Manager/discussions)
-
----
+[GitHub Issues](https://github.com/frontierstack/Open-Source-Model-Manager/issues) | [GitHub Discussions](https://github.com/frontierstack/Open-Source-Model-Manager/discussions)
 
 <div align="center">
 
