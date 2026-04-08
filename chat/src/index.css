@@ -2198,6 +2198,15 @@
         color: var(--text-primary);
     }
 
+    /* Chat input toolbar button - theme-aware hover that works in all modes */
+    .chat-tool-btn {
+        color: var(--text-tertiary);
+    }
+    .chat-tool-btn:hover {
+        color: var(--text-primary);
+        background-color: var(--bg-active);
+    }
+
     /* Send button - uses accent color, guaranteed visible across all themes */
     .send-btn-active {
         background-color: var(--accent-primary);

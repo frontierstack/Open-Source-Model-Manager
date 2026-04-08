@@ -525,8 +525,7 @@ export default function ChatInput({
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             disabled={disabled || isStreaming}
-                            className="flex-shrink-0 p-1.5 rounded-md text-dark-500
-                                       hover:text-dark-300 hover:bg-white/5
+                            className="chat-tool-btn flex-shrink-0 p-1.5 rounded-md
                                        disabled:opacity-30 disabled:cursor-not-allowed
                                        transition-all duration-150"
                             aria-label="Attach files"
@@ -543,7 +542,7 @@ export default function ChatInput({
                                        disabled:opacity-30 disabled:cursor-not-allowed
                                        ${webSearchEnabled
                                            ? 'text-blue-400 bg-blue-500/12'
-                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/5'
+                                           : 'chat-tool-btn'
                                        }`}
                             aria-label={webSearchEnabled ? 'Disable web search' : 'Enable web search'}
                             title={webSearchEnabled ? 'Web search on' : 'Web search off'}
@@ -559,7 +558,7 @@ export default function ChatInput({
                                        disabled:opacity-30 disabled:cursor-not-allowed
                                        ${urlFetchEnabled
                                            ? 'text-emerald-400 bg-emerald-500/12'
-                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/5'
+                                           : 'chat-tool-btn'
                                        }`}
                             aria-label={urlFetchEnabled ? 'Disable URL fetch' : 'Enable URL fetch'}
                             title={urlFetchEnabled ? 'URL fetch on' : 'URL fetch off'}
@@ -580,7 +579,7 @@ export default function ChatInput({
                                         disabled:opacity-30 disabled:cursor-not-allowed
                                         ${selectedPrompt
                                             ? 'bg-primary-500/12 text-primary-300'
-                                            : 'text-dark-500 hover:text-dark-300 hover:bg-white/5'
+                                            : 'chat-tool-btn'
                                         }
                                     `}
                                     aria-label="Select system prompt"
@@ -746,7 +745,7 @@ export default function ChatInput({
                             {contextStats.messageCount} msgs
                         </span>
                         <div className="flex items-center gap-1.5">
-                            <div className="w-16 h-1 bg-dark-800/80 rounded-full overflow-hidden">
+                            <div className="w-16 h-1 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--border-primary)' }}>
                                 <div
                                     className={`h-full rounded-full transition-all duration-300 ${
                                         contextStats.usagePercent > 90
