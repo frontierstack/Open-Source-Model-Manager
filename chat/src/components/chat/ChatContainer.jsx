@@ -5,7 +5,6 @@ import ChatSidebar from './ChatSidebar';
 import ChatMessages from './ChatMessages';
 import ChatInput from './ChatInput';
 import ChatSettings from './ChatSettings';
-import { Sparkles } from 'lucide-react';
 
 // Track empty→messages transition for slide-down animation
 function useSlideTransition(isEmpty) {
@@ -1850,14 +1849,7 @@ export default function ChatContainer({
 
                 {/* Content area - centered when empty, normal when messages */}
                 {chatIsEmpty ? (
-                    <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[10vh]">
-                        <div className="text-center mb-6">
-                            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500/12 to-accent-500/12 flex items-center justify-center mx-auto mb-3">
-                                <Sparkles className="w-5 h-5 text-primary-400/60" />
-                            </div>
-                            <h2 className="text-[15px] font-medium text-dark-300">Start a conversation</h2>
-                            <p className="text-dark-600 text-sm mt-0.5">Type a message below</p>
-                        </div>
+                    <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[8vh]">
                         <div className="w-full max-w-2xl">
                             <ChatInput
                                 onSend={handleSendMessage}

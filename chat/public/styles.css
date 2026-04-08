@@ -2084,8 +2084,8 @@ body.font-size-large .markdown-content,
 .pb-4{
   padding-bottom: 1rem;
 }
-.pb-\[10vh\]{
-  padding-bottom: 10vh;
+.pb-\[8vh\]{
+  padding-bottom: 8vh;
 }
 .pl-1{
   padding-left: 0.25rem;
@@ -2156,9 +2156,6 @@ body.font-size-large .markdown-content,
 }
 .text-\[13px\]{
   font-size: 13px;
-}
-.text-\[15px\]{
-  font-size: 15px;
 }
 .text-\[8px\]{
   font-size: 8px;
@@ -3106,6 +3103,7 @@ body.font-size-large .markdown-content,
 
 /* Opacity variants of dark backgrounds */
 .theme-light .bg-dark-900\/80,
+.theme-light .bg-dark-900\/90,
 .theme-light .bg-dark-900\/95,
 .theme-light .bg-dark-900\/98 {
     background-color: #fafafa !important;
@@ -3241,12 +3239,14 @@ body.font-size-large .markdown-content,
 /* === Hover states === */
 .theme-light .hover\\:bg-white\\/5:hover,
 .theme-light .hover\\:bg-white\\/8:hover,
+.theme-light .hover\\:bg-white\\/\[0\\.04\]:hover,
+.theme-light .hover\\:bg-white\\/\[0\\.05\]:hover,
 .theme-light .hover\\:bg-white\\/\[0\\.06\]:hover {
-    background-color: rgba(0, 0, 0, 0.04) !important;
+    background-color: rgba(0, 0, 0, 0.06) !important;
 }
 
 .theme-light .hover\\:bg-white\\/10:hover {
-    background-color: rgba(0, 0, 0, 0.06) !important;
+    background-color: rgba(0, 0, 0, 0.08) !important;
 }
 
 .theme-light .hover\\:bg-dark-700\\/50:hover,
@@ -3383,15 +3383,6 @@ body.font-size-large .markdown-content,
     color: #8a8a8a !important;
 }
 
-.theme-light .hover\\:bg-white\\/\[0\\.04\]:hover,
-.theme-light .hover\\:bg-white\\/\[0\\.05\]:hover {
-    background-color: rgba(0, 0, 0, 0.05) !important;
-}
-
-.theme-light .hover\\:text-dark-300:hover {
-    color: #404040 !important;
-}
-
 .theme-light .hover\\:border-dark-600\\/40:hover {
     border-color: #b0b0b0 !important;
 }
@@ -3415,6 +3406,69 @@ body.font-size-large .markdown-content,
 
 .theme-light .bg-emerald-500\/12 {
     background-color: rgba(16, 185, 129, 0.12) !important;
+}
+
+/* === Light theme: file attachment tag text (dark enough to read on white) === */
+.theme-light .text-blue-300 {
+    color: #2563eb !important;
+}
+
+.theme-light .text-purple-300 {
+    color: #7c3aed !important;
+}
+
+.theme-light .text-emerald-300 {
+    color: #059669 !important;
+}
+
+.theme-light .text-amber-300 {
+    color: #d97706 !important;
+}
+
+.theme-light .text-gray-300 {
+    color: #6b7280 !important;
+}
+
+.theme-light .text-blue-400 {
+    color: #2563eb !important;
+}
+
+.theme-light .text-primary-300 {
+    color: #3b82f6 !important;
+}
+
+/* === Light theme: file attachment borders & backgrounds more visible === */
+.theme-light .border-blue-500\/30 {
+    border-color: rgba(37, 99, 235, 0.3) !important;
+}
+
+.theme-light .border-purple-500\/30 {
+    border-color: rgba(124, 58, 237, 0.3) !important;
+}
+
+.theme-light .border-emerald-500\/30 {
+    border-color: rgba(5, 150, 105, 0.3) !important;
+}
+
+.theme-light .border-amber-500\/30 {
+    border-color: rgba(217, 119, 6, 0.3) !important;
+}
+
+.theme-light .border-gray-500\/30 {
+    border-color: rgba(107, 114, 128, 0.3) !important;
+}
+
+.theme-light .border-primary-500\/20 {
+    border-color: rgba(59, 130, 246, 0.25) !important;
+}
+
+.theme-light .bg-primary-500\/15 {
+    background-color: rgba(59, 130, 246, 0.08) !important;
+}
+
+/* === Light theme: stop button === */
+.theme-light .bg-red-500\/15 {
+    background-color: rgba(239, 68, 68, 0.12) !important;
 }
 
 /* ============================================
