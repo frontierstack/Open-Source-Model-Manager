@@ -2069,6 +2069,7 @@
 
     /* Message bubbles - compact and modern */
     .message-user {
+        max-width: 75%;
         background: linear-gradient(135deg, var(--user-msg-from), var(--user-msg-to));
         color: var(--user-msg-text, #ffffff);
         border-radius: var(--radius-md);
@@ -2082,6 +2083,7 @@
     }
 
     .message-assistant {
+        max-width: 90%;
         background: var(--assistant-bg);
         border: 1px solid var(--assistant-border);
         border-radius: var(--radius-md);
@@ -3169,7 +3171,7 @@
     border-radius: 0.5rem !important;
 }
 
-/* Terminal - Monospace, flat, left-aligned */
+/* Terminal - Monospace, command-line aesthetic */
 .chat-style-terminal .flex.flex-col.items-end,
 .chat-style-terminal .flex.flex-col.items-start {
     align-items: flex-start !important;
@@ -3178,24 +3180,43 @@
 .chat-style-terminal .message-user,
 .chat-style-terminal .message-assistant {
     font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace !important;
-    border-radius: 0.25rem !important;
+    border-radius: 0 !important;
     max-width: 100% !important;
     width: 100% !important;
-    font-size: 0.85em !important;
+    font-size: 0.84em !important;
     line-height: 1.6 !important;
+    border: none !important;
+    padding: 0.5rem 0.75rem !important;
 }
 
 .chat-style-terminal .message-user {
-    background: rgba(255, 255, 255, 0.03) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-left: 3px solid var(--accent-primary, #6366f1) !important;
+    background: rgba(0, 0, 0, 0.3) !important;
+    color: #4ade80 !important;
+}
+
+.chat-style-terminal .message-user::before {
+    content: "$ ";
+    color: #22c55e;
+    font-weight: bold;
 }
 
 .chat-style-terminal .message-assistant {
     background: transparent !important;
-    border: none !important;
-    border-left: 3px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: 0 !important;
+    color: var(--text-primary) !important;
+}
+
+.chat-style-terminal .message-assistant::before {
+    content: "> ";
+    color: #6b7280;
+    font-weight: bold;
+}
+
+.chat-style-terminal .space-y-1 > * + * {
+    margin-top: 0 !important;
+}
+
+.chat-style-terminal {
+    background: rgba(0, 0, 0, 0.15) !important;
 }
 
 /* Slack - Flat, left-aligned, no bubbles */

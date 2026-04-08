@@ -72,8 +72,8 @@ export default React.memo(function ChatMessage({
             <div
                 className={`group relative min-w-[60px] ${
                     isUser
-                        ? 'message-user max-w-[75%] px-3.5 py-2.5'
-                        : 'message-assistant max-w-[90%] px-4 py-3'
+                        ? 'message-user px-3.5 py-2.5'
+                        : 'message-assistant px-4 py-3'
                 }`}
             >
                 {/* Thinking/Reasoning section */}
