@@ -526,7 +526,7 @@ export default function ChatInput({
                             onClick={() => fileInputRef.current?.click()}
                             disabled={disabled || isStreaming}
                             className="flex-shrink-0 p-1.5 rounded-md text-dark-500
-                                       hover:text-dark-300 hover:bg-white/[0.05]
+                                       hover:text-dark-300 hover:bg-white/5
                                        disabled:opacity-30 disabled:cursor-not-allowed
                                        transition-all duration-150"
                             aria-label="Attach files"
@@ -543,7 +543,7 @@ export default function ChatInput({
                                        disabled:opacity-30 disabled:cursor-not-allowed
                                        ${webSearchEnabled
                                            ? 'text-blue-400 bg-blue-500/12'
-                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/[0.05]'
+                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/5'
                                        }`}
                             aria-label={webSearchEnabled ? 'Disable web search' : 'Enable web search'}
                             title={webSearchEnabled ? 'Web search on' : 'Web search off'}
@@ -559,7 +559,7 @@ export default function ChatInput({
                                        disabled:opacity-30 disabled:cursor-not-allowed
                                        ${urlFetchEnabled
                                            ? 'text-emerald-400 bg-emerald-500/12'
-                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/[0.05]'
+                                           : 'text-dark-500 hover:text-dark-300 hover:bg-white/5'
                                        }`}
                             aria-label={urlFetchEnabled ? 'Disable URL fetch' : 'Enable URL fetch'}
                             title={urlFetchEnabled ? 'URL fetch on' : 'URL fetch off'}
@@ -580,7 +580,7 @@ export default function ChatInput({
                                         disabled:opacity-30 disabled:cursor-not-allowed
                                         ${selectedPrompt
                                             ? 'bg-primary-500/12 text-primary-300'
-                                            : 'text-dark-500 hover:text-dark-300 hover:bg-white/[0.05]'
+                                            : 'text-dark-500 hover:text-dark-300 hover:bg-white/5'
                                         }
                                     `}
                                     aria-label="Select system prompt"
