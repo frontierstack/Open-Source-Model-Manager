@@ -2015,7 +2015,6 @@ export default function ChatContainer({
                                 onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
                                 messages={messages}
                                 maxContextTokens={selectedModelContextSize}
-                                chatStyle={settings.chatStyle}
                             />
                         </div>
                     </>

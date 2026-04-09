@@ -67,7 +67,6 @@ export default function ChatInput({
     onUrlFetchToggle,
     messages = [],
     maxContextTokens = 4096,
-    chatStyle = 'default',
 }) {
     const [message, setMessage] = useState('');
     const [isDragOver, setIsDragOver] = useState(false);
@@ -431,16 +430,10 @@ export default function ChatInput({
                 </div>
             )}
 
-            {/* Floating input container. The chat-input-wrapper class
-                 gets picked up by per-theme CSS rules in src/index.css
-                 so each layout can force the input to visually line up
-                 with its message column (e.g. Bubbles caps bubbles at
-                 78% — the input caps at the same width so it reads as
-                 centered under the responses rather than spanning
-                 wider). Themes that already span the full width
-                 (Wide, Slack) get the full max-w-4xl. */}
-            <div className={`px-3 pt-1.5 pb-2.5 bg-gradient-to-t from-dark-950 via-dark-950/95 to-transparent chat-input-wrapper ${chatStyle && chatStyle !== 'default' ? `chat-style-${chatStyle}` : ''}`}>
-                <div className="max-w-4xl mx-auto chat-input-inner">
+            {/* Floating input container. Always max-w-2xl mx-auto across
+                 every chat layout. Do not add per-theme widths here. */}
+            <div className="px-3 pt-1.5 pb-2.5 bg-gradient-to-t from-dark-950 via-dark-950/95 to-transparent">
+                <div className="max-w-2xl mx-auto">
                     {/* Attachment preview cards */}
                     {(attachments.length > 0 || uploadingFiles.length > 0) && (
                         <div className="mb-1.5">

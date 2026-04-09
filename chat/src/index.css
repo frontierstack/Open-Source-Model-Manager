@@ -3334,48 +3334,11 @@
     color: #ffffff !important;
 }
 
-/* ============================================
-   Chat input alignment per theme
-   ============================================
-   The ChatInput inner container is max-w-4xl mx-auto, matching the
-   ChatMessages container. For themes that render messages at less
-   than 100% of that width (Default/Centered/Bubbles/Minimal/Timeline),
-   the input visually looks "wider than the responses" because its
-   wrapper spans the full 4xl while the bubbles sit narrower inside.
-   Per-theme caps below constrain the input's inner wrapper to match
-   the widest message for that theme, so the input sits on the same
-   visual column as the responses. */
-
-/* Wide + Slack + Default: messages already span or default to the full
-   container width, so the input stays at max-w-4xl as-is. No override. */
-
-/* Centered: messages capped at 80%. Input also capped at 80%, still
-   mx-auto centered. */
-.chat-input-wrapper.chat-style-centered .chat-input-inner {
-    max-width: 80% !important;
-}
-
-/* Timeline: messages have a 2.25rem left padding for the line+dots,
-   and cap at 90% of the remaining space. Shift the input right by the
-   same amount and cap at 90% so it lines up under the message bubbles. */
-.chat-input-wrapper.chat-style-timeline .chat-input-inner {
-    padding-left: 2.25rem !important;
-    max-width: 100% !important;
-}
-.chat-input-wrapper.chat-style-timeline .chat-input-inner > * {
-    max-width: 90% !important;
-}
-
-/* Bubbles: messages cap at 78% of their flex container. Input matches. */
-.chat-input-wrapper.chat-style-bubbles .chat-input-inner {
-    max-width: 78% !important;
-}
-
-/* Minimal: user at 80%, assistant at 90%. Pick the wider (90%) so both
-   are visually enclosed. */
-.chat-input-wrapper.chat-style-minimal .chat-input-inner {
-    max-width: 90% !important;
-}
+/* Chat input width is intentionally fixed in ChatInput.jsx at
+   max-w-2xl mx-auto across every theme. Do not add per-theme input
+   width overrides here — the user has explicitly asked for a compact
+   centered input that never expands, and per-theme width gymnastics
+   previously made it worse. */
 
 /* ============================================
    Font Family Overrides (highest priority - outside @layer)
