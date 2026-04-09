@@ -1208,6 +1208,20 @@ function displayDiff(oldContent, newContent, filePath) {
 // Prompt user for confirmation
 // Uses raw stdin to avoid conflicts with main readline interface
 function promptConfirmation(message, timeoutMs = 30000) {
+    // Non-interactive / single-shot / CI mode auto-accepts.
+    // Activated when KODA_YES=1 is set, when the harness flipped the
+    // __kodaAutoConfirm global (set by runSingleShot), or when stdin is
+    // not a TTY (piped). Without this, single-shot queries that legitimately
+    // need to create or delete a file hang forever waiting on a (y/n)
+    // prompt that no human will ever answer.
+    const autoYes = process.env.KODA_YES === '1' ||
+        global.__kodaAutoConfirm === true ||
+        (!process.stdin.isTTY && process.env.KODA_YES !== '0');
+    if (autoYes) {
+        process.stdout.write(colorize(`${message} (y/n/s=skip): `, 'yellow') + colorize('y [auto]\n', 'dim'));
+        return Promise.resolve('yes');
+    }
+
     return new Promise((resolve) => {
         // Save terminal state
         const wasRaw = process.stdin.isRaw;
@@ -8938,6 +8952,11 @@ const _kodaArgv = process.argv.slice(2);
 const _kodaPromptIdx = _kodaArgv.findIndex(a => a === '-p' || a === '--prompt');
 
 async function runSingleShot(prompt) {
+    // Single-shot mode is non-interactive by definition: auto-accept any
+    // confirmation prompts that would otherwise block waiting on stdin.
+    // Users who want strict manual approval can set KODA_YES=0.
+    global.__kodaAutoConfirm = true;
+
     // Allow env-var overrides so tests and CI can bypass the encrypted config.
     const envKey = process.env.KODA_API_KEY;
     const envSecret = process.env.KODA_API_SECRET;
