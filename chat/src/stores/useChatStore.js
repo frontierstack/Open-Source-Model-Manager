@@ -72,6 +72,15 @@ export const useChatStore = create(
         processingStatus: null, // null, 'thinking', 'searching', 'parsing', 'processing', 'generating'
         processingMessage: null,
 
+        // Rolling credits-style processing log: an ordered array of
+        // { id, icon, text, status: 'active' | 'done' | 'failed', at }
+        // pushed by ChatContainer as real events happen during a turn
+        // (web search started, N results found, URLs fetched, waiting for
+        // model, synthesizing chunks, etc). The streaming assistant bubble
+        // renders this so users see what's happening instead of a mute
+        // spinner.
+        processingLog: [],
+
         // Attachments
         attachments: [],
 
@@ -266,6 +275,7 @@ export const useChatStore = create(
             isStreaming: false,
             processingStatus: null,
             processingMessage: null,
+            processingLog: [],
         }),
 
         // ==================== Processing Status Actions ====================
@@ -279,6 +289,46 @@ export const useChatStore = create(
             processingStatus: null,
             processingMessage: null,
         }),
+
+        // ==================== Processing Log Actions ====================
+
+        // Push a new rolling-credits entry. If the most recent entry has the
+        // same `key`, mark IT as done and append the new one — avoids
+        // duplicate "searching..." rows when a step is re-entered, and keeps
+        // the previous entries on-screen as a trail.
+        pushProcessingLog: (entry) => set(state => {
+            const next = state.processingLog.slice();
+            // Mark any still-active entries as done when a new one arrives,
+            // so only the newest is "running" at any given time.
+            for (let i = 0; i < next.length; i++) {
+                if (next[i].status === 'active') {
+                    next[i] = { ...next[i], status: 'done' };
+                }
+            }
+            next.push({
+                id: `pl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                at: Date.now(),
+                status: 'active',
+                ...entry,
+            });
+            // Cap length so this doesn't grow forever on very long turns
+            return { processingLog: next.slice(-20) };
+        }),
+
+        // Mark the most recent active entry as done/failed without adding a
+        // new row — useful when you just want to close the last step.
+        resolveProcessingLog: (status = 'done') => set(state => {
+            const next = state.processingLog.slice();
+            for (let i = next.length - 1; i >= 0; i--) {
+                if (next[i].status === 'active') {
+                    next[i] = { ...next[i], status };
+                    break;
+                }
+            }
+            return { processingLog: next };
+        }),
+
+        clearProcessingLog: () => set({ processingLog: [] }),
 
         // ==================== Attachment Actions ====================
 

@@ -3123,43 +3123,59 @@
 .chat-style-timeline .flex.flex-col.items-end,
 .chat-style-timeline .flex.flex-col.items-start {
     align-items: flex-start !important;
-    padding-left: 2rem !important;
+    padding-left: 2.25rem !important;
     position: relative !important;
 }
 
-/* Timeline line */
+/* Timeline line - extends into the space-y-1 gap above and below so the line
+   appears continuous across adjacent messages. */
 .chat-style-timeline .flex.flex-col.items-end::before,
 .chat-style-timeline .flex.flex-col.items-start::before {
     content: '' !important;
     position: absolute !important;
     left: 0.45rem !important;
-    top: 0 !important;
-    bottom: 0 !important;
+    top: -0.25rem !important;
+    bottom: -0.25rem !important;
     width: 2px !important;
-    background: linear-gradient(to bottom, rgba(var(--primary-rgb, 99, 102, 241), 0.3), rgba(var(--primary-rgb, 99, 102, 241), 0.08)) !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), 0.18) !important;
+    z-index: 0 !important;
 }
 
-/* Timeline dots - on same parent as line so they align */
+/* Gentle fade-in at the very top of the timeline */
+.chat-style-timeline > div:first-child::before {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 1rem) !important;
+    mask-image: linear-gradient(to bottom, transparent, black 1rem) !important;
+}
+
+/* Gentle fade-out at the very bottom of the timeline */
+.chat-style-timeline > div:last-child::before {
+    -webkit-mask-image: linear-gradient(to top, transparent, black 1rem) !important;
+    mask-image: linear-gradient(to top, transparent, black 1rem) !important;
+}
+
+/* Timeline dots - aligned to roughly the vertical center of the first line
+   of content (timestamp/header row). Dot is 10px so visual center lands at +5px. */
 .chat-style-timeline .flex.flex-col.items-end::after,
 .chat-style-timeline .flex.flex-col.items-start::after {
     content: '' !important;
     position: absolute !important;
     left: calc(0.45rem - 4px) !important;
-    top: 0 !important;
+    top: 0.85rem !important;
     width: 10px !important;
     height: 10px !important;
     border-radius: 50% !important;
     z-index: 1 !important;
+    box-sizing: border-box !important;
 }
 
 .chat-style-timeline .flex.flex-col.items-end::after {
     background: var(--accent-primary, #6366f1) !important;
-    box-shadow: 0 0 6px rgba(var(--primary-rgb, 99, 102, 241), 0.4) !important;
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb, 99, 102, 241), 0.18), 0 0 8px rgba(var(--primary-rgb, 99, 102, 241), 0.45) !important;
 }
 
 .chat-style-timeline .flex.flex-col.items-start::after {
-    background: rgba(255, 255, 255, 0.15) !important;
-    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.3) !important;
+    background: transparent !important;
+    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.55) !important;
 }
 
 .chat-style-timeline .message-user,

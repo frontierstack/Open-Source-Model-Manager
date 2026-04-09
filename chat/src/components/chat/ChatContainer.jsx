@@ -131,6 +131,10 @@ export default function ChatContainer({
         clearStreaming,
         setProcessingStatus,
         clearProcessingStatus,
+        processingLog,
+        pushProcessingLog,
+        resolveProcessingLog,
+        clearProcessingLog,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -593,6 +597,11 @@ export default function ChatContainer({
             return;
         }
 
+        // Reset the rolling-credits log at the very start of the turn so the
+        // streaming bubble can narrate everything Koda is about to do (URL
+        // fetch, search, model thinking, streaming, chunking, synthesis).
+        clearProcessingLog();
+
         // Create conversation if none exists
         let conversationId = activeConversationId;
         let isNewConversation = false;
@@ -660,6 +669,11 @@ export default function ChatContainer({
                 try {
                     setIsLoading(true);
                     setProcessingStatus('parsing', `Fetching ${urls.length} URL${urls.length > 1 ? 's' : ''}`);
+                    pushProcessingLog({
+                        icon: 'link',
+                        text: `Fetching ${urls.length} URL${urls.length === 1 ? '' : 's'}`,
+                        kind: 'url_fetch'
+                    });
 
                     const fetchResponse = await fetch('/api/url/fetch', {
                         method: 'POST',
@@ -698,6 +712,11 @@ export default function ChatContainer({
                                 snippet: r.content ? String(r.content).slice(0, 400) : (r.error || ''),
                                 success: !!r.success
                             }))
+                        });
+                        pushProcessingLog({
+                            icon: 'check',
+                            text: `Retrieved ${successfulResults.length} of ${urls.length} page${urls.length === 1 ? '' : 's'}`,
+                            kind: 'url_fetch_done'
                         });
 
                         if (successfulResults.length > 0) {
@@ -820,6 +839,13 @@ export default function ChatContainer({
         setStreamingReasoning('');
         setIsLoading(true);
         setProcessingStatus('processing', attachedFiles?.length > 0 ? 'Processing files' : 'Preparing request');
+        pushProcessingLog({
+            icon: attachedFiles?.length > 0 ? 'paperclip' : 'edit',
+            text: attachedFiles?.length > 0
+                ? `Preparing ${attachedFiles.length} attachment${attachedFiles.length === 1 ? '' : 's'}`
+                : 'Preparing request',
+            kind: 'setup'
+        });
 
         // Prepare messages for API (use fullContent for the last message to include attachments)
         // Also include search context from previous messages if they had web search results
@@ -893,6 +919,11 @@ export default function ChatContainer({
             try {
                 setIsLoading(true);
                 setProcessingStatus('searching', 'Searching the web');
+                pushProcessingLog({
+                    icon: 'search',
+                    text: `Searching the web: "${content.slice(0, 60)}${content.length > 60 ? '…' : ''}"`,
+                    kind: 'search'
+                });
                 const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=5`, {
                     credentials: 'include',
                     signal: abortControllerRef.current?.signal,
@@ -925,6 +956,11 @@ export default function ChatContainer({
                                 snippet: r.snippet,
                                 content: r.content
                             }))
+                        });
+                        pushProcessingLog({
+                            icon: 'check',
+                            text: `Found ${searchData.results.length} result${searchData.results.length === 1 ? '' : 's'}`,
+                            kind: 'search_done'
                         });
 
                         // Create a summary of search results for memory persistence
@@ -1018,6 +1054,11 @@ export default function ChatContainer({
 
         try {
             setProcessingStatus('thinking', 'Model is thinking');
+            pushProcessingLog({
+                icon: 'brain',
+                text: `Waiting for ${settings.model || 'model'} to respond`,
+                kind: 'thinking'
+            });
 
             const requestBody = {
                 model: settings.model,
@@ -1044,6 +1085,11 @@ export default function ChatContainer({
 
             setIsLoading(false);
             setProcessingStatus('generating', 'Generating response');
+            pushProcessingLog({
+                icon: 'sparkles',
+                text: 'Generating response',
+                kind: 'generating'
+            });
 
             if (!response.ok) {
                 // Try to parse error body
@@ -1188,11 +1234,13 @@ export default function ChatContainer({
                                         msg += ` (condensed ${condensation.reductionPercent}%)`;
                                     }
                                     setProcessingStatus('chunking', msg);
+                                    pushProcessingLog({ icon: 'layers', text: msg, kind: 'chunk_start' });
                                 } else if (phase === 'chunking') {
                                     let msg = `Splitting into ${totalChunks} ${chunkWord(totalChunks)}`;
                                     if (tokenStr) msg += ` — ${tokenStr}`;
                                     if (chunkTokens) msg += ` (~${chunkTokens.toLocaleString()} tokens/chunk)`;
                                     setProcessingStatus('chunking', msg);
+                                    pushProcessingLog({ icon: 'scissors', text: msg, kind: 'chunk_split' });
                                 } else if (phase === 'map') {
                                     const done = completedChunks + failedChunks;
                                     const pct = totalChunks > 0 ? Math.round((done / totalChunks) * 100) : 0;
@@ -1208,12 +1256,15 @@ export default function ChatContainer({
                                         if (elapsed) msg += ` — ${elapsed}`;
                                     }
                                     setProcessingStatus('processing', msg);
+                                    pushProcessingLog({ icon: 'cpu', text: msg, kind: 'chunk_map' });
                                 } else if (phase === 'reduce') {
                                     let msg = `Synthesizing ${completedChunks} ${chunkWord(completedChunks)} into final response`;
                                     if (elapsed) msg += ` — ${elapsed} elapsed`;
                                     setProcessingStatus('synthesizing', msg);
+                                    pushProcessingLog({ icon: 'combine', text: msg, kind: 'chunk_reduce' });
                                 } else if (phase === 'complete') {
                                     setProcessingStatus('generating', `Streaming synthesized response${elapsed ? ` — completed in ${elapsed}` : ''}...`);
+                                    pushProcessingLog({ icon: 'sparkles', text: 'Streaming synthesized response', kind: 'chunk_complete' });
                                 }
                                 continue; // Don't process this as a content event
                             }
@@ -1936,6 +1987,7 @@ export default function ChatContainer({
                                 streamingReasoning={streamingReasoning}
                                 processingStatus={processingStatus}
                                 processingMessage={processingMessage}
+                                processingLog={processingLog}
                                 onContinue={handleContinueResponse}
                                 isLoading={isLoading}
                                 chatStyle={settings.chatStyle}

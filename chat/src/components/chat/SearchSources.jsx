@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Globe, ExternalLink } from 'lucide-react';
+import { Globe, ExternalLink, Loader2 } from 'lucide-react';
 
 /**
  * Safely parse a URL and return a cleaned hostname (www. stripped).
@@ -28,7 +28,7 @@ function truncate(text, max) {
 /**
  * SourceChip - Individual favicon chip with hover preview
  */
-function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
+function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, setPreviewStatus }) {
     const [faviconFailed, setFaviconFailed] = useState(false);
     const hoverTimerRef = useRef(null);
 
@@ -105,6 +105,24 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
 
             {isHovered && (source?.title || previewText) && (
                 <div className="absolute bottom-full mb-2 left-0 z-50 w-80 p-3 rounded-lg bg-dark-900 border border-white/10 shadow-xl pointer-events-none">
+                    {isValidUrl && previewStatus !== 'error' && (
+                        <div className="relative w-full h-36 mb-2 rounded-md overflow-hidden bg-white/[0.03] ring-1 ring-white/10">
+                            {previewStatus === 'loading' && (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <Loader2 className="w-5 h-5 text-dark-300 animate-spin" />
+                                </div>
+                            )}
+                            <img
+                                src={`https://image.thum.io/get/width/640/crop/400/${source.url}`}
+                                alt=""
+                                className={`w-full h-full object-cover transition-opacity duration-200 ${
+                                    previewStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
+                                }`}
+                                onLoad={() => setPreviewStatus('loaded')}
+                                onError={() => setPreviewStatus('error')}
+                            />
+                        </div>
+                    )}
                     {source?.title && (
                         <div className="text-[12px] font-semibold text-white leading-snug mb-1 line-clamp-2">
                             {source.title}
@@ -135,6 +153,14 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx }) {
  */
 export default function SearchSources({ sources, maxVisible = 8 }) {
     const [hoveredIdx, setHoveredIdx] = useState(null);
+    const [previewStatus, setPreviewStatus] = useState('loading'); // 'loading' | 'loaded' | 'error'
+
+    // Reset preview state whenever the hovered source changes
+    useEffect(() => {
+        if (hoveredIdx !== null) {
+            setPreviewStatus('loading');
+        }
+    }, [hoveredIdx]);
 
     if (!Array.isArray(sources) || sources.length === 0) {
         return null;
@@ -152,6 +178,8 @@ export default function SearchSources({ sources, maxVisible = 8 }) {
                     index={idx}
                     hoveredIdx={hoveredIdx}
                     setHoveredIdx={setHoveredIdx}
+                    previewStatus={previewStatus}
+                    setPreviewStatus={setPreviewStatus}
                 />
             ))}
             {overflow > 0 && (

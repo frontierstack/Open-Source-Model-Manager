@@ -1092,6 +1092,9 @@ body.font-size-large .markdown-content,
   margin-top: 1.5rem;
   margin-bottom: 1.5rem;
 }
+.-mt-0\.5{
+  margin-top: -0.125rem;
+}
 .mb-0\.5{
   margin-bottom: 0.125rem;
 }
@@ -1215,6 +1218,9 @@ body.font-size-large .markdown-content,
 .h-3\.5{
   height: 0.875rem;
 }
+.h-36{
+  height: 9rem;
+}
 .h-4{
   height: 1rem;
 }
@@ -1247,6 +1253,9 @@ body.font-size-large .markdown-content,
 }
 .h-screen{
   height: 100vh;
+}
+.max-h-36{
+  max-height: 9rem;
 }
 .max-h-48{
   max-height: 12rem;
@@ -1405,6 +1414,9 @@ body.font-size-large .markdown-content,
 .flex-shrink-0{
   flex-shrink: 0;
 }
+.grow{
+  flex-grow: 1;
+}
 .border-collapse{
   border-collapse: collapse;
 }
@@ -1473,6 +1485,21 @@ body.font-size-large .markdown-content,
 }
 .animate-fade-in{
   animation: fadeIn 0.3s ease-out;
+}
+@keyframes fadeInUp{
+
+  0%{
+    transform: translateY(6px);
+    opacity: 0;
+  }
+
+  100%{
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.animate-fade-in-up{
+  animation: fadeInUp 0.35s cubic-bezier(0.22, 1, 0.36, 1);
 }
 @keyframes pulse{
 
@@ -2021,6 +2048,10 @@ body.font-size-large .markdown-content,
 .fill-yellow-400\/80{
   fill: rgb(250 204 21 / 0.8);
 }
+.object-cover{
+  -o-object-fit: cover;
+     object-fit: cover;
+}
 .p-0\.5{
   padding: 0.125rem;
 }
@@ -2164,6 +2195,9 @@ body.font-size-large .markdown-content,
 .pr-0\.5{
   padding-right: 0.125rem;
 }
+.pr-1{
+  padding-right: 0.25rem;
+}
 .pr-10{
   padding-right: 2.5rem;
 }
@@ -2272,6 +2306,9 @@ body.font-size-large .markdown-content,
 .italic{
   font-style: italic;
 }
+.leading-5{
+  line-height: 1.25rem;
+}
 .leading-none{
   line-height: 1;
 }
@@ -2333,6 +2370,9 @@ body.font-size-large .markdown-content,
   --tw-text-opacity: 1;
   color: rgb(212 212 216 / var(--tw-text-opacity, 1));
 }
+.text-dark-300\/80{
+  color: rgb(212 212 216 / 0.8);
+}
 .text-dark-400{
   --tw-text-opacity: 1;
   color: rgb(161 161 170 / var(--tw-text-opacity, 1));
@@ -2352,6 +2392,9 @@ body.font-size-large .markdown-content,
 .text-emerald-400{
   --tw-text-opacity: 1;
   color: rgb(52 211 153 / var(--tw-text-opacity, 1));
+}
+.text-emerald-400\/70{
+  color: rgb(52 211 153 / 0.7);
 }
 .text-gray-300{
   --tw-text-opacity: 1;
@@ -2429,6 +2472,9 @@ body.font-size-large .markdown-content,
 .opacity-0{
   opacity: 0;
 }
+.opacity-100{
+  opacity: 1;
+}
 .opacity-60{
   opacity: 0.6;
 }
@@ -2472,6 +2518,9 @@ body.font-size-large .markdown-content,
   --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
   --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color);
   box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
+}
+.ring-white\/10{
+  --tw-ring-color: rgb(255 255 255 / 0.1);
 }
 .blur-\[100px\]{
   --tw-blur: blur(100px);
@@ -4655,43 +4704,59 @@ body.font-size-large .markdown-content,
 .chat-style-timeline .flex.flex-col.items-end,
 .chat-style-timeline .flex.flex-col.items-start {
     align-items: flex-start !important;
-    padding-left: 2rem !important;
+    padding-left: 2.25rem !important;
     position: relative !important;
 }
 
-/* Timeline line */
+/* Timeline line - extends into the space-y-1 gap above and below so the line
+   appears continuous across adjacent messages. */
 .chat-style-timeline .flex.flex-col.items-end::before,
 .chat-style-timeline .flex.flex-col.items-start::before {
     content: '' !important;
     position: absolute !important;
     left: 0.45rem !important;
-    top: 0 !important;
-    bottom: 0 !important;
+    top: -0.25rem !important;
+    bottom: -0.25rem !important;
     width: 2px !important;
-    background: linear-gradient(to bottom, rgba(var(--primary-rgb, 99, 102, 241), 0.3), rgba(var(--primary-rgb, 99, 102, 241), 0.08)) !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), 0.18) !important;
+    z-index: 0 !important;
 }
 
-/* Timeline dots - on same parent as line so they align */
+/* Gentle fade-in at the very top of the timeline */
+.chat-style-timeline > div:first-child::before {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 1rem) !important;
+    mask-image: linear-gradient(to bottom, transparent, black 1rem) !important;
+}
+
+/* Gentle fade-out at the very bottom of the timeline */
+.chat-style-timeline > div:last-child::before {
+    -webkit-mask-image: linear-gradient(to top, transparent, black 1rem) !important;
+    mask-image: linear-gradient(to top, transparent, black 1rem) !important;
+}
+
+/* Timeline dots - aligned to roughly the vertical center of the first line
+   of content (timestamp/header row). Dot is 10px so visual center lands at +5px. */
 .chat-style-timeline .flex.flex-col.items-end::after,
 .chat-style-timeline .flex.flex-col.items-start::after {
     content: '' !important;
     position: absolute !important;
     left: calc(0.45rem - 4px) !important;
-    top: 0 !important;
+    top: 0.85rem !important;
     width: 10px !important;
     height: 10px !important;
     border-radius: 50% !important;
     z-index: 1 !important;
+    box-sizing: border-box !important;
 }
 
 .chat-style-timeline .flex.flex-col.items-end::after {
     background: var(--accent-primary, #6366f1) !important;
-    box-shadow: 0 0 6px rgba(var(--primary-rgb, 99, 102, 241), 0.4) !important;
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb, 99, 102, 241), 0.18), 0 0 8px rgba(var(--primary-rgb, 99, 102, 241), 0.45) !important;
 }
 
 .chat-style-timeline .flex.flex-col.items-start::after {
-    background: rgba(255, 255, 255, 0.15) !important;
-    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.3) !important;
+    background: transparent !important;
+    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.55) !important;
 }
 
 .chat-style-timeline .message-user,

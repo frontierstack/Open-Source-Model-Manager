@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle, Minimize2, Maximize2 } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import StatusIndicator from './StatusIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import SearchSources from './SearchSources';
+import ProcessingLogFeed from './ProcessingLogFeed';
 
 /**
  * ChatMessage - Individual chat message bubble (Tailwind)
@@ -31,9 +32,15 @@ export default React.memo(function ChatMessage({
     // and the full web search results array for SearchSources rendering.
     toolCalls,
     searchResults,
+    // Rolling-credits-style processing log, rendered while isStreaming is
+    // true in place of the single mute spinner.
+    processingLog,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
+    // Local per-message state for collapsing the main message body. Default
+    // expanded; toggle persists for the session lifetime of this component.
+    const [bodyCollapsed, setBodyCollapsed] = useState(false);
     const reasoningRef = useRef(null);
 
     const isUser = role === 'user';
@@ -107,6 +114,32 @@ export default React.memo(function ChatMessage({
                     </div>
                 )}
 
+                {/* Collapse/expand toggle for the assistant message body.
+                    Only shown on final (non-streaming) assistant messages
+                    that actually have content. User messages always stay
+                    expanded. */}
+                {!isUser && !isStreaming && displayContent && (
+                    <div className="flex items-center justify-end mb-1 -mt-0.5">
+                        <button
+                            onClick={() => setBodyCollapsed(v => !v)}
+                            className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] text-dark-500 hover:text-dark-200 hover:bg-white/[0.05] transition-colors"
+                            title={bodyCollapsed ? 'Expand response' : 'Collapse response'}
+                        >
+                            {bodyCollapsed ? (
+                                <>
+                                    <Maximize2 className="w-3 h-3" />
+                                    <span>Expand</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Minimize2 className="w-3 h-3" />
+                                    <span>Collapse</span>
+                                </>
+                            )}
+                        </button>
+                    </div>
+                )}
+
                 {/* Tool calls (web search / URL fetch / skills).
                     Rendered above the message body as collapsible cards so
                     the user can see what Koda did before answering without
@@ -130,13 +163,30 @@ export default React.memo(function ChatMessage({
 
                 {/* Content */}
                 {isStreaming && !displayContent ? (
-                    <div className="flex items-center gap-2">
-                        {processingStatus ? (
+                    // While streaming and no tokens have arrived yet, show
+                    // the rolling-credits processing log in place of a mute
+                    // spinner. Falls back to the legacy status indicator if
+                    // no log entries exist yet (very brief window at turn
+                    // start).
+                    <div className="flex flex-col gap-1 min-w-[220px]">
+                        {Array.isArray(processingLog) && processingLog.length > 0 ? (
+                            <ProcessingLogFeed log={processingLog} />
+                        ) : processingStatus ? (
                             <StatusIndicator status={processingStatus} message={processingMessage} />
                         ) : (
                             <ThinkingIndicator />
                         )}
                     </div>
+                ) : bodyCollapsed ? (
+                    // Collapsed: show a compact one-line preview instead of
+                    // the full markdown body. Clicking the Expand button
+                    // above brings the body back.
+                    <button
+                        onClick={() => setBodyCollapsed(false)}
+                        className="w-full text-left text-[12px] text-dark-400 hover:text-dark-200 italic transition-colors"
+                    >
+                        {`… ${displayContent?.length || 0} characters collapsed — click to expand`}
+                    </button>
                 ) : (
                     <MessageContent content={displayContent} />
                 )}

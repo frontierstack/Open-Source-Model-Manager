@@ -13,6 +13,7 @@ export default function ChatMessages({
     streamingReasoning,
     processingStatus,
     processingMessage,
+    processingLog,
     onContinue,
     isLoading,
     chatStyle = 'default',
@@ -106,6 +107,7 @@ export default function ChatMessages({
                     streamingReasoning={streamingReasoning}
                     processingStatus={processingStatus}
                     processingMessage={processingMessage}
+                    processingLog={processingLog}
                 />
             )}
 
