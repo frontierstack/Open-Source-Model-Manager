@@ -42,22 +42,35 @@ RUN pip3 install --no-cache-dir --upgrade pip
 # #9064). Bump this intentionally after verifying GGUF still works.
 # Let vLLM manage its own torch version.
 ARG VLLM_VERSION=0.6.6.post1
-RUN pip3 install --no-cache-dir "vllm==${VLLM_VERSION}"
-
-# Reinstall `gguf` with clean PyPI metadata.
 #
-# Without this, transformers's `is_gguf_available()` crashes on model load
-# with:
-#   packaging.version.InvalidVersion: Invalid version: 'N/A'
-# because `importlib.metadata.version('gguf')` returns 'N/A' when the
-# package was pulled in as a transitive dep without proper METADATA. A
-# clean force-reinstall from PyPI writes the metadata properly and fixes
-# GGUF model loading across every Qwen/Llama/Mistral GGUF variant.
+# Pin transformers to the 4.x line.
+#
+# vllm 0.6.6.post1 declares `transformers>=4.45.2` with no upper bound, and
+# by default pip resolves to the latest, which is the 5.x line. transformers
+# 5.x has a hard bug where `is_gguf_available()` crashes on every GGUF load:
+#
+#   1. Its `_is_package_available("gguf")` looks up the package in a hardcoded
+#      `PACKAGE_DISTRIBUTION_MAPPING` table. `gguf` is not in the table, so
+#      the primary lookup raises KeyError.
+#   2. The fallback does `getattr(module, "__version__", "N/A")`, but the
+#      gguf Python module never exposed `__version__` (only GGUF_VERSION,
+#      which is a file format constant).
+#   3. is_gguf_available then calls `packaging.version.parse("N/A")` and
+#      crashes with `InvalidVersion: 'N/A'`.
+#
+# The 4.x line's `_is_package_available` reads version directly via
+# `importlib.metadata.version(pkg_name)`, which works fine. Pin to 4.x.
+RUN pip3 install --no-cache-dir "vllm==${VLLM_VERSION}" "transformers>=4.45.2,<5.0"
+
+# Reinstall `gguf` with clean PyPI metadata. Defense in depth: transformers
+# 4.x reads importlib.metadata directly, so we want the package metadata to
+# report a real version string rather than 'N/A' under any circumstance.
 # --no-deps ensures we don't disturb anything else vllm already pinned.
 RUN pip3 install --no-cache-dir --force-reinstall --no-deps "gguf>=0.10.0,<0.18.0"
 
 # Verify the fix at build time so a broken base image never ships.
-RUN python3 -c "import gguf, importlib.metadata as m; v = m.version('gguf'); print('gguf version:', v); assert v and v != 'N/A', 'gguf metadata still broken'" && \
+RUN python3 -c "import transformers; print('transformers version:', transformers.__version__); assert transformers.__version__.startswith('4.'), 'transformers is not 4.x'" && \
+    python3 -c "import gguf, importlib.metadata as m; v = m.version('gguf'); print('gguf version:', v); assert v and v != 'N/A', 'gguf metadata still broken'" && \
     python3 -c "from transformers.utils.import_utils import is_gguf_available; assert is_gguf_available(), 'transformers is_gguf_available() returned False'"
 
 # Expose port for API server
