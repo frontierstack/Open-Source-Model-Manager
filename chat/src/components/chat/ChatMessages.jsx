@@ -73,8 +73,14 @@ export default function ChatMessages({
             className={`flex-1 overflow-y-auto px-3 py-2 ${chatStyleClass}`}
             style={{ '--message-border-opacity': (messageBorderStrength || 10) / 100 }}
         >
-            {/* Centered container for messages */}
-            <div className="max-w-5xl mx-auto space-y-1">
+            {/* Centered container for messages. Width must match the
+                 ChatInput inner wrapper (`max-w-4xl mx-auto`) so the
+                 input sits on exactly the same horizontal column as the
+                 responses. On narrow viewports where max-w-5xl would
+                 overflow the parent, using the smaller max-w-4xl also
+                 guarantees that `mx-auto` actually has margin to work
+                 with, avoiding the drift the user reported. */}
+            <div className="max-w-4xl mx-auto space-y-1">
             {messages.map((message, index) => (
                 <ChatMessage
                     key={message.id || `msg-${index}-${message.timestamp || index}`}
