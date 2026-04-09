@@ -18,8 +18,65 @@
 
 set -e
 
+# -----------------------------------------------------------------------------
+# Resolve HOME robustly.
+#
+# In minimal WSL distros, plain `sh` / dash shells, and some container
+# environments, HOME can be empty or literally "/". That silently turned
+# $HOME/.local/bin into "//.local/bin" or "/.local/bin" — a real directory
+# nobody has in their PATH, so `koda` ended up "installed" somewhere the shell
+# could never find. Fix this before computing any derived paths.
+# -----------------------------------------------------------------------------
+resolve_home() {
+    if [ -n "$HOME" ] && [ "$HOME" != "/" ] && [ -d "$HOME" ]; then
+        # Strip trailing slash so derived paths never get "//" in them.
+        HOME="${HOME%/}"
+        export HOME
+        return 0
+    fi
+
+    echo "Note: HOME is empty or '/' — resolving automatically..." >&2
+
+    # 1. Ask the OS what home dir the current user should have.
+    local current_user
+    current_user=$(id -un 2>/dev/null || whoami 2>/dev/null || true)
+    if [ -n "$current_user" ] && command -v getent >/dev/null 2>&1; then
+        local resolved
+        resolved=$(getent passwd "$current_user" 2>/dev/null | cut -d: -f6 || true)
+        if [ -n "$resolved" ] && [ "$resolved" != "/" ] && [ -d "$resolved" ]; then
+            HOME="${resolved%/}"
+            export HOME
+            echo "  -> Resolved HOME to $HOME" >&2
+            return 0
+        fi
+    fi
+
+    # 2. Root fallback: /root exists on essentially every Linux system.
+    if [ "$(id -u 2>/dev/null || echo 0)" = "0" ]; then
+        mkdir -p /root
+        HOME="/root"
+        export HOME
+        echo "  -> Defaulting HOME to /root" >&2
+        return 0
+    fi
+
+    # 3. Give up with a clear message rather than silently corrupting paths.
+    echo "" >&2
+    echo "Error: HOME environment variable is not set and could not be resolved." >&2
+    echo "" >&2
+    echo "Please set it manually and rerun the installer:" >&2
+    echo "  export HOME=\"/path/to/your/home\"" >&2
+    echo "  curl -sk $API_URL/api/cli/install | bash" >&2
+    echo "" >&2
+    echo "If you're running via sudo, try 'sudo -i' first to get a login shell." >&2
+    exit 1
+}
+
 # Get API URL from environment (set by server) or use localhost as fallback
 API_URL="${KODA_API_URL:-https://localhost:3001}"
+
+resolve_home
+
 INSTALL_DIR="$HOME/.local/bin"
 CLI_DIR="$HOME/.local/lib/koda-cli"
 
@@ -138,52 +195,71 @@ echo ""
 # Detect shell config file based on OS and shell
 SHELL_RC=""
 detect_shell_config() {
-    # First check based on current shell
-    if [ -n "$ZSH_VERSION" ]; then
-        # Zsh user
-        if [ -f "$HOME/.zshrc" ]; then
-            echo "$HOME/.zshrc"
-            return
-        elif [ -f "$HOME/.zprofile" ]; then
-            echo "$HOME/.zprofile"
-            return
-        fi
-    elif [ -n "$BASH_VERSION" ]; then
-        # Bash user - check OS for appropriate config
-        if [ "$OS" = "macos" ]; then
-            # macOS prefers .bash_profile for login shells
-            if [ -f "$HOME/.bash_profile" ]; then
-                echo "$HOME/.bash_profile"
-                return
-            elif [ -f "$HOME/.bashrc" ]; then
-                echo "$HOME/.bashrc"
-                return
-            elif [ -f "$HOME/.profile" ]; then
-                echo "$HOME/.profile"
-                return
-            fi
-        else
-            # Linux prefers .bashrc
-            if [ -f "$HOME/.bashrc" ]; then
-                echo "$HOME/.bashrc"
-                return
-            elif [ -f "$HOME/.bash_profile" ]; then
-                echo "$HOME/.bash_profile"
-                return
-            elif [ -f "$HOME/.profile" ]; then
-                echo "$HOME/.profile"
-                return
-            fi
-        fi
+    # Determine which shell the user actually runs. The installer is normally
+    # executed via `curl | bash`, so BASH_VERSION is set inside this process —
+    # but $SHELL still points at the user's login shell, which is what we
+    # actually want to configure.
+    local login_shell=""
+    if [ -n "$SHELL" ]; then
+        login_shell=$(basename "$SHELL")
     fi
 
-    # Fallback: check common files in order
+    # Priority 1: match the user's login shell.
+    case "$login_shell" in
+        zsh)
+            for rc in "$HOME/.zshrc" "$HOME/.zprofile"; do
+                [ -f "$rc" ] && { echo "$rc"; return; }
+            done
+            ;;
+        bash)
+            if [ "$OS" = "macos" ]; then
+                for rc in "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile"; do
+                    [ -f "$rc" ] && { echo "$rc"; return; }
+                done
+            else
+                for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+                    [ -f "$rc" ] && { echo "$rc"; return; }
+                done
+            fi
+            ;;
+        fish)
+            if [ -f "$HOME/.config/fish/config.fish" ]; then
+                echo "$HOME/.config/fish/config.fish"
+                return
+            fi
+            ;;
+        sh|dash|ash|ksh)
+            # POSIX-ish shells read ~/.profile on login.
+            [ -f "$HOME/.profile" ] && { echo "$HOME/.profile"; return; }
+            ;;
+    esac
+
+    # Priority 2: interpreter-of-this-process hints (BASH_VERSION / ZSH_VERSION).
+    if [ -n "$ZSH_VERSION" ]; then
+        for rc in "$HOME/.zshrc" "$HOME/.zprofile"; do
+            [ -f "$rc" ] && { echo "$rc"; return; }
+        done
+    elif [ -n "$BASH_VERSION" ]; then
+        for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+            [ -f "$rc" ] && { echo "$rc"; return; }
+        done
+    fi
+
+    # Priority 3: any common file that already exists.
     for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.profile"; do
         if [ -f "$rc" ]; then
             echo "$rc"
             return
         fi
     done
+
+    # Priority 4: nothing exists yet — create ~/.profile, which every POSIX
+    # login shell (bash, dash, sh, ksh) reads. This is the most widely
+    # compatible fallback and avoids the "Manual PATH Setup Required" dead end.
+    if touch "$HOME/.profile" 2>/dev/null; then
+        echo "$HOME/.profile"
+        return
+    fi
 
     echo ""
 }
@@ -307,33 +383,56 @@ echo ""
 echo "The CLI has been installed to: $INSTALL_DIR"
 echo ""
 
-# Check if install directory is in PATH and auto-add if needed
+# Check if install directory is in PATH and auto-add if needed.
+# We write the LITERAL $INSTALL_DIR (already resolved to an absolute path), not
+# the "$HOME/.local/bin" string — that way even if the user's shell has a
+# different HOME later, the PATH entry still points at the actual install.
 PATH_SETUP_SUCCESS=false
+PATH_EXPORT_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ">>> Adding $INSTALL_DIR to PATH..."
 
     if [ -n "$SHELL_RC" ]; then
-        # Check if PATH export already exists
-        if ! grep -q "export PATH=\"\$HOME/.local/bin:\$PATH\"" "$SHELL_RC" 2>/dev/null; then
-            # Attempt to add PATH to shell config
+        # Check if PATH export already exists (matches either the literal
+        # path or the $HOME-relative form from older installs).
+        if grep -qF "$INSTALL_DIR" "$SHELL_RC" 2>/dev/null ||
+           grep -q 'export PATH="\$HOME/\.local/bin:\$PATH"' "$SHELL_RC" 2>/dev/null; then
+            echo "✓ PATH already configured in $SHELL_RC"
+            PATH_SETUP_SUCCESS=true
+        else
             if { echo "" >> "$SHELL_RC" && \
                  echo "# Added by koda installer" >> "$SHELL_RC" && \
-                 echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$SHELL_RC"; } 2>/dev/null; then
+                 echo "$PATH_EXPORT_LINE" >> "$SHELL_RC"; } 2>/dev/null; then
                 echo "✓ Added to $SHELL_RC"
                 PATH_SETUP_SUCCESS=true
             else
                 echo "⚠️  Could not write to $SHELL_RC (permission denied)"
             fi
-        else
-            echo "✓ PATH already configured in $SHELL_RC"
-            PATH_SETUP_SUCCESS=true
         fi
     else
-        echo "⚠️  Could not detect shell configuration file"
+        echo "⚠️  Could not detect or create a shell configuration file"
     fi
 else
     echo "✓ $INSTALL_DIR is already in your PATH"
     PATH_SETUP_SUCCESS=true
+fi
+
+# Also try to symlink into a system-wide bin when running as root, so the
+# binary is immediately usable without touching PATH at all. This is a belt-
+# and-suspenders measure for WSL/container environments where shell configs
+# don't reliably get sourced.
+SYSTEM_SYMLINK=""
+if [ "$(id -u 2>/dev/null || echo 0)" = "0" ]; then
+    for sys_bin in /usr/local/bin /usr/bin; do
+        if [ -d "$sys_bin" ] && [ -w "$sys_bin" ]; then
+            if ln -sf "$INSTALL_DIR/koda" "$sys_bin/koda" 2>/dev/null; then
+                SYSTEM_SYMLINK="$sys_bin/koda"
+                echo "✓ Also linked into $sys_bin/koda (system-wide)"
+                break
+            fi
+        fi
+    done
 fi
 
 # Show appropriate next steps based on PATH setup result
@@ -351,41 +450,42 @@ else
     echo ""
     echo "Koda was installed successfully, but PATH could not be configured automatically."
     echo ""
-    echo "Please add the following to your shell configuration file:"
+    echo "Run this in your current shell to use koda right now:"
     echo ""
-    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo "  $PATH_EXPORT_LINE"
     echo ""
+    echo "And add the same line to your shell config file to make it permanent:"
     case "$OS" in
         linux)
-            echo "Common config files for Linux:"
             echo "  - ~/.bashrc (Bash)"
-            echo "  - ~/.zshrc (Zsh)"
+            echo "  - ~/.zshrc  (Zsh)"
+            echo "  - ~/.profile (sh/dash/ksh)"
             ;;
         macos)
-            echo "Common config files for macOS:"
+            echo "  - ~/.zshrc     (default on macOS Catalina+)"
+            echo "  - ~/.zprofile  (Zsh login shell)"
             echo "  - ~/.bash_profile (Bash)"
-            echo "  - ~/.zshrc (Zsh - default on macOS Catalina+)"
-            echo "  - ~/.zprofile (Zsh login shell)"
             ;;
         windows)
-            echo "For Git Bash/MSYS2/Cygwin:"
-            echo "  - ~/.bashrc"
-            echo "  - ~/.bash_profile"
+            echo "  - ~/.bashrc (Git Bash / MSYS2 / Cygwin)"
             ;;
     esac
     echo ""
-    echo "After adding, restart your terminal or run: source <config-file>"
+    echo "Or just run koda directly via its full path:"
+    echo "  $INSTALL_DIR/koda"
     echo ""
 fi
 
 echo "To get started:"
-if [ "$PATH_SETUP_SUCCESS" = true ] && [ -n "$SHELL_RC" ]; then
+if [ -n "$SYSTEM_SYMLINK" ]; then
+    echo "  1. Run: koda    (available now — no restart needed)"
+elif [ "$PATH_SETUP_SUCCESS" = true ] && [ -n "$SHELL_RC" ]; then
     echo "  1. Restart your shell or run: source $SHELL_RC"
     echo "  2. Run: koda"
 else
-    echo "  1. Complete PATH setup (see instructions above)"
-    echo "  2. Restart your terminal"
-    echo "  3. Run: koda"
+    echo "  1. Run this in your current shell:  $PATH_EXPORT_LINE"
+    echo "  2. Run: koda"
+    echo "  (Or use the full path directly: $INSTALL_DIR/koda)"
 fi
 echo "  - Authenticate: /auth"
 echo "  - Analyze project: /init"
