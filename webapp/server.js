@@ -2117,6 +2117,17 @@ app.post('/api/models/pull', requireAuth, (req, res) => {
         ggufFile,
         status: 'downloading',
         progress: 0,
+        overallPct: 0,
+        overallDownloaded: 0,
+        overallTotal: 0,
+        speed: 0,
+        eta: 0,
+        fileIndex: 0,
+        fileTotal: 0,
+        fileName: null,
+        filePct: 0,
+        fileDownloaded: 0,
+        fileSize: 0,
         startTime: Date.now(),
         childProcess: child,
         modelName: null // Will be extracted from repo name
@@ -2139,28 +2150,88 @@ app.post('/api/models/pull', requireAuth, (req, res) => {
         modelName: downloadInfo.modelName
     });
 
-    // Parse progress from stdout
-    const progressRegex = /(\d+)%/; // Match percentage like "45%"
+    // Parse structured progress from stdout. The download script emits lines
+    // of the form `__PROGRESS__{json}` alongside regular log output. We buffer
+    // partial lines because `data` events are chunked arbitrarily.
+    let stdoutBuffer = '';
+    const PROGRESS_PREFIX = '__PROGRESS__';
+
+    const handleProgressPayload = (payload) => {
+        if (payload.kind === 'start') {
+            downloadInfo.overallTotal = payload.totalBytes || 0;
+            downloadInfo.fileTotal = payload.fileTotal || 0;
+            broadcast({
+                type: 'download_progress',
+                downloadId,
+                progress: 0,
+                overallPct: 0,
+                overallDownloaded: 0,
+                overallTotal: downloadInfo.overallTotal,
+                fileTotal: downloadInfo.fileTotal,
+                speed: 0,
+                eta: 0,
+                status: 'downloading'
+            });
+        } else if (payload.kind === 'progress') {
+            downloadInfo.progress = payload.overallPct ?? payload.filePct ?? 0;
+            downloadInfo.overallPct = payload.overallPct ?? 0;
+            downloadInfo.overallDownloaded = payload.overallDownloaded ?? 0;
+            downloadInfo.overallTotal = payload.overallTotal ?? downloadInfo.overallTotal;
+            downloadInfo.fileIndex = payload.fileIndex ?? 0;
+            downloadInfo.fileTotal = payload.fileTotal ?? downloadInfo.fileTotal;
+            downloadInfo.fileName = payload.fileName ?? downloadInfo.fileName;
+            downloadInfo.filePct = payload.filePct ?? 0;
+            downloadInfo.fileDownloaded = payload.fileDownloaded ?? 0;
+            downloadInfo.fileSize = payload.fileSize ?? 0;
+            downloadInfo.speed = payload.speed ?? 0;
+            downloadInfo.eta = payload.eta ?? 0;
+            broadcast({
+                type: 'download_progress',
+                downloadId,
+                progress: downloadInfo.progress,
+                overallPct: downloadInfo.overallPct,
+                overallDownloaded: downloadInfo.overallDownloaded,
+                overallTotal: downloadInfo.overallTotal,
+                fileIndex: downloadInfo.fileIndex,
+                fileTotal: downloadInfo.fileTotal,
+                fileName: downloadInfo.fileName,
+                filePct: downloadInfo.filePct,
+                fileDownloaded: downloadInfo.fileDownloaded,
+                fileSize: downloadInfo.fileSize,
+                speed: downloadInfo.speed,
+                eta: downloadInfo.eta
+            });
+        } else if (payload.kind === 'complete') {
+            downloadInfo.progress = 100;
+            downloadInfo.overallPct = 100;
+            if (payload.totalBytes) {
+                downloadInfo.overallDownloaded = payload.totalBytes;
+                downloadInfo.overallTotal = payload.totalBytes;
+            }
+        }
+    };
 
     child.stdout.on('data', (data) => {
         try {
-            const output = data.toString();
-            console.log(`[Download ${downloadId}] stdout: ${output}`);
+            stdoutBuffer += data.toString();
+            let newlineIdx;
+            while ((newlineIdx = stdoutBuffer.indexOf('\n')) !== -1) {
+                const line = stdoutBuffer.slice(0, newlineIdx);
+                stdoutBuffer = stdoutBuffer.slice(newlineIdx + 1);
+                const trimmed = line.trim();
+                if (!trimmed) continue;
 
-            // Try to extract progress percentage
-            const match = output.match(progressRegex);
-            if (match) {
-                const progress = parseInt(match[1]);
-                downloadInfo.progress = progress;
-                broadcast({
-                    type: 'download_progress',
-                    downloadId,
-                    progress,
-                    message: output.trim()
-                });
-            } else {
-                // Still broadcast as log for non-progress output
-                broadcast({ type: 'log', message: `[${downloadInfo.modelName}] ${output}` });
+                if (trimmed.startsWith(PROGRESS_PREFIX)) {
+                    try {
+                        const payload = JSON.parse(trimmed.slice(PROGRESS_PREFIX.length));
+                        handleProgressPayload(payload);
+                    } catch (parseErr) {
+                        console.error(`[Download ${downloadId}] Bad progress payload:`, parseErr.message, trimmed);
+                    }
+                } else {
+                    console.log(`[Download ${downloadId}] ${trimmed}`);
+                    broadcast({ type: 'log', message: `[${downloadInfo.modelName}] ${trimmed}` });
+                }
             }
         } catch (error) {
             console.error(`[Download ${downloadId}] Error processing stdout:`, error.message);
@@ -2266,6 +2337,17 @@ app.get('/api/downloads', requireAuth, (req, res) => {
         modelName: d.modelName,
         status: d.status,
         progress: d.progress,
+        overallPct: d.overallPct,
+        overallDownloaded: d.overallDownloaded,
+        overallTotal: d.overallTotal,
+        fileIndex: d.fileIndex,
+        fileTotal: d.fileTotal,
+        fileName: d.fileName,
+        filePct: d.filePct,
+        fileDownloaded: d.fileDownloaded,
+        fileSize: d.fileSize,
+        speed: d.speed,
+        eta: d.eta,
         startTime: d.startTime
     }));
     res.json(downloads);

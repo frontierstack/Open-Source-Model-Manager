@@ -141,6 +141,18 @@ const formatFileSize = (bytes) => {
     return `${gb.toFixed(2)} GB`;
 };
 
+const formatDuration = (seconds) => {
+    if (!seconds || seconds <= 0 || !Number.isFinite(seconds)) return null;
+    const s = Math.round(seconds);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    if (m < 60) return rem ? `${m}m ${rem}s` : `${m}m`;
+    const h = Math.floor(m / 60);
+    const mRem = m % 60;
+    return mRem ? `${h}h ${mRem}m` : `${h}h`;
+};
+
 // Settings tooltips - detailed descriptions for all vLLM configuration options
 const SETTINGS_TOOLTIPS = {
     maxModelLen: "Maximum number of tokens the model can process at once. Larger values allow longer conversations but require more VRAM. Your prompt + response must fit within this limit.",
@@ -646,7 +658,23 @@ const App = () => {
                         showSnackbar(`Download started: ${data.modelName}`, 'info');
                     } else if (data.type === 'download_progress') {
                         setActiveDownloads(prev => prev.map(d =>
-                            d.downloadId === data.downloadId ? { ...d, progress: data.progress } : d
+                            d.downloadId === data.downloadId
+                                ? {
+                                    ...d,
+                                    progress: data.progress ?? d.progress,
+                                    overallPct: data.overallPct ?? d.overallPct,
+                                    overallDownloaded: data.overallDownloaded ?? d.overallDownloaded,
+                                    overallTotal: data.overallTotal ?? d.overallTotal,
+                                    fileIndex: data.fileIndex ?? d.fileIndex,
+                                    fileTotal: data.fileTotal ?? d.fileTotal,
+                                    fileName: data.fileName ?? d.fileName,
+                                    filePct: data.filePct ?? d.filePct,
+                                    fileDownloaded: data.fileDownloaded ?? d.fileDownloaded,
+                                    fileSize: data.fileSize ?? d.fileSize,
+                                    speed: data.speed ?? d.speed,
+                                    eta: data.eta ?? d.eta
+                                }
+                                : d
                         ));
                     } else if (data.type === 'download_finished') {
                         fetchDownloads();
@@ -6909,7 +6937,21 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                     subtitle={`${activeDownloads.length} download${activeDownloads.length > 1 ? 's' : ''} in progress`}
                                                 />
                                                 <Box sx={{ mt: 2 }}>
-                                                    {activeDownloads.map(download => (
+                                                    {activeDownloads.map(download => {
+                                                        const pct = download.progress || 0;
+                                                        const hasTotals = download.overallTotal > 0;
+                                                        const hasSplit = (download.fileTotal || 0) > 1;
+                                                        const speedLabel = download.speed
+                                                            ? `${formatFileSize(download.speed)}/s`
+                                                            : null;
+                                                        const etaLabel = download.eta
+                                                            ? formatDuration(download.eta)
+                                                            : null;
+                                                        const sizeLabel = hasTotals
+                                                            ? `${formatFileSize(download.overallDownloaded)} / ${formatFileSize(download.overallTotal)}`
+                                                            : null;
+                                                        const indeterminate = download.status === 'downloading' && !hasTotals && pct === 0;
+                                                        return (
                                                         <Box key={download.downloadId} sx={{ mb: 2, p: 2, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
                                                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
                                                                 <Box sx={{ flex: 1, overflow: 'hidden' }}>
@@ -6932,23 +6974,47 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             </Box>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                                                 <LinearProgress
-                                                                    variant="determinate"
-                                                                    value={download.progress || 0}
-                                                                    sx={{ flex: 1, height: 6, borderRadius: 3 }}
+                                                                    variant={indeterminate ? 'indeterminate' : 'determinate'}
+                                                                    value={pct}
+                                                                    sx={{ flex: 1, height: 8, borderRadius: 4 }}
                                                                 />
-                                                                <Typography variant="caption" color="text.secondary" sx={{ minWidth: 40, textAlign: 'right' }}>
-                                                                    {download.progress || 0}%
+                                                                <Typography variant="caption" color="text.secondary" sx={{ minWidth: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                                    {pct}%
                                                                 </Typography>
                                                             </Box>
-                                                            <Box sx={{ mt: 1 }}>
+                                                            <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1 }}>
                                                                 <Chip
                                                                     label={download.status}
                                                                     size="small"
                                                                     color={download.status === 'downloading' ? 'primary' : download.status === 'completed' ? 'success' : 'warning'}
                                                                 />
+                                                                {hasSplit && (
+                                                                    <Chip
+                                                                        label={`Part ${download.fileIndex || 0}/${download.fileTotal}`}
+                                                                        size="small"
+                                                                        variant="outlined"
+                                                                        color="info"
+                                                                    />
+                                                                )}
+                                                                {sizeLabel && (
+                                                                    <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                                                        {sizeLabel}
+                                                                    </Typography>
+                                                                )}
+                                                                {speedLabel && download.status === 'downloading' && (
+                                                                    <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                                                        ↓ {speedLabel}
+                                                                    </Typography>
+                                                                )}
+                                                                {etaLabel && download.status === 'downloading' && (
+                                                                    <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                                                        ETA {etaLabel}
+                                                                    </Typography>
+                                                                )}
                                                             </Box>
                                                         </Box>
-                                                    ))}
+                                                        );
+                                                    })}
                                                 </Box>
                                             </CardContent>
                                         </Card>
