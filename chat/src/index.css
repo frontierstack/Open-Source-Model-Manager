@@ -3233,7 +3233,13 @@
     margin-top: 0.45rem !important;
 }
 
-/* Slack - Flat, left-aligned, no bubbles */
+/* Slack - Flat, left-aligned, full-width rows with a visible background
+   tint. Previously too transparent — the bubbles blended into the page
+   background and the text was hard to read. Bumped the user tint from
+   4% to 9% alpha and added a subtle assistant tint (3% white) so both
+   roles stand out from the ambient background. Border opacity
+   independent of --message-border-opacity so weak border settings don't
+   destroy readability. */
 .chat-style-slack .flex.flex-col.items-end,
 .chat-style-slack .flex.flex-col.items-start {
     align-items: flex-start !important;
@@ -3243,42 +3249,132 @@
 .chat-style-slack .message-assistant {
     max-width: 100% !important;
     width: 100% !important;
-    background: transparent !important;
-    padding: 0.5rem 0.75rem !important;
+    padding: 0.625rem 0.875rem !important;
+    color: var(--text-primary) !important;
 }
 
 .chat-style-slack .message-user {
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
-    border-left: 2px solid var(--accent-primary, #6366f1) !important;
-    border-radius: 0 0.375rem 0.375rem 0 !important;
-    background: rgba(var(--primary-rgb, 99, 102, 241), 0.04) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), 0.22) !important;
+    border-left: 3px solid var(--accent-primary, #6366f1) !important;
+    border-radius: 0 0.5rem 0.5rem 0 !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), 0.09) !important;
 }
 
 .chat-style-slack .message-assistant {
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
-    border-left: 2px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
-    border-radius: 0 0.375rem 0.375rem 0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), 0.35) !important;
+    border-radius: 0 0.5rem 0.5rem 0 !important;
+    background: rgba(255, 255, 255, 0.03) !important;
 }
 
 .chat-style-slack .space-y-1 > * + * {
-    margin-top: 0.125rem !important;
+    margin-top: 0.3rem !important;
 }
 
-/* Minimal - Clean dividers, no bubble backgrounds */
+/* Minimal - Clean dividers, weak bubble backgrounds. Bumped background
+   opacity from 0 (transparent) to a subtle tint so the response area is
+   distinguishable from the page background. Borders use a fixed higher
+   opacity so the outlines read clearly. Text always uses the theme
+   primary text color for consistency. */
 .chat-style-minimal .message-user {
     max-width: 80% !important;
-    background: transparent !important;
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
-    border-radius: 0.5rem !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), 0.10) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), 0.28) !important;
+    border-radius: 0.55rem !important;
     color: var(--text-primary) !important;
+    padding: 0.55rem 0.85rem !important;
 }
 
 .chat-style-minimal .message-assistant {
     max-width: 90% !important;
-    background: transparent !important;
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
-    border-radius: 0.375rem !important;
-    padding: 0.75rem !important;
+    background: rgba(255, 255, 255, 0.035) !important;
+    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+    border-radius: 0.55rem !important;
+    padding: 0.75rem 0.95rem !important;
+    color: var(--text-primary) !important;
+}
+
+/* ============================================
+   Unified text color baseline across all chat themes
+   ============================================
+   Different themes used to set their own message colors (or not at
+   all), producing inconsistent readability — some themes would show
+   dim grey prose while others were bright. This baseline ensures
+   every theme's assistant/user bubbles inherit a high-contrast
+   foreground. Individual themes that need a different color
+   (e.g. Bubbles user bubble on primary gradient) can still override
+   with higher specificity. */
+[class^="chat-style-"] .message-user,
+[class*=" chat-style-"] .message-user,
+[class^="chat-style-"] .message-assistant,
+[class*=" chat-style-"] .message-assistant {
+    color: var(--text-primary) !important;
+}
+
+[class^="chat-style-"] .message-user .prose,
+[class*=" chat-style-"] .message-user .prose,
+[class^="chat-style-"] .message-assistant .prose,
+[class*=" chat-style-"] .message-assistant .prose {
+    color: var(--text-primary) !important;
+}
+
+/* Default theme (no chat-style- class) baseline — same deal. */
+.message-user,
+.message-assistant {
+    color: var(--text-primary);
+}
+
+/* Bubbles user bubble overrides the baseline with explicit white text
+   because its gradient background is bright and needs high-contrast
+   foreground. Re-stated here after the baseline so specificity wins. */
+.chat-style-bubbles .message-user,
+.chat-style-bubbles .message-user *,
+.chat-style-bubbles .message-user .prose,
+.chat-style-bubbles .message-user .prose * {
+    color: #ffffff !important;
+}
+
+/* ============================================
+   Chat input alignment per theme
+   ============================================
+   The ChatInput inner container is max-w-4xl mx-auto, matching the
+   ChatMessages container. For themes that render messages at less
+   than 100% of that width (Default/Centered/Bubbles/Minimal/Timeline),
+   the input visually looks "wider than the responses" because its
+   wrapper spans the full 4xl while the bubbles sit narrower inside.
+   Per-theme caps below constrain the input's inner wrapper to match
+   the widest message for that theme, so the input sits on the same
+   visual column as the responses. */
+
+/* Wide + Slack + Default: messages already span or default to the full
+   container width, so the input stays at max-w-4xl as-is. No override. */
+
+/* Centered: messages capped at 80%. Input also capped at 80%, still
+   mx-auto centered. */
+.chat-input-wrapper.chat-style-centered .chat-input-inner {
+    max-width: 80% !important;
+}
+
+/* Timeline: messages have a 2.25rem left padding for the line+dots,
+   and cap at 90% of the remaining space. Shift the input right by the
+   same amount and cap at 90% so it lines up under the message bubbles. */
+.chat-input-wrapper.chat-style-timeline .chat-input-inner {
+    padding-left: 2.25rem !important;
+    max-width: 100% !important;
+}
+.chat-input-wrapper.chat-style-timeline .chat-input-inner > * {
+    max-width: 90% !important;
+}
+
+/* Bubbles: messages cap at 78% of their flex container. Input matches. */
+.chat-input-wrapper.chat-style-bubbles .chat-input-inner {
+    max-width: 78% !important;
+}
+
+/* Minimal: user at 80%, assistant at 90%. Pick the wider (90%) so both
+   are visually enclosed. */
+.chat-input-wrapper.chat-style-minimal .chat-input-inner {
+    max-width: 90% !important;
 }
 
 /* ============================================
