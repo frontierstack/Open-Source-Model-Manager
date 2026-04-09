@@ -66,6 +66,8 @@ const apiProxy = createProxyMiddleware({
     changeOrigin: true,
     secure: false, // Allow self-signed certs
     ws: true, // Proxy WebSocket connections
+    proxyTimeout: 0,   // Disable proxy read timeout — let the backend stream as long as it needs
+    timeout: 0,        // Disable socket idle timeout on the proxy side
     onProxyReq: (proxyReq, req) => {
         // Forward session cookie
         if (req.headers.cookie) {
@@ -77,14 +79,25 @@ const apiProxy = createProxyMiddleware({
         proxyRes.headers['Access-Control-Allow-Origin'] = '*';
     },
     onError: (err, req, res) => {
-        console.error('Proxy error:', err.message);
+        console.error(`[proxy] ${req.method} ${req.url} -> ${err.code || err.message}`);
         if (!res.headersSent) {
-            res.status(502).json({ error: 'Backend service unavailable' });
+            // Include the error code so the browser devtools show something
+            // useful instead of a bare 502. Most 502s during development are
+            // caused by the webapp container restarting during a rebuild;
+            // the frontend should simply retry the request.
+            res.status(502).json({
+                error: 'Backend service unavailable',
+                code: err.code || 'PROXY_ERROR',
+                retryable: true
+            });
         }
     },
 });
 
-// Apply proxy to all API routes
+// Apply proxy to all API routes. 502s still happen momentarily when the
+// webapp container restarts during a dev rebuild, but the client should
+// see a clearer error and the browser's Retry behaviour (or a page
+// reload) recovers immediately once the target is back up.
 app.use('/api', apiProxy);
 
 // Health check endpoint

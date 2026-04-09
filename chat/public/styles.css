@@ -1092,10 +1092,6 @@ body.font-size-large .markdown-content,
   margin-left: auto;
   margin-right: auto;
 }
-.my-2{
-  margin-top: 0.5rem;
-  margin-bottom: 0.5rem;
-}
 .my-4{
   margin-top: 1rem;
   margin-bottom: 1rem;
@@ -1142,6 +1138,9 @@ body.font-size-large .markdown-content,
 }
 .ml-auto{
   margin-left: auto;
+}
+.mr-1\.5{
+  margin-right: 0.375rem;
 }
 .mt-0\.5{
   margin-top: 0.125rem;
@@ -1398,6 +1397,9 @@ body.font-size-large .markdown-content,
 }
 .max-w-\[180px\]{
   max-width: 180px;
+}
+.max-w-\[240px\]{
+  max-width: 240px;
 }
 .max-w-\[420px\]{
   max-width: 420px;
@@ -1833,9 +1835,6 @@ body.font-size-large .markdown-content,
 .border-white\/\[0\.04\]{
   border-color: rgb(255 255 255 / 0.04);
 }
-.border-white\/\[0\.05\]{
-  border-color: rgb(255 255 255 / 0.05);
-}
 .border-white\/\[0\.06\]{
   border-color: rgb(255 255 255 / 0.06);
 }
@@ -1980,9 +1979,6 @@ body.font-size-large .markdown-content,
 .bg-red-500\/20{
   background-color: rgb(239 68 68 / 0.2);
 }
-.bg-red-500\/5{
-  background-color: rgb(239 68 68 / 0.05);
-}
 .bg-transparent{
   background-color: transparent;
 }
@@ -1995,9 +1991,6 @@ body.font-size-large .markdown-content,
 }
 .bg-white\/5{
   background-color: rgb(255 255 255 / 0.05);
-}
-.bg-white\/\[0\.02\]{
-  background-color: rgb(255 255 255 / 0.02);
 }
 .bg-white\/\[0\.03\]{
   background-color: rgb(255 255 255 / 0.03);
@@ -2225,9 +2218,6 @@ body.font-size-large .markdown-content,
 .pt-2{
   padding-top: 0.5rem;
 }
-.pt-2\.5{
-  padding-top: 0.625rem;
-}
 .text-left{
   text-align: left;
 }
@@ -2236,6 +2226,9 @@ body.font-size-large .markdown-content,
 }
 .text-right{
   text-align: right;
+}
+.align-middle{
+  vertical-align: middle;
 }
 .font-mono{
   font-family: JetBrains Mono, Fira Code, Consolas, monospace;
@@ -2317,6 +2310,10 @@ body.font-size-large .markdown-content,
 }
 .italic{
   font-style: italic;
+}
+.tabular-nums{
+  --tw-numeric-spacing: tabular-nums;
+  font-variant-numeric: var(--tw-ordinal) var(--tw-slashed-zero) var(--tw-numeric-figure) var(--tw-numeric-spacing) var(--tw-numeric-fraction);
 }
 .leading-5{
   line-height: 1.25rem;
@@ -2493,6 +2490,21 @@ body.font-size-large .markdown-content,
 .shadow-2xl{
   --tw-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25);
   --tw-shadow-colored: 0 25px 50px -12px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+.shadow-\[0_0_6px_rgba\(248\2c 113\2c 113\2c 0\.6\)\]{
+  --tw-shadow: 0 0 6px rgba(248,113,113,0.6);
+  --tw-shadow-colored: 0 0 6px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+.shadow-\[0_0_6px_rgba\(251\2c 191\2c 36\2c 0\.6\)\]{
+  --tw-shadow: 0 0 6px rgba(251,191,36,0.6);
+  --tw-shadow-colored: 0 0 6px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+.shadow-\[0_0_6px_rgba\(52\2c 211\2c 153\2c 0\.6\)\]{
+  --tw-shadow: 0 0 6px rgba(52,211,153,0.6);
+  --tw-shadow-colored: 0 0 6px var(--tw-shadow-color);
   box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 }
 .shadow-lg{

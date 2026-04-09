@@ -140,27 +140,6 @@ export default React.memo(function ChatMessage({
                     </div>
                 )}
 
-                {/* Tool calls (web search / URL fetch / skills).
-                    Rendered above the message body as collapsible cards so
-                    the user can see what Koda did before answering without
-                    cluttering the response itself. Hidden during streaming
-                    to avoid flicker — the final message shows them after
-                    the stream resolves. */}
-                {!isUser && !isStreaming && Array.isArray(toolCalls) && toolCalls.length > 0 && (
-                    <div className="mb-2">
-                        {toolCalls.map((tc, idx) => (
-                            <ToolCallBlock key={idx} tool={tc} />
-                        ))}
-                    </div>
-                )}
-
-                {/* Web search source chips. These come from the tool call's
-                    `results` array, but we also accept a top-level
-                    `searchResults` prop for convenience / legacy messages. */}
-                {!isUser && !isStreaming && Array.isArray(searchResults) && searchResults.length > 0 && (
-                    <SearchSources sources={searchResults} />
-                )}
-
                 {/* Content */}
                 {isStreaming && !displayContent ? (
                     // While streaming and no tokens have arrived yet, show
@@ -189,6 +168,26 @@ export default React.memo(function ChatMessage({
                     </button>
                 ) : (
                     <MessageContent content={displayContent} />
+                )}
+
+                {/* Web search source chips + tool-call blocks. Rendered
+                    BELOW the response body so the hover preview on a source
+                    chip has room above it to render without being clipped
+                    by the viewport edge. Order: source chips first (they're
+                    the primary provenance), then any additional tool calls
+                    (url fetch, skills, etc) as compact status pills below. */}
+                {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(searchResults) && searchResults.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-white/[0.04]">
+                        <SearchSources sources={searchResults} />
+                    </div>
+                )}
+
+                {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (
+                    <div className={`flex flex-wrap items-center ${Array.isArray(searchResults) && searchResults.length > 0 ? 'mt-1' : 'mt-2 pt-2 border-t border-white/[0.04]'}`}>
+                        {toolCalls.map((tc, idx) => (
+                            <ToolCallBlock key={idx} tool={tc} />
+                        ))}
+                    </div>
                 )}
 
                 {/* Partial/interrupted response indicator */}
