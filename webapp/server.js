@@ -1199,7 +1199,10 @@ async function syncModelInstances() {
         }
 
         console.log(`Synced ${modelInstances.size} model instance(s)`);
-        if (modelInstances.size > 0) startSystemMonitoring();
+        // Start monitoring unconditionally — the UI resource panel needs
+        // CPU/GPU/RAM samples even when no model is loaded. nvidia-smi at a
+        // 3s cadence is effectively free.
+        startSystemMonitoring();
     } catch (error) {
         console.error('Error syncing model instances:', error);
     }
@@ -3098,76 +3101,124 @@ async function monitorContainerHealth(container, modelName, port) {
 // ====== Periodic System & Model Monitoring ======
 let monitoringInterval = null;
 
-async function broadcastSystemMonitoring() {
-    // Only run if there are active model instances
-    if (modelInstances.size === 0) return;
-
+// Delta-based CPU sampling. os.cpus() returns cumulative tick counts since
+// boot, so a single snapshot is meaningless — we compute the delta between
+// consecutive polls to derive a real CPU% over the monitoring interval.
+let lastCpuTicks = null;
+function sampleCpuPercent() {
     try {
-        // GPU utilization monitoring
+        const cpus = os.cpus();
+        const current = cpus.reduce((acc, cpu) => {
+            acc.idle += cpu.times.idle;
+            acc.total += cpu.times.user + cpu.times.nice + cpu.times.sys +
+                         cpu.times.idle + cpu.times.irq;
+            return acc;
+        }, { idle: 0, total: 0 });
+
+        if (!lastCpuTicks) {
+            lastCpuTicks = current;
+            return null; // First sample — no delta yet
+        }
+
+        const idleDelta = current.idle - lastCpuTicks.idle;
+        const totalDelta = current.total - lastCpuTicks.total;
+        lastCpuTicks = current;
+
+        if (totalDelta <= 0) return null;
+        const busyDelta = totalDelta - idleDelta;
+        return Math.max(0, Math.min(100, (busyDelta / totalDelta) * 100));
+    } catch {
+        return null;
+    }
+}
+
+async function broadcastSystemMonitoring() {
+    try {
+        // ---- GPUs ----
+        const gpus = [];
         try {
             const { stdout } = await execPromise('nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits');
             const lines = stdout.trim().split('\n');
             for (const line of lines) {
                 const parts = line.split(',').map(s => s.trim());
                 const [index, name, gpuUtil, memUtil, memUsed, memTotal, temp, power] = parts;
-                const memUsedGB = (parseInt(memUsed) / 1024).toFixed(1);
-                const memTotalGB = (parseInt(memTotal) / 1024).toFixed(1);
-                broadcast({
-                    type: 'log',
-                    message: `[GPU ${index}] ${name} | Utilization: ${gpuUtil}% | VRAM: ${memUsedGB}/${memTotalGB} GB (${memUtil}%) | Temp: ${temp}°C | Power: ${parseFloat(power).toFixed(0)}W`,
-                    level: 'info'
+                const memUsedMb = parseInt(memUsed, 10);
+                const memTotalMb = parseInt(memTotal, 10);
+                gpus.push({
+                    index: parseInt(index, 10),
+                    name,
+                    utilizationPct: parseInt(gpuUtil, 10) || 0,
+                    vramUsedMb: Number.isFinite(memUsedMb) ? memUsedMb : 0,
+                    vramTotalMb: Number.isFinite(memTotalMb) ? memTotalMb : 0,
+                    vramUsedPct: memTotalMb > 0 ? Math.round((memUsedMb / memTotalMb) * 100) : 0,
+                    temperatureC: parseInt(temp, 10) || 0,
+                    powerW: parseFloat(power) || 0
                 });
             }
         } catch (err) {
-            // No NVIDIA GPU available
+            // No NVIDIA GPU / nvidia-smi unavailable — leave gpus empty
         }
 
-        // System memory monitoring
+        // ---- Memory ----
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
         const usedMem = totalMem - freeMem;
-        const memPercent = ((usedMem / totalMem) * 100).toFixed(1);
-        const usedGB = (usedMem / (1024 * 1024 * 1024)).toFixed(1);
-        const totalGB = (totalMem / (1024 * 1024 * 1024)).toFixed(1);
+        const memPct = totalMem > 0 ? (usedMem / totalMem) * 100 : 0;
 
-        const memLevel = parseFloat(memPercent) > 90 ? 'warning' : 'info';
+        // ---- CPU ----
+        const cpuPct = sampleCpuPercent();
+        const cpus = os.cpus();
+
+        // ---- Models ----
+        const models = Array.from(modelInstances.entries()).map(([name, info]) => ({
+            name,
+            status: info.status,
+            backend: info.backend || 'unknown',
+            contextSize: info.config?.contextSize || info.config?.maxModelLen || null,
+            port: info.port
+        }));
+
         broadcast({
-            type: 'log',
-            message: `[System] RAM: ${usedGB}/${totalGB} GB (${memPercent}%)`,
-            level: memLevel
+            type: 'system_stats',
+            timestamp: Date.now(),
+            cpu: {
+                percent: cpuPct,
+                cores: cpus.length,
+                model: cpus[0]?.model || 'Unknown'
+            },
+            memory: {
+                totalBytes: totalMem,
+                usedBytes: usedMem,
+                freeBytes: freeMem,
+                percent: memPct
+            },
+            gpus,
+            models
         });
-
-        // Active model instances status
-        const instances = Array.from(modelInstances.entries());
-        if (instances.length > 0) {
-            for (const [name, info] of instances) {
-                const statusEmoji = info.status === 'running' ? '●' : info.status === 'loading' ? '◐' : '○';
-                const backend = info.backend || 'unknown';
-                const ctx = info.config?.contextSize || info.config?.maxModelLen || 'N/A';
-                broadcast({
-                    type: 'log',
-                    message: `[Model] ${statusEmoji} ${name} | Backend: ${backend} | Context: ${ctx} | Status: ${info.status} | Port: ${info.port}`,
-                    level: info.status === 'running' ? 'info' : info.status === 'unhealthy' ? 'warning' : 'info'
-                });
-            }
-        }
     } catch (error) {
         console.error('System monitoring error:', error.message);
     }
 }
 
+// Poll every 3s so the UI sparklines animate smoothly. nvidia-smi takes
+// ~20-50ms per call on a warm system; at this cadence it's negligible.
+const MONITORING_INTERVAL_MS = 3000;
+
 function startSystemMonitoring() {
     if (monitoringInterval) return; // Already running
-    monitoringInterval = setInterval(broadcastSystemMonitoring, 60000); // Every 60 seconds
-    console.log('[Monitoring] System monitoring started (60s interval)');
+    // Fire once immediately to prime the CPU tick delta and give clients
+    // an initial snapshot, then settle into the regular interval.
+    broadcastSystemMonitoring().catch(() => {});
+    monitoringInterval = setInterval(broadcastSystemMonitoring, MONITORING_INTERVAL_MS);
+    console.log(`[Monitoring] System monitoring started (${MONITORING_INTERVAL_MS}ms interval)`);
 }
 
 function stopSystemMonitoring() {
-    if (monitoringInterval) {
-        clearInterval(monitoringInterval);
-        monitoringInterval = null;
-        console.log('[Monitoring] System monitoring stopped');
-    }
+    // Intentional no-op. The UI resource panel keeps streaming CPU/GPU/RAM
+    // samples for as long as the server is running, independent of whether
+    // any model is loaded. Call sites that trigger this on "last model
+    // removed" are left in place so that if we ever want tight lifecycle
+    // coupling again we only have to change it here.
 }
 
 // List all running vLLM instances

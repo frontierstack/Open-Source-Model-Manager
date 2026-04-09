@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 // Use native WebSocket (W3C-compliant in all modern browsers)
 import { useAuthStore } from './stores/useAuthStore';
 import { useAppStore } from './stores/useAppStore';
+import SystemResourceMonitor from './components/SystemResourceMonitor';
 import { logout as performLogout } from './services/auth';
 import { ThemeProvider, alpha } from '@mui/material/styles';
 import { createAppTheme } from './theme';
@@ -327,6 +328,10 @@ const App = () => {
     const [loading, setLoading] = useState(false);
     const [logFilter, setLogFilter] = useState('all'); // 'all', 'error', 'warning', 'success', 'info'
     const [logSearch, setLogSearch] = useState('');
+
+    // Live system resource state (driven by WebSocket 'system_stats' events)
+    const [systemStats, setSystemStats] = useState(null);
+    const [systemStatsHistory, setSystemStatsHistory] = useState([]);
 
     // Auth state
     const { user } = useAuthStore();
@@ -656,6 +661,16 @@ const App = () => {
                     } else if (data.type === 'download_started') {
                         fetchDownloads();
                         showSnackbar(`Download started: ${data.modelName}`, 'info');
+                    } else if (data.type === 'system_stats') {
+                        // Push into a bounded ring buffer. The resource panel
+                        // reads from this state to draw sparklines; logs stay
+                        // untouched.
+                        setSystemStats(data);
+                        setSystemStatsHistory(prev => {
+                            const next = [...prev, data];
+                            // Keep last 120 samples (~6 minutes at 3s interval)
+                            return next.length > 120 ? next.slice(next.length - 120) : next;
+                        });
                     } else if (data.type === 'download_progress') {
                         setActiveDownloads(prev => prev.map(d =>
                             d.downloadId === data.downloadId
@@ -9522,7 +9537,8 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                 return true;
                             });
                             return (
-                            <Card sx={{ height: 'calc(100vh - 220px)' }}>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 220px)', gap: 2 }}>
+                            <Card sx={{ flex: 1, minHeight: 200, display: 'flex', flexDirection: 'column' }}>
                                 <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 2 }}>
                                     {/* Header */}
                                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
@@ -9793,6 +9809,11 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                     </Paper>
                                 </CardContent>
                             </Card>
+                            <SystemResourceMonitor
+                                current={systemStats}
+                                history={systemStatsHistory}
+                            />
+                            </Box>
                             );
                         })()}
 
