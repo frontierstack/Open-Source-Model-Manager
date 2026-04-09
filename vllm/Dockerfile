@@ -44,6 +44,22 @@ RUN pip3 install --no-cache-dir --upgrade pip
 ARG VLLM_VERSION=0.6.6.post1
 RUN pip3 install --no-cache-dir "vllm==${VLLM_VERSION}"
 
+# Reinstall `gguf` with clean PyPI metadata.
+#
+# Without this, transformers's `is_gguf_available()` crashes on model load
+# with:
+#   packaging.version.InvalidVersion: Invalid version: 'N/A'
+# because `importlib.metadata.version('gguf')` returns 'N/A' when the
+# package was pulled in as a transitive dep without proper METADATA. A
+# clean force-reinstall from PyPI writes the metadata properly and fixes
+# GGUF model loading across every Qwen/Llama/Mistral GGUF variant.
+# --no-deps ensures we don't disturb anything else vllm already pinned.
+RUN pip3 install --no-cache-dir --force-reinstall --no-deps "gguf>=0.10.0,<0.18.0"
+
+# Verify the fix at build time so a broken base image never ships.
+RUN python3 -c "import gguf, importlib.metadata as m; v = m.version('gguf'); print('gguf version:', v); assert v and v != 'N/A', 'gguf metadata still broken'" && \
+    python3 -c "from transformers.utils.import_utils import is_gguf_available; assert is_gguf_available(), 'transformers is_gguf_available() returned False'"
+
 # Expose port for API server
 EXPOSE 8000
 

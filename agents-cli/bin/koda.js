@@ -3168,13 +3168,121 @@ Use skills naturally based on user requests. The catalog shows all ${enabledSkil
 }
 
 // Execute file operation skills locally (client-side)
+// Extensions where the file on disk IS markdown and fences should be
+// preserved verbatim. Everything else (code, config, plain text) gets
+// markdown fences stripped before writing.
+const MARKDOWN_DOC_EXTENSIONS = new Set([
+    '.md', '.markdown', '.mdx', '.rst', '.adoc', '.asciidoc'
+]);
+
+// Strip markdown decoration the model wrapped around a payload it was
+// asked to save to a file. The most common failure mode is the model
+// returning content="```python\ncode\n```" when asked to save code —
+// without this, the file literally contains the backticks and the
+// "python" language tag, which breaks the script.
+//
+// Rules:
+//   - If the target file is a markdown doc (.md, .rst, etc.) leave the
+//     content alone. Fences there are intentional.
+//   - Otherwise, if the content is entirely wrapped in a single fenced
+//     code block, unwrap it.
+//   - Trim a trailing newline chaser the renderer often leaves behind.
+function sanitizeContentForFile(filePath, content) {
+    if (content == null) return '';
+    if (typeof content !== 'string') content = String(content);
+
+    const ext = (filePath.match(/\.[^./\\]+$/) || [''])[0].toLowerCase();
+    if (MARKDOWN_DOC_EXTENSIONS.has(ext)) {
+        return content;
+    }
+
+    let out = content;
+
+    // Count fence lines up front. If the content has more than 2 fence
+    // lines OR the fences aren't at the extremes (ignoring blank padding
+    // lines), it's a multi-block document and we should NOT unwrap it —
+    // unwrapping would splice the middle blocks together and corrupt the
+    // file.
+    const allLines = out.split('\n');
+    // Identify the first/last non-blank line indices so trailing
+    // newlines on fenced wraps don't confuse the "fence at extreme" test.
+    let firstNonBlank = 0;
+    while (firstNonBlank < allLines.length && allLines[firstNonBlank].trim() === '') firstNonBlank++;
+    let lastNonBlank = allLines.length - 1;
+    while (lastNonBlank >= 0 && allLines[lastNonBlank].trim() === '') lastNonBlank--;
+
+    const fenceLineIndices = [];
+    for (let i = 0; i < allLines.length; i++) {
+        if (/^\s*(```|~~~)/.test(allLines[i])) fenceLineIndices.push(i);
+    }
+    const isMultiBlockDoc = fenceLineIndices.length > 2 ||
+        (fenceLineIndices.length === 2 &&
+            !(fenceLineIndices[0] === firstNonBlank && fenceLineIndices[1] === lastNonBlank));
+
+    if (isMultiBlockDoc) {
+        return out.replace(/^\n/, '').replace(/\n$/, '');
+    }
+
+    // Case 1: entire payload is a single fenced code block, optionally
+    // with leading/trailing whitespace.
+    //   ```python\n...code...\n```
+    //   ```\n...code...\n```
+    //   ~~~lang\n...code...\n~~~
+    const fencedWhole = out.match(/^\s*(```|~~~)([^\n]*)\n([\s\S]*?)\n\1\s*$/);
+    if (fencedWhole) {
+        out = fencedWhole[3];
+    } else {
+        // Case 2: the model started with a fence but didn't close it, OR
+        // left a bare opening/closing fence line, OR there's exactly one
+        // clean block wrap the regex above missed due to whitespace
+        // quirks. Only touch the content when we're confident the fence
+        // is a wrapper, not part of a multi-block document — otherwise a
+        // .py file containing two fenced blocks (i.e. a document being
+        // misfiled as code) would get its interior mangled.
+        const lines = out.split('\n');
+        const fenceIdx = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (/^\s*(```|~~~)/.test(lines[i])) fenceIdx.push(i);
+        }
+
+        if (fenceIdx.length === 1) {
+            // A single bare fence line: strip it only if it sits at an
+            // extreme (the model opened or closed but not both).
+            if (fenceIdx[0] === 0) {
+                lines.shift();
+                out = lines.join('\n');
+            } else if (fenceIdx[0] === lines.length - 1) {
+                lines.pop();
+                out = lines.join('\n');
+            }
+        } else if (
+            fenceIdx.length === 2 &&
+            fenceIdx[0] === 0 &&
+            fenceIdx[1] === lines.length - 1
+        ) {
+            // Exactly one wrap the earlier regex missed — strip both.
+            lines.shift();
+            lines.pop();
+            out = lines.join('\n');
+        }
+        // 3+ fence lines or fences in the interior: leave it alone —
+        // that's a multi-block document and stripping would corrupt it.
+    }
+
+    // Trim a single leading/trailing newline that the unwrap may leave.
+    out = out.replace(/^\n/, '').replace(/\n$/, '');
+
+    return out;
+}
+
 async function executeFileOperationSkill(skillName, params) {
     try {
         switch (skillName) {
             case 'create_file':
             case 'update_file': {
                 const filePath = params.filePath;
-                const content = params.content || '';
+                const rawContent = params.content || '';
+                const content = sanitizeContentForFile(filePath, rawContent);
 
                 if (!filePath) {
                     return { success: false, error: 'filePath is required' };
@@ -3441,7 +3549,8 @@ async function executeFileOperationSkill(skillName, params) {
 
             case 'append_to_file': {
                 const filePath = params.filePath;
-                const content = params.content || '';
+                const rawContent = params.content || '';
+                const content = sanitizeContentForFile(filePath, rawContent);
 
                 if (!filePath) {
                     return { success: false, error: 'filePath is required' };
@@ -5053,7 +5162,10 @@ async function executePdfSkill(skillName, params) {
 
             case 'create_pdf': {
                 const outputPath = params.outputPath || params.filePath;
-                const content = params.content || '';
+                // Strip markdown fences if the model wrapped the content in
+                // them — otherwise the backticks and language tag end up
+                // rendered verbatim inside the PDF.
+                const content = sanitizeContentForFile(outputPath || 'out.pdf', params.content || '');
                 const title = params.title || 'Document';
                 if (!outputPath) return { success: false, error: 'outputPath parameter is required' };
                 if (!content) return { success: false, error: 'content parameter is required' };
