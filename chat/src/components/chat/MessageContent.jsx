@@ -14,7 +14,7 @@ export default React.memo(function MessageContent({ content }) {
     const processedContent = content.replace(/<br\s*\/?>/gi, '  \n');
 
     return (
-        <div className="markdown-content break-words overflow-wrap-anywhere">
+        <div className="markdown-content">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{

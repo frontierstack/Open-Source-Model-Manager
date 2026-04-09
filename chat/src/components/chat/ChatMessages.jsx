@@ -80,7 +80,7 @@ export default function ChatMessages({
                  overflow the parent, using the smaller max-w-4xl also
                  guarantees that `mx-auto` actually has margin to work
                  with, avoiding the drift the user reported. */}
-            <div className="max-w-4xl mx-auto space-y-1">
+            <div className="max-w-4xl mx-auto min-w-0 space-y-1">
             {messages.map((message, index) => (
                 <ChatMessage
                     key={message.id || `msg-${index}-${message.timestamp || index}`}

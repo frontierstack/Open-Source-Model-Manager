@@ -695,6 +695,7 @@ body.font-size-large .markdown-content,
     }
 .message-assistant {
         max-width: 90%;
+        min-width: 0;
         background: var(--assistant-bg);
         border: 1px solid var(--assistant-border);
         border-radius: var(--radius-md);
@@ -842,6 +843,22 @@ body.font-size-large .markdown-content,
         font-weight: var(--font-weight-normal);
         overflow-wrap: anywhere;
         word-break: break-word;
+        min-width: 0;
+        max-width: 100%;
+    }
+/* Defense against runaway children: any direct descendant inside a
+       message response must stay within the bubble. Catches cases where
+       nested markdown (embedded HTML, tables, pre/code blocks, etc)
+       would otherwise force the bubble wider than its max-width via
+       intrinsic min-content sizing. */
+.markdown-content > *,
+    .markdown-content pre,
+    .markdown-content code {
+        max-width: 100%;
+    }
+.markdown-content pre {
+        overflow-x: auto;
+        white-space: pre;
     }
 .markdown-content p {
         margin-bottom: 0.75rem;
@@ -1702,9 +1719,6 @@ body.font-size-large .markdown-content,
 }
 .whitespace-pre-wrap{
   white-space: pre-wrap;
-}
-.break-words{
-  overflow-wrap: break-word;
 }
 .break-all{
   word-break: break-all;

@@ -64,7 +64,7 @@ export default React.memo(function ChatMessage({
     };
 
     return (
-        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-full ${isStreaming ? '' : 'animate-fade-in'}`}>
+        <div className={`flex flex-col min-w-0 ${isUser ? 'items-end' : 'items-start'} max-w-full ${isStreaming ? '' : 'animate-fade-in'}`}>
             {/* File attachments for user messages */}
             {isUser && attachments && attachments.length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-1 max-w-[85%] justify-end">
