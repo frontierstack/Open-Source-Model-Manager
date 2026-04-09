@@ -430,9 +430,12 @@ export default function ChatInput({
                 </div>
             )}
 
-            {/* Floating input container */}
+            {/* Floating input container. Width must match ChatMessages
+                 inner wrapper (`max-w-5xl mx-auto`) or the input ends up
+                 visually offset to the right of the responses. Both are
+                 now `max-w-5xl` so they sit on the same centered column. */}
             <div className="px-3 pt-1.5 pb-2.5 bg-gradient-to-t from-dark-950 via-dark-950/95 to-transparent">
-                <div className="max-w-4xl mx-auto">
+                <div className="max-w-5xl mx-auto">
                     {/* Attachment preview cards */}
                     {(attachments.length > 0 || uploadingFiles.length > 0) && (
                         <div className="mb-1.5">

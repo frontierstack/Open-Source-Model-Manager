@@ -15,6 +15,48 @@ function getHostname(url) {
 }
 
 /**
+ * Deterministic color for a hostname. No network call: we hash the
+ * hostname and index into a curated palette. This replaces the previous
+ * favicon-service approach which fired visible 404s in the console
+ * whenever the service couldn't resolve the domain (Google, DDG, and
+ * thum.io all did this for some subset of sites). A client-side letter
+ * avatar is guaranteed clean and looks consistent.
+ */
+const AVATAR_PALETTE = [
+    { bg: '#4338ca', fg: '#ffffff' }, // indigo
+    { bg: '#0e7490', fg: '#ffffff' }, // cyan
+    { bg: '#15803d', fg: '#ffffff' }, // green
+    { bg: '#b45309', fg: '#ffffff' }, // amber
+    { bg: '#be123c', fg: '#ffffff' }, // rose
+    { bg: '#7c3aed', fg: '#ffffff' }, // violet
+    { bg: '#0369a1', fg: '#ffffff' }, // sky
+    { bg: '#ea580c', fg: '#ffffff' }, // orange
+    { bg: '#047857', fg: '#ffffff' }, // emerald
+    { bg: '#a21caf', fg: '#ffffff' }, // fuchsia
+];
+
+function colorForHostname(hostname) {
+    if (!hostname) return AVATAR_PALETTE[0];
+    let hash = 0;
+    for (let i = 0; i < hostname.length; i++) {
+        hash = (hash * 31 + hostname.charCodeAt(i)) | 0;
+    }
+    return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+}
+
+/**
+ * First letter of the hostname's base name — e.g. 'nytimes.com' -> 'N'.
+ */
+function avatarLetter(hostname) {
+    if (!hostname) return '?';
+    // Drop a leading subdomain if there's one so 'en.wikipedia.org' -> 'W'
+    // and 'blog.github.com' -> 'G'. Keep single-label hosts as-is.
+    const parts = hostname.split('.').filter(Boolean);
+    const base = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+    return (base || '?').charAt(0).toUpperCase();
+}
+
+/**
  * Truncate text to a maximum length, preserving word boundaries when possible.
  */
 function truncate(text, max) {
@@ -29,7 +71,6 @@ function truncate(text, max) {
  * SourceChip - Individual favicon chip with hover preview
  */
 function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, setPreviewStatus }) {
-    const [faviconFailed, setFaviconFailed] = useState(false);
     const hoverTimerRef = useRef(null);
 
     const hostname = getHostname(source?.url);
@@ -57,31 +98,27 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
         };
     }, []);
 
-    // Use DuckDuckGo's favicon service instead of Google's. Google's
-    // `s2/favicons` endpoint redirects through `gstatic.com/faviconV2`
-    // which 404s noisily for any site Google hasn't indexed a favicon
-    // for — it pollutes the console even though our onError fallback
-    // catches it. DDG's `icons.duckduckgo.com/ip3/{host}.ico` returns a
-    // default icon when the real one can't be fetched, so it doesn't
-    // fire 404s, and it's also faster.
-    const faviconUrl = isValidUrl
-        ? `https://icons.duckduckgo.com/ip3/${hostname}.ico`
-        : null;
-
     const displayHost = hostname || 'unknown';
     const previewText = truncate(source?.content || source?.snippet || '', 280);
 
+    // Letter avatar derived from hostname. Purely client-side so we can
+    // never generate favicon 404s in the console regardless of the target
+    // domain. See the AVATAR_PALETTE + colorForHostname helpers above.
+    const avatarColor = isValidUrl ? colorForHostname(hostname) : { bg: '#334155', fg: '#cbd5e1' };
+    const letter = isValidUrl ? avatarLetter(hostname) : '?';
+
     const chipInner = (
         <>
-            {faviconFailed || !faviconUrl ? (
-                <Globe className="w-3.5 h-3.5 text-dark-300 flex-shrink-0" />
+            {isValidUrl ? (
+                <span
+                    className="flex-shrink-0 flex items-center justify-center w-4 h-4 rounded-sm text-[8.5px] font-semibold tracking-tight leading-none select-none"
+                    style={{ backgroundColor: avatarColor.bg, color: avatarColor.fg }}
+                    aria-hidden="true"
+                >
+                    {letter}
+                </span>
             ) : (
-                <img
-                    src={faviconUrl}
-                    alt=""
-                    className="w-3.5 h-3.5 rounded-sm flex-shrink-0"
-                    onError={() => setFaviconFailed(true)}
-                />
+                <Globe className="w-3.5 h-3.5 text-dark-300 flex-shrink-0" />
             )}
             <span className="text-[10.5px] text-dark-300 truncate max-w-[140px]">
                 {displayHost}

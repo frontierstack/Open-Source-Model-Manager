@@ -34,12 +34,28 @@ const migrateSettings = () => {
         const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
         if (stored) {
             const settings = JSON.parse(stored);
+            let dirty = false;
+
             // If maxTokens was set to old hardcoded default (1024), reset to null
             // so it uses the model's context window dynamically
             if (settings.maxTokens === 1024) {
                 settings.maxTokens = null;
-                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+                dirty = true;
                 console.log('[Settings] Migrated maxTokens from 1024 to null (dynamic)');
+            }
+
+            // The 'terminal' chat layout was removed in favor of 'bubbles'.
+            // Migrate anyone who had it saved to 'default' so they don't end
+            // up with an unmapped style that silently falls back to
+            // unstyled flex.
+            if (settings.chatStyle === 'terminal') {
+                settings.chatStyle = 'default';
+                dirty = true;
+                console.log('[Settings] Migrated chatStyle terminal -> default (terminal removed)');
+            }
+
+            if (dirty) {
+                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
             }
         }
     } catch (e) {

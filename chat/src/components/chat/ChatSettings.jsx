@@ -15,7 +15,7 @@ import {
     Layout,
     AlignCenter,
     GitCommitVertical,
-    Terminal,
+    MessageCircle,
     PanelLeft,
     Rows3,
     Type
@@ -92,11 +92,11 @@ export default function ChatSettings({
             preview: { userAlign: 'left', assistantAlign: 'left', width: 'normal' }
         },
         {
-            value: 'terminal',
-            label: 'Terminal',
-            icon: Terminal,
-            description: 'Monospace, flat style',
-            preview: { userAlign: 'left', assistantAlign: 'left', width: 'full' }
+            value: 'bubbles',
+            label: 'Bubbles',
+            icon: MessageCircle,
+            description: 'Rounded iMessage-style bubbles',
+            preview: { userAlign: 'right', assistantAlign: 'left', width: 'normal' }
         },
         {
             value: 'slack',

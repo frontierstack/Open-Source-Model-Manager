@@ -940,6 +940,18 @@ body.font-size-large .markdown-content,
 /* Badge/Tag styling - compact */
 /* Tooltip styling - refined */
 /* Avatar styling - compact */
+.avatar {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        border-radius: var(--radius-md);
+        background: var(--accent-muted);
+        color: var(--accent-primary);
+        font-weight: var(--font-weight-medium);
+        font-size: 0.8125rem;
+    }
 /* Divider - subtle */
 /* Loading skeleton */
 /* Empty state - compact */
@@ -1371,9 +1383,6 @@ body.font-size-large .markdown-content,
 }
 .max-w-2xl{
   max-width: 42rem;
-}
-.max-w-4xl{
-  max-width: 56rem;
 }
 .max-w-5xl{
   max-width: 64rem;
@@ -2255,6 +2264,9 @@ body.font-size-large .markdown-content,
 }
 .text-\[13px\]{
   font-size: 13px;
+}
+.text-\[8\.5px\]{
+  font-size: 8.5px;
 }
 .text-\[8px\]{
   font-size: 8px;
@@ -4762,52 +4774,53 @@ body.font-size-large .markdown-content,
     border-radius: 0.5rem !important;
 }
 
-/* Terminal - Monospace, command-line aesthetic */
-.chat-style-terminal .flex.flex-col.items-end,
-.chat-style-terminal .flex.flex-col.items-start {
+/* Bubbles - iMessage / WhatsApp style rounded bubbles with strong
+   contrast. User messages sit on the right with a vivid primary-colored
+   bubble; assistant messages sit on the left with a soft neutral bubble.
+   Shapes use asymmetric corner radii so the "tail" side (the edge nearest
+   the user/assistant) is tighter — that's what makes it read as a
+   speech bubble rather than a plain card. */
+.chat-style-bubbles .flex.flex-col.items-end {
+    align-items: flex-end !important;
+}
+
+.chat-style-bubbles .flex.flex-col.items-start {
     align-items: flex-start !important;
 }
 
-.chat-style-terminal .message-user,
-.chat-style-terminal .message-assistant {
-    font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace !important;
-    border-radius: 0 !important;
-    max-width: 100% !important;
-    width: 100% !important;
-    font-size: 0.84em !important;
-    line-height: 1.6 !important;
+.chat-style-bubbles .message-user,
+.chat-style-bubbles .message-assistant {
+    max-width: 78% !important;
+    padding: 0.6rem 0.95rem !important;
     border: none !important;
-    padding: 0.5rem 0.75rem !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
 }
 
-.chat-style-terminal .message-user {
-    background: rgba(0, 0, 0, 0.3) !important;
-    color: #4ade80 !important;
+.chat-style-bubbles .message-user {
+    background: linear-gradient(
+        135deg,
+        rgba(var(--primary-rgb, 99, 102, 241), 0.95),
+        rgba(var(--primary-rgb, 99, 102, 241), 0.78)
+    ) !important;
+    color: #ffffff !important;
+    border-radius: 1.1rem 1.1rem 0.25rem 1.1rem !important;
 }
 
-.chat-style-terminal .message-user::before {
-    content: "$ ";
-    color: #22c55e;
-    font-weight: bold;
+.chat-style-bubbles .message-user *,
+.chat-style-bubbles .message-user .prose,
+.chat-style-bubbles .message-user .prose * {
+    color: #ffffff !important;
 }
 
-.chat-style-terminal .message-assistant {
-    background: transparent !important;
+.chat-style-bubbles .message-assistant {
+    background: rgba(255, 255, 255, 0.055) !important;
     color: var(--text-primary) !important;
+    border-radius: 1.1rem 1.1rem 1.1rem 0.25rem !important;
+    backdrop-filter: blur(2px);
 }
 
-.chat-style-terminal .message-assistant::before {
-    content: "> ";
-    color: #6b7280;
-    font-weight: bold;
-}
-
-.chat-style-terminal .space-y-1 > * + * {
-    margin-top: 0 !important;
-}
-
-.chat-style-terminal {
-    background: rgba(0, 0, 0, 0.15) !important;
+.chat-style-bubbles .space-y-1 > * + * {
+    margin-top: 0.45rem !important;
 }
 
 /* Slack - Flat, left-aligned, no bubbles */
