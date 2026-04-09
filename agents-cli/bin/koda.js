@@ -1820,6 +1820,19 @@ class AgentAPI {
     }
 
     // Streaming chat with model - Server-Sent Events
+    /**
+     * Stream a chat completion.
+     *
+     * The first argument can be either:
+     *   - a plain string (legacy single-turn behavior), or
+     *   - an object { messages, systemPrompt, temperature } where
+     *     messages is an array of { role, content } pairs. When this
+     *     shape is used, the request body uses the `messages` field
+     *     which the backend (/api/chat/stream) routes through the full
+     *     OpenAI-compatible path — giving the model a real system role
+     *     separate from the user turn. This is what allows a 500-line
+     *     skill catalog to not bleed into the user's "10+10" question.
+     */
     async chatStream(message, model = null, maxTokens = 4000, onToken, onComplete) {
         lastApiCallStartTime = Date.now();
 
@@ -1848,7 +1861,25 @@ class AgentAPI {
                 timeout: CONNECTION_TIMEOUT
             };
 
-            const postData = JSON.stringify({ message, model, maxTokens });
+            // Build the request body. When the caller passes an object with
+            // a messages array, forward it as a proper OpenAI-style messages
+            // request so the server can set a real system role. Otherwise
+            // fall back to the legacy single-string form for any code path
+            // that hasn't migrated yet.
+            let postData;
+            if (message && typeof message === 'object' && Array.isArray(message.messages)) {
+                const bodyObj = {
+                    messages: message.messages,
+                    model,
+                    maxTokens
+                };
+                if (typeof message.temperature === 'number') {
+                    bodyObj.temperature = message.temperature;
+                }
+                postData = JSON.stringify(bodyObj);
+            } else {
+                postData = JSON.stringify({ message, model, maxTokens });
+            }
 
             return new Promise((resolve, reject) => {
                 let resolved = false;
@@ -2454,6 +2485,126 @@ function getSkillsInCategory(category) {
     return SKILL_CATEGORIES[category] || [];
 }
 
+// ============================================================================
+// Query classification
+// ============================================================================
+//
+// Koda used to always ship its 500+ line skill catalog as part of the user
+// turn, which made small models hallucinate (the infamous "10+10 = 20 words"
+// bug and "count to 5 using count_words skill"). The catalog is only useful
+// when the user is asking for something that actually needs a skill — file
+// operations, git, networking, shell, etc. For plain chat, math, factual
+// questions, and code snippets, a lean system prompt gives far better
+// results.
+//
+// classifyQuery returns one of:
+//   'skill'        — the user clearly wants a filesystem/git/net/etc action
+//   'math'         — a pure arithmetic expression
+//   'greeting'     — hi/hello/hey/...
+//   'code'         — write/show/explain code
+//   'chat'         — everything else (facts, explanations, conversation)
+//
+// The 'skill' bucket still gets the full catalog. The other buckets get a
+// short, focused system prompt.
+// ============================================================================
+
+// Keywords that signal a request that actually needs a skill call. Kept
+// deliberately tight: "file", "folder", "directory", git verbs, network
+// verbs, shell/process, archive. We avoid noisy matches like "read" alone
+// because "read the docs" is conversational.
+const SKILL_TRIGGER_REGEX = new RegExp([
+    // File / directory operations
+    '\\b(create|make|write|save|export|delete|remove|rm|erase|list|move|rename|copy|append|tail|head)\\b.*\\b(file|folder|directory|dir|path|pdf|txt|json|yaml|yml|csv|md|zip|tar|archive)\\b',
+    '\\b(file|folder|directory|dir)\\b.*\\b(named|called)\\b',
+    '\\b(ls|list)\\b.*(dir|directory|folder|files)',
+    '\\blist\\s+(the\\s+)?(files|contents|directory|dir)\\b',
+    // Git
+    '\\bgit\\b',
+    '\\b(commit|branch|staged|unstaged|repo|repository)\\b',
+    // Network / web fetch
+    '\\b(ping|dns|port|http|https|fetch|download|curl|wget)\\b',
+    '\\b(scrape|scan|crawl)\\b',
+    // Shell / process
+    '\\b(run|execute)\\s+(bash|shell|command|script|python|node)\\b',
+    '\\b(kill|pid|process)\\b',
+    // System info
+    '\\b(disk|uptime|cpu|memory|ram|system info)\\b',
+    // Archives
+    '\\b(zip|unzip|tar|extract|compress)\\b',
+    // Database
+    '\\b(sqlite|sql query|select\\s+.*\\s+from)\\b',
+    // Env
+    '\\benv(ironment)?\\s+(var|variable)\\b',
+    // Search in filesystem
+    '\\bsearch (for )?(files|in)\\b',
+    '\\bgrep\\b'
+].join('|'), 'i');
+
+const MATH_REGEX = /^[\s0-9+\-*/().^%=,xX\s]+$/;
+const MATH_WORDS_REGEX = /^(what('?s| is)|calculate|compute|solve)\s+([0-9().+\-*/^%\s]+|\d+[\s\S]*(times|plus|minus|divided|squared|cubed)[\s\S]*)/i;
+const GREETING_REGEX = /^(hi|hello|hey|yo|howdy|greetings|sup|hola|bonjour)[\s!.,?]*$/i;
+const CODE_REQUEST_REGEX = /\b(write|show|give me|generate|produce|implement)\s+(a|an|some)?\s*(python|javascript|js|typescript|ts|bash|shell|sql|go|rust|c\+\+|c#|java|regex|function|script|class|snippet|code|example)\b/i;
+
+function classifyQuery(message, websearchEnabled = false) {
+    const m = (message || '').trim();
+    if (!m) return 'chat';
+
+    // 1. Does this clearly need a skill call? Check before math/chat because
+    // "list files in /tmp" contains no math but is a skill request.
+    if (SKILL_TRIGGER_REGEX.test(m)) {
+        return 'skill';
+    }
+
+    // 2. Pure arithmetic like "10+10", "(3+4)*2"
+    if (m.length < 80 && MATH_REGEX.test(m) && /[0-9]/.test(m) && /[+\-*/^%]/.test(m)) {
+        return 'math';
+    }
+    // 3. "what is 47 times 38" style
+    if (MATH_WORDS_REGEX.test(m)) {
+        return 'math';
+    }
+
+    // 4. Greetings
+    if (GREETING_REGEX.test(m)) {
+        return 'greeting';
+    }
+
+    // 5. Code snippet requests (unless it's also a file-save request, which
+    // would have been caught above as a skill).
+    if (CODE_REQUEST_REGEX.test(m)) {
+        return 'code';
+    }
+
+    // Web searches are conversational by default — the web results get
+    // injected into the system message later.
+    return 'chat';
+}
+
+// Lean system prompt for non-skill queries. Deliberately short: a small
+// model performs much better when the prompt fits comfortably in a few
+// hundred tokens. The guardrails at the bottom are the minimum needed to
+// stop the specific bugs observed in testing.
+function buildLeanSystemPrompt(queryType, mode = 'standalone', websearchEnabled = false) {
+    const base =
+`You are Koda, a concise AI assistant running in a terminal.
+
+Answer the user's question directly. Do NOT restate, describe, or analyze the question itself. Do NOT comment on its length, word count, character count, or format — just answer.
+
+Formatting rules:
+- Keep responses short unless the user asks for detail.
+- For math, give the numerical result first, optionally followed by one-line reasoning.
+- For factual questions, answer in one or two sentences.
+- For code requests, output the code in a fenced block and keep the explanation brief.
+- Never invent "skill" calls in square brackets — those are only used when actually executing tools, not for conversation.
+- Never fabricate that you have executed a tool, saved a file, or counted words unless you actually did.`;
+
+    const tail = websearchEnabled
+        ? '\n\nWeb search is ON. If search results are provided below, use them as the primary source and cite briefly.'
+        : '';
+
+    return base + tail;
+}
+
 // Build system prompt with skill instructions - SMART ROUTING VERSION
 function buildSkillSystemPrompt(skills, mode = 'standalone', websearchEnabled = false, userMessage = '') {
     if (!skills || skills.length === 0) {
@@ -2657,7 +2808,7 @@ When asked to find or summarize web content:
 [SKILL:hash_data(data="text to hash", algorithm="sha256")]
 [SKILL:generate_uuid()]
 [SKILL:get_timestamp()]
-[SKILL:count_words(content="count the words in this text")]
+[SKILL:count_words(content="The quick brown fox jumps over the lazy dog.")]
 `,
         SHELL: `
 🖥️ SHELL EXECUTION EXAMPLES:
@@ -2704,6 +2855,9 @@ To analyze a file, first read_file then pass its content to analyze_code.
 5. When fixing code, use update_file immediately - don't just show the fix
 6. STOP LOOPING: After success, confirm briefly. Don't verify with extra skills.
 7. For non-skill tasks (math, explanations, chat), respond conversationally.
+8. NEVER fabricate skill results. Do not write "I've executed the X skill" unless you ACTUALLY called [SKILL:X(...)] in this same response.
+9. NEVER answer a simple question by calling an unrelated skill. Math like "10+10" or "count to 5" requires NO skills — just answer directly.
+10. NEVER restate, analyze, or comment on the user's message itself (length, word count, format). Answer the actual question.
 
 WRONG: "You can create a directory by running: mkdir test"
 RIGHT: [SKILL:create_directory(dirPath="${userWorkingDirectory}/test")]
@@ -7200,16 +7354,27 @@ async function handleChat(api, message) {
             addToHistory('system', 'Warning: Could not load skills from server. File operations may not work.');
         }
     }
-    const skillPrompt = buildSkillSystemPrompt(skills, currentMode, websearchMode, message);
+
+    // ---- Decide whether this query actually needs the full skill catalog ----
+    // A trivial question like "10+10" or "hi" gets a lean system prompt; a
+    // file operation or git command gets the full skill catalog. This cuts
+    // the prompt length by 90%+ for casual queries and eliminates the model
+    // confusion bugs (the infamous "20 words" hallucination).
+    const queryType = classifyQuery(message, websearchMode);
+    const useFullSkillCatalog =
+        queryType === 'skill' ||
+        websearchMode ||            // web results need to be sourced + cited
+        currentMode === 'agent';    // agent mode orchestrates skills
+
+    let systemPrefix = '';
+    if (useFullSkillCatalog) {
+        systemPrefix = buildSkillSystemPrompt(skills, currentMode, websearchMode, message) + '\n\n';
+    } else {
+        systemPrefix = buildLeanSystemPrompt(queryType, currentMode, websearchMode) + '\n\n';
+    }
 
     // Build context-aware message for the API
     let userMessage = message;
-    let systemPrefix = '';
-
-    // Add skill execution capability FIRST (most important)
-    if (skillPrompt) {
-        systemPrefix = skillPrompt + '\n\n';
-    }
 
     // If websearch mode is enabled, perform search with content fetching
     // Skip search for simple file save requests (use existing conversation context instead)
@@ -7318,35 +7483,55 @@ YOU MUST NOT:
         }
     }
 
-    // Build final message: system prefix + working files + conversation context + user message
-    let contextMessage = systemPrefix;
-
-    // Add working files context if available
+    // Build the SYSTEM message content: system prefix + working files. Web
+    // search results and agent task state were already appended into
+    // systemPrefix above. This stays in its own message so the model sees a
+    // real system role instead of having all of it stuffed into the user
+    // turn (which is what caused most of the legacy response-quality bugs).
+    let systemContent = systemPrefix.trimEnd();
     const workingFilesContext = buildWorkingFilesContext();
     if (workingFilesContext) {
-        contextMessage += workingFilesContext;
+        systemContent += '\n\n' + workingFilesContext.trimEnd();
     }
 
+    // Convert the last few conversation turns into proper message objects.
+    // Filter out 'system' entries — those are skill outputs and UI notices
+    // which are stale noise on unrelated follow-up questions.
+    const historyMessages = [];
     if (conversationContext.length > 1) {
-        // Include recent context (last 5 exchanges, but skip the current message we just added)
-        // Filter out system messages (skill results, directory listings) - they are stale noise
-        // that confuses the model on subsequent unrelated queries
         const recentContext = conversationContext.slice(-11, -1)
             .filter(msg => msg.role === 'user' || msg.role === 'assistant');
-        if (recentContext.length > 0) {
-            const contextStr = recentContext.map(msg =>
-                `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`
-            ).join('\n\n');
-            contextMessage += contextStr + '\n\n';
+        for (const msg of recentContext) {
+            historyMessages.push({ role: msg.role, content: msg.content });
         }
     }
 
-    contextMessage += 'User: ' + userMessage;
+    // Base messages array for this user turn. Skill feedback iterations
+    // append to a copy of this; the original is preserved so each iteration
+    // starts from the same known-good baseline.
+    const baseMessages = [
+        { role: 'system', content: systemContent },
+        ...historyMessages,
+        { role: 'user', content: userMessage }
+    ];
 
     // Skill execution loop
     let iteration = 0;
-    let currentMessage = contextMessage;
+    let currentMessages = baseMessages.slice();
     let finalResponse = '';
+
+    // Helper: produce a fresh messages array that represents
+    //   baseMessages + assistant(lastResponse) + user(feedback)
+    // This is how we continue the conversation after a skill call without
+    // blowing up the previous turn's content.
+    const buildFeedbackMessages = (lastResponse, feedback) => {
+        const next = baseMessages.slice();
+        if (lastResponse && lastResponse.length > 0) {
+            next.push({ role: 'assistant', content: lastResponse });
+        }
+        next.push({ role: 'user', content: feedback });
+        return next;
+    };
 
     // Track successfully executed file operation skills across iterations
     // This prevents false completion detection from triggering after delete/move/copy operations complete
@@ -7384,7 +7569,10 @@ YOU MUST NOT:
         let thinkingIndicatorShown = false;
 
         const result = await api.chatStream(
-            currentMessage,
+            // Proper OpenAI-style messages array with a real `system` role.
+            // The backend routes this through /api/chat/stream which clamps
+            // max_tokens against input size server-side.
+            { messages: currentMessages, temperature: 0.7 },
             null,
             4000,
             // onToken callback - display tokens in real-time
@@ -7530,7 +7718,7 @@ YOU MUST NOT:
                 displayChatHistory();
 
                 // Continue the conversation with error feedback
-                currentMessage = contextMessage + '\n\nPrevious response: ' + response + errorFeedback;
+                currentMessages = buildFeedbackMessages(response, errorFeedback);
                 continue;
             }
 
@@ -7587,7 +7775,7 @@ YOU MUST NOT:
                 addToHistory('system', 'No file operation executed - asking AI to actually save the file...');
                 displayChatHistory();
 
-                currentMessage = contextMessage + '\n\nPrevious response: ' + response + correctionFeedback;
+                currentMessages = buildFeedbackMessages(response, correctionFeedback);
                 continue;
             }
 
@@ -7617,7 +7805,7 @@ YOU MUST NOT:
                 addToHistory('system', 'Redirecting to use skills instead of shell commands...');
                 displayChatHistory();
 
-                currentMessage = contextMessage + '\n\nPrevious response: ' + response + correctionFeedback;
+                currentMessages = buildFeedbackMessages(response, correctionFeedback);
                 continue;
             }
 
@@ -7729,7 +7917,7 @@ YOU MUST NOT:
         }
 
         // Continue the conversation with skill results
-        currentMessage = contextMessage + '\n\nPrevious response: ' + response + feedbackMessage;
+        currentMessages = buildFeedbackMessages(response, feedbackMessage);
 
         // Show animated processing indicator for next iteration (animation starts before next API call)
     }
@@ -8314,5 +8502,86 @@ async function startShell() {
     });
 }
 
-// Start the shell
-startShell();
+// -----------------------------------------------------------------------------
+// Entry point: single-shot mode or interactive REPL.
+//
+// Single-shot usage:
+//   koda -p "question"                     Ask a question, print the answer, exit.
+//   koda --prompt "question"               Same, long form.
+//   echo "question" | koda -p -            Read the question from stdin.
+//   KODA_API_KEY=... KODA_API_SECRET=... koda -p "question"
+//                                          Override credentials without touching config.
+// -----------------------------------------------------------------------------
+const _kodaArgv = process.argv.slice(2);
+const _kodaPromptIdx = _kodaArgv.findIndex(a => a === '-p' || a === '--prompt');
+
+async function runSingleShot(prompt) {
+    // Allow env-var overrides so tests and CI can bypass the encrypted config.
+    const envKey = process.env.KODA_API_KEY;
+    const envSecret = process.env.KODA_API_SECRET;
+    const envUrl = process.env.KODA_API_URL || 'https://localhost:3001';
+
+    let api;
+    if (envKey && envSecret) {
+        api = new AgentAPI(envUrl, envKey, envSecret);
+    } else {
+        const cfg = loadConfig();
+        if (!cfg) {
+            console.error('Error: no koda config found. Run `koda` and then `/auth`, or set KODA_API_KEY and KODA_API_SECRET.');
+            process.exit(2);
+        }
+        api = new AgentAPI(cfg.apiUrl, cfg.apiKey, cfg.apiSecret);
+    }
+
+    // Suppress the interactive UI: single-shot mode just prints the final
+    // answer and exits. handleChat writes streaming tokens via stdout.write
+    // and would also redraw the chat history via displayChatHistory, which
+    // is noisy for scripted testing. Redirect displayChatHistory to a no-op.
+    if (typeof displayChatHistory === 'function') {
+        // eslint-disable-next-line no-global-assign
+        displayChatHistory = function () {};
+    }
+
+    try {
+        // handleChat does its own streaming output; we just wait for it and
+        // then print the cleaned final assistant message once, so test
+        // harnesses can grep for it reliably.
+        await handleChat(api, prompt);
+
+        const last = [...chatHistory].reverse().find(m => m.role === 'assistant');
+        if (last && last.content) {
+            process.stdout.write('\n--- KODA RESPONSE ---\n');
+            process.stdout.write(last.content.trim() + '\n');
+            process.stdout.write('--- END RESPONSE ---\n');
+        } else {
+            process.stderr.write('\n(no response produced)\n');
+        }
+        process.exit(0);
+    } catch (err) {
+        console.error('\nkoda error:', err && err.message ? err.message : err);
+        process.exit(1);
+    }
+}
+
+if (_kodaPromptIdx !== -1) {
+    let prompt = _kodaArgv.slice(_kodaPromptIdx + 1).join(' ').trim();
+    if (prompt === '-' || prompt === '') {
+        // Read from stdin
+        let stdinBuf = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', chunk => { stdinBuf += chunk; });
+        process.stdin.on('end', () => {
+            const p = stdinBuf.trim();
+            if (!p) {
+                console.error('Usage: koda -p "your question"   or   echo "q" | koda -p -');
+                process.exit(1);
+            }
+            runSingleShot(p);
+        });
+    } else {
+        runSingleShot(prompt);
+    }
+} else {
+    // Start the interactive shell
+    startShell();
+}
