@@ -216,7 +216,7 @@ export default React.memo(function ChatMessage({
                 )}
 
                 {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (
-                    <div className={`flex flex-wrap items-center ${Array.isArray(searchResults) && searchResults.length > 0 ? 'mt-1' : 'mt-2 pt-2 border-t border-white/[0.04]'}`}>
+                    <div className="flex flex-wrap items-center mt-2 pt-2 border-t border-white/[0.04]">
                         {toolCalls.map((tc, idx) => (
                             <ToolCallBlock key={idx} tool={tc} />
                         ))}
