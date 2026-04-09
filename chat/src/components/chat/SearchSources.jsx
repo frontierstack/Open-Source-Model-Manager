@@ -57,8 +57,15 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
         };
     }, []);
 
+    // Use DuckDuckGo's favicon service instead of Google's. Google's
+    // `s2/favicons` endpoint redirects through `gstatic.com/faviconV2`
+    // which 404s noisily for any site Google hasn't indexed a favicon
+    // for — it pollutes the console even though our onError fallback
+    // catches it. DDG's `icons.duckduckgo.com/ip3/{host}.ico` returns a
+    // default icon when the real one can't be fetched, so it doesn't
+    // fire 404s, and it's also faster.
     const faviconUrl = isValidUrl
-        ? `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`
+        ? `https://icons.duckduckgo.com/ip3/${hostname}.ico`
         : null;
 
     const displayHost = hostname || 'unknown';
@@ -112,8 +119,18 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
                                     <Loader2 className="w-5 h-5 text-dark-300 animate-spin" />
                                 </div>
                             )}
+                            {/*
+                                WordPress mshots is a free, no-auth public
+                                link-preview service. First request for an
+                                uncached URL returns a placeholder then
+                                generates the real screenshot in the
+                                background, so subsequent hovers get the
+                                real thing. image.thum.io (our earlier
+                                choice) was hanging indefinitely for many
+                                domains, which is why we switched.
+                            */}
                             <img
-                                src={`https://image.thum.io/get/width/640/crop/400/${source.url}`}
+                                src={`https://s.wordpress.com/mshots/v1/${encodeURIComponent(source.url)}?w=640&h=400`}
                                 alt=""
                                 className={`w-full h-full object-cover transition-opacity duration-200 ${
                                     previewStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
@@ -155,11 +172,17 @@ export default function SearchSources({ sources, maxVisible = 8 }) {
     const [hoveredIdx, setHoveredIdx] = useState(null);
     const [previewStatus, setPreviewStatus] = useState('loading'); // 'loading' | 'loaded' | 'error'
 
-    // Reset preview state whenever the hovered source changes
+    // Reset preview state whenever the hovered source changes. Also arm
+    // a safety timeout: if the preview image hasn't reported onLoad or
+    // onError within 8 seconds, mark it as errored so the spinner doesn't
+    // hang forever on slow/unresponsive preview services.
     useEffect(() => {
-        if (hoveredIdx !== null) {
-            setPreviewStatus('loading');
-        }
+        if (hoveredIdx === null) return;
+        setPreviewStatus('loading');
+        const timer = setTimeout(() => {
+            setPreviewStatus(prev => (prev === 'loading' ? 'error' : prev));
+        }, 8000);
+        return () => clearTimeout(timer);
     }, [hoveredIdx]);
 
     if (!Array.isArray(sources) || sources.length === 0) {

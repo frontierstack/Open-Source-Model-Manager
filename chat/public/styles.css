@@ -1266,9 +1266,6 @@ body.font-size-large .markdown-content,
 .max-h-64{
   max-height: 16rem;
 }
-.max-h-\[320px\]{
-  max-height: 320px;
-}
 .max-h-\[400px\]{
   max-height: 400px;
 }
@@ -1278,8 +1275,8 @@ body.font-size-large .markdown-content,
 .min-h-\[120px\]{
   min-height: 120px;
 }
-.min-h-\[56px\]{
-  min-height: 56px;
+.min-h-\[32px\]{
+  min-height: 32px;
 }
 .min-h-screen{
   min-height: 100vh;
