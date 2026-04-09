@@ -1836,10 +1836,22 @@ class AgentAPI {
     async chatStream(message, model = null, maxTokens = 4000, onToken, onComplete) {
         lastApiCallStartTime = Date.now();
 
-        // Timeout constants
-        const CONNECTION_TIMEOUT = 60000;  // 60 seconds to establish connection
-        const ACTIVITY_TIMEOUT = 120000;   // 120 seconds of no data before timeout
-        const MAX_TOTAL_TIMEOUT = 600000;  // 10 minutes max total time
+        // Timeout constants.
+        //
+        // Web-enabled queries legitimately take a long time BEFORE the first
+        // response byte: the backend has to run the search, fetch up to 5
+        // URLs via Scrapling/Playwright (each with a 30s budget), build the
+        // prompt, and only then start streaming model tokens. A short
+        // "connection timeout" on the Node.js request kills the socket while
+        // the server is still working and surfaces as "Failed to connect to
+        // server" — which is wrong, the connection was already open.
+        //
+        // We rely on ACTIVITY_TIMEOUT (started immediately after the request
+        // is sent, reset on every response byte) and MAX_TOTAL_TIMEOUT as
+        // the outer ceiling. No Node socket `timeout` option — that caused
+        // the bug.
+        const ACTIVITY_TIMEOUT = 300000;   // 5 min: first byte + inter-token silence
+        const MAX_TOTAL_TIMEOUT = 900000;  // 15 minutes max total time
 
         try {
             const https = require('https');
@@ -1857,8 +1869,11 @@ class AgentAPI {
                     'X-API-Secret': this.apiSecret,
                     'Accept': 'text/event-stream'
                 },
-                rejectUnauthorized: false,
-                timeout: CONNECTION_TIMEOUT
+                rejectUnauthorized: false
+                // Intentionally NO `timeout` option: Node treats it as a
+                // socket-idle timeout which would fire during the long
+                // pre-first-byte window on web-enabled queries. We use our
+                // own ACTIVITY_TIMEOUT below instead.
             };
 
             // Build the request body. When the caller passes an object with
@@ -1897,8 +1912,12 @@ class AgentAPI {
                         if (!resolved) {
                             resolved = true;
                             cleanup();
-                            req.destroy();
-                            reject(new Error('Stream timeout: No data received for 120 seconds'));
+                            if (req) req.destroy();
+                            reject(new Error(
+                                `Stream timeout: no data received for ${Math.round(ACTIVITY_TIMEOUT / 1000)}s. ` +
+                                `The server may still be processing (web scraping, map-reduce, or a slow model). ` +
+                                `Try a shorter query or disable /web.`
+                            ));
                         }
                     }, ACTIVITY_TIMEOUT);
                 };
@@ -2064,14 +2083,9 @@ class AgentAPI {
                     });
                 });
 
-                req.on('timeout', () => {
-                    if (!resolved) {
-                        resolved = true;
-                        cleanup();
-                        req.destroy();
-                        reject(new Error('Connection timeout: Failed to connect to server within 60 seconds'));
-                    }
-                });
+                // No `req.on('timeout')` handler: we removed the socket
+                // idle timeout from the request options. ACTIVITY_TIMEOUT
+                // (started right after req.end()) is the real budget.
 
                 req.on('error', (error) => {
                     if (!resolved) {
@@ -2083,6 +2097,11 @@ class AgentAPI {
 
                 req.write(postData);
                 req.end();
+
+                // Start the activity timer NOW so the pre-first-byte window
+                // (the server running web search + scraping + prompt build)
+                // is bounded. Any response data resets it inside res.on.
+                resetActivityTimer();
             });
 
         } catch (error) {
