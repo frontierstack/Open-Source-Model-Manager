@@ -937,6 +937,250 @@ function formatCodeBlocks(content) {
     });
 }
 
+// ============================================================================
+// Markdown-to-ANSI renderer
+// ============================================================================
+// Models routinely respond with markdown-flavored text: headers, bullet
+// lists, **bold**, `inline code`, fenced code blocks, etc. Before this
+// renderer, koda just printed the raw markdown source, which looked like
+// an unstructured wall of text in the terminal. This renderer converts the
+// common subset to ANSI-styled output and hard-wraps paragraphs to the
+// current terminal width with a hanging indent, so responses read like a
+// proper article instead of an unreadable blob.
+// ============================================================================
+
+// Strip ANSI escape sequences so we can measure visible width for wrapping.
+function stripAnsi(str) {
+    return String(str).replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// Wrap a single logical line (already styled with ANSI) at `width` visible
+// characters, indenting the first line with `firstIndent` and subsequent
+// wrapped lines with `nextIndent`. Preserves ANSI codes across wraps by
+// splitting on whitespace only.
+function wrapAnsiLine(text, width, firstIndent = '', nextIndent = '') {
+    if (!text) return firstIndent;
+    const words = text.split(/(\s+)/).filter(w => w.length > 0);
+    const lines = [];
+    let current = firstIndent;
+    let currentVis = stripAnsi(firstIndent).length;
+    const firstVisLen = currentVis;
+
+    for (const w of words) {
+        if (/^\s+$/.test(w)) {
+            // Only keep one space between words, and only if we're not at
+            // the start of a fresh line.
+            if (currentVis > stripAnsi(lines.length === 0 ? firstIndent : nextIndent).length) {
+                current += ' ';
+                currentVis += 1;
+            }
+            continue;
+        }
+        const wLen = stripAnsi(w).length;
+        if (currentVis + wLen > width && currentVis > firstVisLen) {
+            // Trim trailing space before wrap
+            lines.push(current.replace(/\s+$/, ''));
+            current = nextIndent + w;
+            currentVis = stripAnsi(nextIndent).length + wLen;
+        } else {
+            current += w;
+            currentVis += wLen;
+        }
+    }
+    if (current.replace(/\s+$/, '').length > 0) {
+        lines.push(current.replace(/\s+$/, ''));
+    }
+    return lines.join('\n');
+}
+
+// Apply inline markdown (bold, italic, inline code, links) to a single
+// line of plain text. Returns text with ANSI escapes inlined.
+function applyInlineMarkdown(text) {
+    if (!text) return '';
+    let out = text;
+
+    // Fenced `code` first, so the * inside backticks doesn't get eaten by
+    // the bold/italic replacements.
+    out = out.replace(/`([^`\n]+)`/g, (_m, c) => '\x1b[33;2m' + c + '\x1b[0m');
+
+    // Bold: **text**
+    out = out.replace(/\*\*([^*\n][^*\n]*?)\*\*/g, (_m, c) => '\x1b[1m' + c + '\x1b[22m');
+
+    // Italic: *text* or _text_, avoiding ** which is handled above.
+    out = out.replace(/(^|[^*])\*([^*\n][^*\n]*?)\*(?!\*)/g, (_m, pre, c) => pre + '\x1b[3m' + c + '\x1b[23m');
+    out = out.replace(/(^|[^_])_([^_\n]+?)_(?!_)/g, (_m, pre, c) => pre + '\x1b[3m' + c + '\x1b[23m');
+
+    // Links: [text](url) — show text in blue underline, url dimmed in parens.
+    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) =>
+        '\x1b[4;34m' + label + '\x1b[0m' + colorize(' (' + url + ')', 'dim'));
+
+    return out;
+}
+
+// Render a markdown string to a styled, wrapped block ready to log.
+// The output always ends without a trailing newline.
+function renderMarkdown(text, options = {}) {
+    if (!text) return '';
+
+    const termWidth = getTerminalWidth();
+    const baseIndent = options.indent != null ? options.indent : '  ';
+    const width = options.width || Math.max(40, termWidth - 2);
+
+    const source = String(text);
+    const srcLines = source.split('\n');
+    const out = [];
+    let paragraph = [];
+    let inCodeFence = false;
+    let codeLang = '';
+    let codeBuf = [];
+
+    const flushParagraph = () => {
+        if (paragraph.length === 0) return;
+        // Join soft-wrapped lines into one logical paragraph; the terminal
+        // wrapper will re-wrap at `width`.
+        const joined = paragraph.join(' ').replace(/\s+/g, ' ').trim();
+        if (joined.length === 0) { paragraph = []; return; }
+        const styled = applyInlineMarkdown(joined);
+        out.push(wrapAnsiLine(styled, width, baseIndent, baseIndent));
+        paragraph = [];
+    };
+
+    const flushCode = () => {
+        if (codeBuf.length === 0) {
+            return;
+        }
+        // Delegate to the existing fenced-code renderer so code blocks look
+        // consistent with the one used elsewhere.
+        const fenced = '```' + (codeLang || '') + '\n' + codeBuf.join('\n') + '\n```';
+        // formatCodeBlocks prepends its own newline; indent each rendered
+        // line with the base indent so code sits visually under the body.
+        const rendered = formatCodeBlocks(fenced).replace(/\n(?!$)/g, '\n' + baseIndent);
+        out.push(baseIndent.trimEnd() + rendered.trimEnd());
+        codeBuf = [];
+        codeLang = '';
+    };
+
+    for (let i = 0; i < srcLines.length; i++) {
+        const rawLine = srcLines[i];
+
+        // Fenced code block tracking
+        const fenceMatch = rawLine.match(/^\s*(```|~~~)(\w*)\s*$/);
+        if (fenceMatch) {
+            if (!inCodeFence) {
+                flushParagraph();
+                inCodeFence = true;
+                codeLang = fenceMatch[2] || '';
+                codeBuf = [];
+            } else {
+                flushCode();
+                inCodeFence = false;
+            }
+            continue;
+        }
+        if (inCodeFence) {
+            codeBuf.push(rawLine);
+            continue;
+        }
+
+        // Blank line: paragraph break
+        if (rawLine.trim() === '') {
+            flushParagraph();
+            // Collapse runs of blank lines: only emit a single blank if the
+            // previous output line isn't already blank.
+            if (out.length > 0 && out[out.length - 1] !== '') {
+                out.push('');
+            }
+            continue;
+        }
+
+        // Headers (# through ######)
+        const headerMatch = rawLine.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+        if (headerMatch) {
+            flushParagraph();
+            const level = headerMatch[1].length;
+            const title = applyInlineMarkdown(headerMatch[2]);
+            let prefix, color, bold;
+            if (level === 1) {
+                prefix = '';
+                color = 'cyan';
+                bold = true;
+            } else if (level === 2) {
+                prefix = colorize('▸ ', 'cyan');
+                color = 'cyan';
+                bold = true;
+            } else {
+                prefix = colorize('· ', 'cyan');
+                color = 'yellow';
+                bold = false;
+            }
+            const line = baseIndent + prefix +
+                (bold ? '\x1b[1m' : '') + colorize(title, color) + (bold ? '\x1b[22m' : '');
+            out.push(line);
+            if (level === 1) {
+                const underlineLen = Math.min(stripAnsi(title).length + 2, width - baseIndent.length);
+                out.push(baseIndent + colorize('─'.repeat(Math.max(3, underlineLen)), 'dim'));
+            }
+            continue;
+        }
+
+        // Bullet list (- * +)
+        const bulletMatch = rawLine.match(/^(\s*)([-*+])\s+(.*)$/);
+        if (bulletMatch) {
+            flushParagraph();
+            const extraIndent = bulletMatch[1] || '';
+            const lead = baseIndent + extraIndent + colorize('•', 'cyan') + ' ';
+            const nextLead = baseIndent + extraIndent + '  ';
+            const body = applyInlineMarkdown(bulletMatch[3]);
+            out.push(wrapAnsiLine(body, width, lead, nextLead));
+            continue;
+        }
+
+        // Numbered list (1. 2. etc.)
+        const numMatch = rawLine.match(/^(\s*)(\d+)\.\s+(.*)$/);
+        if (numMatch) {
+            flushParagraph();
+            const extraIndent = numMatch[1] || '';
+            const numStr = numMatch[2] + '.';
+            const lead = baseIndent + extraIndent + colorize(numStr, 'cyan') + ' ';
+            const nextLead = baseIndent + extraIndent + ' '.repeat(numStr.length + 1);
+            const body = applyInlineMarkdown(numMatch[3]);
+            out.push(wrapAnsiLine(body, width, lead, nextLead));
+            continue;
+        }
+
+        // Blockquote
+        if (/^\s*>\s?/.test(rawLine)) {
+            flushParagraph();
+            const body = applyInlineMarkdown(rawLine.replace(/^\s*>\s?/, ''));
+            const lead = baseIndent + colorize('│ ', 'dim');
+            out.push(wrapAnsiLine(colorize(body, 'dim'), width, lead, lead));
+            continue;
+        }
+
+        // Horizontal rule
+        if (/^\s*[-*_]{3,}\s*$/.test(rawLine)) {
+            flushParagraph();
+            const len = Math.max(10, width - baseIndent.length - 2);
+            out.push(baseIndent + colorize('─'.repeat(len), 'dim'));
+            continue;
+        }
+
+        // Regular paragraph line: accumulate for wrapping
+        paragraph.push(rawLine.trim());
+    }
+
+    // Flush anything left over
+    if (inCodeFence) {
+        flushCode();
+    }
+    flushParagraph();
+
+    // Strip a trailing blank paragraph separator
+    while (out.length > 0 && out[out.length - 1] === '') out.pop();
+
+    return out.join('\n');
+}
+
 // Display colored diff
 function displayDiff(oldContent, newContent, filePath) {
     const diff = Diff.createPatch(filePath, oldContent || '', newContent || '', 'original', 'modified');
@@ -1205,8 +1449,21 @@ function displayChatHistory() {
                 // Clean any skill syntax before displaying
                 const cleanedContent = cleanSkillSyntax(msg.content);
                 if (cleanedContent) {
-                    const formattedContent = formatCodeBlocks(cleanedContent);
-                    log(colorize('◆ Koda: ', 'cyan') + formattedContent);
+                    if (msg.role === 'assistant') {
+                        // Final message — render markdown properly: headers,
+                        // lists, inline styling, fenced code blocks, and
+                        // paragraph wrapping to terminal width. This is what
+                        // the user actually reads.
+                        log(colorize('◆ Koda:', 'cyan'));
+                        const rendered = renderMarkdown(cleanedContent);
+                        if (rendered) log(rendered);
+                    } else {
+                        // Streaming in progress — keep the legacy minimal
+                        // formatting so tokens don't cause visual reflow.
+                        // The final redraw will run the full markdown pass.
+                        const formattedContent = formatCodeBlocks(cleanedContent);
+                        log(colorize('◆ Koda: ', 'cyan') + formattedContent);
+                    }
                 }
             } else if (msg.role === 'system') {
                 // System messages with subtle styling (ASCII-safe icon)
@@ -2609,11 +2866,13 @@ function buildLeanSystemPrompt(queryType, mode = 'standalone', websearchEnabled 
 
 Answer the user's question directly. Do NOT restate, describe, or analyze the question itself. Do NOT comment on its length, word count, character count, or format — just answer.
 
-Formatting rules:
-- Keep responses short unless the user asks for detail.
+Formatting rules (output is rendered as markdown in a terminal):
+- Keep responses short unless the user asks for detail. A short answer is one or two sentences with no headers and no bullets.
+- Only use structure when it actually helps: use ## Headers, - bullet lists, **bold**, and \`inline code\` when a response is long enough to benefit from structure. Never add headings or bullets just to look organized.
 - For math, give the numerical result first, optionally followed by one-line reasoning.
 - For factual questions, answer in one or two sentences.
-- For code requests, output the code in a fenced block and keep the explanation brief.
+- For code requests, output the code in a fenced code block with the language tag (\`\`\`python, \`\`\`js, etc) and keep the explanation brief.
+- For news, summaries, or research responses, lead with a one-line summary, then use short bullets for the key points, and cite sources by number [1], [2] if they were provided.
 - Never invent "skill" calls in square brackets — those are only used when actually executing tools, not for conversation.
 - Never fabricate that you have executed a tool, saved a file, or counted words unless you actually did.`;
 
@@ -5726,12 +5985,44 @@ function buildUserVisibleSkillResults(results) {
         } else if (skillName === 'web_search') {
             const query = result.query || result.data?.query || '';
             const searchResults = result.results || result.data?.results || [];
-            output += `\n🔎 Web Search: "${query}" (${searchResults.length} results)\n`;
-            output += '─'.repeat(40) + '\n';
-            for (const sr of searchResults.slice(0, 5)) {
-                output += `• ${sr.title || 'No title'}\n`;
-                if (sr.snippet) output += `  ${sr.snippet.substring(0, 150)}...\n`;
-                if (sr.link) output += `  ${sr.link}\n`;
+            const termWidth = getTerminalWidth();
+            const width = Math.max(50, Math.min(termWidth - 4, 110));
+
+            output += `\n🔎 Web Search  ${colorize('"' + query + '"', 'cyan')}  ${colorize(`(${searchResults.length} results)`, 'dim')}\n`;
+            output += colorize('─'.repeat(width), 'dim') + '\n';
+
+            const top = searchResults.slice(0, 5);
+            top.forEach((sr, idx) => {
+                const num = String(idx + 1).padStart(2);
+                const title = (sr.title || 'No title').trim();
+                // Header line: number + title wrapped to full width
+                output += colorize(num + '. ', 'cyan') +
+                    wrapAnsiLine(colorize(title, 'white'), width, '', '    ') + '\n';
+
+                // Snippet: show up to ~280 chars, wrapped with hanging indent.
+                // The previous cap of 150 chars was cutting off right when
+                // the interesting bit started; 2-3 wrapped lines is about
+                // right in a terminal.
+                const snippetRaw = (sr.snippet || sr.description || '').trim();
+                if (snippetRaw) {
+                    const snippet = snippetRaw.length > 280
+                        ? snippetRaw.substring(0, 277).replace(/\s+\S*$/, '') + '…'
+                        : snippetRaw;
+                    output += wrapAnsiLine(colorize(snippet, 'dim'), width, '    ', '    ') + '\n';
+                }
+
+                // URL — underlined dim so it's clearly a link but doesn't
+                // steal the eye from the title.
+                const url = sr.url || sr.link || '';
+                if (url) {
+                    output += colorize('    \x1b[4m' + url + '\x1b[24m', 'dim') + '\n';
+                }
+                if (idx < top.length - 1) output += '\n';
+            });
+
+            output += colorize('─'.repeat(width), 'dim') + '\n';
+            if (searchResults.length > top.length) {
+                output += colorize(`    … and ${searchResults.length - top.length} more result${searchResults.length - top.length === 1 ? '' : 's'}\n`, 'dim');
             }
         } else if (skillName === 'list_processes') {
             const procs = result.processes || result.data?.processes || [];
@@ -8569,8 +8860,11 @@ async function runSingleShot(prompt) {
 
         const last = [...chatHistory].reverse().find(m => m.role === 'assistant');
         if (last && last.content) {
+            const cleaned = cleanSkillSyntax(last.content).trim();
             process.stdout.write('\n--- KODA RESPONSE ---\n');
-            process.stdout.write(last.content.trim() + '\n');
+            // Show the markdown-rendered form by default; test harnesses
+            // that need the raw text can strip ANSI codes from this output.
+            process.stdout.write(renderMarkdown(cleaned) + '\n');
             process.stdout.write('--- END RESPONSE ---\n');
         } else {
             process.stderr.write('\n(no response produced)\n');
