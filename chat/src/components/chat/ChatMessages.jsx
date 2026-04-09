@@ -88,6 +88,8 @@ export default function ChatMessages({
                     tokenCount={message.tokenCount}
                     needsContinuation={message.needsContinuation}
                     isPartial={message.isPartial}
+                    toolCalls={message.toolCalls}
+                    searchResults={message.searchResults}
                     onContinue={onContinue}
                     isLoading={isLoading}
                 />

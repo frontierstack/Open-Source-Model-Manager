@@ -168,7 +168,7 @@ export default function ChatInput({
     useEffect(() => {
         if (textareaRef.current) {
             textareaRef.current.style.height = 'auto';
-            textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+            textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 320) + 'px';
         }
     }, [message]);
 
@@ -678,10 +678,10 @@ export default function ChatInput({
                             onPaste={handlePaste}
                             placeholder={isDragOver ? 'Drop files...' : 'Message...'}
                             disabled={disabled}
-                            rows={1}
+                            rows={2}
                             className="flex-1 bg-transparent text-dark-100 placeholder:text-dark-600
                                        resize-y focus:outline-none py-1.5 px-1.5 text-sm
-                                       max-h-[400px] min-h-[32px] leading-relaxed"
+                                       max-h-[320px] min-h-[56px] leading-relaxed"
                             style={{ height: 'auto' }}
                             aria-label="Message input"
                         />

@@ -641,12 +641,22 @@ export default function ChatContainer({
                 fullContent = `${textParts.join('\n')}\n---\n\n${content}`;
             }
         }
+        // Collect tool-call metadata across this turn so we can attach it to
+        // the final assistant message. The chat UI renders each entry as a
+        // collapsible ToolCallBlock above the message body, giving the user
+        // transparency into what Koda did before answering (web search, URL
+        // fetch, etc). Neither tool is streamed over SSE — both run here on
+        // the client before the chat request is sent — so this is the only
+        // place where the metadata is actually known.
+        const toolCalls = [];
+
         // Handle URL fetching if enabled
         let urlFetchResults = null;
         let urlContextSummary = null;
         if (settings.urlFetchEnabled) {
             const urls = extractUrls(content);
             if (urls.length > 0) {
+                const urlFetchStart = Date.now();
                 try {
                     setIsLoading(true);
                     setProcessingStatus('parsing', `Fetching ${urls.length} URL${urls.length > 1 ? 's' : ''}`);
@@ -670,6 +680,25 @@ export default function ChatContainer({
                         }
                         const successfulResults = fetchData.results?.filter(r => r.success) || [];
                         const failedResults = fetchData.results?.filter(r => !r.success) || [];
+
+                        // Record a tool-call entry for this URL fetch so the
+                        // assistant message can show a collapsible block.
+                        toolCalls.push({
+                            type: 'url_fetch',
+                            label: 'URL Fetch',
+                            query: urls.join('\n'),
+                            resultCount: successfulResults.length,
+                            durationMs: Date.now() - urlFetchStart,
+                            status: failedResults.length === 0
+                                ? 'success'
+                                : (successfulResults.length > 0 ? 'partial' : 'failed'),
+                            results: [...successfulResults, ...failedResults].map(r => ({
+                                url: r.url,
+                                title: r.title || r.url,
+                                snippet: r.content ? String(r.content).slice(0, 400) : (r.error || ''),
+                                success: !!r.success
+                            }))
+                        });
 
                         if (successfulResults.length > 0) {
                             urlFetchResults = successfulResults;
@@ -860,6 +889,7 @@ export default function ChatContainer({
         let searchResults = null;
         let searchContextSummary = null;
         if (settings.webSearchEnabled) {
+            const webSearchStart = Date.now();
             try {
                 setIsLoading(true);
                 setProcessingStatus('searching', 'Searching the web');
@@ -879,6 +909,23 @@ export default function ChatContainer({
                     }
                     if (searchData.results && searchData.results.length > 0) {
                         searchResults = searchData.results;
+
+                        // Record a tool-call entry so the assistant message
+                        // can show a collapsible block + favicon source row.
+                        toolCalls.push({
+                            type: 'web_search',
+                            label: 'Web Search',
+                            query: content,
+                            resultCount: searchData.results.length,
+                            durationMs: Date.now() - webSearchStart,
+                            status: 'success',
+                            results: searchData.results.map(r => ({
+                                url: r.url || r.link,
+                                title: r.title,
+                                snippet: r.snippet,
+                                content: r.content
+                            }))
+                        });
 
                         // Create a summary of search results for memory persistence
                         searchContextSummary = searchData.results
@@ -1314,7 +1361,8 @@ export default function ChatContainer({
                         content: finalContent,
                         reasoning: finalReasoning,
                         timestamp: new Date().toISOString(),
-                        searchResults: searchResults ? searchResults.length : undefined,
+                        searchResults: searchResults || undefined,
+                        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
                         responseTime,
                         tokenCount: tokenCount > 0 ? tokenCount : undefined,
                         isPartial: true, // Mark as partial response
@@ -1354,7 +1402,12 @@ export default function ChatContainer({
                     content: finalContent,
                     reasoning: finalReasoning,
                     timestamp: new Date().toISOString(),
-                    searchResults: searchResults ? searchResults.length : undefined,
+                    // Persist the full search results array so the chat UI
+                    // can render SearchSources favicon chips. Previously we
+                    // only stored the count, which made sources impossible
+                    // to re-render on conversation reload.
+                    searchResults: searchResults || undefined,
+                    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
                     responseTime,
                     tokenCount: tokenCount > 0 ? tokenCount : undefined,
                     needsContinuation, // Mark if response was cut off by length

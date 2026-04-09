@@ -3,6 +3,8 @@ import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircl
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import StatusIndicator from './StatusIndicator';
+import ToolCallBlock from './ToolCallBlock';
+import SearchSources from './SearchSources';
 
 /**
  * ChatMessage - Individual chat message bubble (Tailwind)
@@ -25,6 +27,10 @@ export default React.memo(function ChatMessage({
     isPartial,
     onContinue,
     isLoading,
+    // New: tool calls captured client-side (web search, url fetch, etc.)
+    // and the full web search results array for SearchSources rendering.
+    toolCalls,
+    searchResults,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
@@ -99,6 +105,27 @@ export default React.memo(function ChatMessage({
                             </div>
                         )}
                     </div>
+                )}
+
+                {/* Tool calls (web search / URL fetch / skills).
+                    Rendered above the message body as collapsible cards so
+                    the user can see what Koda did before answering without
+                    cluttering the response itself. Hidden during streaming
+                    to avoid flicker — the final message shows them after
+                    the stream resolves. */}
+                {!isUser && !isStreaming && Array.isArray(toolCalls) && toolCalls.length > 0 && (
+                    <div className="mb-2">
+                        {toolCalls.map((tc, idx) => (
+                            <ToolCallBlock key={idx} tool={tc} />
+                        ))}
+                    </div>
+                )}
+
+                {/* Web search source chips. These come from the tool call's
+                    `results` array, but we also accept a top-level
+                    `searchResults` prop for convenience / legacy messages. */}
+                {!isUser && !isStreaming && Array.isArray(searchResults) && searchResults.length > 0 && (
+                    <SearchSources sources={searchResults} />
                 )}
 
                 {/* Content */}
