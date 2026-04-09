@@ -8742,12 +8742,11 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
                     const requestBody = {
                         messages: messages,
-                        temperature: temperature || 0.7
+                        temperature: temperature || 0.7,
+                        // Always clamped to contextSize - inputTokens to prevent
+                        // vLLM's "0 input tokens" VLLMValidationError.
+                        max_tokens: responseReserve
                     };
-
-                    if (maxTokens) {
-                        requestBody.max_tokens = maxTokens;
-                    }
 
                     const response = await axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody);
                     const choice = response.data.choices[0];
@@ -8792,13 +8791,12 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
         const requestBody = {
             messages: messages,
-            temperature: temperature || 0.7
+            temperature: temperature || 0.7,
+            // Always clamped to contextSize - inputTokens to prevent vLLM's
+            // "0 input tokens" VLLMValidationError when the caller sends a
+            // raw max_tokens value equal to contextSize.
+            max_tokens: responseReserve
         };
-
-        // Only include max_tokens if explicitly provided
-        if (maxTokens) {
-            requestBody.max_tokens = maxTokens;
-        }
 
         const response = await axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody);
 
@@ -9629,8 +9627,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         };
 
         try {
-            // Initial request with original messages
-            const initialMaxTokens = effectiveMaxTokens || responseReserve;
+            // Initial request with original messages.
+            // responseReserve is already clamped to leave room for input
+            // (see the desiredResponseTokens/responseReserve calculation above),
+            // so we always use it — never the raw client-supplied value, which
+            // could equal contextSize and make vLLM reject the request with
+            // "0 input tokens" VLLMValidationError.
+            const initialMaxTokens = responseReserve;
             let finishReason = await streamOneRequest(chatMessages, initialMaxTokens);
 
             // Auto-continuation loop: if model hit length limit, keep going
@@ -9982,17 +9985,23 @@ app.post('/api/complete', requireAuth, async (req, res) => {
             finalPrompt = `${systemPrompt}\n\n${prompt}`;
         }
 
-        // Make request to vLLM instance
-        // Don't set default max_tokens - let the model/API key handle it
+        // Compute a safe max_tokens value. vLLM rejects the request if
+        // input_tokens + max_tokens > contextSize, so we always clamp to the
+        // space actually available for generation.
+        const contextSize = (targetInstance.config && (targetInstance.config.contextSize || targetInstance.config.maxModelLen)) || 4096;
+        const estimatedInputTokens = Math.ceil(finalPrompt.length / 4);
+        const safetyMargin = 200;
+        const minResponse = Math.min(512, Math.max(64, Math.floor(contextSize * 0.1)));
+        const available = Math.max(minResponse, contextSize - estimatedInputTokens - safetyMargin);
+        const safeMaxTokens = maxTokens
+            ? Math.min(maxTokens, available)
+            : Math.min(Math.max(2048, Math.floor(contextSize * 0.2)), available);
+
         const requestBody = {
             prompt: finalPrompt,
-            temperature: temperature || 0.7
+            temperature: temperature || 0.7,
+            max_tokens: safeMaxTokens
         };
-
-        // Only include max_tokens if explicitly provided
-        if (maxTokens) {
-            requestBody.max_tokens = maxTokens;
-        }
 
         const response = await axios.post(`http://${targetHost}:${targetPort}/v1/completions`, requestBody);
 

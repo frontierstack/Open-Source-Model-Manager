@@ -506,7 +506,12 @@ export default function ChatContainer({
                     model: settings.model,
                     messages: apiMessages,
                     temperature: settings.temperature,
-                    max_tokens: settings.maxTokens || selectedModelContextSize,  // Use context size if not explicitly set
+                    // Only forward max_tokens when the user explicitly set it.
+                    // Sending contextSize as the default leaves vLLM with zero
+                    // tokens for input and triggers VLLMValidationError.
+                    // When omitted, the backend computes a safe value using
+                    // its input-priority response reserve logic.
+                    max_tokens: settings.maxTokens || undefined,
                     stream: true,
                     conversationId, // Include for continuation support
                 }),

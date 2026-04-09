@@ -46,7 +46,11 @@ export default function ChatSettings({
     const {
         temperature = 0.7,
         topP = 1.0,
-        maxTokens = contextSize,  // Default to model's context window
+        // null = "auto" — let the backend pick based on input size. The TextField
+        // renders this as an empty input. Never default to contextSize here
+        // because that would later be sent verbatim as max_tokens and leave
+        // vLLM with zero room for the input prompt.
+        maxTokens = null,
         systemPromptId = null,
     } = settings;
 
@@ -279,17 +283,31 @@ export default function ChatSettings({
                     <Box>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                             <Typography variant="body2">Max Tokens</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                                {maxTokens ? `${maxTokens}` : 'Auto'}
+                            </Typography>
                         </Box>
                         <TextField
                             type="number"
-                            value={maxTokens}
-                            onChange={(e) => onUpdateSettings({ maxTokens: parseInt(e.target.value) || 256 })}
+                            value={maxTokens ?? ''}
+                            placeholder="Auto"
+                            onChange={(e) => {
+                                const raw = e.target.value;
+                                if (raw === '') {
+                                    onUpdateSettings({ maxTokens: null });
+                                    return;
+                                }
+                                const parsed = parseInt(raw, 10);
+                                if (!Number.isNaN(parsed)) {
+                                    onUpdateSettings({ maxTokens: parsed });
+                                }
+                            }}
                             size="small"
                             fullWidth
-                            inputProps={{ min: 64, max: 32768, step: 64 }}
+                            inputProps={{ min: 64, max: contextSize || 131072, step: 64 }}
                         />
                         <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-                            Maximum length of the response (64-32768)
+                            Maximum response length. Leave blank for auto — the server picks a value that fits your prompt inside the model's context window.
                         </Typography>
                     </Box>
 
@@ -299,22 +317,23 @@ export default function ChatSettings({
                     <Box>
                         <Typography variant="body2" sx={{ mb: 1.5 }}>Quick Presets</Typography>
                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                            {/* Presets use percentages of the model's context window */}
+                            {/* Presets tune sampling only; max_tokens stays on Auto so
+                                the backend can clamp it against the current prompt size. */}
                             <PresetButton
                                 label="Precise"
-                                onClick={() => onUpdateSettings({ temperature: 0.2, topP: 0.9, maxTokens: Math.floor(contextSize * 0.5) })}
+                                onClick={() => onUpdateSettings({ temperature: 0.2, topP: 0.9, maxTokens: null })}
                             />
                             <PresetButton
                                 label="Balanced"
-                                onClick={() => onUpdateSettings({ temperature: 0.7, topP: 1.0, maxTokens: Math.floor(contextSize * 0.75) })}
+                                onClick={() => onUpdateSettings({ temperature: 0.7, topP: 1.0, maxTokens: null })}
                             />
                             <PresetButton
                                 label="Creative"
-                                onClick={() => onUpdateSettings({ temperature: 1.0, topP: 1.0, maxTokens: contextSize })}
+                                onClick={() => onUpdateSettings({ temperature: 1.0, topP: 1.0, maxTokens: null })}
                             />
                             <PresetButton
                                 label="Code"
-                                onClick={() => onUpdateSettings({ temperature: 0.1, topP: 0.95, maxTokens: contextSize })}
+                                onClick={() => onUpdateSettings({ temperature: 0.1, topP: 0.95, maxTokens: null })}
                             />
                         </Box>
                     </Box>

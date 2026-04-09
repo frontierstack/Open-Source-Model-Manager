@@ -34,9 +34,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip
 RUN pip3 install --no-cache-dir --upgrade pip
 
-# Install vLLM with CUDA support
-# Note: vLLM requires specific torch version, let vLLM manage its dependencies
-RUN pip3 install --no-cache-dir vllm
+# Install vLLM with CUDA support.
+# Pin to a known-good minor range: 0.6.x has stable GGUF quantization for
+# Qwen2/Qwen3/Llama/Mistral families and well-tested CUDA 12.1 wheels.
+# Unpinning this has historically broken GGUF loading whenever upstream ships
+# a breaking change in the quantization backend (see vLLM GH issues #8757,
+# #9064). Bump this intentionally after verifying GGUF still works.
+# Let vLLM manage its own torch version.
+ARG VLLM_VERSION=0.6.6.post1
+RUN pip3 install --no-cache-dir "vllm==${VLLM_VERSION}"
 
 # Expose port for API server
 EXPOSE 8000
