@@ -12,7 +12,6 @@ import {
     Check,
     Monitor,
     Target,
-    Layout,
     AlignCenter,
     GitCommitVertical,
     MessageCircle,
@@ -76,13 +75,6 @@ export default function ChatSettings({
             icon: AlignCenter,
             description: 'Messages centered',
             preview: { userAlign: 'center', assistantAlign: 'center', width: 'normal' }
-        },
-        {
-            value: 'wide',
-            label: 'Wide',
-            icon: Layout,
-            description: 'Full width messages',
-            preview: { userAlign: 'right', assistantAlign: 'left', width: 'full' }
         },
         {
             value: 'timeline',
@@ -245,7 +237,7 @@ export default function ChatSettings({
         ]},
         { label: 'Warm Tones', options: [
             { value: 'copper', label: 'Copper' },
-            { value: 'vesper', label: 'Vesper' },
+            { value: 'mocha', label: 'Mocha' },
         ]},
         { label: 'Neutral', options: [
             { value: 'slate', label: 'Slate' },

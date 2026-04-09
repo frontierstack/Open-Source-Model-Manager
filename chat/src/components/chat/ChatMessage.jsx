@@ -157,15 +157,48 @@ export default React.memo(function ChatMessage({
                         )}
                     </div>
                 ) : bodyCollapsed ? (
-                    // Collapsed: show a compact one-line preview instead of
-                    // the full markdown body. Clicking the Expand button
-                    // above brings the body back.
-                    <button
-                        onClick={() => setBodyCollapsed(false)}
-                        className="w-full text-left text-[12px] text-dark-400 hover:text-dark-200 italic transition-colors"
-                    >
-                        {`… ${displayContent?.length || 0} characters collapsed — click to expand`}
-                    </button>
+                    // Collapsed: show a compact preview instead of the full
+                    // markdown body so the message doesn't become an empty
+                    // rectangle. Derives a one-line title from the first
+                    // non-empty, non-markdown line of the response, and a
+                    // character count. Clicking anywhere re-expands.
+                    (() => {
+                        // Strip fenced code blocks, headers, bullet markers,
+                        // bold/italic, and inline code so the preview reads
+                        // like plain prose rather than markdown source.
+                        const cleaned = (displayContent || '')
+                            .replace(/```[\s\S]*?```/g, '[code]')
+                            .replace(/`([^`]+)`/g, '$1')
+                            .replace(/\*\*([^*]+)\*\*/g, '$1')
+                            .replace(/\*([^*]+)\*/g, '$1')
+                            .replace(/^#{1,6}\s+/gm, '')
+                            .replace(/^[-*+]\s+/gm, '')
+                            .replace(/^\d+\.\s+/gm, '');
+                        const firstLine = (cleaned.split('\n').find(l => l.trim().length > 0) || '').trim();
+                        const MAX = 90;
+                        const preview = firstLine.length > MAX
+                            ? firstLine.slice(0, MAX).replace(/\s+\S*$/, '') + '…'
+                            : firstLine;
+                        const chars = (displayContent || '').length;
+                        return (
+                            <button
+                                onClick={() => setBodyCollapsed(false)}
+                                className="w-full text-left group transition-colors"
+                            >
+                                <div className="flex items-start gap-2 text-[12.5px]">
+                                    <Maximize2 className="w-3 h-3 mt-0.5 flex-shrink-0 text-dark-500 group-hover:text-primary-400 transition-colors" />
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-dark-200 group-hover:text-white truncate transition-colors">
+                                            {preview || 'Collapsed response'}
+                                        </div>
+                                        <div className="text-[10.5px] text-dark-500 mt-0.5 group-hover:text-dark-400 transition-colors">
+                                            {chars.toLocaleString()} character{chars === 1 ? '' : 's'} · click to expand
+                                        </div>
+                                    </div>
+                                </div>
+                            </button>
+                        );
+                    })()
                 ) : (
                     <MessageContent content={displayContent} />
                 )}

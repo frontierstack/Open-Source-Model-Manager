@@ -44,18 +44,31 @@ const migrateSettings = () => {
                 console.log('[Settings] Migrated maxTokens from 1024 to null (dynamic)');
             }
 
-            // The 'terminal' chat layout was removed in favor of 'bubbles'.
-            // Migrate anyone who had it saved to 'default' so they don't end
-            // up with an unmapped style that silently falls back to
-            // unstyled flex.
-            if (settings.chatStyle === 'terminal') {
+            // Removed chat layouts: 'terminal' (replaced by 'bubbles') and
+            // 'wide' (functionally the same as 'default'). Migrate anyone
+            // who had either saved to 'default'.
+            if (settings.chatStyle === 'terminal' || settings.chatStyle === 'wide') {
+                const prev = settings.chatStyle;
                 settings.chatStyle = 'default';
                 dirty = true;
-                console.log('[Settings] Migrated chatStyle terminal -> default (terminal removed)');
+                console.log(`[Settings] Migrated chatStyle ${prev} -> default (${prev} removed)`);
             }
 
             if (dirty) {
                 localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+            }
+        }
+
+        // Theme lives in its own localStorage key, not inside settings.
+        // Vesper was replaced with Mocha — migrate stored value so the UI
+        // doesn't render unthemed.
+        const storedTheme = localStorage.getItem(STORAGE_KEYS.THEME);
+        if (storedTheme) {
+            // localStorage stores JSON-encoded strings here
+            const parsed = (() => { try { return JSON.parse(storedTheme); } catch { return storedTheme; } })();
+            if (parsed === 'vesper') {
+                localStorage.setItem(STORAGE_KEYS.THEME, JSON.stringify('mocha'));
+                console.log('[Settings] Migrated theme vesper -> mocha (vesper removed)');
             }
         }
     } catch (e) {

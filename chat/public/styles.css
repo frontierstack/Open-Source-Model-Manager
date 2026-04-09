@@ -2255,6 +2255,9 @@ body.font-size-large .markdown-content,
 .text-\[11px\]{
   font-size: 11px;
 }
+.text-\[12\.5px\]{
+  font-size: 12.5px;
+}
 .text-\[12px\]{
   font-size: 12px;
 }
@@ -3693,66 +3696,69 @@ body.font-size-large .markdown-content,
 }
 
 /* ============================================
-   Theme: Vesper
-   Warm minimal dark with peach accents
+   Theme: Mocha
+   Deep espresso background with warm honey-tan accents. Cozy cafe
+   aesthetic — distinct from Copper (metallic orange) and Sunset
+   (bright pink/orange); sits in the Warm Tones group as the muted,
+   grounded counterpart to Copper's brightness.
    ============================================ */
-.theme-vesper {
-    --primary-rgb: 255, 199, 153;
-    --bg-primary: #101010;
-    --bg-secondary: #1a1a1a;
-    --bg-tertiary: #232323;
-    --bg-elevated: #141414;
-    --bg-hover: rgba(255, 199, 153, 0.06);
-    --bg-active: rgba(255, 199, 153, 0.10);
+.theme-mocha {
+    --primary-rgb: 207, 168, 122;
+    --bg-primary: #130e0a;
+    --bg-secondary: #1c1510;
+    --bg-tertiary: #261c16;
+    --bg-elevated: #1a130e;
+    --bg-hover: rgba(207, 168, 122, 0.06);
+    --bg-active: rgba(207, 168, 122, 0.11);
 
-    --surface-primary: rgba(26, 26, 26, 0.9);
-    --surface-secondary: rgba(35, 35, 35, 0.8);
-    --surface-glass: rgba(16, 16, 16, 0.95);
+    --surface-primary: rgba(28, 21, 16, 0.92);
+    --surface-secondary: rgba(38, 28, 22, 0.82);
+    --surface-glass: rgba(19, 14, 10, 0.95);
 
-    --text-primary: #d4d4d4;
-    --text-secondary: #b0b0b0;
-    --text-tertiary: #808080;
-    --text-muted: #505050;
+    --text-primary: #f2e6d4;
+    --text-secondary: #d1bfa6;
+    --text-tertiary: #a38d73;
+    --text-muted: #665443;
 
-    --border-primary: rgba(255, 199, 153, 0.12);
-    --border-secondary: rgba(255, 199, 153, 0.06);
-    --border-hover: rgba(255, 199, 153, 0.22);
-    --border-focus: rgba(255, 199, 153, 0.5);
+    --border-primary: rgba(207, 168, 122, 0.14);
+    --border-secondary: rgba(207, 168, 122, 0.07);
+    --border-hover: rgba(207, 168, 122, 0.26);
+    --border-focus: rgba(207, 168, 122, 0.52);
 
-    --accent-primary: #ffc799;
-    --accent-secondary: #f5a575;
-    --accent-hover: #ffd6b3;
-    --accent-muted: rgba(255, 199, 153, 0.15);
+    --accent-primary: #cfa87a;
+    --accent-secondary: #a8845a;
+    --accent-hover: #e3bc8c;
+    --accent-muted: rgba(207, 168, 122, 0.16);
 
-    --user-msg-from: #2a2018;
-    --user-msg-to: #201812;
-    --user-msg-hover-from: #352820;
-    --user-msg-hover-to: #2a2018;
-    --user-msg-text: #f5e8dc;
+    --user-msg-from: #2a1f16;
+    --user-msg-to: #1e160f;
+    --user-msg-hover-from: #362a1f;
+    --user-msg-hover-to: #2a1f16;
+    --user-msg-text: #f7ecd8;
 
-    --assistant-bg: rgba(26, 26, 26, 0.8);
-    --assistant-border: rgba(255, 199, 153, 0.10);
-    --assistant-text: #d4d4d4;
+    --assistant-bg: rgba(28, 21, 16, 0.85);
+    --assistant-border: rgba(207, 168, 122, 0.10);
+    --assistant-text: #f2e6d4;
 
-    --scrollbar-thumb: rgba(255, 199, 153, 0.18);
-    --scrollbar-thumb-hover: rgba(255, 199, 153, 0.30);
+    --scrollbar-thumb: rgba(207, 168, 122, 0.20);
+    --scrollbar-thumb-hover: rgba(207, 168, 122, 0.34);
 
-    --code-bg: #0c0c0c;
-    --code-header-bg: rgba(26, 26, 26, 0.7);
-    --code-border: rgba(255, 199, 153, 0.08);
+    --code-bg: #0e0907;
+    --code-header-bg: rgba(28, 21, 16, 0.75);
+    --code-border: rgba(207, 168, 122, 0.09);
 
-    --input-bg: rgba(20, 20, 20, 0.8);
-    --input-border: rgba(255, 199, 153, 0.15);
-    --input-focus-border: rgba(255, 199, 153, 0.5);
-    --input-focus-ring: rgba(255, 199, 153, 0.12);
+    --input-bg: rgba(22, 16, 12, 0.85);
+    --input-border: rgba(207, 168, 122, 0.16);
+    --input-focus-border: rgba(207, 168, 122, 0.52);
+    --input-focus-ring: rgba(207, 168, 122, 0.13);
 
-    --shadow-accent: rgba(255, 199, 153, 0.2);
-    --shadow-accent-hover: rgba(245, 165, 117, 0.3);
+    --shadow-accent: rgba(207, 168, 122, 0.20);
+    --shadow-accent-hover: rgba(168, 132, 90, 0.30);
 
-    --success: #6bc46d;
-    --warning: #ffc799;
-    --error: #e06060;
-    --info: #8ab4f8;
+    --success: #7fb369;
+    --warning: #e3bc8c;
+    --error: #d4625a;
+    --info: #8ab4c8;
 }
 
 /* ============================================
@@ -4710,20 +4716,6 @@ body.font-size-large .markdown-content,
     max-width: 80% !important;
 }
 
-/* Wide - Full width messages */
-.chat-style-wide .message-user {
-    max-width: 85% !important;
-}
-
-.chat-style-wide .message-assistant {
-    max-width: 100% !important;
-    padding: 1.25rem 1.5rem !important;
-}
-
-.chat-style-wide .max-w-5xl {
-    max-width: 100% !important;
-}
-
 /* Timeline - Vertical timeline with connected messages */
 .chat-style-timeline .flex.flex-col.items-end,
 .chat-style-timeline .flex.flex-col.items-start {
@@ -5360,6 +5352,17 @@ html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.c
 }
 .group:hover .group-hover\:bg-white\/\[0\.08\]{
   background-color: rgb(255 255 255 / 0.08);
+}
+.group:hover .group-hover\:text-dark-400{
+  --tw-text-opacity: 1;
+  color: rgb(161 161 170 / var(--tw-text-opacity, 1));
+}
+.group:hover .group-hover\:text-primary-400{
+  color: var(--accent-hover);
+}
+.group:hover .group-hover\:text-white{
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity, 1));
 }
 .group\/icon:hover .group-hover\/icon\:opacity-100{
   opacity: 1;
