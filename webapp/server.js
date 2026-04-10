@@ -3146,10 +3146,13 @@ function sampleCpuPercent() {
     }
 }
 
+let gpuErrorLogged = false; // Only log nvidia-smi errors once to avoid log spam
+
 async function broadcastSystemMonitoring() {
     try {
         // ---- GPUs ----
         const gpus = [];
+        let gpuError = null;
         try {
             const { stdout } = await execPromise('nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits');
             const lines = stdout.trim().split('\n');
@@ -3169,8 +3172,29 @@ async function broadcastSystemMonitoring() {
                     powerW: parseFloat(power) || 0
                 });
             }
+            // Reset the flag if nvidia-smi starts working again
+            if (gpus.length > 0) gpuErrorLogged = false;
         } catch (err) {
-            // No NVIDIA GPU / nvidia-smi unavailable — leave gpus empty
+            // Determine the specific reason nvidia-smi failed
+            const errMsg = err.message || String(err);
+            if (errMsg.includes('not found') || errMsg.includes('ENOENT') || errMsg.includes('No such file')) {
+                gpuError = 'nvidia-smi not found — NVIDIA drivers may not be installed in the container';
+            } else if (errMsg.includes('NVML') || errMsg.includes('driver')) {
+                gpuError = 'NVIDIA driver communication failed — GPU passthrough may not be configured';
+            } else {
+                gpuError = `nvidia-smi error: ${errMsg.substring(0, 120)}`;
+            }
+
+            // Log once to avoid flooding at 3s interval
+            if (!gpuErrorLogged) {
+                gpuErrorLogged = true;
+                console.warn(`[Monitoring] GPU detection failed: ${gpuError}`);
+                broadcast({
+                    type: 'log',
+                    message: `[Warning] GPU monitoring unavailable: ${gpuError}`,
+                    level: 'warning'
+                });
+            }
         }
 
         // ---- Memory ----
@@ -3207,6 +3231,7 @@ async function broadcastSystemMonitoring() {
                 percent: memPct
             },
             gpus,
+            gpuError: gpuError || null,
             models
         });
     } catch (error) {
@@ -3830,7 +3855,7 @@ app.get('/api/system/resources', requireAuth, async (req, res) => {
                 };
             }
         } catch (err) {
-            // No NVIDIA GPU or nvidia-smi not available
+            console.warn('[System Resources] GPU detection failed:', err.message);
         }
 
         res.json({

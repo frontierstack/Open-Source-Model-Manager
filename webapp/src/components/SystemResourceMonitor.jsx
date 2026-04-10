@@ -171,6 +171,7 @@ function SystemResourceMonitor({ current, history }) {
     const cpu = current?.cpu;
     const mem = current?.memory;
     const gpus = current?.gpus || [];
+    const gpuError = current?.gpuError || null;
     const models = current?.models || [];
 
     return (
@@ -248,6 +249,47 @@ function SystemResourceMonitor({ current, history }) {
                             />
                         );
                     })}
+
+                    {/* GPU error indicator — shown when nvidia-smi fails */}
+                    {hasData && gpus.length === 0 && (
+                        <Box
+                            sx={{
+                                flex: '1 1 240px',
+                                minWidth: 240,
+                                p: 1.5,
+                                borderRadius: 1.5,
+                                border: '1px solid',
+                                borderColor: gpuError ? 'warning.dark' : 'divider',
+                                bgcolor: gpuError ? 'rgba(245,158,11,0.04)' : 'rgba(255,255,255,0.02)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 0.75,
+                            }}
+                        >
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Box sx={{
+                                    width: 26, height: 26, borderRadius: 1,
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    bgcolor: gpuError ? 'rgba(245,158,11,0.15)' : 'rgba(107,114,128,0.15)',
+                                    color: gpuError ? '#f59e0b' : '#6b7280',
+                                }}>
+                                    <BoltIcon sx={{ fontSize: 16 }} />
+                                </Box>
+                                <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: '0.7rem' }}>
+                                    GPU
+                                </Typography>
+                                <Typography
+                                    variant="body2"
+                                    sx={{ ml: 'auto', fontWeight: 600, color: gpuError ? '#f59e0b' : '#6b7280' }}
+                                >
+                                    {gpuError ? 'Unavailable' : 'Not detected'}
+                                </Typography>
+                            </Box>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.68rem', lineHeight: 1.4 }}>
+                                {gpuError || 'No NVIDIA GPU found. GPU monitoring requires nvidia-smi inside the container.'}
+                            </Typography>
+                        </Box>
+                    )}
                 </Box>
 
                 {/* Models summary row */}
