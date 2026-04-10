@@ -11,30 +11,93 @@ cd "$PROJECT_DIR"
 BUILD_STATE_DIR="$PROJECT_DIR/.build-state"
 mkdir -p "$BUILD_STATE_DIR"
 
-# Colors for output
+# ============================================================================
+# TERMINAL OUTPUT HELPERS
+# ============================================================================
+
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
 
-# Logging functions
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+# Status symbols
+SYM_OK="${GREEN}✓${NC}"
+SYM_FAIL="${RED}✗${NC}"
+SYM_SKIP="${DIM}–${NC}"
+SYM_WARN="${YELLOW}!${NC}"
+SYM_ARROW="${CYAN}→${NC}"
 
-echo "=========================================="
-echo "  Model Server Advanced Build System"
-echo "=========================================="
+# Logging — compact, single-line where possible
+log_info()    { echo -e "  ${BLUE}ℹ${NC}  $1"; }
+log_success() { echo -e "  ${SYM_OK}  $1"; }
+log_warning() { echo -e "  ${SYM_WARN}  ${YELLOW}$1${NC}"; }
+log_error()   { echo -e "  ${SYM_FAIL}  ${RED}$1${NC}"; }
+log_step()    { echo -e "  ${SYM_ARROW}  $1"; }
+
+# Section header — visually separates build phases
+section() {
+    echo ""
+    echo -e "  ${BOLD}${CYAN}$1${NC}"
+    echo -e "  ${DIM}$(printf '%.0s─' $(seq 1 ${#1}))${NC}"
+}
+
+# Spinner for long-running tasks (runs in background, call stop_spinner to end)
+SPINNER_PID=""
+start_spinner() {
+    local msg="$1"
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    (
+        local i=0
+        while true; do
+            printf "\r  ${CYAN}${frames[$i]}${NC}  %s" "$msg"
+            i=$(( (i + 1) % ${#frames[@]} ))
+            sleep 0.1
+        done
+    ) &
+    SPINNER_PID=$!
+    disown $SPINNER_PID 2>/dev/null
+}
+
+stop_spinner() {
+    if [ -n "$SPINNER_PID" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
+        kill "$SPINNER_PID" 2>/dev/null
+        wait "$SPINNER_PID" 2>/dev/null || true
+    fi
+    SPINNER_PID=""
+    printf "\r\033[K"  # clear the spinner line
+}
+
+# Format seconds as "Xm Ys"
+fmt_duration() {
+    local secs=$1
+    if [ "$secs" -ge 60 ]; then
+        echo "$((secs / 60))m $((secs % 60))s"
+    else
+        echo "${secs}s"
+    fi
+}
+
+# Print banner
+echo ""
+echo -e "  ${BOLD}Model Server Build System${NC}"
+echo -e "  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${NC}"
 echo ""
 
-# Parse arguments
+# ============================================================================
+# PARSE ARGUMENTS
+# ============================================================================
+
 NO_CACHE=false
 CLEANUP=true
 PARALLEL=true
 RETRY_COUNT=2
 RESUME=true
+SKIP_SSL_CHECK=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -60,6 +123,10 @@ while [[ $# -gt 0 ]]; do
             RETRY_COUNT="$2"
             shift 2
             ;;
+        --skip-ssl-check)
+            SKIP_SSL_CHECK=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -72,25 +139,16 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-ssl-check Skip SSL inspection detection"
             echo "  -h, --help       Show this help message"
             echo ""
-            echo "Features:"
-            echo "  - Incremental builds (skip existing images)"
-            echo "  - Build state tracking (resume interrupted builds)"
-            echo "  - Dockerfile change detection (rebuild when changed)"
-            echo "  - Parallel builds (llamacpp + vllm simultaneously)"
-            echo "  - Automatic retry on transient failures"
-            echo "  - Build timing and progress indicators"
-            echo ""
             echo "Corporate Proxy/SSL Environment Variables:"
             echo "  HTTP_PROXY                    HTTP proxy URL"
             echo "  HTTPS_PROXY                   HTTPS proxy URL"
-            echo "  NO_PROXY                      Hosts to bypass proxy (default: localhost,127.0.0.1)"
-            echo "  NODE_TLS_REJECT_UNAUTHORIZED  Set to 0 to skip Node.js SSL verification"
+            echo "  NO_PROXY                      Hosts to bypass proxy"
+            echo "  NODE_TLS_REJECT_UNAUTHORIZED  Set to 0 to skip SSL verification"
             echo "  GIT_SSL_NO_VERIFY             Set to true to skip git SSL verification"
-            echo "  PIP_TRUSTED_HOST              pip trusted hosts (e.g., pypi.org)"
+            echo "  PIP_TRUSTED_HOST              pip trusted hosts"
             echo ""
-            echo "Example for corporate environment:"
-            echo "  HTTP_PROXY=http://proxy:8080 HTTPS_PROXY=http://proxy:8080 ./build.sh"
-            echo "  NODE_TLS_REJECT_UNAUTHORIZED=0 GIT_SSL_NO_VERIFY=true ./build.sh"
+            echo "Example:"
+            echo "  HTTP_PROXY=http://proxy:8080 ./build.sh"
             exit 0
             ;;
         *)
@@ -99,6 +157,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
 
 # Calculate checksum of a file
 get_checksum() {
@@ -123,7 +185,6 @@ is_build_complete() {
     local current_checksum=$(get_checksum "$dockerfile")
 
     if [ "$saved_checksum" != "$current_checksum" ]; then
-        log_info "${component}: Dockerfile changed, rebuild required"
         return 1
     fi
 
@@ -142,7 +203,6 @@ mark_build_complete() {
 build_image() {
     local component=$1
     local image_name=$2
-    local build_time=$3
     local profile_arg=""
 
     if [ "$component" = "llamacpp" ] || [ "$component" = "vllm" ]; then
@@ -160,37 +220,34 @@ build_image() {
     [ -n "$PIP_CERT" ] && build_args="$build_args --build-arg PIP_CERT=$PIP_CERT"
 
     local attempt=1
-    while [ $attempt -le $((RETRY_COUNT + 1)) ]; do
-        log_info "Building ${component} (attempt ${attempt}/$((RETRY_COUNT + 1)))..."
+    local max_attempts=$((RETRY_COUNT + 1))
+    while [ $attempt -le $max_attempts ]; do
+        if [ $attempt -gt 1 ]; then
+            log_warning "${component}: retry ${attempt}/${max_attempts}"
+            sleep 2
+        fi
 
         local start_time=$(date +%s)
-        if [ "$NO_CACHE" = true ]; then
-            if docker compose $profile_arg build $build_args "$component" --no-cache; then
-                local end_time=$(date +%s)
-                local duration=$((end_time - start_time))
-                log_success "${component} built in ${duration}s"
-                mark_build_complete "$component"
-                return 0
-            fi
-        else
-            if docker compose $profile_arg build $build_args "$component"; then
-                local end_time=$(date +%s)
-                local duration=$((end_time - start_time))
-                log_success "${component} built in ${duration}s"
-                mark_build_complete "$component"
-                return 0
-            fi
+        local build_cmd="docker compose $profile_arg build $build_args $component"
+        [ "$NO_CACHE" = true ] && build_cmd="$build_cmd --no-cache"
+
+        if eval "$build_cmd" > "$BUILD_STATE_DIR/${component}.log" 2>&1; then
+            local duration=$(( $(date +%s) - start_time ))
+            mark_build_complete "$component"
+            # Store duration for summary
+            echo "$duration" > "$BUILD_STATE_DIR/${component}.duration"
+            return 0
         fi
 
-        if [ $attempt -le $RETRY_COUNT ]; then
-            log_warning "${component} build failed, retrying..."
-            attempt=$((attempt + 1))
-            sleep 2
-        else
-            log_error "${component} build failed after $((RETRY_COUNT + 1)) attempts"
-            return 1
-        fi
+        attempt=$((attempt + 1))
     done
+
+    log_error "${component} build failed after ${max_attempts} attempts"
+    echo ""
+    echo -e "  ${DIM}Last 15 lines of build log:${NC}"
+    tail -15 "$BUILD_STATE_DIR/${component}.log" 2>/dev/null | sed 's/^/    /'
+    echo ""
+    return 1
 }
 
 # Verify image exists
@@ -203,14 +260,19 @@ verify_image() {
     return 0
 }
 
-# Generate SSL certificates if they don't exist
-echo ">>> Checking SSL certificates..."
+# ============================================================================
+# PHASE 1: PREREQUISITES
+# ============================================================================
+
+section "Prerequisites"
+
+# SSL certificates
 if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server.crt" ]; then
-    echo ">>> Generating SSL certificates..."
+    start_spinner "Generating SSL certificates"
     mkdir -p "$PROJECT_DIR/certs"
     if [ -f "$PROJECT_DIR/certs/generate-certs.sh" ]; then
         chmod +x "$PROJECT_DIR/certs/generate-certs.sh"
-        "$PROJECT_DIR/certs/generate-certs.sh"
+        "$PROJECT_DIR/certs/generate-certs.sh" >/dev/null 2>&1
     else
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$PROJECT_DIR/certs/server.key" \
@@ -220,15 +282,15 @@ if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server
         chmod 600 "$PROJECT_DIR/certs/server.key"
         chmod 644 "$PROJECT_DIR/certs/server.crt"
     fi
+    stop_spinner
+    log_success "SSL certificates generated"
 else
-    echo ">>> SSL certificates already exist"
+    log_success "SSL certificates found"
 fi
 
 # ============================================================================
-# SSL INSPECTION DETECTION
+# PHASE 2: SSL INSPECTION DETECTION
 # ============================================================================
-# Detect corporate SSL inspection proxies that intercept HTTPS traffic.
-# If detected, automatically configure SSL bypass for web search features.
 
 SSL_INSPECTION_DETECTED=false
 ENV_FILE="$PROJECT_DIR/.env"
@@ -237,96 +299,78 @@ ENV_FILE="$PROJECT_DIR/.env"
 run_with_timeout() {
     local timeout_secs=$1
     shift
-
     if command -v timeout &> /dev/null; then
         timeout "$timeout_secs" "$@" 2>&1
     else
-        # Fallback: run command directly with shorter curl timeouts
         "$@" 2>&1
     fi
 }
 
 detect_ssl_inspection() {
-    echo ""
-    echo ">>> Checking for SSL inspection/corporate proxy..."
+    section "Network & SSL"
 
     local failures=0
     local inspection_indicators=0
     local service_failures=0
 
-    # Quick connectivity check first - if this fails, skip detailed tests
-    echo -n "    Quick connectivity check... "
+    # Quick connectivity check
+    start_spinner "Checking network connectivity"
     local quick_check
     quick_check=$(curl -sS --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" "https://google.com" 2>&1) || true
+    stop_spinner
+
     if [ "$quick_check" != "200" ] && [ "$quick_check" != "301" ] && [ "$quick_check" != "302" ]; then
-        echo "SKIPPED (network issues)"
-        log_warning "Network connectivity issues detected, skipping detailed SSL checks"
+        log_warning "Network issues detected — skipping SSL checks"
         return 0
     fi
-    echo "OK"
+    log_success "Network connectivity OK"
 
-    # Test sites that are commonly used and should have valid certificates
-    local test_urls=(
-        "https://curl.se"
-        "https://pypi.org"
-    )
-
+    # Test certificate validation
+    local test_urls=("https://curl.se" "https://pypi.org")
     for url in "${test_urls[@]}"; do
-        # Try to connect and check certificate
-        local result
-        local exit_code
+        local result exit_code
         result=$(curl -sS --connect-timeout 3 --max-time 5 "$url" -o /dev/null -w "%{ssl_verify_result}" 2>&1) || true
         exit_code=$?
 
         if [ $exit_code -ne 0 ]; then
             ((failures++))
-
-            # Check for specific SSL errors indicating inspection
             if echo "$result" | grep -qiE "(certificate|ssl|tls|verify|self.signed|unable to get local issuer)"; then
                 ((inspection_indicators++))
-                log_warning "SSL issue detected with $url"
+                log_warning "SSL issue with $url"
             fi
         fi
     done
 
-    # Also check if we can detect a corporate proxy certificate
-    # by comparing certificate issuers
+    # Check for corporate proxy certificate
     local cert_check
     cert_check=$(curl -sS --connect-timeout 3 -v https://google.com 2>&1 | grep -i "issuer:" | head -1) || true
     if echo "$cert_check" | grep -qiE "(zscaler|bluecoat|fortigate|paloalto|mcafee|symantec.*proxy|websense|barracuda|cisco.*umbrella|checkpoint)"; then
         ((inspection_indicators++))
-        log_warning "Corporate proxy certificate detected: $cert_check"
+        log_warning "Corporate proxy certificate: $(echo "$cert_check" | sed 's/.*issuer: //')"
     fi
 
-    # ========================================
-    # Extended service-specific tests (simplified for WSL/cross-platform)
-    # ========================================
-    echo ">>> Testing web search and API services..."
-
-    # Test 1: HuggingFace API (most important for model downloads)
-    echo -n "    Testing HuggingFace API... "
-    local hf_result
-    local hf_exit
-    hf_result=$(curl -sS --connect-timeout 5 --max-time 10 \
-        "https://huggingface.co/api/models?limit=1" 2>&1) || true
+    # Service-specific tests
+    start_spinner "Testing HuggingFace API"
+    local hf_result hf_exit
+    hf_result=$(curl -sS --connect-timeout 5 --max-time 10 "https://huggingface.co/api/models?limit=1" 2>&1) || true
     hf_exit=$?
+    stop_spinner
+
     if [ $hf_exit -ne 0 ]; then
         ((service_failures++))
-        echo "FAILED"
+        log_warning "HuggingFace API unreachable"
         if echo "$hf_result" | grep -qiE "(certificate|ssl|tls|verify)"; then
             ((inspection_indicators++))
-            log_warning "SSL issue with HuggingFace API"
         fi
     elif echo "$hf_result" | grep -q '"id"'; then
-        echo "OK"
+        log_success "HuggingFace API OK"
     else
-        echo "FAILED (invalid response)"
         ((service_failures++))
+        log_warning "HuggingFace API returned invalid response"
     fi
 
-    # Test 2: Python SSL (used by Scrapling) - only if Python is available
+    # Python SSL test
     if command -v python3 &> /dev/null; then
-        echo -n "    Testing Python SSL... "
         local py_result
         py_result=$(python3 -c "
 import sys
@@ -343,233 +387,258 @@ except Exception as e:
         if echo "$py_result" | grep -q "SSL_ERROR"; then
             ((service_failures++))
             ((inspection_indicators++))
-            echo "FAILED (SSL)"
             log_warning "Python SSL verification failed"
-        elif echo "$py_result" | grep -q "FAILED"; then
-            ((service_failures++))
-            echo "$py_result"
         elif echo "$py_result" | grep -q "OK"; then
-            echo "OK"
-        else
-            # Module not available or other issue
-            echo "SKIPPED"
+            log_success "Python SSL OK"
         fi
-    else
-        echo "    Testing Python SSL... SKIPPED (python3 not found)"
     fi
 
-    # Summary of service tests
-    if [ $service_failures -gt 0 ]; then
-        log_warning "$service_failures web service(s) failed connectivity tests"
-    fi
-
-    # Determine if SSL inspection is likely active
-    # Now includes service-specific failures in the decision
+    # Decision
     if [ $inspection_indicators -ge 1 ] || [ $failures -ge 2 ] || [ $service_failures -ge 2 ]; then
         SSL_INSPECTION_DETECTED=true
-        log_warning "SSL inspection/corporate proxy detected!"
-        log_info "Configuring automatic SSL bypass for web search features..."
+        echo ""
+        log_warning "SSL inspection / corporate proxy detected"
+        log_step "Configuring automatic SSL bypass"
 
-        # Update .env file with SSL bypass setting (docker-compose reads this)
+        # Update .env file
         if [ -f "$ENV_FILE" ]; then
-            # Remove existing NODE_TLS_REJECT_UNAUTHORIZED line if present
             grep -v "^NODE_TLS_REJECT_UNAUTHORIZED=" "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
             mv "$ENV_FILE.tmp" "$ENV_FILE"
         fi
         echo "# Auto-added by build.sh - SSL inspection detected" >> "$ENV_FILE"
         echo "NODE_TLS_REJECT_UNAUTHORIZED=0" >> "$ENV_FILE"
 
-        # Set environment variables for the build process
         export NODE_TLS_REJECT_UNAUTHORIZED=0
         export GIT_SSL_NO_VERIFY=true
         export PIP_TRUSTED_HOST="pypi.org pypi.python.org files.pythonhosted.org"
 
-        log_success "SSL bypass configured in .env file. Web search will work through corporate proxy."
+        # Disable BuildKit — it has its own HTTP client that ignores system CA certs,
+        # causing TLS failures even when docker pull works fine through the proxy.
+        export DOCKER_BUILDKIT=0
+        log_step "BuildKit disabled (legacy builder respects system CA bundle)"
+
+        log_success "SSL bypass configured"
     else
-        log_success "No SSL inspection detected. Standard SSL verification will be used."
+        log_success "No SSL inspection detected"
     fi
 }
-
-# Run SSL detection (can be skipped with --skip-ssl-check)
-SKIP_SSL_CHECK=false
-for arg in "$@"; do
-    if [ "$arg" = "--skip-ssl-check" ]; then
-        SKIP_SSL_CHECK=true
-        break
-    fi
-done
 
 if [ "$SKIP_SSL_CHECK" = false ]; then
     detect_ssl_inspection
 else
-    log_info "Skipping SSL inspection check (--skip-ssl-check)"
+    log_info "SSL check skipped (--skip-ssl-check)"
 fi
 
-echo ""
-log_info "Analyzing build requirements..."
+# ============================================================================
+# PHASE 3: ANALYZE BUILD REQUIREMENTS
+# ============================================================================
 
-# Check which images need to be built
+section "Build Plan"
+
 BUILD_LLAMACPP=false
 BUILD_VLLM=false
 BUILD_WEBAPP=false
 
-# Check llamacpp
-if [ "$NO_CACHE" = true ] || [ "$RESUME" = false ]; then
-    BUILD_LLAMACPP=true
-    log_info "llamacpp: rebuild requested"
-elif [[ -z $(docker images -q modelserver-llamacpp:latest 2>/dev/null) ]]; then
-    BUILD_LLAMACPP=true
-    log_info "llamacpp: image not found"
-elif ! is_build_complete "llamacpp"; then
-    BUILD_LLAMACPP=true
-    log_info "llamacpp: Dockerfile changed or incomplete build"
-else
-    log_info "llamacpp: image exists and up-to-date (skipping)"
+# Track reasons for the summary
+declare -A BUILD_REASON
+
+analyze_component() {
+    local component=$1
+    local image=$2
+
+    if [ "$NO_CACHE" = true ] || [ "$RESUME" = false ]; then
+        eval "BUILD_$(echo $component | tr '[:lower:]' '[:upper:]')=true"
+        BUILD_REASON[$component]="rebuild requested"
+        return
+    fi
+
+    if [[ -z $(docker images -q "$image" 2>/dev/null) ]]; then
+        eval "BUILD_$(echo $component | tr '[:lower:]' '[:upper:]')=true"
+        BUILD_REASON[$component]="image not found"
+        return
+    fi
+
+    if ! is_build_complete "$component"; then
+        eval "BUILD_$(echo $component | tr '[:lower:]' '[:upper:]')=true"
+        BUILD_REASON[$component]="Dockerfile changed"
+        return
+    fi
+
+    BUILD_REASON[$component]="up to date"
+}
+
+analyze_component "llamacpp" "modelserver-llamacpp:latest"
+analyze_component "vllm" "modelserver-vllm:latest"
+analyze_component "webapp" "modelserver-webapp:latest"
+
+# Display build plan
+for comp in llamacpp vllm webapp; do
+    reason="${BUILD_REASON[$comp]}"
+    needs_build=false
+    eval "needs_build=\$BUILD_$(echo $comp | tr '[:lower:]' '[:upper:]')"
+
+    if [ "$needs_build" = true ]; then
+        log_step "${comp}  ${DIM}${reason}${NC}"
+    else
+        log_success "${comp}  ${DIM}${reason}${NC}"
+    fi
+done
+
+# Check if anything needs building
+if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_VLLM" = false ] && [ "$BUILD_WEBAPP" = false ]; then
+    echo ""
+    log_success "All images up to date — nothing to build"
+    echo ""
+    echo -e "  ${DIM}Use --no-cache to force rebuild, or --no-resume to start fresh${NC}"
+    echo ""
+    exit 0
 fi
 
-# Check vllm
-if [ "$NO_CACHE" = true ] || [ "$RESUME" = false ]; then
-    BUILD_VLLM=true
-    log_info "vllm: rebuild requested"
-elif [[ -z $(docker images -q modelserver-vllm:latest 2>/dev/null) ]]; then
-    BUILD_VLLM=true
-    log_info "vllm: image not found"
-elif ! is_build_complete "vllm"; then
-    BUILD_VLLM=true
-    log_info "vllm: Dockerfile changed or incomplete build"
-else
-    log_info "vllm: image exists and up-to-date (skipping)"
-fi
+# ============================================================================
+# PHASE 4: BUILD IMAGES
+# ============================================================================
 
-# Check webapp
-if [ "$NO_CACHE" = true ] || [ "$RESUME" = false ]; then
-    BUILD_WEBAPP=true
-    log_info "webapp: rebuild requested"
-elif [[ -z $(docker images -q modelserver-webapp:latest 2>/dev/null) ]]; then
-    BUILD_WEBAPP=true
-    log_info "webapp: image not found"
-elif ! is_build_complete "webapp"; then
-    BUILD_WEBAPP=true
-    log_info "webapp: Dockerfile changed or incomplete build"
-else
-    log_info "webapp: image exists and up-to-date (skipping)"
-fi
-
-# Track overall build start time
 TOTAL_START_TIME=$(date +%s)
 
-# Build backend images in parallel if enabled
+# Build backend images
 if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
-    echo ""
-    log_info "Building backend images..."
+    section "Backend Images"
 
     if [ "$PARALLEL" = true ] && [ "$BUILD_LLAMACPP" = true ] && [ "$BUILD_VLLM" = true ]; then
-        log_info "Building llamacpp and vllm in parallel..."
+        log_info "Building llamacpp + vllm in parallel"
+        echo ""
 
         # Build both in background
         (
-            build_image "llamacpp" "modelserver-llamacpp:latest" "20-30 minutes"
+            build_image "llamacpp" "modelserver-llamacpp:latest"
             echo $? > "$BUILD_STATE_DIR/llamacpp.exit"
         ) &
         PID_LLAMACPP=$!
 
         (
-            build_image "vllm" "modelserver-vllm:latest" "10-15 minutes"
+            build_image "vllm" "modelserver-vllm:latest"
             echo $? > "$BUILD_STATE_DIR/vllm.exit"
         ) &
         PID_VLLM=$!
 
-        # Wait for both to complete
-        log_info "Waiting for parallel builds to complete..."
-        wait $PID_LLAMACPP
-        wait $PID_VLLM
+        # Wait with a spinner
+        start_spinner "Building backend images (this may take 20–30 minutes)"
+        wait $PID_LLAMACPP 2>/dev/null || true
+        wait $PID_VLLM 2>/dev/null || true
+        stop_spinner
 
-        # Check exit codes
+        # Check exit codes and report
         LLAMACPP_EXIT=$(cat "$BUILD_STATE_DIR/llamacpp.exit" 2>/dev/null || echo "1")
         VLLM_EXIT=$(cat "$BUILD_STATE_DIR/vllm.exit" 2>/dev/null || echo "1")
 
-        if [ "$LLAMACPP_EXIT" != "0" ]; then
+        if [ "$LLAMACPP_EXIT" = "0" ]; then
+            local_dur=$(cat "$BUILD_STATE_DIR/llamacpp.duration" 2>/dev/null || echo "?")
+            log_success "llamacpp  ${DIM}$(fmt_duration $local_dur)${NC}"
+        else
             log_error "llamacpp build failed"
+            echo ""
+            echo -e "  ${DIM}Build log: $BUILD_STATE_DIR/llamacpp.log${NC}"
+            tail -10 "$BUILD_STATE_DIR/llamacpp.log" 2>/dev/null | sed 's/^/    /'
             exit 1
         fi
 
-        if [ "$VLLM_EXIT" != "0" ]; then
+        if [ "$VLLM_EXIT" = "0" ]; then
+            local_dur=$(cat "$BUILD_STATE_DIR/vllm.duration" 2>/dev/null || echo "?")
+            log_success "vllm  ${DIM}$(fmt_duration $local_dur)${NC}"
+        else
             log_error "vllm build failed"
+            echo ""
+            echo -e "  ${DIM}Build log: $BUILD_STATE_DIR/vllm.log${NC}"
+            tail -10 "$BUILD_STATE_DIR/vllm.log" 2>/dev/null | sed 's/^/    /'
             exit 1
         fi
 
-        # Verify images
         verify_image "modelserver-llamacpp:latest" || exit 1
         verify_image "modelserver-vllm:latest" || exit 1
 
     else
         # Sequential builds
         if [ "$BUILD_LLAMACPP" = true ]; then
-            log_info "Building llamacpp (estimated: 20-30 minutes for CUDA compilation)..."
-            build_image "llamacpp" "modelserver-llamacpp:latest" "20-30 minutes" || exit 1
+            start_spinner "Building llamacpp (CUDA compilation, ~20–30 min)"
+            if build_image "llamacpp" "modelserver-llamacpp:latest"; then
+                stop_spinner
+                local_dur=$(cat "$BUILD_STATE_DIR/llamacpp.duration" 2>/dev/null || echo "?")
+                log_success "llamacpp  ${DIM}$(fmt_duration $local_dur)${NC}"
+            else
+                stop_spinner
+                exit 1
+            fi
             verify_image "modelserver-llamacpp:latest" || exit 1
         fi
 
         if [ "$BUILD_VLLM" = true ]; then
-            log_info "Building vllm (estimated: 10-15 minutes)..."
-            build_image "vllm" "modelserver-vllm:latest" "10-15 minutes" || exit 1
+            start_spinner "Building vllm (~10–15 min)"
+            if build_image "vllm" "modelserver-vllm:latest"; then
+                stop_spinner
+                local_dur=$(cat "$BUILD_STATE_DIR/vllm.duration" 2>/dev/null || echo "?")
+                log_success "vllm  ${DIM}$(fmt_duration $local_dur)${NC}"
+            else
+                stop_spinner
+                exit 1
+            fi
             verify_image "modelserver-vllm:latest" || exit 1
         fi
     fi
 fi
 
-# Build webapp (depends on backend images being available)
+# Build webapp
 if [ "$BUILD_WEBAPP" = true ]; then
-    echo ""
-    log_info "Building webapp image..."
-    build_image "webapp" "modelserver-webapp:latest" "2-5 minutes" || exit 1
+    section "Webapp Image"
+
+    start_spinner "Building webapp (~2–5 min)"
+    if build_image "webapp" "modelserver-webapp:latest"; then
+        stop_spinner
+        local_dur=$(cat "$BUILD_STATE_DIR/webapp.duration" 2>/dev/null || echo "?")
+        log_success "webapp  ${DIM}$(fmt_duration $local_dur)${NC}"
+    else
+        stop_spinner
+        exit 1
+    fi
     verify_image "modelserver-webapp:latest" || exit 1
 fi
 
+# ============================================================================
+# PHASE 5: CLEANUP & SUMMARY
+# ============================================================================
+
 if [ "$CLEANUP" = true ]; then
-    echo ""
-    log_info "Cleaning up Docker build cache..."
-    docker builder prune -af 2>&1 | tail -20
-    log_success "Cleanup complete"
+    start_spinner "Cleaning up build cache"
+    docker builder prune -af > /dev/null 2>&1 || true
+    stop_spinner
+    log_success "Build cache cleaned"
 fi
 
 # Calculate total build time
-TOTAL_END_TIME=$(date +%s)
-TOTAL_DURATION=$((TOTAL_END_TIME - TOTAL_START_TIME))
-MINUTES=$((TOTAL_DURATION / 60))
-SECONDS=$((TOTAL_DURATION % 60))
+TOTAL_DURATION=$(( $(date +%s) - TOTAL_START_TIME ))
+
+section "Summary"
+
+# Build results table
+for comp in llamacpp vllm webapp; do
+    needs_build=false
+    eval "needs_build=\$BUILD_$(echo $comp | tr '[:lower:]' '[:upper:]')"
+    dur_file="$BUILD_STATE_DIR/${comp}.duration"
+
+    if [ "$needs_build" = true ] && [ -f "$dur_file" ]; then
+        echo -e "  ${SYM_OK}  ${comp}  ${DIM}built in $(fmt_duration $(cat "$dur_file"))${NC}"
+    elif [ "$needs_build" = true ]; then
+        echo -e "  ${SYM_OK}  ${comp}  ${DIM}built${NC}"
+    else
+        echo -e "  ${SYM_SKIP}  ${comp}  ${DIM}skipped${NC}"
+    fi
+done
 
 echo ""
-echo "=========================================="
-echo "  Build Complete!"
-echo "=========================================="
-echo ""
-
-# Show what was built
-echo "Build Summary:"
-if [ "$BUILD_LLAMACPP" = true ]; then
-    echo "  ✓ llamacpp image built"
-else
-    echo "  - llamacpp image skipped (already exists)"
+echo -e "  ${DIM}Total time:  $(fmt_duration $TOTAL_DURATION)${NC}"
+echo -e "  ${DIM}Build mode:  $([ "$PARALLEL" = true ] && echo "parallel" || echo "sequential")${NC}"
+if [ "$SSL_INSPECTION_DETECTED" = true ]; then
+    echo -e "  ${DIM}SSL bypass:  enabled${NC}"
 fi
-
-if [ "$BUILD_VLLM" = true ]; then
-    echo "  ✓ vllm image built"
-else
-    echo "  - vllm image skipped (already exists)"
-fi
-
-if [ "$BUILD_WEBAPP" = true ]; then
-    echo "  ✓ webapp image built"
-else
-    echo "  - webapp image skipped (already exists)"
-fi
-
 echo ""
-echo "Total build time: ${MINUTES}m ${SECONDS}s"
-echo "Build mode: $([ "$PARALLEL" = true ] && echo "parallel" || echo "sequential")"
-echo "Build state saved in: $BUILD_STATE_DIR"
-echo ""
-echo "Next steps:"
-echo "  ./start.sh    # Start all services"
+echo -e "  Next: ${BOLD}./start.sh${NC}"
 echo ""

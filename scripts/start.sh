@@ -7,13 +7,71 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
-echo "=========================================="
-echo "  Model Server Start"
-echo "=========================================="
-echo ""
+# ============================================================================
+# TERMINAL OUTPUT HELPERS
+# ============================================================================
 
-# Check if core images exist
-echo ">>> Checking required Docker images..."
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+SYM_OK="${GREEN}✓${NC}"
+SYM_FAIL="${RED}✗${NC}"
+SYM_WARN="${YELLOW}!${NC}"
+SYM_ARROW="${CYAN}→${NC}"
+
+log_success() { echo -e "  ${SYM_OK}  $1"; }
+log_warning() { echo -e "  ${SYM_WARN}  ${YELLOW}$1${NC}"; }
+log_error()   { echo -e "  ${SYM_FAIL}  ${RED}$1${NC}"; }
+log_step()    { echo -e "  ${SYM_ARROW}  $1"; }
+
+section() {
+    echo ""
+    echo -e "  ${BOLD}${CYAN}$1${NC}"
+    echo -e "  ${DIM}$(printf '%.0s─' $(seq 1 ${#1}))${NC}"
+}
+
+SPINNER_PID=""
+start_spinner() {
+    local msg="$1"
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    (
+        local i=0
+        while true; do
+            printf "\r  ${CYAN}${frames[$i]}${NC}  %s" "$msg"
+            i=$(( (i + 1) % ${#frames[@]} ))
+            sleep 0.1
+        done
+    ) &
+    SPINNER_PID=$!
+    disown $SPINNER_PID 2>/dev/null
+}
+
+stop_spinner() {
+    if [ -n "$SPINNER_PID" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
+        kill "$SPINNER_PID" 2>/dev/null
+        wait "$SPINNER_PID" 2>/dev/null || true
+    fi
+    SPINNER_PID=""
+    printf "\r\033[K"
+}
+
+# Print banner
+echo ""
+echo -e "  ${BOLD}Model Server${NC}"
+echo -e "  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${NC}"
+
+# ============================================================================
+# CHECK PREREQUISITES
+# ============================================================================
+
+section "Preflight"
+
+# Check required Docker images
 REQUIRED_IMAGES=("modelserver-webapp:latest" "modelserver-llamacpp:latest" "modelserver-vllm:latest")
 MISSING_IMAGES=()
 
@@ -24,28 +82,24 @@ for img in "${REQUIRED_IMAGES[@]}"; do
 done
 
 if [ ${#MISSING_IMAGES[@]} -gt 0 ]; then
-    echo ""
-    echo "Error: Missing required Docker images:"
+    log_error "Missing Docker images:"
     for img in "${MISSING_IMAGES[@]}"; do
-        echo "  - $img"
+        echo -e "    ${DIM}$img${NC}"
     done
     echo ""
-    echo "Please run ./build.sh to build the missing images."
+    echo -e "  Run ${BOLD}./build.sh${NC} first."
     echo ""
     exit 1
 fi
+log_success "Docker images found"
 
-echo ">>> All required images found"
-
-# Ensure SSL certificates exist
-echo ""
-echo ">>> Checking SSL certificates..."
+# SSL certificates
 if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server.crt" ]; then
-    echo ">>> Generating SSL certificates..."
+    start_spinner "Generating SSL certificates"
     mkdir -p "$PROJECT_DIR/certs"
     if [ -f "$PROJECT_DIR/certs/generate-certs.sh" ]; then
         chmod +x "$PROJECT_DIR/certs/generate-certs.sh"
-        "$PROJECT_DIR/certs/generate-certs.sh"
+        "$PROJECT_DIR/certs/generate-certs.sh" >/dev/null 2>&1
     else
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$PROJECT_DIR/certs/server.key" \
@@ -54,46 +108,62 @@ if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server
             -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1" 2>/dev/null
         chmod 600 "$PROJECT_DIR/certs/server.key"
         chmod 644 "$PROJECT_DIR/certs/server.crt"
-        echo ">>> SSL certificates generated"
     fi
+    stop_spinner
+    log_success "SSL certificates generated"
 else
-    echo ">>> SSL certificates found"
+    log_success "SSL certificates found"
 fi
 
-echo ""
-echo ">>> Starting services..."
-docker compose up -d
+# ============================================================================
+# START SERVICES
+# ============================================================================
 
-echo ""
-echo ">>> Waiting for services to start..."
+section "Starting Services"
+
+start_spinner "Starting containers"
+docker compose up -d > /dev/null 2>&1
+stop_spinner
+log_success "Containers started"
 
 # Wait for webapp to be ready
-MAX_RETRIES=20
+start_spinner "Waiting for webapp to become ready"
+MAX_RETRIES=30
 RETRY_COUNT=0
+WEBAPP_READY=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    # Check if webapp is responding (HTTPS)
     if curl -sk https://localhost:3001/api/models 2>/dev/null > /dev/null; then
+        WEBAPP_READY=true
         break
     fi
     RETRY_COUNT=$((RETRY_COUNT + 1))
     sleep 2
 done
+stop_spinner
 
+if [ "$WEBAPP_READY" = true ]; then
+    log_success "Webapp ready"
+else
+    log_warning "Webapp may still be starting — check logs if it doesn't respond"
+fi
+
+# Check chat service
+if curl -sk https://localhost:3002/health 2>/dev/null | grep -q "ok"; then
+    log_success "Chat UI ready"
+fi
+
+# ============================================================================
+# SUMMARY
+# ============================================================================
+
+section "Ready"
+
+echo -e "  ${BOLD}Webapp${NC}   https://localhost:3001"
+echo -e "  ${BOLD}Chat UI${NC}  https://localhost:3002"
 echo ""
-echo "=========================================="
-echo "  Model Server Started!"
-echo "=========================================="
+echo -e "  ${DIM}Your browser will show a certificate warning — this is expected.${NC}"
 echo ""
-echo "Access URL:"
-echo ""
-echo "  Webapp: https://localhost:3001"
-echo ""
-echo "HTTP requests are automatically redirected to HTTPS."
-echo ""
-echo "Note: Your browser will show a security warning for the"
-echo "self-signed certificate - this is expected for local development."
-echo ""
-echo "View logs:    docker compose logs -f"
-echo "Stop:         ./stop.sh"
+echo -e "  ${DIM}Logs:   docker compose logs -f${NC}"
+echo -e "  ${DIM}Stop:   ./stop.sh${NC}"
 echo ""
