@@ -6528,17 +6528,24 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                         <CardContent>
                                             <SectionHeader
                                                 icon={<SearchIcon />}
-                                                title="Search HuggingFace"
-                                                subtitle="Find and download GGUF models from HuggingFace"
+                                                title="Discover Models"
+                                                subtitle="Search and download GGUF models from HuggingFace"
                                             />
-                                            <Box sx={{ display: 'flex', gap: 2, mt: 2 }}>
+                                            {/* Search input */}
+                                            <Box sx={{ display: 'flex', gap: 1.5, mt: 2 }}>
                                                 <TextField
                                                     fullWidth
-                                                    placeholder="Search for models (e.g., llama, mistral, qwen)..."
+                                                    placeholder="Search models... (e.g., llama, mistral, qwen, deepseek)"
                                                     value={searchQuery}
                                                     onChange={(e) => setSearchQuery(e.target.value)}
                                                     onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                                                     size="small"
+                                                    sx={{
+                                                        '& .MuiOutlinedInput-root': {
+                                                            borderRadius: 2,
+                                                            bgcolor: 'rgba(255,255,255,0.03)',
+                                                        },
+                                                    }}
                                                     InputProps={{
                                                         startAdornment: (
                                                             <InputAdornment position="start">
@@ -6551,50 +6558,64 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                     variant="contained"
                                                     onClick={handleSearch}
                                                     disabled={searching}
-                                                    sx={{ minWidth: 100 }}
+                                                    sx={{ minWidth: 100, borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
                                                 >
                                                     {searching ? <CircularProgress size={20} /> : 'Search'}
                                                 </Button>
                                             </Box>
 
-                                            {/* Search Filters */}
-                                            <Box sx={{ display: 'flex', gap: 2, mt: 2, alignItems: 'center', flexWrap: 'wrap' }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                    <FilterListIcon sx={{ color: 'text.secondary', fontSize: 18 }} />
-                                                    <Typography variant="body2" sx={{ color: 'text.secondary' }}>Filters:</Typography>
-                                                </Box>
-                                                <FormControl size="small" sx={{ minWidth: 140 }}>
-                                                    <InputLabel>Sort By</InputLabel>
-                                                    <Select
-                                                        value={searchSortBy}
-                                                        onChange={(e) => setSearchSortBy(e.target.value)}
-                                                        label="Sort By"
-                                                    >
-                                                        <MenuItem value="downloads">Most Downloads</MenuItem>
-                                                        <MenuItem value="downloads_asc">Fewest Downloads</MenuItem>
-                                                        <MenuItem value="likes">Most Likes</MenuItem>
-                                                        <MenuItem value="likes_asc">Fewest Likes</MenuItem>
-                                                        <MenuItem value="params">Largest First</MenuItem>
-                                                        <MenuItem value="params_asc">Smallest First</MenuItem>
-                                                        <MenuItem value="trending">Trending</MenuItem>
-                                                        <MenuItem value="newest">Newest</MenuItem>
-                                                        <MenuItem value="oldest">Oldest</MenuItem>
-                                                    </Select>
-                                                </FormControl>
-                                                <FormControl size="small" sx={{ minWidth: 120 }}>
-                                                    <InputLabel>Size</InputLabel>
-                                                    <Select
-                                                        value={searchSizeFilter}
-                                                        onChange={(e) => setSearchSizeFilter(e.target.value)}
-                                                        label="Size"
-                                                    >
-                                                        <MenuItem value="all">All Sizes</MenuItem>
-                                                        <MenuItem value="small">≤3B (Small)</MenuItem>
-                                                        <MenuItem value="medium">7B-13B (Medium)</MenuItem>
-                                                        <MenuItem value="large">14B-40B (Large)</MenuItem>
-                                                        <MenuItem value="xlarge">40B+ (XL)</MenuItem>
-                                                    </Select>
-                                                </FormControl>
+                                            {/* Sort pills */}
+                                            <Box sx={{ display: 'flex', gap: 0.75, mt: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary', mr: 0.5, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sort</Typography>
+                                                {[
+                                                    { value: 'downloads', label: 'Downloads' },
+                                                    { value: 'trending', label: 'Trending' },
+                                                    { value: 'likes', label: 'Likes' },
+                                                    { value: 'newest', label: 'Newest' },
+                                                    { value: 'params', label: 'Size \u2193' },
+                                                    { value: 'params_asc', label: 'Size \u2191' },
+                                                ].map(opt => (
+                                                    <Chip
+                                                        key={opt.value}
+                                                        label={opt.label}
+                                                        size="small"
+                                                        onClick={() => setSearchSortBy(opt.value)}
+                                                        sx={{
+                                                            height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
+                                                            bgcolor: searchSortBy === opt.value ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
+                                                            border: '1px solid',
+                                                            borderColor: searchSortBy === opt.value ? 'rgba(99,102,241,0.5)' : 'transparent',
+                                                            color: searchSortBy === opt.value ? 'primary.main' : 'text.secondary',
+                                                            '&:hover': { bgcolor: searchSortBy === opt.value ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                        }}
+                                                    />
+                                                ))}
+
+                                                <Box sx={{ width: 1, height: 16, borderLeft: '1px solid', borderColor: 'divider', mx: 0.5 }} />
+
+                                                <Typography variant="caption" sx={{ color: 'text.secondary', mr: 0.5, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: 0.5 }}>Size</Typography>
+                                                {[
+                                                    { value: 'all', label: 'All' },
+                                                    { value: 'small', label: '\u22643B' },
+                                                    { value: 'medium', label: '7-13B' },
+                                                    { value: 'large', label: '14-40B' },
+                                                    { value: 'xlarge', label: '40B+' },
+                                                ].map(opt => (
+                                                    <Chip
+                                                        key={opt.value}
+                                                        label={opt.label}
+                                                        size="small"
+                                                        onClick={() => setSearchSizeFilter(opt.value)}
+                                                        sx={{
+                                                            height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
+                                                            bgcolor: searchSizeFilter === opt.value ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
+                                                            border: '1px solid',
+                                                            borderColor: searchSizeFilter === opt.value ? 'rgba(168,85,247,0.5)' : 'transparent',
+                                                            color: searchSizeFilter === opt.value ? '#a855f7' : 'text.secondary',
+                                                            '&:hover': { bgcolor: searchSizeFilter === opt.value ? 'rgba(168,85,247,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                        }}
+                                                    />
+                                                ))}
                                             </Box>
 
                                             {/* Search Results */}
@@ -6682,25 +6703,54 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                         variant="outlined"
                                                                         sx={{
                                                                             cursor: 'pointer',
-                                                                            transition: 'all 0.15s',
+                                                                            position: 'relative',
+                                                                            transition: 'transform 0.2s, box-shadow 0.2s',
+                                                                            borderColor: 'rgba(255,255,255,0.08)',
+                                                                            '&::before': {
+                                                                                content: '""',
+                                                                                position: 'absolute',
+                                                                                inset: -1,
+                                                                                borderRadius: 'inherit',
+                                                                                padding: '1px',
+                                                                                background: 'linear-gradient(135deg, rgba(99,102,241,0) 0%, rgba(99,102,241,0) 100%)',
+                                                                                WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+                                                                                WebkitMaskComposite: 'xor',
+                                                                                maskComposite: 'exclude',
+                                                                                transition: 'background 0.3s',
+                                                                                pointerEvents: 'none',
+                                                                            },
                                                                             '&:hover': {
-                                                                                borderColor: 'primary.main',
-                                                                                bgcolor: 'rgba(99, 102, 241, 0.03)',
+                                                                                transform: 'translateY(-2px)',
+                                                                                boxShadow: '0 4px 20px rgba(99,102,241,0.15)',
+                                                                                borderColor: 'transparent',
+                                                                                '&::before': {
+                                                                                    background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #6366f1 100%)',
+                                                                                },
                                                                             },
                                                                         }}
                                                                         onClick={() => handleSelectModel(model.id)}
                                                                     >
                                                                         <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                                                                            <Typography variant="h6" sx={{
-                                                                                whiteSpace: 'nowrap',
-                                                                                overflow: 'hidden',
-                                                                                textOverflow: 'ellipsis',
-                                                                                mb: 0.5,
-                                                                                fontSize: '0.95rem'
-                                                                            }}>
-                                                                                {model.id.split('/')[1]}
-                                                                            </Typography>
-                                                                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+                                                                            {/* Header row: name + param size */}
+                                                                            <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, mb: 0.5 }}>
+                                                                                <Typography sx={{
+                                                                                    fontWeight: 600,
+                                                                                    whiteSpace: 'nowrap',
+                                                                                    overflow: 'hidden',
+                                                                                    textOverflow: 'ellipsis',
+                                                                                    fontSize: '0.92rem',
+                                                                                    lineHeight: 1.3,
+                                                                                }}>
+                                                                                    {model.id.split('/')[1]}
+                                                                                </Typography>
+                                                                                {paramSize && (
+                                                                                    <Chip label={paramSize} size="small" sx={{
+                                                                                        height: 22, fontWeight: 700, fontSize: '0.72rem', flexShrink: 0,
+                                                                                        bgcolor: 'rgba(168,85,247,0.15)', color: '#a855f7', border: 'none',
+                                                                                    }} />
+                                                                                )}
+                                                                            </Box>
+                                                                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1, fontSize: '0.7rem' }}>
                                                                                 {model.id.split('/')[0]}
                                                                             </Typography>
                                                                             {/* Model Type Tags */}
@@ -6713,50 +6763,42 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                                             size="small"
                                                                                             sx={{
                                                                                                 height: 18,
-                                                                                                fontSize: '0.65rem',
+                                                                                                fontSize: '0.62rem',
                                                                                                 bgcolor: tag.color,
                                                                                                 color: tag.textColor,
-                                                                                                fontWeight: 500
+                                                                                                fontWeight: 600,
+                                                                                                letterSpacing: 0.3,
                                                                                             }}
                                                                                         />
                                                                                     ))}
                                                                                 </Box>
                                                                             )}
-                                                                            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center' }}>
-                                                                                {paramSize && (
-                                                                                    <Chip label={paramSize} size="small" color="secondary" sx={{ height: 22 }} />
-                                                                                )}
+                                                                            {/* Stats row */}
+                                                                            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', color: 'text.secondary', fontSize: '0.7rem' }}>
                                                                                 <Tooltip title="Downloads" arrow>
-                                                                                    <Chip
-                                                                                        icon={<CloudDownloadIcon sx={{ fontSize: 12 }} />}
-                                                                                        label={formatNumber(model.downloads)}
-                                                                                        size="small"
-                                                                                        variant="outlined"
-                                                                                        sx={{ fontSize: '0.65rem', height: 22 }}
-                                                                                    />
+                                                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4 }}>
+                                                                                        <CloudDownloadIcon sx={{ fontSize: 13, opacity: 0.7 }} />
+                                                                                        <span>{formatNumber(model.downloads)}</span>
+                                                                                    </Box>
                                                                                 </Tooltip>
                                                                                 {model.likes > 0 && (
                                                                                     <Tooltip title="Likes" arrow>
-                                                                                        <Chip
-                                                                                            icon={<FavoriteIcon sx={{ fontSize: 12 }} />}
-                                                                                            label={formatNumber(model.likes)}
-                                                                                            size="small"
-                                                                                            variant="outlined"
-                                                                                            sx={{ fontSize: '0.65rem', height: 22 }}
-                                                                                        />
+                                                                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4 }}>
+                                                                                            <FavoriteIcon sx={{ fontSize: 12, opacity: 0.7 }} />
+                                                                                            <span>{formatNumber(model.likes)}</span>
+                                                                                        </Box>
                                                                                     </Tooltip>
                                                                                 )}
                                                                                 {model.contextLength && (
-                                                                                    <Tooltip title={model.contextEstimated ? "Estimated context length" : "Context length"} arrow>
-                                                                                        <Chip
-                                                                                            icon={<MemoryIcon sx={{ fontSize: 12 }} />}
-                                                                                            label={model.contextLength >= 1048576 ? `${(model.contextLength / 1048576).toFixed(0)}M` :
+                                                                                    <Tooltip title={model.contextEstimated ? "Estimated context" : "Context window"} arrow>
+                                                                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4, ml: 'auto',
+                                                                                            ...(model.contextEstimated && { opacity: 0.6, fontStyle: 'italic' })
+                                                                                        }}>
+                                                                                            <MemoryIcon sx={{ fontSize: 12, opacity: 0.7 }} />
+                                                                                            <span>{model.contextLength >= 1048576 ? `${(model.contextLength / 1048576).toFixed(0)}M` :
                                                                                                    model.contextLength >= 1024 ? `${Math.round(model.contextLength / 1024)}K` :
-                                                                                                   model.contextLength}
-                                                                                            size="small"
-                                                                                            variant="outlined"
-                                                                                            sx={{ fontSize: '0.65rem', height: 22, borderStyle: model.contextEstimated ? 'dashed' : 'solid' }}
-                                                                                        />
+                                                                                                   model.contextLength} ctx</span>
+                                                                                        </Box>
                                                                                     </Tooltip>
                                                                                 )}
                                                                             </Box>
@@ -6822,107 +6864,116 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                     </Card>
                                 </Grid>
 
-                                {/* Selected Model Files */}
+                                {/* Selected Model Files — Quantization Picker */}
                                 {selectedModelFiles.length > 0 && (
                                     <Grid item xs={12}>
                                         <Card>
                                             <CardContent>
                                                 <SectionHeader
                                                     icon={<CloudDownloadIcon />}
-                                                    title={`Select Quantization`}
+                                                    title="Select Quantization"
                                                     subtitle={ggufRepo}
                                                 />
-                                                {/* File Type Filter */}
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, mt: 2 }}>
-                                                    <FilterListIcon sx={{ color: 'text.secondary', fontSize: 20 }} />
-                                                    <ToggleButtonGroup
-                                                        value={fileFilter}
-                                                        exclusive
-                                                        onChange={(e, newFilter) => newFilter && setFileFilter(newFilter)}
-                                                        size="small"
-                                                    >
-                                                        <ToggleButton value="all">
-                                                            All ({selectedModelFiles.length})
-                                                        </ToggleButton>
-                                                        <ToggleButton value="single">
-                                                            Single ({selectedModelFiles.filter(f => !isSplitFile(f.rfilename)).length})
-                                                        </ToggleButton>
-                                                        <ToggleButton value="split">
-                                                            Split ({selectedModelFiles.filter(f => isSplitFile(f.rfilename)).length})
-                                                        </ToggleButton>
-                                                    </ToggleButtonGroup>
+                                                {/* File type filter pills */}
+                                                <Box sx={{ display: 'flex', gap: 0.75, mb: 2, mt: 2, alignItems: 'center' }}>
+                                                    {[
+                                                        { value: 'all', label: `All (${selectedModelFiles.length})` },
+                                                        { value: 'single', label: `Single (${selectedModelFiles.filter(f => !isSplitFile(f.rfilename)).length})` },
+                                                        { value: 'split', label: `Split (${selectedModelFiles.filter(f => isSplitFile(f.rfilename)).length})` },
+                                                    ].map(opt => (
+                                                        <Chip
+                                                            key={opt.value}
+                                                            label={opt.label}
+                                                            size="small"
+                                                            onClick={() => setFileFilter(opt.value)}
+                                                            sx={{
+                                                                height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
+                                                                bgcolor: fileFilter === opt.value ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
+                                                                border: '1px solid',
+                                                                borderColor: fileFilter === opt.value ? 'rgba(99,102,241,0.5)' : 'transparent',
+                                                                color: fileFilter === opt.value ? 'primary.main' : 'text.secondary',
+                                                                '&:hover': { bgcolor: fileFilter === opt.value ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                            }}
+                                                        />
+                                                    ))}
                                                 </Box>
-                                                <TableContainer sx={{ maxHeight: 350 }}>
-                                                    <Table size="small" stickyHeader>
-                                                        <TableHead>
-                                                            <TableRow>
-                                                                <TableCell>File</TableCell>
-                                                                <TableCell>Quant</TableCell>
-                                                                <TableCell>Type</TableCell>
-                                                                <TableCell>Size</TableCell>
-                                                                <TableCell align="right">Action</TableCell>
-                                                            </TableRow>
-                                                        </TableHead>
-                                                        <TableBody>
-                                                            {selectedModelFiles
-                                                                .filter(file => {
-                                                                    if (fileFilter === 'all') return true;
-                                                                    if (fileFilter === 'single') return !isSplitFile(file.rfilename);
-                                                                    if (fileFilter === 'split') return isSplitFile(file.rfilename);
-                                                                    return true;
-                                                                })
-                                                                .map(file => {
-                                                                const quant = extractQuantization(file.rfilename);
-                                                                const isSelected = ggufFile === file.rfilename;
-                                                                const isSplit = isSplitFile(file.rfilename);
-                                                                const splitInfo = getSplitInfo(file.rfilename);
-                                                                return (
-                                                                    <TableRow
-                                                                        key={file.rfilename}
-                                                                        hover
-                                                                        selected={isSelected}
-                                                                        sx={{ cursor: 'pointer' }}
-                                                                        onClick={() => handleSelectGGUFFile(file.rfilename)}
-                                                                    >
-                                                                        <TableCell>
-                                                                            <Typography variant="body2" sx={{
-                                                                                maxWidth: 300,
-                                                                                whiteSpace: 'nowrap',
-                                                                                overflow: 'hidden',
-                                                                                textOverflow: 'ellipsis'
-                                                                            }}>
-                                                                                {file.rfilename}
+                                                {/* Quantization card grid */}
+                                                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 1.5, maxHeight: 400, overflow: 'auto', pr: 0.5 }}>
+                                                    {selectedModelFiles
+                                                        .filter(file => {
+                                                            if (fileFilter === 'all') return true;
+                                                            if (fileFilter === 'single') return !isSplitFile(file.rfilename);
+                                                            if (fileFilter === 'split') return isSplitFile(file.rfilename);
+                                                            return true;
+                                                        })
+                                                        .map(file => {
+                                                        const quant = extractQuantization(file.rfilename);
+                                                        const isSelected = ggufFile === file.rfilename;
+                                                        const isSplit = isSplitFile(file.rfilename);
+                                                        const splitInfo = getSplitInfo(file.rfilename);
+                                                        return (
+                                                            <Box
+                                                                key={file.rfilename}
+                                                                onClick={() => handleSelectGGUFFile(file.rfilename)}
+                                                                sx={{
+                                                                    p: 1.5,
+                                                                    borderRadius: 2,
+                                                                    cursor: 'pointer',
+                                                                    border: '1.5px solid',
+                                                                    borderColor: isSelected ? 'primary.main' : 'rgba(255,255,255,0.08)',
+                                                                    bgcolor: isSelected ? 'rgba(99,102,241,0.08)' : 'rgba(255,255,255,0.02)',
+                                                                    transition: 'all 0.2s',
+                                                                    position: 'relative',
+                                                                    '&:hover': {
+                                                                        borderColor: isSelected ? 'primary.main' : 'rgba(99,102,241,0.4)',
+                                                                        bgcolor: isSelected ? 'rgba(99,102,241,0.1)' : 'rgba(99,102,241,0.04)',
+                                                                        transform: 'translateY(-1px)',
+                                                                        boxShadow: '0 2px 12px rgba(99,102,241,0.1)',
+                                                                    },
+                                                                }}
+                                                            >
+                                                                {/* Top row: quant badge + size */}
+                                                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75 }}>
+                                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                                                                        {quant ? (
+                                                                            <Typography sx={{ fontWeight: 700, fontSize: '0.85rem', color: isSelected ? 'primary.main' : 'text.primary', fontFamily: '"Fira Code", monospace' }}>
+                                                                                {quant}
                                                                             </Typography>
-                                                                        </TableCell>
-                                                                        <TableCell>
-                                                                            {quant && <Chip label={quant} size="small" color="primary" variant="outlined" />}
-                                                                        </TableCell>
-                                                                        <TableCell>
-                                                                            {isSplit ? (
-                                                                                <Chip
-                                                                                    label={`Part ${splitInfo?.part}/${splitInfo?.total}`}
-                                                                                    size="small"
-                                                                                    color="warning"
-                                                                                    variant="outlined"
-                                                                                />
-                                                                            ) : (
-                                                                                <Chip label="Single" size="small" color="success" variant="outlined" />
-                                                                            )}
-                                                                        </TableCell>
-                                                                        <TableCell>{formatFileSize(file.size)}</TableCell>
-                                                                        <TableCell align="right">
-                                                                            {isSelected ? (
-                                                                                <CheckCircleIcon sx={{ color: 'success.main', fontSize: 20 }} />
-                                                                            ) : (
-                                                                                <Button size="small" variant="text">Select</Button>
-                                                                            )}
-                                                                        </TableCell>
-                                                                    </TableRow>
-                                                                );
-                                                            })}
-                                                        </TableBody>
-                                                    </Table>
-                                                </TableContainer>
+                                                                        ) : (
+                                                                            <Typography sx={{ fontWeight: 600, fontSize: '0.78rem', color: 'text.secondary' }}>
+                                                                                GGUF
+                                                                            </Typography>
+                                                                        )}
+                                                                        {isSplit && (
+                                                                            <Chip label={`${splitInfo?.part}/${splitInfo?.total}`} size="small" sx={{
+                                                                                height: 16, fontSize: '0.58rem', fontWeight: 600,
+                                                                                bgcolor: 'rgba(245,158,11,0.15)', color: '#f59e0b',
+                                                                            }} />
+                                                                        )}
+                                                                    </Box>
+                                                                    <Typography sx={{ fontSize: '0.78rem', fontWeight: 600, color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
+                                                                        {formatFileSize(file.size)}
+                                                                    </Typography>
+                                                                </Box>
+                                                                {/* Filename */}
+                                                                <Typography sx={{
+                                                                    fontSize: '0.68rem', color: 'text.secondary', lineHeight: 1.3,
+                                                                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                                                }}>
+                                                                    {file.rfilename}
+                                                                </Typography>
+                                                                {/* Selection indicator */}
+                                                                {isSelected && (
+                                                                    <CheckCircleIcon sx={{
+                                                                        position: 'absolute', top: 6, right: 6,
+                                                                        fontSize: 16, color: 'primary.main',
+                                                                    }} />
+                                                                )}
+                                                            </Box>
+                                                        );
+                                                    })}
+                                                </Box>
+                                                {/* Download button */}
                                                 {ggufFile && (
                                                     <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
                                                         <Button
@@ -6931,6 +6982,7 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             onClick={handlePullModel}
                                                             disabled={loading}
                                                             fullWidth
+                                                            sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 600, py: 1 }}
                                                         >
                                                             {loading ? 'Downloading...' : `Download ${ggufFile}`}
                                                         </Button>
