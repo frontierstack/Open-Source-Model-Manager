@@ -9537,8 +9537,8 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                 return true;
                             });
                             return (
-                            <Box sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 220px)', gap: 2 }}>
-                            <Card sx={{ flex: 1, minHeight: 200, display: 'flex', flexDirection: 'column' }}>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <Card sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 460px)', minHeight: 320 }}>
                                 <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 2 }}>
                                     {/* Header */}
                                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
