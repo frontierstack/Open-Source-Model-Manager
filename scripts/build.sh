@@ -250,52 +250,58 @@ build_image() {
     return 1
 }
 
-# Spinner + periodic checkpoint monitor for a build running in the background.
-# Tails the log file and prints key milestones under the spinner.
-build_with_progress() {
-    local component=$1
-    local label=$2
-    local log_file="$BUILD_STATE_DIR/${component}.log"
-    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local last_checkpoint=""
+# Spinner with periodic checkpoint monitoring.
+# Watches one or more log files and prints key milestones below the spinner.
+# Usage: start_build_spinner "label" logfile1 [logfile2 ...]
+#   Stores PID in BUILD_SPINNER_PID. Call stop_build_spinner to end.
+BUILD_SPINNER_PID=""
+CHECKPOINT_PATTERNS='downloading cuda|installing cuda|compiling llama|cmake|make -j|pip install|installing vllm|npm install|npm run build|npm ci|webpack|apt-get install|apt-get update|exporting layers|exporting manifest|DONE [0-9]'
 
-    # Monitor loop: spinner + checkpoint extraction
+start_build_spinner() {
+    local label="$1"
+    shift
+    local log_files=("$@")
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
     (
         local i=0
-        local check_msg="$label"
+        local last_checkpoint=""
+        local tick=0
         while true; do
-            printf "\r  ${CYAN}${frames[$i]}${NC}  %s" "$check_msg"
+            printf "\r  \033[0;36m${frames[$i]}\033[0m  %s" "$label"
             i=$(( (i + 1) % ${#frames[@]} ))
+            tick=$((tick + 1))
 
-            # Every ~2s, scan log for latest milestone
-            if [ -f "$log_file" ]; then
-                local latest
-                latest=$(grep -oiE '(downloading cuda|installing cuda|compiling llama\.cpp|cmake|make -j|pip install|installing vllm|npm install|npm run build|webpack|apt-get install|COPY|exporting layers|exporting manifest|Step [0-9]+/[0-9]+|\[[0-9]+/[0-9]+\][[:space:]])' "$log_file" 2>/dev/null | tail -1)
-                if [ -n "$latest" ] && [ "$latest" != "$last_checkpoint" ]; then
-                    last_checkpoint="$latest"
-                    # Clean up and capitalize
-                    local clean
-                    clean=$(echo "$latest" | sed 's/\[/[/' | head -c 50)
-                    printf "\r\033[K  ${CYAN}${frames[$i]}${NC}  ${label}  ${DIM}— ${clean}${NC}\n"
-                fi
+            # Check logs every ~20 ticks (~3s at 0.15s interval)
+            if [ $((tick % 20)) -eq 0 ]; then
+                for lf in "${log_files[@]}"; do
+                    if [ -f "$lf" ]; then
+                        local latest
+                        latest=$(grep -oiE "$CHECKPOINT_PATTERNS" "$lf" 2>/dev/null | tail -1)
+                        if [ -n "$latest" ] && [ "$latest" != "$last_checkpoint" ]; then
+                            last_checkpoint="$latest"
+                            local clean
+                            clean=$(echo "$latest" | head -c 40)
+                            # Print checkpoint below spinner, then redraw spinner on next tick
+                            printf "\r\033[K  \033[0;36m${frames[$i]}\033[0m  %s  \033[2m— %s\033[0m\n" "$label" "$clean"
+                        fi
+                    fi
+                done
             fi
 
             sleep 0.15
         done
     ) &
-    local monitor_pid=$!
-    disown $monitor_pid 2>/dev/null
-
-    # Return the monitor PID so caller can stop it
-    echo "$monitor_pid"
+    BUILD_SPINNER_PID=$!
+    disown $BUILD_SPINNER_PID 2>/dev/null
 }
 
-stop_progress() {
-    local pid=$1
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null || true
+stop_build_spinner() {
+    if [ -n "$BUILD_SPINNER_PID" ] && kill -0 "$BUILD_SPINNER_PID" 2>/dev/null; then
+        kill "$BUILD_SPINNER_PID" 2>/dev/null
+        wait "$BUILD_SPINNER_PID" 2>/dev/null || true
     fi
+    BUILD_SPINNER_PID=""
     printf "\r\033[K"
 }
 
@@ -557,6 +563,10 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
         log_info "Building llamacpp + vllm in parallel"
         echo ""
 
+        # Clear any stale logs so the checkpoint monitor starts fresh
+        > "$BUILD_STATE_DIR/llamacpp.log" 2>/dev/null || true
+        > "$BUILD_STATE_DIR/vllm.log" 2>/dev/null || true
+
         # Build both in background
         (
             build_image "llamacpp" "modelserver-llamacpp:latest"
@@ -570,11 +580,12 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
         ) &
         PID_VLLM=$!
 
-        # Spinner with checkpoint monitoring
-        start_spinner "Building backend images (this may take 20–30 minutes)"
+        # Spinner monitoring both log files for checkpoints
+        start_build_spinner "Building backend images (~20–30 min)" \
+            "$BUILD_STATE_DIR/llamacpp.log" "$BUILD_STATE_DIR/vllm.log"
         wait $PID_LLAMACPP 2>/dev/null || true
         wait $PID_VLLM 2>/dev/null || true
-        stop_spinner
+        stop_build_spinner
 
         echo ""
 
@@ -610,26 +621,28 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
     else
         # Sequential builds
         if [ "$BUILD_LLAMACPP" = true ]; then
-            MONITOR_PID=$(build_with_progress "llamacpp" "Building llamacpp (~20–30 min)")
+            > "$BUILD_STATE_DIR/llamacpp.log" 2>/dev/null || true
+            start_build_spinner "Building llamacpp (~20–30 min)" "$BUILD_STATE_DIR/llamacpp.log"
             if build_image "llamacpp" "modelserver-llamacpp:latest"; then
-                stop_progress "$MONITOR_PID"
+                stop_build_spinner
                 local_dur=$(cat "$BUILD_STATE_DIR/llamacpp.duration" 2>/dev/null || echo "?")
                 log_success "llamacpp  ${DIM}$(fmt_duration $local_dur)${NC}"
             else
-                stop_progress "$MONITOR_PID"
+                stop_build_spinner
                 exit 1
             fi
             verify_image "modelserver-llamacpp:latest" || exit 1
         fi
 
         if [ "$BUILD_VLLM" = true ]; then
-            MONITOR_PID=$(build_with_progress "vllm" "Building vllm (~10–15 min)")
+            > "$BUILD_STATE_DIR/vllm.log" 2>/dev/null || true
+            start_build_spinner "Building vllm (~10–15 min)" "$BUILD_STATE_DIR/vllm.log"
             if build_image "vllm" "modelserver-vllm:latest"; then
-                stop_progress "$MONITOR_PID"
+                stop_build_spinner
                 local_dur=$(cat "$BUILD_STATE_DIR/vllm.duration" 2>/dev/null || echo "?")
                 log_success "vllm  ${DIM}$(fmt_duration $local_dur)${NC}"
             else
-                stop_progress "$MONITOR_PID"
+                stop_build_spinner
                 exit 1
             fi
             verify_image "modelserver-vllm:latest" || exit 1
@@ -641,13 +654,14 @@ fi
 if [ "$BUILD_WEBAPP" = true ]; then
     section "Webapp Image"
 
-    MONITOR_PID=$(build_with_progress "webapp" "Building webapp (~2–5 min)")
+    > "$BUILD_STATE_DIR/webapp.log" 2>/dev/null || true
+    start_build_spinner "Building webapp (~2–5 min)" "$BUILD_STATE_DIR/webapp.log"
     if build_image "webapp" "modelserver-webapp:latest"; then
-        stop_progress "$MONITOR_PID"
+        stop_build_spinner
         local_dur=$(cat "$BUILD_STATE_DIR/webapp.duration" 2>/dev/null || echo "?")
         log_success "webapp  ${DIM}$(fmt_duration $local_dur)${NC}"
     else
-        stop_progress "$MONITOR_PID"
+        stop_build_spinner
         exit 1
     fi
     verify_image "modelserver-webapp:latest" || exit 1
