@@ -1,6 +1,15 @@
 #!/bin/bash
 set -e
 
+# Require root / sudo for Docker access
+if [ "$(id -u)" -ne 0 ]; then
+    echo ""
+    echo "  This script requires root privileges (for Docker)."
+    echo "  Run with:  sudo $0 $*"
+    echo ""
+    exit 1
+fi
+
 # Resolve symlinks to get actual script location
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
@@ -255,7 +264,31 @@ build_image() {
 # Usage: start_build_spinner "label" logfile1 [logfile2 ...]
 #   Stores PID in BUILD_SPINNER_PID. Call stop_build_spinner to end.
 BUILD_SPINNER_PID=""
-CHECKPOINT_PATTERNS='downloading cuda|installing cuda|compiling llama|cmake|make -j|pip install|installing vllm|npm install|npm run build|npm ci|webpack|apt-get install|apt-get update|exporting layers|exporting manifest|DONE [0-9]'
+
+# Maps raw grep matches to friendly checkpoint descriptions
+friendly_checkpoint() {
+    local raw="$1"
+    case "$(echo "$raw" | tr '[:upper:]' '[:lower:]')" in
+        *"downloading cuda"*)  echo "Downloading CUDA toolkit" ;;
+        *"installing cuda"*)   echo "Installing CUDA toolkit" ;;
+        *"compiling llama"*)   echo "Compiling llama.cpp (CUDA)" ;;
+        *"cmake"*)             echo "Running CMake" ;;
+        *"make -j"*)           echo "Compiling native code" ;;
+        *"pip install"*)       echo "Installing Python packages" ;;
+        *"installing vllm"*)   echo "Installing vLLM" ;;
+        *"npm ci"*)            echo "Installing npm packages" ;;
+        *"npm install"*)       echo "Installing npm packages" ;;
+        *"npm run build"*)     echo "Building frontend bundle" ;;
+        *"webpack"*)           echo "Bundling with webpack" ;;
+        *"apt-get update"*)    echo "Updating package lists" ;;
+        *"apt-get install"*)   echo "Installing system packages" ;;
+        *"exporting layers"*)  echo "Exporting image layers" ;;
+        *"exporting manifest"*) echo "Finalizing image" ;;
+        *)                     echo "$raw" ;;
+    esac
+}
+
+CHECKPOINT_PATTERNS='downloading cuda|installing cuda|compiling llama|cmake|make -j|pip install|installing vllm|npm install|npm run build|npm ci|webpack|apt-get install|apt-get update|exporting layers|exporting manifest'
 
 start_build_spinner() {
     local label="$1"
@@ -267,12 +300,13 @@ start_build_spinner() {
         local i=0
         local last_checkpoint=""
         local tick=0
+        local display="$label"
         while true; do
-            printf "\r  \033[0;36m${frames[$i]}\033[0m  %s" "$label"
+            printf "\r\033[K  \033[0;36m${frames[$i]}\033[0m  %s" "$display"
             i=$(( (i + 1) % ${#frames[@]} ))
             tick=$((tick + 1))
 
-            # Check logs every ~20 ticks (~3s at 0.15s interval)
+            # Check logs every ~20 ticks (~3s)
             if [ $((tick % 20)) -eq 0 ]; then
                 for lf in "${log_files[@]}"; do
                     if [ -f "$lf" ]; then
@@ -280,10 +314,7 @@ start_build_spinner() {
                         latest=$(grep -oiE "$CHECKPOINT_PATTERNS" "$lf" 2>/dev/null | tail -1)
                         if [ -n "$latest" ] && [ "$latest" != "$last_checkpoint" ]; then
                             last_checkpoint="$latest"
-                            local clean
-                            clean=$(echo "$latest" | head -c 40)
-                            # Print checkpoint below spinner, then redraw spinner on next tick
-                            printf "\r\033[K  \033[0;36m${frames[$i]}\033[0m  %s  \033[2m— %s\033[0m\n" "$label" "$clean"
+                            display=$(friendly_checkpoint "$latest")
                         fi
                     fi
                 done

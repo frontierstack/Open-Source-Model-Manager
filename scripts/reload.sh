@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# Require root / sudo for Docker access
+if [ "$(id -u)" -ne 0 ]; then
+    echo ""
+    echo "  This script requires root privileges (for Docker)."
+    echo "  Run with:  sudo $0 $*"
+    echo ""
+    exit 1
+fi
+
 # Resolve symlinks to get actual script location
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
