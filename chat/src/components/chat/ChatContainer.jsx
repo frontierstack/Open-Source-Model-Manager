@@ -632,22 +632,32 @@ export default function ChatContainer({
         }
 
         // Build message with attachments
+        // Each file is clearly labeled with index and filename so the model
+        // can reference all uploaded files, not just the last one.
         let fullContent = content;
         if (attachedFiles && attachedFiles.length > 0) {
             const textParts = [];
+            let fileIndex = 0;
 
             // Include non-image file content
             attachedFiles
                 .filter(att => att.type !== 'image')
-                .forEach(att => textParts.push(`--- ${att.filename} ---\n${att.content}\n`));
+                .forEach(att => {
+                    fileIndex++;
+                    textParts.push(`=== FILE ${fileIndex}: ${att.filename} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
+                });
 
             // Include OCR text from images (if available)
             attachedFiles
                 .filter(att => att.type === 'image' && att.content)
-                .forEach(att => textParts.push(`--- ${att.filename} ---\n${att.content}\n`));
+                .forEach(att => {
+                    fileIndex++;
+                    textParts.push(`=== FILE ${fileIndex}: ${att.filename} (OCR) ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
+                });
 
             if (textParts.length > 0) {
-                fullContent = `${textParts.join('\n')}\n---\n\n${content}`;
+                const header = `The user has uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. Read and consider ALL files below:\n\n`;
+                fullContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
             }
         }
         // Collect tool-call metadata across this turn so we can attach it to
@@ -1964,6 +1974,7 @@ export default function ChatContainer({
                                 onAddAttachment={addAttachment}
                                 onRemoveAttachment={removeAttachment}
                                 onClearAllAttachments={clearAttachments}
+                                onUploadError={(msg) => showSnackbar(msg, 'error')}
                                 systemPrompts={systemPrompts}
                                 selectedSystemPromptId={settings.selectedSystemPromptId}
                                 onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
@@ -2006,6 +2017,7 @@ export default function ChatContainer({
                                 onAddAttachment={addAttachment}
                                 onRemoveAttachment={removeAttachment}
                                 onClearAllAttachments={clearAttachments}
+                                onUploadError={(msg) => showSnackbar(msg, 'error')}
                                 systemPrompts={systemPrompts}
                                 selectedSystemPromptId={settings.selectedSystemPromptId}
                                 onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}

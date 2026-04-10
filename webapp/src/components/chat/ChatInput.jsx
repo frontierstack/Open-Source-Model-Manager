@@ -26,6 +26,7 @@ export default function ChatInput({
     attachments = [],
     onAddAttachment,
     onRemoveAttachment,
+    onUploadError,
     webSearchEnabled = false,
     onWebSearchToggle,
 }) {
@@ -58,47 +59,82 @@ export default function ChatInput({
     const handleFileSelect = useCallback(async (files) => {
         if (!files || files.length === 0) return;
 
-        for (const file of Array.from(files)) {
-            // Accept all file types
+        const fileArray = Array.from(files);
+
+        // Helper: read file as base64 (promisified FileReader)
+        const readAsBase64 = (file) => new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = async (e) => {
-                const base64 = e.target.result.split(',')[1];
-
-                try {
-                    const response = await fetch('/api/chat/upload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'include',
-                        body: JSON.stringify({
-                            filename: file.name,
-                            content: base64,
-                            mimeType: file.type,
-                        }),
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        onAddAttachment({
-                            id: crypto.randomUUID(),
-                            filename: file.name,
-                            type: data.type,
-                            content: data.content,
-                            dataUrl: data.dataUrl,
-                            charCount: data.charCount,
-                            pageCount: data.pageCount,
-                            estimatedTokens: data.estimatedTokens,
-                            requiresChunking: data.requiresChunking,
-                            totalChunks: data.totalChunks,
-                            ocrPerformed: data.ocrPerformed,
-                        });
-                    }
-                } catch (error) {
-                    console.error('File upload error:', error);
-                }
-            };
+            reader.onload = (e) => resolve(e.target.result.split(',')[1]);
+            reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
             reader.readAsDataURL(file);
+        });
+
+        // Helper: upload a single file with one retry on 401/5xx
+        const uploadFile = async (base64, file) => {
+            const doFetch = () => fetch('/api/chat/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    filename: file.name,
+                    content: base64,
+                    mimeType: file.type,
+                }),
+            });
+
+            let response = await doFetch();
+
+            // Retry once on 401 (session race) or 5xx (transient server error)
+            if (response.status === 401 || response.status >= 500) {
+                await new Promise(r => setTimeout(r, 500));
+                response = await doFetch();
+            }
+
+            return response;
+        };
+
+        // Process files sequentially to avoid session race conditions
+        let failedFiles = [];
+        for (const file of fileArray) {
+            try {
+                const base64 = await readAsBase64(file);
+                const response = await uploadFile(base64, file);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    onAddAttachment({
+                        id: crypto.randomUUID(),
+                        filename: file.name,
+                        type: data.type,
+                        content: data.content,
+                        dataUrl: data.dataUrl,
+                        charCount: data.charCount,
+                        pageCount: data.pageCount,
+                        estimatedTokens: data.estimatedTokens,
+                        requiresChunking: data.requiresChunking,
+                        totalChunks: data.totalChunks,
+                        ocrPerformed: data.ocrPerformed,
+                    });
+                } else {
+                    const errBody = await response.json().catch(() => ({}));
+                    const reason = errBody.error || `HTTP ${response.status}`;
+                    console.error(`Upload failed for ${file.name}: ${reason}`);
+                    failedFiles.push(file.name);
+                }
+            } catch (error) {
+                console.error(`File upload error for ${file.name}:`, error);
+                failedFiles.push(file.name);
+            }
         }
-    }, [onAddAttachment]);
+
+        // Report failures to the user
+        if (failedFiles.length > 0 && onUploadError) {
+            const msg = failedFiles.length === 1
+                ? `Failed to upload: ${failedFiles[0]}`
+                : `Failed to upload ${failedFiles.length} files: ${failedFiles.join(', ')}`;
+            onUploadError(msg);
+        }
+    }, [onAddAttachment, onUploadError]);
 
     // Convert large pasted text or clipboard images into file attachments
     const PASTE_AS_FILE_THRESHOLD = 500; // characters

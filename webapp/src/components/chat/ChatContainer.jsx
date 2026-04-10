@@ -374,22 +374,28 @@ export default function ChatContainer({
         }
 
         // Build message with attachments
-        // Separate text-based attachments from images
+        // Each file is clearly labeled with index and filename so the model
+        // can reference all uploaded files, not just the last one.
         const textAttachments = attachedFiles?.filter(att => att.type !== 'image') || [];
         const imageAttachments = attachedFiles?.filter(att => att.type === 'image') || [];
 
-        // Build text content with embedded text attachments + OCR text from images
         let fullTextContent = content;
         const textParts = [];
+        let fileIndex = 0;
         if (textAttachments.length > 0) {
-            textAttachments.forEach(att => textParts.push(`--- ${att.filename} ---\n${att.content}\n`));
+            textAttachments.forEach(att => {
+                fileIndex++;
+                textParts.push(`=== FILE ${fileIndex}: ${att.filename} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
+            });
         }
         // Include OCR text from images when available
         imageAttachments.filter(att => att.content).forEach(att => {
-            textParts.push(`--- ${att.filename} ---\n${att.content}\n`);
+            fileIndex++;
+            textParts.push(`=== FILE ${fileIndex}: ${att.filename} (OCR) ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
         });
         if (textParts.length > 0) {
-            fullTextContent = `${textParts.join('\n')}\n---\n\n${content}`;
+            const header = `The user has uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. Read and consider ALL files below:\n\n`;
+            fullTextContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
         }
 
         // Build API content - use vision format if there are images, otherwise string
@@ -853,6 +859,7 @@ export default function ChatContainer({
                     attachments={attachments}
                     onAddAttachment={addAttachment}
                     onRemoveAttachment={removeAttachment}
+                    onUploadError={(msg) => showSnackbar(msg, 'error')}
                     webSearchEnabled={settings.webSearchEnabled}
                     onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
                 />

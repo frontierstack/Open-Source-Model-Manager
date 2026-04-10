@@ -58,6 +58,7 @@ export default function ChatInput({
     onAddAttachment,
     onRemoveAttachment,
     onClearAllAttachments,
+    onUploadError,
     systemPrompts = [],
     selectedSystemPromptId,
     onSystemPromptSelect,
@@ -221,52 +222,86 @@ export default function ChatInput({
         }));
         setUploadingFiles(prev => [...prev, ...uploadingIds]);
 
+        // Helper: read file as base64 (promisified FileReader)
+        const readAsBase64 = (file) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target.result.split(',')[1]);
+            reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+            reader.readAsDataURL(file);
+        });
+
+        // Helper: upload a single file with one retry on 401/5xx
+        const uploadFile = async (base64, file) => {
+            const doFetch = () => fetch('/api/chat/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    filename: file.name,
+                    content: base64,
+                    mimeType: file.type,
+                }),
+            });
+
+            let response = await doFetch();
+
+            // Retry once on 401 (session race) or 5xx (transient server error)
+            if (response.status === 401 || response.status >= 500) {
+                await new Promise(r => setTimeout(r, 500));
+                response = await doFetch();
+            }
+
+            return response;
+        };
+
+        // Process files sequentially to avoid session race conditions
+        // and ensure reliable ordering for bulk uploads
+        let failedFiles = [];
         for (let i = 0; i < validFiles.length; i++) {
             const file = validFiles[i];
             const uploadId = uploadingIds[i].id;
 
-            const reader = new FileReader();
-            reader.onload = async (e) => {
-                const base64 = e.target.result.split(',')[1];
+            try {
+                const base64 = await readAsBase64(file);
+                const response = await uploadFile(base64, file);
 
-                try {
-                    const response = await fetch('/api/chat/upload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'include',
-                        body: JSON.stringify({
-                            filename: file.name,
-                            content: base64,
-                            mimeType: file.type,
-                        }),
+                if (response.ok) {
+                    const data = await response.json();
+                    onAddAttachment({
+                        id: crypto.randomUUID(),
+                        filename: file.name,
+                        size: file.size,
+                        type: data.type,
+                        content: data.content,
+                        dataUrl: data.dataUrl,
+                        charCount: data.charCount,
+                        pageCount: data.pageCount,
+                        estimatedTokens: data.estimatedTokens,
+                        requiresChunking: data.requiresChunking,
+                        totalChunks: data.totalChunks,
                     });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        onAddAttachment({
-                            id: crypto.randomUUID(),
-                            filename: file.name,
-                            size: file.size,
-                            type: data.type,
-                            content: data.content,
-                            dataUrl: data.dataUrl,
-                            charCount: data.charCount,
-                            pageCount: data.pageCount,
-                            estimatedTokens: data.estimatedTokens,
-                            requiresChunking: data.requiresChunking,
-                            totalChunks: data.totalChunks,
-                        });
-                    }
-                } catch (error) {
-                    console.error('File upload error:', error);
-                } finally {
-                    // Remove from uploading state
-                    setUploadingFiles(prev => prev.filter(f => f.id !== uploadId));
+                } else {
+                    const errBody = await response.json().catch(() => ({}));
+                    const reason = errBody.error || `HTTP ${response.status}`;
+                    console.error(`Upload failed for ${file.name}: ${reason}`);
+                    failedFiles.push(file.name);
                 }
-            };
-            reader.readAsDataURL(file);
+            } catch (error) {
+                console.error(`File upload error for ${file.name}:`, error);
+                failedFiles.push(file.name);
+            } finally {
+                setUploadingFiles(prev => prev.filter(f => f.id !== uploadId));
+            }
         }
-    }, [onAddAttachment]);
+
+        // Report failures to the user via onUploadError callback
+        if (failedFiles.length > 0 && onUploadError) {
+            const msg = failedFiles.length === 1
+                ? `Failed to upload: ${failedFiles[0]}`
+                : `Failed to upload ${failedFiles.length} files: ${failedFiles.join(', ')}`;
+            onUploadError(msg);
+        }
+    }, [onAddAttachment, onUploadError]);
 
     // Convert large pasted text or clipboard images into file attachments
     const PASTE_AS_FILE_THRESHOLD = 500; // characters
@@ -297,7 +332,7 @@ export default function ChatInput({
         setUploadingFiles(prev => [...prev, { id: uploadId, filename, size: pastedText.length }]);
 
         try {
-            const response = await fetch('/api/chat/upload', {
+            const doFetch = () => fetch('/api/chat/upload', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -307,6 +342,14 @@ export default function ChatInput({
                     mimeType: 'text/plain',
                 }),
             });
+
+            let response = await doFetch();
+
+            // Retry once on 401/5xx
+            if (response.status === 401 || response.status >= 500) {
+                await new Promise(r => setTimeout(r, 500));
+                response = await doFetch();
+            }
 
             if (response.ok) {
                 const data = await response.json();
@@ -321,13 +364,17 @@ export default function ChatInput({
                     requiresChunking: data.requiresChunking,
                     totalChunks: data.totalChunks,
                 });
+            } else if (onUploadError) {
+                const errBody = await response.json().catch(() => ({}));
+                onUploadError(`Failed to upload pasted text: ${errBody.error || `HTTP ${response.status}`}`);
             }
         } catch (error) {
             console.error('Paste-as-file upload error:', error);
+            if (onUploadError) onUploadError('Failed to upload pasted text');
         } finally {
             setUploadingFiles(prev => prev.filter(f => f.id !== uploadId));
         }
-    }, [onAddAttachment, handleFileSelect]);
+    }, [onAddAttachment, onUploadError, handleFileSelect]);
 
     const handleDrop = useCallback((e) => {
         e.preventDefault();

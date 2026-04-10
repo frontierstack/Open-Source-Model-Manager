@@ -1051,12 +1051,20 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Promise Rejection:', reason);
     console.error('Promise:', promise);
 
+    // Build detailed error message for logs
+    const errorMsg = reason instanceof Error
+        ? `${reason.message}${reason.code ? ` (${reason.code})` : ''}`
+        : (typeof reason === 'string' ? reason : JSON.stringify(reason) || 'Unknown error');
+    const stack = reason instanceof Error && reason.stack
+        ? `\n${reason.stack.split('\n').slice(1, 3).join('\n').trim()}`
+        : '';
+
     // Try to broadcast error to connected clients
     try {
         if (typeof broadcast === 'function') {
             broadcast({
                 type: 'log',
-                message: `[Error] Unhandled rejection: ${reason?.message || reason || 'Unknown error'}`,
+                message: `[Error] Unhandled rejection: ${errorMsg}${stack}`,
                 level: 'error'
             });
         }
@@ -1072,12 +1080,18 @@ process.on('uncaughtException', (error) => {
     console.error('Uncaught Exception:', error);
     console.error('Stack:', error.stack);
 
+    // Build detailed error message for logs
+    const errorMsg = `${error.message || 'Unknown error'}${error.code ? ` (${error.code})` : ''}`;
+    const stack = error.stack
+        ? `\n${error.stack.split('\n').slice(1, 3).join('\n').trim()}`
+        : '';
+
     // Try to broadcast error to connected clients
     try {
         if (typeof broadcast === 'function') {
             broadcast({
                 type: 'log',
-                message: `[Error] Uncaught exception: ${error.message || 'Unknown error'}`,
+                message: `[Error] Uncaught exception: ${errorMsg}${stack}`,
                 level: 'error'
             });
         }
@@ -8684,7 +8698,8 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         }
     } catch (error) {
         console.error('File upload error:', error);
-        res.status(500).json({ error: 'Failed to process file' });
+        const detail = error.message || 'Unknown processing error';
+        res.status(500).json({ error: `Failed to process file: ${detail}` });
     }
 });
 
@@ -12123,28 +12138,28 @@ app.use((err, req, res, next) => {
     console.error('Express error handler caught:', err);
     console.error('Stack:', err.stack);
 
-    // Try to broadcast error to connected clients
+    // Build detailed error message for the Logs tab
+    const errorDetail = err.message || 'Internal server error';
+    const route = `${req.method} ${req.originalUrl || req.url}`;
+    const stack = err.stack
+        ? err.stack.split('\n').slice(1, 3).join('\n').trim()
+        : '';
+
+    // Broadcast detailed error to connected clients (visible in Logs tab)
     try {
         broadcast({
             type: 'log',
-            message: 'Server error occurred. Check logs for details.',
+            message: `[Error] ${route}: ${errorDetail}${stack ? `\n${stack}` : ''}`,
             level: 'error'
         });
     } catch (broadcastError) {
         console.error('Failed to broadcast error:', broadcastError);
     }
 
-    // Don't expose internal error details to client
-    const isDevelopment = process.env.NODE_ENV !== 'production';
-
-    // In production, use generic error messages to prevent information leakage
-    const errorMessage = isDevelopment
-        ? (err.message || 'Internal server error')
-        : 'Request could not be processed';
-
+    // Return error message to API caller (useful for debugging in browser devtools)
+    // Include the error message but not the stack trace for security
     res.status(err.status || 500).json({
-        error: errorMessage
-        // Stack traces removed for security - check server logs for details
+        error: errorDetail
     });
 });
 
