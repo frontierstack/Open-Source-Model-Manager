@@ -199,7 +199,8 @@ mark_build_complete() {
     echo "$checksum" > "$BUILD_STATE_DIR/${component}.state"
 }
 
-# Build a single image with retry logic and progress checkpoints
+# Build a single image with retry logic
+# Runs silently to a log file. Use build_with_progress() for spinner + checkpoints.
 build_image() {
     local component=$1
     local image_name=$2
@@ -231,37 +232,7 @@ build_image() {
         local build_cmd="docker compose $profile_arg build $build_args $component"
         [ "$NO_CACHE" = true ] && build_cmd="$build_cmd --no-cache"
 
-        # Stream build output to log AND extract progress checkpoints
-        local log_file="$BUILD_STATE_DIR/${component}.log"
-        local last_step=""
-        eval "$build_cmd" 2>&1 | tee "$log_file" | while IFS= read -r line; do
-            # Docker BuildKit step markers: "#N [stage X/Y] ..."
-            if echo "$line" | grep -qE '^#[0-9]+ \['; then
-                local step_info
-                step_info=$(echo "$line" | sed -n 's/^#[0-9]\+ \[\([^]]*\)\].*/\1/p')
-                if [ -n "$step_info" ] && [ "$step_info" != "$last_step" ]; then
-                    last_step="$step_info"
-                    printf "\r\033[K  ${CYAN}▸${NC}  ${DIM}${component}:${NC} %s\n" "$step_info"
-                fi
-            # Legacy builder: "Step N/M : ..."
-            elif echo "$line" | grep -qE '^Step [0-9]+/[0-9]+'; then
-                local step_info
-                step_info=$(echo "$line" | sed 's/ *: */: /' | head -c 70)
-                printf "\r\033[K  ${CYAN}▸${NC}  ${DIM}${component}:${NC} %s\n" "$step_info"
-            # Key milestones from build output
-            elif echo "$line" | grep -qiE '(npm install|npm run build|pip install|apt-get|COPY|WORKDIR|FROM|RUN|downloading|extracting|exporting layers|exporting manifest|DONE)'; then
-                local milestone
-                milestone=$(echo "$line" | sed 's/^#[0-9]* //' | head -c 70)
-                # Only show non-empty meaningful lines
-                if [ ${#milestone} -gt 3 ]; then
-                    printf "\r\033[K  ${DIM}  ${component}: %s${NC}\n" "$milestone"
-                fi
-            fi
-        done
-
-        # Check exit code from the pipeline (PIPESTATUS captures tee'd command)
-        local build_exit=${PIPESTATUS[0]:-$?}
-        if [ "$build_exit" = "0" ]; then
+        if eval "$build_cmd" > "$BUILD_STATE_DIR/${component}.log" 2>&1; then
             local duration=$(( $(date +%s) - start_time ))
             mark_build_complete "$component"
             echo "$duration" > "$BUILD_STATE_DIR/${component}.duration"
@@ -277,6 +248,55 @@ build_image() {
     tail -15 "$BUILD_STATE_DIR/${component}.log" 2>/dev/null | sed 's/^/    /'
     echo ""
     return 1
+}
+
+# Spinner + periodic checkpoint monitor for a build running in the background.
+# Tails the log file and prints key milestones under the spinner.
+build_with_progress() {
+    local component=$1
+    local label=$2
+    local log_file="$BUILD_STATE_DIR/${component}.log"
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local last_checkpoint=""
+
+    # Monitor loop: spinner + checkpoint extraction
+    (
+        local i=0
+        local check_msg="$label"
+        while true; do
+            printf "\r  ${CYAN}${frames[$i]}${NC}  %s" "$check_msg"
+            i=$(( (i + 1) % ${#frames[@]} ))
+
+            # Every ~2s, scan log for latest milestone
+            if [ -f "$log_file" ]; then
+                local latest
+                latest=$(grep -oiE '(downloading cuda|installing cuda|compiling llama\.cpp|cmake|make -j|pip install|installing vllm|npm install|npm run build|webpack|apt-get install|COPY|exporting layers|exporting manifest|Step [0-9]+/[0-9]+|\[[0-9]+/[0-9]+\][[:space:]])' "$log_file" 2>/dev/null | tail -1)
+                if [ -n "$latest" ] && [ "$latest" != "$last_checkpoint" ]; then
+                    last_checkpoint="$latest"
+                    # Clean up and capitalize
+                    local clean
+                    clean=$(echo "$latest" | sed 's/\[/[/' | head -c 50)
+                    printf "\r\033[K  ${CYAN}${frames[$i]}${NC}  ${label}  ${DIM}— ${clean}${NC}\n"
+                fi
+            fi
+
+            sleep 0.15
+        done
+    ) &
+    local monitor_pid=$!
+    disown $monitor_pid 2>/dev/null
+
+    # Return the monitor PID so caller can stop it
+    echo "$monitor_pid"
+}
+
+stop_progress() {
+    local pid=$1
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null || true
+    fi
+    printf "\r\033[K"
 }
 
 # Verify image exists
@@ -535,10 +555,9 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
 
     if [ "$PARALLEL" = true ] && [ "$BUILD_LLAMACPP" = true ] && [ "$BUILD_VLLM" = true ]; then
         log_info "Building llamacpp + vllm in parallel"
-        log_info "Progress checkpoints interleaved from both builds"
         echo ""
 
-        # Build both in background — checkpoints stream live from both
+        # Build both in background
         (
             build_image "llamacpp" "modelserver-llamacpp:latest"
             echo $? > "$BUILD_STATE_DIR/llamacpp.exit"
@@ -551,9 +570,11 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
         ) &
         PID_VLLM=$!
 
-        # Wait for both — progress streams live above
+        # Spinner with checkpoint monitoring
+        start_spinner "Building backend images (this may take 20–30 minutes)"
         wait $PID_LLAMACPP 2>/dev/null || true
         wait $PID_VLLM 2>/dev/null || true
+        stop_spinner
 
         echo ""
 
@@ -587,25 +608,28 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
         verify_image "modelserver-vllm:latest" || exit 1
 
     else
-        # Sequential builds with live progress
+        # Sequential builds
         if [ "$BUILD_LLAMACPP" = true ]; then
-            log_step "Building llamacpp (CUDA compilation, ~20–30 min)"
+            MONITOR_PID=$(build_with_progress "llamacpp" "Building llamacpp (~20–30 min)")
             if build_image "llamacpp" "modelserver-llamacpp:latest"; then
+                stop_progress "$MONITOR_PID"
                 local_dur=$(cat "$BUILD_STATE_DIR/llamacpp.duration" 2>/dev/null || echo "?")
                 log_success "llamacpp  ${DIM}$(fmt_duration $local_dur)${NC}"
             else
+                stop_progress "$MONITOR_PID"
                 exit 1
             fi
             verify_image "modelserver-llamacpp:latest" || exit 1
         fi
 
         if [ "$BUILD_VLLM" = true ]; then
-            log_step "Building vllm (~10–15 min)"
+            MONITOR_PID=$(build_with_progress "vllm" "Building vllm (~10–15 min)")
             if build_image "vllm" "modelserver-vllm:latest"; then
+                stop_progress "$MONITOR_PID"
                 local_dur=$(cat "$BUILD_STATE_DIR/vllm.duration" 2>/dev/null || echo "?")
                 log_success "vllm  ${DIM}$(fmt_duration $local_dur)${NC}"
             else
-                stop_spinner
+                stop_progress "$MONITOR_PID"
                 exit 1
             fi
             verify_image "modelserver-vllm:latest" || exit 1
@@ -617,11 +641,13 @@ fi
 if [ "$BUILD_WEBAPP" = true ]; then
     section "Webapp Image"
 
-    log_step "Building webapp (~2–5 min)"
+    MONITOR_PID=$(build_with_progress "webapp" "Building webapp (~2–5 min)")
     if build_image "webapp" "modelserver-webapp:latest"; then
+        stop_progress "$MONITOR_PID"
         local_dur=$(cat "$BUILD_STATE_DIR/webapp.duration" 2>/dev/null || echo "?")
         log_success "webapp  ${DIM}$(fmt_duration $local_dur)${NC}"
     else
+        stop_progress "$MONITOR_PID"
         exit 1
     fi
     verify_image "modelserver-webapp:latest" || exit 1

@@ -120,19 +120,13 @@ fi
 section "Build"
 
 BUILD_START=$(date +%s)
-log_step "Rebuilding webapp image"
-BUILD_CMD="docker compose build webapp"
-[ "$NO_CACHE" = true ] && BUILD_CMD="$BUILD_CMD --no-cache"
-eval "$BUILD_CMD" 2>&1 | while IFS= read -r line; do
-    # BuildKit step markers
-    if echo "$line" | grep -qE '^#[0-9]+ \['; then
-        step_info=$(echo "$line" | sed -n 's/^#[0-9]\+ \[\([^]]*\)\].*/\1/p')
-        [ -n "$step_info" ] && printf "\r\033[K  ${DIM}  webapp: %s${NC}\n" "$step_info"
-    # Legacy builder
-    elif echo "$line" | grep -qE '^Step [0-9]+/[0-9]+'; then
-        printf "\r\033[K  ${DIM}  webapp: %s${NC}\n" "$(echo "$line" | head -c 60)"
-    fi
-done
+start_spinner "Rebuilding webapp image"
+if [ "$NO_CACHE" = true ]; then
+    docker compose build webapp --no-cache > /dev/null 2>&1
+else
+    docker compose build webapp > /dev/null 2>&1
+fi
+stop_spinner
 BUILD_DUR=$(( $(date +%s) - BUILD_START ))
 log_success "Image rebuilt  ${DIM}$(fmt_duration $BUILD_DUR)${NC}"
 
