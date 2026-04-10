@@ -299,6 +299,7 @@ start_build_spinner() {
     (
         local i=0
         local last_checkpoint=""
+        local last_display=""
         local tick=0
         local display="$label"
         while true; do
@@ -314,7 +315,14 @@ start_build_spinner() {
                         latest=$(grep -oiE "$CHECKPOINT_PATTERNS" "$lf" 2>/dev/null | tail -1)
                         if [ -n "$latest" ] && [ "$latest" != "$last_checkpoint" ]; then
                             last_checkpoint="$latest"
-                            display=$(friendly_checkpoint "$latest")
+                            local new_display
+                            new_display=$(friendly_checkpoint "$latest")
+                            # Print the previous checkpoint as completed above the spinner
+                            if [ -n "$last_display" ] && [ "$last_display" != "$label" ]; then
+                                printf "\r\033[K  \033[0;32m✓\033[0m  \033[2m%s\033[0m\n" "$last_display"
+                            fi
+                            last_display="$new_display"
+                            display="$new_display"
                         fi
                     fi
                 done
