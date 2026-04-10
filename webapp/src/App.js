@@ -6864,134 +6864,174 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                     </Card>
                                 </Grid>
 
-                                {/* Selected Model Files — Quantization Picker */}
-                                {selectedModelFiles.length > 0 && (
-                                    <Grid item xs={12}>
-                                        <Card>
-                                            <CardContent>
-                                                <SectionHeader
-                                                    icon={<CloudDownloadIcon />}
-                                                    title="Select Quantization"
-                                                    subtitle={ggufRepo}
-                                                />
-                                                {/* File type filter pills */}
-                                                <Box sx={{ display: 'flex', gap: 0.75, mb: 2, mt: 2, alignItems: 'center' }}>
+                                {/* Quantization side panel (Drawer) */}
+                                <Drawer
+                                    anchor="right"
+                                    open={selectedModelFiles.length > 0}
+                                    onClose={() => { setSelectedModelFiles([]); setGgufRepo(''); setGgufFile(''); setFileFilter('all'); }}
+                                    PaperProps={{ sx: { width: 380, bgcolor: 'background.paper', backgroundImage: 'none' } }}
+                                >
+                                    {selectedModelFiles.length > 0 && (() => {
+                                        // Collect unique quantization types for filter
+                                        const allQuants = [...new Set(selectedModelFiles.map(f => extractQuantization(f.rfilename)).filter(Boolean))];
+                                        // Active quant filter (empty = show all)
+                                        const activeQuantFilter = fileFilter.startsWith('q:') ? fileFilter.slice(2) : null;
+
+                                        const filteredFiles = selectedModelFiles.filter(file => {
+                                            // Type filter
+                                            if (fileFilter === 'single' && isSplitFile(file.rfilename)) return false;
+                                            if (fileFilter === 'split' && !isSplitFile(file.rfilename)) return false;
+                                            // Quant filter
+                                            if (activeQuantFilter) {
+                                                const q = extractQuantization(file.rfilename);
+                                                if (q !== activeQuantFilter) return false;
+                                            }
+                                            return true;
+                                        });
+
+                                        return (
+                                        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                            {/* Header */}
+                                            <Box sx={{ p: 2, pb: 1.5, borderBottom: '1px solid', borderColor: 'divider' }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                                                    <Typography sx={{ fontWeight: 700, fontSize: '0.95rem' }}>Select Quantization</Typography>
+                                                    <IconButton size="small" onClick={() => { setSelectedModelFiles([]); setGgufRepo(''); setGgufFile(''); setFileFilter('all'); }}>
+                                                        <ClearIcon sx={{ fontSize: 18 }} />
+                                                    </IconButton>
+                                                </Box>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.7rem', wordBreak: 'break-all' }}>
+                                                    {ggufRepo}
+                                                </Typography>
+
+                                                {/* Type filters */}
+                                                <Box sx={{ display: 'flex', gap: 0.5, mt: 1.5, flexWrap: 'wrap' }}>
                                                     {[
-                                                        { value: 'all', label: `All (${selectedModelFiles.length})` },
-                                                        { value: 'single', label: `Single (${selectedModelFiles.filter(f => !isSplitFile(f.rfilename)).length})` },
-                                                        { value: 'split', label: `Split (${selectedModelFiles.filter(f => isSplitFile(f.rfilename)).length})` },
+                                                        { value: 'all', label: 'All' },
+                                                        { value: 'single', label: 'Single' },
+                                                        { value: 'split', label: 'Split' },
                                                     ].map(opt => (
-                                                        <Chip
-                                                            key={opt.value}
-                                                            label={opt.label}
-                                                            size="small"
+                                                        <Chip key={opt.value} label={opt.label} size="small"
                                                             onClick={() => setFileFilter(opt.value)}
                                                             sx={{
-                                                                height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
+                                                                height: 24, fontSize: '0.68rem', cursor: 'pointer', fontWeight: 500,
                                                                 bgcolor: fileFilter === opt.value ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
                                                                 border: '1px solid',
                                                                 borderColor: fileFilter === opt.value ? 'rgba(99,102,241,0.5)' : 'transparent',
                                                                 color: fileFilter === opt.value ? 'primary.main' : 'text.secondary',
-                                                                '&:hover': { bgcolor: fileFilter === opt.value ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                                '&:hover': { bgcolor: 'rgba(255,255,255,0.08)' },
                                                             }}
                                                         />
                                                     ))}
                                                 </Box>
-                                                {/* Quantization card grid */}
-                                                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 1.5, maxHeight: 400, overflow: 'auto', pr: 0.5 }}>
-                                                    {selectedModelFiles
-                                                        .filter(file => {
-                                                            if (fileFilter === 'all') return true;
-                                                            if (fileFilter === 'single') return !isSplitFile(file.rfilename);
-                                                            if (fileFilter === 'split') return isSplitFile(file.rfilename);
-                                                            return true;
-                                                        })
-                                                        .map(file => {
-                                                        const quant = extractQuantization(file.rfilename);
-                                                        const isSelected = ggufFile === file.rfilename;
-                                                        const isSplit = isSplitFile(file.rfilename);
-                                                        const splitInfo = getSplitInfo(file.rfilename);
-                                                        return (
-                                                            <Box
-                                                                key={file.rfilename}
-                                                                onClick={() => handleSelectGGUFFile(file.rfilename)}
+
+                                                {/* Quantization type filters */}
+                                                {allQuants.length > 1 && (
+                                                    <Box sx={{ display: 'flex', gap: 0.5, mt: 1, flexWrap: 'wrap' }}>
+                                                        <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.65rem', mr: 0.25, alignSelf: 'center', textTransform: 'uppercase', letterSpacing: 0.5 }}>Quant</Typography>
+                                                        {allQuants.sort().map(q => (
+                                                            <Chip key={q} label={q} size="small"
+                                                                onClick={() => setFileFilter(activeQuantFilter === q ? 'all' : `q:${q}`)}
                                                                 sx={{
-                                                                    p: 1.5,
-                                                                    borderRadius: 2,
-                                                                    cursor: 'pointer',
-                                                                    border: '1.5px solid',
-                                                                    borderColor: isSelected ? 'primary.main' : 'rgba(255,255,255,0.08)',
-                                                                    bgcolor: isSelected ? 'rgba(99,102,241,0.08)' : 'rgba(255,255,255,0.02)',
-                                                                    transition: 'all 0.2s',
-                                                                    position: 'relative',
-                                                                    '&:hover': {
-                                                                        borderColor: isSelected ? 'primary.main' : 'rgba(99,102,241,0.4)',
-                                                                        bgcolor: isSelected ? 'rgba(99,102,241,0.1)' : 'rgba(99,102,241,0.04)',
-                                                                        transform: 'translateY(-1px)',
-                                                                        boxShadow: '0 2px 12px rgba(99,102,241,0.1)',
-                                                                    },
+                                                                    height: 22, fontSize: '0.65rem', cursor: 'pointer', fontWeight: 600,
+                                                                    fontFamily: '"Fira Code", monospace',
+                                                                    bgcolor: activeQuantFilter === q ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
+                                                                    border: '1px solid',
+                                                                    borderColor: activeQuantFilter === q ? 'rgba(168,85,247,0.5)' : 'transparent',
+                                                                    color: activeQuantFilter === q ? '#a855f7' : 'text.secondary',
+                                                                    '&:hover': { bgcolor: 'rgba(255,255,255,0.08)' },
                                                                 }}
-                                                            >
-                                                                {/* Top row: quant badge + size */}
-                                                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75 }}>
-                                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                                                                        {quant ? (
-                                                                            <Typography sx={{ fontWeight: 700, fontSize: '0.85rem', color: isSelected ? 'primary.main' : 'text.primary', fontFamily: '"Fira Code", monospace' }}>
-                                                                                {quant}
-                                                                            </Typography>
-                                                                        ) : (
-                                                                            <Typography sx={{ fontWeight: 600, fontSize: '0.78rem', color: 'text.secondary' }}>
-                                                                                GGUF
-                                                                            </Typography>
-                                                                        )}
-                                                                        {isSplit && (
-                                                                            <Chip label={`${splitInfo?.part}/${splitInfo?.total}`} size="small" sx={{
-                                                                                height: 16, fontSize: '0.58rem', fontWeight: 600,
-                                                                                bgcolor: 'rgba(245,158,11,0.15)', color: '#f59e0b',
-                                                                            }} />
-                                                                        )}
-                                                                    </Box>
-                                                                    <Typography sx={{ fontSize: '0.78rem', fontWeight: 600, color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
-                                                                        {formatFileSize(file.size)}
-                                                                    </Typography>
-                                                                </Box>
-                                                                {/* Filename */}
-                                                                <Typography sx={{
-                                                                    fontSize: '0.68rem', color: 'text.secondary', lineHeight: 1.3,
-                                                                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                                                                }}>
-                                                                    {file.rfilename}
+                                                            />
+                                                        ))}
+                                                    </Box>
+                                                )}
+                                            </Box>
+
+                                            {/* File list — compact rows */}
+                                            <Box sx={{ flex: 1, overflow: 'auto', px: 1, py: 0.5 }}>
+                                                {filteredFiles.map(file => {
+                                                    const quant = extractQuantization(file.rfilename);
+                                                    const isSelected = ggufFile === file.rfilename;
+                                                    const isSplit = isSplitFile(file.rfilename);
+                                                    const splitInfo = getSplitInfo(file.rfilename);
+                                                    return (
+                                                        <Box
+                                                            key={file.rfilename}
+                                                            onClick={() => handleSelectGGUFFile(file.rfilename)}
+                                                            sx={{
+                                                                display: 'flex', alignItems: 'center', gap: 1,
+                                                                px: 1.5, py: 1, mx: 0.5, my: 0.25,
+                                                                borderRadius: 1.5, cursor: 'pointer',
+                                                                borderLeft: '3px solid',
+                                                                borderLeftColor: isSelected ? 'primary.main' : 'transparent',
+                                                                bgcolor: isSelected ? 'rgba(99,102,241,0.08)' : 'transparent',
+                                                                transition: 'all 0.15s',
+                                                                '&:hover': {
+                                                                    bgcolor: isSelected ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.04)',
+                                                                },
+                                                            }}
+                                                        >
+                                                            {/* Quant label */}
+                                                            <Typography sx={{
+                                                                fontFamily: '"Fira Code", monospace',
+                                                                fontWeight: 700, fontSize: '0.75rem',
+                                                                color: isSelected ? 'primary.main' : 'text.primary',
+                                                                minWidth: 72,
+                                                            }}>
+                                                                {quant || 'GGUF'}
+                                                            </Typography>
+                                                            {/* Split badge */}
+                                                            {isSplit && (
+                                                                <Typography sx={{ fontSize: '0.6rem', color: '#f59e0b', fontWeight: 600, minWidth: 30 }}>
+                                                                    {splitInfo?.part}/{splitInfo?.total}
                                                                 </Typography>
-                                                                {/* Selection indicator */}
-                                                                {isSelected && (
-                                                                    <CheckCircleIcon sx={{
-                                                                        position: 'absolute', top: 6, right: 6,
-                                                                        fontSize: 16, color: 'primary.main',
-                                                                    }} />
-                                                                )}
-                                                            </Box>
-                                                        );
-                                                    })}
-                                                </Box>
-                                                {/* Download button */}
-                                                {ggufFile && (
-                                                    <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                                                            )}
+                                                            {/* Size — pushed right */}
+                                                            <Typography sx={{
+                                                                ml: 'auto', fontSize: '0.72rem', fontWeight: 500,
+                                                                color: 'text.secondary', fontVariantNumeric: 'tabular-nums', flexShrink: 0,
+                                                            }}>
+                                                                {formatFileSize(file.size)}
+                                                            </Typography>
+                                                            {/* Check */}
+                                                            {isSelected && <CheckCircleIcon sx={{ fontSize: 16, color: 'primary.main', flexShrink: 0 }} />}
+                                                        </Box>
+                                                    );
+                                                })}
+                                                {filteredFiles.length === 0 && (
+                                                    <Typography sx={{ textAlign: 'center', color: 'text.secondary', fontSize: '0.78rem', py: 4 }}>
+                                                        No files match current filters
+                                                    </Typography>
+                                                )}
+                                            </Box>
+
+                                            {/* Download button — pinned at bottom */}
+                                            <Box sx={{ p: 2, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
+                                                {ggufFile ? (
+                                                    <>
+                                                        <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.68rem', display: 'block', mb: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                            {ggufFile}
+                                                        </Typography>
                                                         <Button
                                                             variant="contained"
                                                             startIcon={loading ? <CircularProgress size={16} /> : <CloudDownloadIcon />}
                                                             onClick={handlePullModel}
                                                             disabled={loading}
                                                             fullWidth
-                                                            sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 600, py: 1 }}
+                                                            sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
                                                         >
-                                                            {loading ? 'Downloading...' : `Download ${ggufFile}`}
+                                                            {loading ? 'Downloading...' : 'Download'}
                                                         </Button>
-                                                    </Box>
+                                                    </>
+                                                ) : (
+                                                    <Typography sx={{ textAlign: 'center', color: 'text.secondary', fontSize: '0.75rem' }}>
+                                                        Select a file to download
+                                                    </Typography>
                                                 )}
-                                            </CardContent>
-                                        </Card>
-                                    </Grid>
-                                )}
+                                            </Box>
+                                        </Box>
+                                        );
+                                    })()}
+                                </Drawer>
 
                                 {/* Active Downloads */}
                                 {activeDownloads.length > 0 && (
