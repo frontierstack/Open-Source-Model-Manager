@@ -7,10 +7,62 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
-echo "=========================================="
-echo "  OpenSourceModelManager Reset - Clean Slate"
-echo "=========================================="
+# ============================================================================
+# TERMINAL OUTPUT HELPERS
+# ============================================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+SYM_OK="${GREEN}✓${NC}"
+SYM_FAIL="${RED}✗${NC}"
+SYM_WARN="${YELLOW}!${NC}"
+SYM_ARROW="${CYAN}→${NC}"
+
+log_success() { echo -e "  ${SYM_OK}  $1"; }
+log_warning() { echo -e "  ${SYM_WARN}  ${YELLOW}$1${NC}"; }
+log_error()   { echo -e "  ${SYM_FAIL}  ${RED}$1${NC}"; }
+log_step()    { echo -e "  ${SYM_ARROW}  $1"; }
+
+section() {
+    echo ""
+    echo -e "  ${BOLD}${CYAN}$1${NC}"
+    echo -e "  ${DIM}$(printf '%.0s─' $(seq 1 ${#1}))${NC}"
+}
+
+SPINNER_PID=""
+start_spinner() {
+    local msg="$1"
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    (
+        local i=0
+        while true; do
+            printf "\r  ${CYAN}${frames[$i]}${NC}  %s" "$msg"
+            i=$(( (i + 1) % ${#frames[@]} ))
+            sleep 0.1
+        done
+    ) &
+    SPINNER_PID=$!
+    disown $SPINNER_PID 2>/dev/null
+}
+
+stop_spinner() {
+    if [ -n "$SPINNER_PID" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
+        kill "$SPINNER_PID" 2>/dev/null
+        wait "$SPINNER_PID" 2>/dev/null || true
+    fi
+    SPINNER_PID=""
+    printf "\r\033[K"
+}
+
+# Print banner
 echo ""
+echo -e "  ${BOLD}Model Server Reset${NC}"
 
 # Parse arguments
 FORCE_RESET=false
@@ -32,18 +84,15 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [OPTIONS]"
             echo ""
-            echo "Options:"
-            echo "  -f, --force        Skip confirmation prompts"
-            echo "  --rebuild          Rebuild Docker images from scratch"
-            echo "  --full             Full factory reset (removes EVERYTHING including models)"
-            echo "  -h, --help         Show this help message"
+            echo "  Usage: $0 [OPTIONS]"
             echo ""
-            echo "Examples:"
-            echo "  $0                      # Reset API keys, settings, users"
-            echo "  $0 --full -f            # Complete factory reset (no prompts)"
-            echo "  $0 --rebuild            # Reset and rebuild all Docker images"
+            echo "  Options:"
+            echo "    -f, --force        Skip confirmation prompts"
+            echo "    --rebuild          Rebuild Docker images from scratch"
+            echo "    --full             Full factory reset (removes EVERYTHING including models)"
+            echo "    -h, --help         Show this help message"
+            echo ""
             exit 0
             ;;
         *)
@@ -56,151 +105,133 @@ done
 # Confirm reset
 if [ "$FORCE_RESET" = false ]; then
     if [ "$FULL_WIPE" = true ]; then
-        echo "WARNING: This is a FULL FACTORY RESET!"
-        echo "This will permanently delete:"
-        echo "  - All downloaded models"
-        echo "  - All user accounts"
-        echo "  - All API keys and sessions"
-        echo "  - All agents, skills, and tasks"
         echo ""
-        read -p "Are you absolutely sure? Type 'YES' to confirm: " -r
+        echo -e "  ${RED}${BOLD}FULL FACTORY RESET${NC}"
+        echo -e "  ${DIM}This will permanently delete:${NC}"
+        echo -e "  ${DIM}  - All downloaded models${NC}"
+        echo -e "  ${DIM}  - All user accounts${NC}"
+        echo -e "  ${DIM}  - All API keys and sessions${NC}"
+        echo -e "  ${DIM}  - All agents, skills, and tasks${NC}"
+        echo ""
+        read -p "  Type 'YES' to confirm: " -r
         echo ""
         if [ "$REPLY" != "YES" ]; then
-            echo "Reset cancelled."
+            echo -e "  ${DIM}Reset cancelled.${NC}"
             exit 0
         fi
     else
-        read -p "This will remove ALL API keys, settings, and llama.cpp instances. Continue? [y/N] " -n 1 -r
+        echo ""
+        echo -e "  ${DIM}This will remove API keys, settings, and model instances.${NC}"
+        read -p "  Continue? [y/N] " -n 1 -r
         echo ""
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "Reset cancelled."
+            echo -e "  ${DIM}Reset cancelled.${NC}"
             exit 0
         fi
     fi
 fi
 
-echo ""
-echo ">>> Step 1: Stopping all services..."
+# ============================================================================
+# RESET
+# ============================================================================
 
-# Stop all llama.cpp instances
-echo ">>> Stopping llama.cpp instances..."
+section "Stop Services"
+
+start_spinner "Stopping model instances"
 docker ps --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
 docker ps -a --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
-
-# Stop all vLLM instances
-echo ">>> Stopping vLLM instances..."
 docker ps --filter "name=vllm-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
 docker ps -a --filter "name=vllm-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
+stop_spinner
+log_success "Model instances stopped"
 
-# Stop docker-compose services
+start_spinner "Stopping compose services"
 docker compose down 2>/dev/null || true
+stop_spinner
+log_success "Services stopped"
 
-echo ""
-echo ">>> Step 2: Removing webapp data..."
-# Try both possible volume names (with and without project prefix)
+section "Clean Data"
+
+start_spinner "Removing webapp data volume"
 docker volume rm modelserver_webapp_data 2>/dev/null || \
 docker volume rm opensourcemodelmanager_webapp_data 2>/dev/null || \
 docker volume rm webapp_data 2>/dev/null || true
+stop_spinner
+log_success "Webapp data removed"
 
-# Handle full wipe (delete models)
 if [ "$FULL_WIPE" = true ]; then
-    echo ""
-    echo ">>> Step 2.5: Removing all downloaded models..."
-
-    # Remove models directory contents
+    start_spinner "Removing all downloaded models"
     if [ -d "$PROJECT_DIR/models" ]; then
-        echo ">>> Clearing models directory..."
         rm -rf "$PROJECT_DIR/models"/* 2>/dev/null || true
         rm -rf "$PROJECT_DIR/models"/.* 2>/dev/null || true
-        echo ">>> Models directory cleared"
     fi
-
-    # Also remove .modelserver directory if it exists in models
-    if [ -d "$PROJECT_DIR/models/.modelserver" ]; then
-        rm -rf "$PROJECT_DIR/models/.modelserver" 2>/dev/null || true
-    fi
-
-    echo ">>> All models deleted"
+    stop_spinner
+    log_success "Models deleted"
 fi
 
-# Rebuild images if requested
 if [ "$REBUILD_IMAGES" = true ]; then
+    section "Rebuild Images"
+    log_step "This may take 20–30 minutes"
     echo ""
-    echo ">>> Step 3: Rebuilding Docker images..."
-    echo ">>> This may take 20-30 minutes for llama.cpp compilation..."
-
-    # Build llamacpp base image
-    docker compose --profile build-only build llamacpp --no-cache
-
-    # Build vLLM base image
-    docker compose --profile build-only build vllm --no-cache
-
-    # Build webapp
-    docker compose build webapp --no-cache
+    docker compose --profile build-only build llamacpp --no-cache 2>&1 | tail -3
+    log_success "llamacpp rebuilt"
+    docker compose --profile build-only build vllm --no-cache 2>&1 | tail -3
+    log_success "vllm rebuilt"
+    docker compose build webapp --no-cache 2>&1 | tail -3
+    log_success "webapp rebuilt"
 fi
 
-# Ensure SSL certificates exist
-echo ""
-echo ">>> Step 3: Checking SSL certificates..."
+section "Restart"
+
+# SSL certificates
 if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server.crt" ]; then
-    echo ">>> Generating SSL certificates..."
+    start_spinner "Generating SSL certificates"
     mkdir -p "$PROJECT_DIR/certs"
-    if [ -f "$PROJECT_DIR/certs/generate-certs.sh" ]; then
-        chmod +x "$PROJECT_DIR/certs/generate-certs.sh"
-        "$PROJECT_DIR/certs/generate-certs.sh"
-    else
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$PROJECT_DIR/certs/server.key" \
-            -out "$PROJECT_DIR/certs/server.crt" \
-            -subj "/C=US/ST=Local/L=Local/O=OpenSourceModelManager/OU=Development/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1" 2>/dev/null
-        chmod 600 "$PROJECT_DIR/certs/server.key"
-        chmod 644 "$PROJECT_DIR/certs/server.crt"
-    fi
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$PROJECT_DIR/certs/server.key" \
+        -out "$PROJECT_DIR/certs/server.crt" \
+        -subj "/C=US/ST=Local/L=Local/O=ModelServer/OU=Development/CN=localhost" \
+        -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1" 2>/dev/null
+    chmod 600 "$PROJECT_DIR/certs/server.key"
+    chmod 644 "$PROJECT_DIR/certs/server.crt"
+    stop_spinner
+    log_success "SSL certificates generated"
 else
-    echo ">>> SSL certificates already exist"
+    log_success "SSL certificates found"
 fi
 
-echo ""
-echo ">>> Step 4: Starting fresh services..."
-docker compose up -d
+start_spinner "Starting services"
+docker compose up -d > /dev/null 2>&1
+stop_spinner
+log_success "Services started"
 
-echo ""
-echo ">>> Step 5: Waiting for webapp to initialize..."
-
-# Wait for webapp to be ready and fetch credentials
+# Wait for webapp
 MAX_RETRIES=30
 RETRY_COUNT=0
-CREDS=""
-
+WEBAPP_READY=false
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    # Try HTTPS first, then HTTP
-    CREDS=$(curl -sk https://localhost:3001/api/webapp-credentials 2>/dev/null || curl -s http://localhost:3001/api/webapp-credentials 2>/dev/null || echo "")
-    if [ -n "$CREDS" ] && [ "$CREDS" != "{}" ] && [ "$CREDS" != '{"error"' ]; then
+    CREDS=$(curl -sk https://localhost:3001/api/webapp-credentials 2>/dev/null || echo "")
+    if [ -n "$CREDS" ] && [ "$CREDS" != "{}" ]; then
+        WEBAPP_READY=true
         break
     fi
     RETRY_COUNT=$((RETRY_COUNT + 1))
-    echo "Waiting for webapp... ($RETRY_COUNT/$MAX_RETRIES)"
+    printf "\r  ${CYAN}⠸${NC}  Waiting for webapp (%d/%d)" "$RETRY_COUNT" "$MAX_RETRIES"
     sleep 2
 done
+printf "\r\033[K"
 
-echo ""
-echo "=========================================="
-echo "  Reset Complete!"
-echo "=========================================="
-echo ""
-
-if [ "$FULL_WIPE" = true ]; then
-    echo "Factory reset completed. All data has been removed."
-    echo ""
+if [ "$WEBAPP_READY" = true ]; then
+    log_success "Webapp ready"
+else
+    log_warning "Webapp may still be starting"
 fi
 
-echo "Services are running. Access URL:"
-echo ""
-echo "  Webapp: https://localhost:3001"
-echo ""
-echo "HTTP requests are automatically redirected to HTTPS."
-echo ""
-echo "Note: Your browser will show a security warning for the"
-echo "self-signed certificate - this is expected for local development."
+section "Done"
+
+if [ "$FULL_WIPE" = true ]; then
+    echo -e "  ${DIM}Factory reset complete. All data removed.${NC}"
+    echo ""
+fi
+echo -e "  ${BOLD}https://localhost:3001${NC}"
 echo ""

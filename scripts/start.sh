@@ -121,13 +121,20 @@ fi
 
 section "Starting Services"
 
-start_spinner "Starting containers"
-docker compose up -d > /dev/null 2>&1
-stop_spinner
+log_step "Creating containers"
+docker compose up -d 2>&1 | while IFS= read -r line; do
+    # Show container lifecycle events
+    if echo "$line" | grep -qiE '(created|started|running|pulling|recreat)'; then
+        svc=$(echo "$line" | sed 's/.*Container //' | sed 's/ .*//' | head -c 40)
+        action=$(echo "$line" | grep -oiE '(Created|Started|Running|Pulling|Recreated)' | head -1)
+        if [ -n "$svc" ] && [ -n "$action" ]; then
+            echo -e "  ${DIM}  $svc: $action${NC}"
+        fi
+    fi
+done
 log_success "Containers started"
 
-# Wait for webapp to be ready
-start_spinner "Waiting for webapp to become ready"
+# Wait for webapp to be ready with countdown
 MAX_RETRIES=30
 RETRY_COUNT=0
 WEBAPP_READY=false
@@ -138,9 +145,10 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         break
     fi
     RETRY_COUNT=$((RETRY_COUNT + 1))
+    printf "\r  ${CYAN}⠸${NC}  Waiting for webapp (%d/%d)" "$RETRY_COUNT" "$MAX_RETRIES"
     sleep 2
 done
-stop_spinner
+printf "\r\033[K"
 
 if [ "$WEBAPP_READY" = true ]; then
     log_success "Webapp ready"
@@ -151,6 +159,8 @@ fi
 # Check chat service
 if curl -sk https://localhost:3002/health 2>/dev/null | grep -q "ok"; then
     log_success "Chat UI ready"
+else
+    log_warning "Chat UI not responding yet"
 fi
 
 # ============================================================================
