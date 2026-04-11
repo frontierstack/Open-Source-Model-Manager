@@ -1720,6 +1720,9 @@ body.font-size-large .markdown-content,
 .whitespace-pre-wrap{
   white-space: pre-wrap;
 }
+.break-words{
+  overflow-wrap: break-word;
+}
 .break-all{
   word-break: break-all;
 }

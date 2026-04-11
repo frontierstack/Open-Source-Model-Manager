@@ -325,6 +325,8 @@ export default function ChatContainer({
                                     if (storeContent.trim()) {
                                         const parsed = parseThinkTags(storeContent);
                                         const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
+                                        // Estimate tokens: ~1 token per 3 characters (conservative)
+                                        const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
                                         const assistantMessage = {
                                             id: crypto.randomUUID(),
                                             role: 'assistant',
@@ -332,6 +334,7 @@ export default function ChatContainer({
                                             reasoning: parsed.reasoning || storeReasoning || undefined,
                                             timestamp: new Date().toISOString(),
                                             responseTime,
+                                            tokenCount: estimatedTokens,
                                             backgroundCompleted: true,
                                         };
                                         addMessage(assistantMessage);
@@ -1274,9 +1277,11 @@ export default function ChatContainer({
                                     assistantReasoning = thinkParsed.reasoning;
                                     pendingReasoningRef.current = assistantReasoning;
                                 }
-                                // Throttled UI update (~50ms) to reduce jitter from per-chunk re-renders
+                                // 60fps UI update via requestAnimationFrame — plain text
+                                // rendering during streaming makes this cheap enough
+                                // to run every frame without jank.
                                 if (!throttleTimerRef.current) {
-                                    throttleTimerRef.current = setTimeout(() => {
+                                    throttleTimerRef.current = requestAnimationFrame(() => {
                                         const currentActiveId = useChatStore.getState().activeConversationId;
                                         if (currentActiveId === conversationId) {
                                             setStreamingContent(pendingContentRef.current);
@@ -1285,7 +1290,7 @@ export default function ChatContainer({
                                             }
                                         }
                                         throttleTimerRef.current = null;
-                                    }, 150);
+                                    });
                                 }
                                 tokenCount++; // Approximate token count by chunks
                             }
@@ -1294,15 +1299,14 @@ export default function ChatContainer({
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
                                 pendingReasoningRef.current = assistantReasoning;
-                                // Throttled UI update for reasoning
                                 if (!throttleTimerRef.current) {
-                                    throttleTimerRef.current = setTimeout(() => {
+                                    throttleTimerRef.current = requestAnimationFrame(() => {
                                         const currentActiveId = useChatStore.getState().activeConversationId;
                                         if (currentActiveId === conversationId) {
                                             setStreamingReasoning(pendingReasoningRef.current);
                                         }
                                         throttleTimerRef.current = null;
-                                    }, 150);
+                                    });
                                 }
                             }
 
@@ -1443,7 +1447,7 @@ export default function ChatContainer({
 
             // Final flush of any pending throttled content
             if (throttleTimerRef.current) {
-                clearTimeout(throttleTimerRef.current);
+                cancelAnimationFrame(throttleTimerRef.current);
                 throttleTimerRef.current = null;
             }
             const currentActiveIdFlush = useChatStore.getState().activeConversationId;

@@ -5,9 +5,26 @@ import CodeBlock from './CodeBlock';
 
 /**
  * MessageContent - Renders markdown content with Tailwind styling
+ *
+ * During streaming: renders plain text (whitespace-pre-wrap) for 60fps
+ * smoothness — avoids expensive ReactMarkdown re-parses on every token.
+ * After streaming: full ReactMarkdown with syntax highlighting.
  */
 export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
+
+    // During streaming, bypass ReactMarkdown entirely for smooth 60fps rendering.
+    // Just render the raw text with preserved whitespace. When streaming finishes,
+    // the component re-renders with isStreaming=false and full markdown kicks in.
+    if (isStreaming) {
+        return (
+            <div className="markdown-content">
+                <div className="whitespace-pre-wrap leading-relaxed break-words">
+                    {content}
+                </div>
+            </div>
+        );
+    }
 
     // Pre-process content to convert <br> tags to markdown line breaks
     // ReactMarkdown doesn't render raw HTML by default
@@ -28,7 +45,7 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
                                 <CodeBlock
                                     code={code}
                                     language={match ? match[1] : 'text'}
-                                    isStreaming={isStreaming}
+                                    isStreaming={false}
                                 />
                             );
                         }
