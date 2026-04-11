@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
@@ -7,14 +7,15 @@ import CodeBlock from './CodeBlock';
  * MessageContent - Renders markdown content with Tailwind styling
  *
  * During streaming: two-layer render —
- *   1. Plain text updates every frame (60fps, what the user sees flowing in)
- *   2. Full ReactMarkdown re-renders every 300ms behind the scenes, then
- *      swaps in so tables/bold/code format progressively while streaming.
+ *   1. Memoized ReactMarkdown re-renders only when debounced content changes
+ *      (~10fps markdown formatting for tables/bold/code)
+ *   2. Plain text "tail" updates every frame (60fps character flow)
  * After streaming: single full ReactMarkdown render.
  */
 
-// Debounced markdown content — re-parses at most every INTERVAL ms
-const MARKDOWN_INTERVAL = 300;
+// Markdown re-parses at most every INTERVAL ms. Low enough for responsive
+// formatting, high enough to not cause jank.
+const MARKDOWN_INTERVAL = 100;
 
 function useDebounced(value, delay) {
     const [debounced, setDebounced] = useState(value);
@@ -22,7 +23,6 @@ function useDebounced(value, delay) {
 
     useEffect(() => {
         if (!timerRef.current) {
-            // First update: apply immediately
             setDebounced(value);
         }
         timerRef.current = setTimeout(() => {
@@ -37,10 +37,9 @@ function useDebounced(value, delay) {
     return debounced;
 }
 
-// Shared markdown component map — defined once outside the component
-// to avoid recreating on every render.
+// Shared markdown component maps — defined once outside the component
+// to keep stable references (prevents ReactMarkdown from re-mounting internals).
 const markdownComponents = {
-    // Code blocks
     code({ node, inline, className, children, ...props }) {
         const match = /language-(\w+)/.exec(className || '');
         const code = String(children).replace(/\n$/, '');
@@ -55,7 +54,6 @@ const markdownComponents = {
             );
         }
 
-        // Inline code
         return (
             <code
                 className="px-1.5 py-0.5 mx-0.5 bg-white/10 rounded text-accent-400 font-mono text-[0.85em]"
@@ -66,16 +64,9 @@ const markdownComponents = {
         );
     },
 
-    // Paragraphs
     p({ children }) {
-        return (
-            <p className="mb-4 leading-relaxed last:mb-0">
-                {children}
-            </p>
-        );
+        return <p className="mb-4 leading-relaxed last:mb-0">{children}</p>;
     },
-
-    // Headings
     h1({ children }) {
         return <h1 className="text-xl font-semibold mt-6 mb-3 text-dark-100">{children}</h1>;
     },
@@ -85,22 +76,13 @@ const markdownComponents = {
     h3({ children }) {
         return <h3 className="text-base font-semibold mt-4 mb-2 text-dark-100">{children}</h3>;
     },
-
-    // Links
     a({ href, children }) {
         return (
-            <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary-400 hover:underline break-all"
-            >
+            <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary-400 hover:underline break-all">
                 {children}
             </a>
         );
     },
-
-    // Lists
     ul({ children }) {
         return <ul className="pl-5 mb-4 list-disc marker:text-dark-500">{children}</ul>;
     },
@@ -110,8 +92,6 @@ const markdownComponents = {
     li({ children }) {
         return <li className="mb-1.5 text-dark-200">{children}</li>;
     },
-
-    // Blockquotes
     blockquote({ children }) {
         return (
             <blockquote className="border-l-3 border-primary-500/50 pl-4 py-1 my-4 text-dark-400 italic">
@@ -119,8 +99,6 @@ const markdownComponents = {
             </blockquote>
         );
     },
-
-    // Tables - with proper structure and borders
     table({ children }) {
         return (
             <div className="overflow-x-auto my-4 rounded-lg border border-white/10">
@@ -151,24 +129,17 @@ const markdownComponents = {
             </td>
         );
     },
-
-    // Horizontal rule
     hr() {
         return <hr className="border-white/10 my-6" />;
     },
-
-    // Strong/Bold
     strong({ children }) {
         return <strong className="font-semibold text-dark-100">{children}</strong>;
     },
-
-    // Emphasis/Italic
     em({ children }) {
         return <em className="italic">{children}</em>;
     },
 };
 
-// Streaming-specific component map — same as above but passes isStreaming to CodeBlock
 const streamingMarkdownComponents = {
     ...markdownComponents,
     code({ node, inline, className, children, ...props }) {
@@ -201,28 +172,32 @@ const remarkPlugins = [remarkGfm];
 export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
 
-    // During streaming: debounce markdown rendering to every 300ms.
-    // The plain text layer updates every frame, but the markdown layer
-    // only re-parses periodically — giving progressive formatting
-    // (tables, bold, code) while keeping the text flow smooth.
     const debouncedContent = useDebounced(content, MARKDOWN_INTERVAL);
 
+    // Memoize the ReactMarkdown output — only re-parses when debouncedContent
+    // actually changes (~every 100ms). On all other frames the cached JSX tree
+    // is reused, so the only per-frame work is the cheap tail text node update.
+    const markdownRendered = useMemo(() => {
+        const processed = (isStreaming ? debouncedContent : content).replace(/<br\s*\/?>/gi, '  \n');
+        return (
+            <ReactMarkdown
+                remarkPlugins={remarkPlugins}
+                components={isStreaming ? streamingMarkdownComponents : markdownComponents}
+            >
+                {processed}
+            </ReactMarkdown>
+        );
+    }, [isStreaming ? debouncedContent : content, isStreaming]);
+
     if (isStreaming) {
-        const processedDebounced = debouncedContent.replace(/<br\s*\/?>/gi, '  \n');
-        // Show the markdown-rendered version (debounced, so it doesn't re-parse every frame).
-        // The latest unformatted text is appended below it as a "tail" so the user sees
-        // new characters immediately even between markdown refreshes.
+        // Tail: characters that arrived since the last debounced snapshot.
+        // This text updates every frame (60fps) — just a text node, sub-ms.
         const tail = content.length > debouncedContent.length
             ? content.slice(debouncedContent.length)
             : '';
         return (
             <div className="markdown-content">
-                <ReactMarkdown
-                    remarkPlugins={remarkPlugins}
-                    components={streamingMarkdownComponents}
-                >
-                    {processedDebounced}
-                </ReactMarkdown>
+                {markdownRendered}
                 {tail && (
                     <span className="whitespace-pre-wrap leading-relaxed break-words">
                         {tail}
@@ -232,17 +207,9 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
         );
     }
 
-    // Pre-process content to convert <br> tags to markdown line breaks
-    const processedContent = content.replace(/<br\s*\/?>/gi, '  \n');
-
     return (
         <div className="markdown-content">
-            <ReactMarkdown
-                remarkPlugins={remarkPlugins}
-                components={markdownComponents}
-            >
-                {processedContent}
-            </ReactMarkdown>
+            {markdownRendered}
         </div>
     );
 });

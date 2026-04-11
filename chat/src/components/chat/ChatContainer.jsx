@@ -104,6 +104,7 @@ export default function ChatContainer({
     const pendingContentRef = useRef(''); // Buffer for throttled content updates
     const pendingReasoningRef = useRef(''); // Buffer for throttled reasoning updates
     const backgroundPollRef = useRef(null); // Track background streaming poll interval for cleanup
+    const handleContinueRef = useRef(null); // Stable reference for continue handler (avoids React.memo invalidation)
 
     // Chat store
     const {
@@ -268,10 +269,10 @@ export default function ChatContainer({
         }
     };
 
-    // Clean up any active background polling interval
+    // Clean up any active background polling timeout
     const clearBackgroundPoll = () => {
         if (backgroundPollRef.current) {
-            clearInterval(backgroundPollRef.current);
+            clearTimeout(backgroundPollRef.current);
             backgroundPollRef.current = null;
         }
     };
@@ -301,97 +302,96 @@ export default function ChatContainer({
                     // Clear any previous poll before starting a new one
                     clearBackgroundPoll();
 
-                    const pollInterval = setInterval(async () => {
-                        // Stop polling if user navigated to a different conversation
-                        const currentActiveId = useChatStore.getState().activeConversationId;
-                        if (currentActiveId !== conversationId) {
-                            clearBackgroundPoll();
-                            return;
-                        }
-                        try {
-                            const pollResponse = await fetch(`/api/conversations/${conversationId}/streaming`, { credentials: 'include' });
-                            if (pollResponse.ok) {
-                                const pollData = await pollResponse.json();
-                                if (pollData.streaming) {
-                                    // Still streaming - update content
-                                    setStreamingContent(pollData.content || '');
-                                    setStreamingReasoning(pollData.reasoning || '');
-                                } else {
-                                    // Streaming finished. The server saves the response
-                                    // BEFORE deleting the job from activeStreamingJobs,
-                                    // so by the time we see streaming:false, the response
-                                    // is already persisted. Fetch from server (sole writer)
-                                    // to avoid dual-save duplicates.
-                                    clearBackgroundPoll();
-                                    let loaded = false;
-                                    try {
-                                        const msgResponse = await fetch(
-                                            `/api/conversations/${conversationId}`,
-                                            { credentials: 'include' }
-                                        );
-                                        if (msgResponse.ok) {
-                                            const msgData = await msgResponse.json();
-                                            if (msgData.messages?.some(m => m.role === 'assistant' && !m.isError)) {
-                                                setMessages(msgData.messages);
-                                                loaded = true;
+                    // Poll with chained setTimeout (not setInterval) to prevent
+                    // overlapping requests. 100ms gives ~10fps content updates —
+                    // much smoother than the 2fps of 500ms polling.
+                    const schedulePoll = () => {
+                        backgroundPollRef.current = setTimeout(async () => {
+                            const currentActiveId = useChatStore.getState().activeConversationId;
+                            if (currentActiveId !== conversationId) {
+                                clearBackgroundPoll();
+                                return;
+                            }
+                            try {
+                                const pollResponse = await fetch(`/api/conversations/${conversationId}/streaming`, { credentials: 'include' });
+                                if (pollResponse.ok) {
+                                    const pollData = await pollResponse.json();
+                                    if (pollData.streaming) {
+                                        setStreamingContent(pollData.content || '');
+                                        setStreamingReasoning(pollData.reasoning || '');
+                                        // Schedule next poll AFTER this one completes
+                                        schedulePoll();
+                                    } else {
+                                        // Streaming finished — fetch saved response from server
+                                        clearBackgroundPoll();
+                                        let loaded = false;
+                                        try {
+                                            const msgResponse = await fetch(
+                                                `/api/conversations/${conversationId}`,
+                                                { credentials: 'include' }
+                                            );
+                                            if (msgResponse.ok) {
+                                                const msgData = await msgResponse.json();
+                                                if (msgData.messages?.some(m => m.role === 'assistant' && !m.isError)) {
+                                                    setMessages(msgData.messages);
+                                                    loaded = true;
+                                                }
+                                            }
+                                        } catch (loadErr) {
+                                            console.error('Failed to load completed messages:', loadErr);
+                                        }
+                                        if (!loaded) {
+                                            const storeContent = useChatStore.getState().streamingContent || '';
+                                            const storeReasoning = useChatStore.getState().streamingReasoning || '';
+                                            if (storeContent.trim()) {
+                                                const parsed = parseThinkTags(storeContent);
+                                                const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
+                                                const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
+                                                addMessage({
+                                                    id: crypto.randomUUID(),
+                                                    role: 'assistant',
+                                                    content: parsed.content || storeContent,
+                                                    reasoning: parsed.reasoning || storeReasoning || undefined,
+                                                    timestamp: new Date().toISOString(),
+                                                    responseTime,
+                                                    tokenCount: estimatedTokens,
+                                                    backgroundCompleted: true,
+                                                });
+                                                saveMessages(conversationId, useChatStore.getState().messages);
                                             }
                                         }
-                                    } catch (loadErr) {
-                                        console.error('Failed to load completed messages:', loadErr);
+                                        clearStreaming();
+                                        setIsLoading(false);
+                                        clearProcessingStatus();
+                                        showSnackbar('Background response completed', 'success');
                                     }
-                                    // Fallback: if server didn't have the response yet
-                                    // (very narrow race), save from streaming content.
-                                    if (!loaded) {
-                                        const storeContent = useChatStore.getState().streamingContent || '';
-                                        const storeReasoning = useChatStore.getState().streamingReasoning || '';
-                                        if (storeContent.trim()) {
-                                            const parsed = parseThinkTags(storeContent);
-                                            const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
-                                            const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
-                                            addMessage({
-                                                id: crypto.randomUUID(),
-                                                role: 'assistant',
-                                                content: parsed.content || storeContent,
-                                                reasoning: parsed.reasoning || storeReasoning || undefined,
-                                                timestamp: new Date().toISOString(),
-                                                responseTime,
-                                                tokenCount: estimatedTokens,
-                                                backgroundCompleted: true,
-                                            });
-                                            saveMessages(conversationId, useChatStore.getState().messages);
-                                        }
+                                } else {
+                                    schedulePoll(); // Retry on non-ok response
+                                }
+                            } catch (pollError) {
+                                console.error('Failed to poll streaming status:', pollError);
+                                clearBackgroundPoll();
+                                const rescueContent = useChatStore.getState().streamingContent || '';
+                                if (rescueContent.trim()) {
+                                    const parsed = parseThinkTags(rescueContent);
+                                    if (parsed.content.trim()) {
+                                        addMessage({
+                                            id: crypto.randomUUID(),
+                                            role: 'assistant',
+                                            content: parsed.content,
+                                            reasoning: parsed.reasoning || undefined,
+                                            timestamp: new Date().toISOString(),
+                                            isPartial: true,
+                                        });
+                                        saveMessages(conversationId, useChatStore.getState().messages);
                                     }
-                                    clearStreaming();
-                                    setIsLoading(false);
-                                    clearProcessingStatus();
-                                    showSnackbar('Background response completed', 'success');
                                 }
+                                clearStreaming();
+                                setIsLoading(false);
                             }
-                        } catch (pollError) {
-                            console.error('Failed to poll streaming status:', pollError);
-                            clearBackgroundPoll();
-                            // Rescue whatever content we have before clearing
-                            const rescueContent = useChatStore.getState().streamingContent || '';
-                            if (rescueContent.trim()) {
-                                const parsed = parseThinkTags(rescueContent);
-                                if (parsed.content.trim()) {
-                                    addMessage({
-                                        id: crypto.randomUUID(),
-                                        role: 'assistant',
-                                        content: parsed.content,
-                                        reasoning: parsed.reasoning || undefined,
-                                        timestamp: new Date().toISOString(),
-                                        isPartial: true,
-                                    });
-                                    saveMessages(conversationId, useChatStore.getState().messages);
-                                }
-                            }
-                            clearStreaming();
-                            setIsLoading(false);
-                        }
-                    }, 500);
-
-                    backgroundPollRef.current = pollInterval;
+                        }, 100);
+                    };
+                    schedulePoll();
                     streamingConversationRef.current = conversationId;
 
                     // Safety timeout: stop polling after 10 minutes
@@ -2016,6 +2016,15 @@ export default function ChatContainer({
         }
     };
 
+    // Stable callback wrapper — keeps the same reference across re-renders
+    // so React.memo on ChatMessages doesn't break. The ref always points to
+    // the latest handleContinueResponse without creating a new closure.
+    handleContinueRef.current = handleContinueResponse;
+    const stableHandleContinue = React.useCallback(
+        (...args) => handleContinueRef.current(...args),
+        []
+    );
+
     const handleModelChange = (modelName) => {
         updateSettings({ model: modelName });
     };
@@ -2128,12 +2137,7 @@ export default function ChatContainer({
                             <ChatMessages
                                 messages={messages}
                                 isStreaming={isStreaming}
-                                streamingContent={streamingContent}
-                                streamingReasoning={streamingReasoning}
-                                processingStatus={processingStatus}
-                                processingMessage={processingMessage}
-                                processingLog={processingLog}
-                                onContinue={handleContinueResponse}
+                                onContinue={stableHandleContinue}
                                 isLoading={isLoading}
                                 chatStyle={settings.chatStyle}
                                 messageBorderStrength={settings.messageBorderStrength}

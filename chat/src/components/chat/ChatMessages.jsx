@@ -1,19 +1,46 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MessageSquare } from 'lucide-react';
 import ChatMessage from './ChatMessage';
-import StatusIndicator from './StatusIndicator';
+import { useChatStore } from '../../stores/useChatStore';
+
+/**
+ * StreamingMessage — reads streaming content directly from the Zustand store
+ * via selectors so that only THIS component re-renders on each token, not the
+ * entire ChatContainer → ChatMessages prop chain.
+ */
+function StreamingMessage() {
+    const streamingContent = useChatStore(state => state.streamingContent);
+    const streamingReasoning = useChatStore(state => state.streamingReasoning);
+    const processingStatus = useChatStore(state => state.processingStatus);
+    const processingMessage = useChatStore(state => state.processingMessage);
+    const processingLog = useChatStore(state => state.processingLog);
+
+    return (
+        <ChatMessage
+            key="streaming-message"
+            role="assistant"
+            content={streamingContent}
+            reasoning={streamingReasoning}
+            isStreaming={true}
+            streamingContent={streamingContent}
+            streamingReasoning={streamingReasoning}
+            processingStatus={processingStatus}
+            processingMessage={processingMessage}
+            processingLog={processingLog}
+        />
+    );
+}
 
 /**
  * ChatMessages - Scrollable message list with auto-scroll (Tailwind)
+ *
+ * Wrapped in React.memo — only re-renders when messages, isStreaming, or
+ * layout props change. Streaming content updates bypass this component
+ * entirely (StreamingMessage reads from the store directly).
  */
-export default function ChatMessages({
+const ChatMessages = React.memo(function ChatMessages({
     messages,
     isStreaming,
-    streamingContent,
-    streamingReasoning,
-    processingStatus,
-    processingMessage,
-    processingLog,
     onContinue,
     isLoading,
     chatStyle = 'default',
@@ -73,13 +100,6 @@ export default function ChatMessages({
             className={`flex-1 overflow-y-auto px-3 py-2 ${chatStyleClass}`}
             style={{ '--message-border-opacity': (messageBorderStrength || 10) / 100 }}
         >
-            {/* Centered container for messages. Width must match the
-                 ChatInput inner wrapper (`max-w-4xl mx-auto`) so the
-                 input sits on exactly the same horizontal column as the
-                 responses. On narrow viewports where max-w-5xl would
-                 overflow the parent, using the smaller max-w-4xl also
-                 guarantees that `mx-auto` actually has margin to work
-                 with, avoiding the drift the user reported. */}
             <div className="max-w-4xl mx-auto min-w-0 space-y-1">
             {messages.map((message, index) => (
                 <ChatMessage
@@ -102,24 +122,13 @@ export default function ChatMessages({
                 />
             ))}
 
-            {/* Streaming message with status indicator */}
-            {isStreaming && (
-                <ChatMessage
-                    key="streaming-message"
-                    role="assistant"
-                    content={streamingContent}
-                    reasoning={streamingReasoning}
-                    isStreaming={true}
-                    streamingContent={streamingContent}
-                    streamingReasoning={streamingReasoning}
-                    processingStatus={processingStatus}
-                    processingMessage={processingMessage}
-                    processingLog={processingLog}
-                />
-            )}
+            {/* Streaming message — reads content from store directly */}
+            {isStreaming && <StreamingMessage />}
 
             <div ref={messagesEndRef} />
             </div>
         </div>
     );
-}
+});
+
+export default ChatMessages;
