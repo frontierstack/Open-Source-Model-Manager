@@ -217,15 +217,14 @@ export default function ChatContainer({
     useEffect(() => {
         // Clean up background polling from previous conversation
         clearBackgroundPoll();
-        // Abort any active stream reader — the server continues in background.
-        // When the user returns, loadConversationMessages + checkActiveStreaming
-        // will pick up the response. This prevents duplicate saves.
-        if (abortControllerRef.current) {
+        // Only abort the stream if we're switching AWAY from the streaming
+        // conversation. Don't abort if switching TO it (e.g. new conversation
+        // just created — activeConversationId changes to match the stream).
+        const streamConvId = streamingConversationRef.current;
+        if (abortControllerRef.current && streamConvId && streamConvId !== activeConversationId) {
             switchingConversationRef.current = true;
             abortControllerRef.current.abort();
-        }
-        // Clear streaming UI so it doesn't bleed into the new conversation.
-        if (useChatStore.getState().isStreaming) {
+            // Clear streaming UI so it doesn't bleed into the new conversation.
             clearStreaming();
             setIsLoading(false);
             clearProcessingStatus();
@@ -313,33 +312,49 @@ export default function ChatContainer({
                                     setStreamingContent(pollData.content || '');
                                     setStreamingReasoning(pollData.reasoning || '');
                                 } else {
-                                    // Streaming finished. The content is already in the
-                                    // store — convert it into a saved message directly
-                                    // instead of fetching from server (avoids race conditions).
+                                    // Streaming finished. The server saves the response
+                                    // BEFORE deleting the job from activeStreamingJobs,
+                                    // so by the time we see streaming:false, the response
+                                    // is already persisted. Fetch from server (sole writer)
+                                    // to avoid dual-save duplicates.
                                     clearBackgroundPoll();
-                                    // Save the response from streaming content.
-                                    // The stream reader was aborted on conversation switch,
-                                    // so this poll is the sole owner of the save.
-                                    const storeContent = useChatStore.getState().streamingContent || '';
-                                    const storeReasoning = useChatStore.getState().streamingReasoning || '';
-                                    if (storeContent.trim()) {
-                                        const parsed = parseThinkTags(storeContent);
-                                        const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
-                                        // Estimate tokens: ~1 token per 3 characters (conservative)
-                                        const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
-                                        const assistantMessage = {
-                                            id: crypto.randomUUID(),
-                                            role: 'assistant',
-                                            content: parsed.content || storeContent,
-                                            reasoning: parsed.reasoning || storeReasoning || undefined,
-                                            timestamp: new Date().toISOString(),
-                                            responseTime,
-                                            tokenCount: estimatedTokens,
-                                            backgroundCompleted: true,
-                                        };
-                                        addMessage(assistantMessage);
-                                        const updatedMsgs = useChatStore.getState().messages;
-                                        saveMessages(conversationId, updatedMsgs);
+                                    let loaded = false;
+                                    try {
+                                        const msgResponse = await fetch(
+                                            `/api/conversations/${conversationId}`,
+                                            { credentials: 'include' }
+                                        );
+                                        if (msgResponse.ok) {
+                                            const msgData = await msgResponse.json();
+                                            if (msgData.messages?.some(m => m.role === 'assistant' && !m.isError)) {
+                                                setMessages(msgData.messages);
+                                                loaded = true;
+                                            }
+                                        }
+                                    } catch (loadErr) {
+                                        console.error('Failed to load completed messages:', loadErr);
+                                    }
+                                    // Fallback: if server didn't have the response yet
+                                    // (very narrow race), save from streaming content.
+                                    if (!loaded) {
+                                        const storeContent = useChatStore.getState().streamingContent || '';
+                                        const storeReasoning = useChatStore.getState().streamingReasoning || '';
+                                        if (storeContent.trim()) {
+                                            const parsed = parseThinkTags(storeContent);
+                                            const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
+                                            const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
+                                            addMessage({
+                                                id: crypto.randomUUID(),
+                                                role: 'assistant',
+                                                content: parsed.content || storeContent,
+                                                reasoning: parsed.reasoning || storeReasoning || undefined,
+                                                timestamp: new Date().toISOString(),
+                                                responseTime,
+                                                tokenCount: estimatedTokens,
+                                                backgroundCompleted: true,
+                                            });
+                                            saveMessages(conversationId, useChatStore.getState().messages);
+                                        }
                                     }
                                     clearStreaming();
                                     setIsLoading(false);
