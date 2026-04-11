@@ -9260,14 +9260,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
         // AIMem compression: compress older conversation messages to save tokens
         // Controlled by compressMemory in model instance config (set at load time in model manager)
-        // When enabled, triggers when conversation has 6+ non-system messages and input exceeds 60% of context
+        // Normal trigger: 6+ non-system messages and input exceeds 60% of context
+        // Early trigger: 3+ messages when input exceeds 80% of context (e.g. bulk file uploads
+        // that fill most of the context — without early compression, context shifting would
+        // drop the file-heavy messages entirely, leaving follow-ups with no file data)
         const compressMemory = targetInstance.config?.compressMemory || false;
         const aimemThreshold = Math.floor(availableContextForInput * 0.6);
+        const aimemCriticalThreshold = Math.floor(availableContextForInput * 0.8);
         const nonSystemCount = chatMessages.filter(m => m.role !== 'system').length;
+        const minMessages = totalInputTokens > aimemCriticalThreshold ? 3 : 6;
         let aimemApplied = false;
         let aimemStats = null;
 
-        if (aimemEnabled && memoryCompressorService && compressMemory && nonSystemCount >= 6 && totalInputTokens > aimemThreshold) {
+        if (aimemEnabled && memoryCompressorService && compressMemory && nonSystemCount >= minMessages && totalInputTokens > aimemThreshold) {
             try {
                 // Extract the current user query for relevance ranking
                 let currentQuery = '';
@@ -9282,11 +9287,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     }
                 }
 
-                console.log(`[AIMem] Attempting compression: ${nonSystemCount} non-system messages, ${totalInputTokens} tokens (threshold: ${aimemThreshold})`);
+                console.log(`[AIMem] Attempting compression: ${nonSystemCount} non-system messages (min: ${minMessages}), ${totalInputTokens} tokens (threshold: ${aimemThreshold}${minMessages < 6 ? ', early trigger: >80% context' : ''})`);
 
+                // When few messages but high context usage (bulk file uploads), keep fewer
+                // recent messages uncompressed so the file-heavy message gets compressed
+                // instead of being skipped entirely then dropped by context shifting
+                const keepRecent = nonSystemCount <= 4 ? Math.max(1, nonSystemCount - 2) : 4;
                 const compressResult = await memoryCompressorService.compressConversation(
                     chatMessages, currentQuery, availableContextForInput,
-                    { keepRecentCount: 4, dedupThreshold: 0.45 }
+                    { keepRecentCount: keepRecent, dedupThreshold: 0.45 }
                 );
 
                 if (compressResult.success && compressResult.compressed && compressResult.stats) {
