@@ -4,15 +4,20 @@ import { Highlight, themes } from 'prism-react-renderer';
 
 /**
  * CodeBlock - Syntax-highlighted code block with copy functionality (Tailwind)
+ *
+ * During streaming: always expanded, no syntax highlighting (plain pre) for
+ * performance — avoids Prism re-highlighting the entire block on every token.
+ * After streaming: normal collapse/expand with full syntax highlighting.
  */
-export default React.memo(function CodeBlock({ code, language = 'text' }) {
+export default React.memo(function CodeBlock({ code, language = 'text', isStreaming = false }) {
     const [copied, setCopied] = useState(false);
 
     // Compute line count from the raw code
     const lineCount = (code || '').split('\n').length;
 
-    // Default-collapse blocks longer than 20 lines
-    const initialCollapsed = lineCount > 20;
+    // During streaming: never auto-collapse (content is still arriving).
+    // After streaming: collapse blocks longer than 20 lines.
+    const initialCollapsed = !isStreaming && lineCount > 20;
     const [collapsed, setCollapsed] = useState(initialCollapsed);
 
     const handleCopy = async () => {
@@ -43,6 +48,10 @@ export default React.memo(function CodeBlock({ code, language = 'text' }) {
 
     const normalizedLanguage = languageMap[language?.toLowerCase()] || language?.toLowerCase() || 'text';
 
+    // During streaming, hide collapse toggle (content still arriving, and local
+    // state resets on each ReactMarkdown re-parse anyway).
+    const showCollapseToggle = !isStreaming;
+
     return (
         <div className="code-block my-4">
             {/* Header with language, line count, collapse toggle and copy button */}
@@ -54,18 +63,20 @@ export default React.memo(function CodeBlock({ code, language = 'text' }) {
                     </span>
                 </span>
                 <div className="flex items-center gap-2">
-                    {collapsed && (
+                    {collapsed && showCollapseToggle && (
                         <span className="text-xs text-dark-500 italic">
                             {lineCount} {lineCount === 1 ? 'line' : 'lines'} hidden
                         </span>
                     )}
-                    <button
-                        onClick={handleToggleCollapsed}
-                        className="p-1.5 rounded-lg transition-colors text-dark-400 hover:text-dark-200 hover:bg-white/10"
-                        title={collapsed ? 'Expand code' : 'Collapse code'}
-                    >
-                        {collapsed ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
-                    </button>
+                    {showCollapseToggle && (
+                        <button
+                            onClick={handleToggleCollapsed}
+                            className="p-1.5 rounded-lg transition-colors text-dark-400 hover:text-dark-200 hover:bg-white/10"
+                            title={collapsed ? 'Expand code' : 'Collapse code'}
+                        >
+                            {collapsed ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
+                        </button>
+                    )}
                     <button
                         onClick={handleCopy}
                         className={`p-1.5 rounded-lg transition-colors ${
@@ -80,27 +91,34 @@ export default React.memo(function CodeBlock({ code, language = 'text' }) {
                 </div>
             </div>
 
-            {/* Code content */}
+            {/* Code content — during streaming use plain <pre> (fast), after
+                streaming use Prism syntax highlighting (pretty). */}
             {!collapsed && (
-                <Highlight theme={themes.nightOwl} code={code.trim()} language={normalizedLanguage}>
-                    {({ className, style, tokens, getLineProps, getTokenProps }) => (
-                        <pre
-                            className="p-4 overflow-x-auto font-mono text-[0.8125rem] leading-relaxed"
-                            style={{ ...style, backgroundColor: 'transparent' }}
-                        >
-                            {tokens.map((line, i) => (
-                                <div key={i} {...getLineProps({ line })}>
-                                    <span className="inline-block w-8 text-right pr-4 text-white/20 select-none">
-                                        {i + 1}
-                                    </span>
-                                    {line.map((token, key) => (
-                                        <span key={key} {...getTokenProps({ token })} />
-                                    ))}
-                                </div>
-                            ))}
-                        </pre>
-                    )}
-                </Highlight>
+                isStreaming ? (
+                    <pre className="p-4 overflow-x-auto font-mono text-[0.8125rem] leading-relaxed text-dark-200">
+                        {code.trim()}
+                    </pre>
+                ) : (
+                    <Highlight theme={themes.nightOwl} code={code.trim()} language={normalizedLanguage}>
+                        {({ className, style, tokens, getLineProps, getTokenProps }) => (
+                            <pre
+                                className="p-4 overflow-x-auto font-mono text-[0.8125rem] leading-relaxed"
+                                style={{ ...style, backgroundColor: 'transparent' }}
+                            >
+                                {tokens.map((line, i) => (
+                                    <div key={i} {...getLineProps({ line })}>
+                                        <span className="inline-block w-8 text-right pr-4 text-white/20 select-none">
+                                            {i + 1}
+                                        </span>
+                                        {line.map((token, key) => (
+                                            <span key={key} {...getTokenProps({ token })} />
+                                        ))}
+                                    </div>
+                                ))}
+                            </pre>
+                        )}
+                    </Highlight>
+                )
             )}
         </div>
     );

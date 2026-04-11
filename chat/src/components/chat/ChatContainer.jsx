@@ -103,6 +103,7 @@ export default function ChatContainer({
     const throttleTimerRef = useRef(null); // Throttle streaming UI updates to reduce jitter
     const pendingContentRef = useRef(''); // Buffer for throttled content updates
     const pendingReasoningRef = useRef(''); // Buffer for throttled reasoning updates
+    const backgroundPollRef = useRef(null); // Track background streaming poll interval for cleanup
 
     // Chat store
     const {
@@ -214,6 +215,15 @@ export default function ChatContainer({
 
     // Load conversation messages when active changes
     useEffect(() => {
+        // Clean up background polling from previous conversation
+        clearBackgroundPoll();
+        // If we were streaming, clear the streaming UI so it doesn't bleed
+        // into the new conversation's display.
+        if (useChatStore.getState().isStreaming) {
+            clearStreaming();
+            setIsLoading(false);
+            clearProcessingStatus();
+        }
         if (activeConversationId) {
             loadConversationMessages(activeConversationId);
         } else {
@@ -253,6 +263,14 @@ export default function ChatContainer({
         }
     };
 
+    // Clean up any active background polling interval
+    const clearBackgroundPoll = () => {
+        if (backgroundPollRef.current) {
+            clearInterval(backgroundPollRef.current);
+            backgroundPollRef.current = null;
+        }
+    };
+
     // Check for active background streaming on a conversation
     const checkActiveStreaming = async (conversationId) => {
         try {
@@ -265,10 +283,18 @@ export default function ChatContainer({
                     setStreamingContent(data.content || '');
                     setStreamingReasoning(data.reasoning || '');
                     setIsLoading(true);
-                    setProcessingStatus('thinking', 'Generating in background...');
+                    setProcessingStatus('generating', 'Generating in background...');
 
-                    // Start polling for updates
+                    // Clear any previous poll before starting a new one
+                    clearBackgroundPoll();
+
                     const pollInterval = setInterval(async () => {
+                        // Stop polling if user navigated to a different conversation
+                        const currentActiveId = useChatStore.getState().activeConversationId;
+                        if (currentActiveId !== conversationId) {
+                            clearBackgroundPoll();
+                            return;
+                        }
                         try {
                             const pollResponse = await fetch(`/api/conversations/${conversationId}/streaming`, { credentials: 'include' });
                             if (pollResponse.ok) {
@@ -278,35 +304,63 @@ export default function ChatContainer({
                                     setStreamingContent(pollData.content || '');
                                     setStreamingReasoning(pollData.reasoning || '');
                                 } else {
-                                    // Streaming finished - reload messages and clear streaming state
-                                    clearInterval(pollInterval);
+                                    // Streaming finished. The content is already in the
+                                    // store — convert it into a saved message directly
+                                    // instead of fetching from server (avoids race conditions).
+                                    clearBackgroundPoll();
+                                    const finalContent = useChatStore.getState().streamingContent || '';
+                                    const finalReasoning = useChatStore.getState().streamingReasoning || '';
+                                    if (finalContent.trim()) {
+                                        const parsed = parseThinkTags(finalContent);
+                                        const assistantMessage = {
+                                            id: crypto.randomUUID(),
+                                            role: 'assistant',
+                                            content: parsed.content || finalContent,
+                                            reasoning: parsed.reasoning || finalReasoning || undefined,
+                                            timestamp: new Date().toISOString(),
+                                            backgroundCompleted: true,
+                                        };
+                                        addMessage(assistantMessage);
+                                        const updatedMsgs = useChatStore.getState().messages;
+                                        saveMessages(conversationId, updatedMsgs);
+                                    }
                                     clearStreaming();
                                     setIsLoading(false);
                                     clearProcessingStatus();
-                                    // Reload messages to get the completed response
-                                    const msgResponse = await fetch(`/api/conversations/${conversationId}`, { credentials: 'include' });
-                                    if (msgResponse.ok) {
-                                        const msgData = await msgResponse.json();
-                                        setMessages(msgData.messages || []);
-                                    }
                                     showSnackbar('Background response completed', 'success');
                                 }
                             }
                         } catch (pollError) {
                             console.error('Failed to poll streaming status:', pollError);
-                            clearInterval(pollInterval);
+                            clearBackgroundPoll();
+                            // Rescue whatever content we have before clearing
+                            const rescueContent = useChatStore.getState().streamingContent || '';
+                            if (rescueContent.trim()) {
+                                const parsed = parseThinkTags(rescueContent);
+                                if (parsed.content.trim()) {
+                                    addMessage({
+                                        id: crypto.randomUUID(),
+                                        role: 'assistant',
+                                        content: parsed.content,
+                                        reasoning: parsed.reasoning || undefined,
+                                        timestamp: new Date().toISOString(),
+                                        isPartial: true,
+                                    });
+                                    saveMessages(conversationId, useChatStore.getState().messages);
+                                }
+                            }
                             clearStreaming();
                             setIsLoading(false);
                         }
-                    }, 500); // Poll every 500ms
+                    }, 500);
 
-                    // Store the interval ID so we can clear it if user navigates away
+                    backgroundPollRef.current = pollInterval;
                     streamingConversationRef.current = conversationId;
 
-                    // Clear interval after 5 minutes max (safety limit)
+                    // Safety timeout: stop polling after 10 minutes
                     setTimeout(() => {
-                        clearInterval(pollInterval);
-                    }, 5 * 60 * 1000);
+                        clearBackgroundPoll();
+                    }, 10 * 60 * 1000);
                 }
             }
         } catch (error) {
@@ -1061,6 +1115,8 @@ export default function ChatContainer({
 
         // Track response time
         const startTime = Date.now();
+        let connectionLost = false; // Track if stream died due to network (hoisted for finally block access)
+        let messageSaved = false; // Track if assistant message was saved (for finally rescue)
 
         try {
             setProcessingStatus('thinking', 'Model is thinking');
@@ -1138,8 +1194,12 @@ export default function ChatContainer({
                             // User manually stopped - not an error, save partial content
                             lastFinishReason = 'stop_by_user';
                         } else {
-                            console.error('Stream read error:', readError);
-                            inStreamError = 'Connection lost while streaming response';
+                            // Network error (page refresh, tab close, connection drop).
+                            // The server continues generating in background and will save
+                            // the complete response. Don't save partial content or error
+                            // messages — just transition to background polling.
+                            console.log('[Chat] Stream connection lost — server continues in background');
+                            connectionLost = true;
                         }
                         break;
                     }
@@ -1204,7 +1264,7 @@ export default function ChatContainer({
                                             }
                                         }
                                         throttleTimerRef.current = null;
-                                    }, 50);
+                                    }, 150);
                                 }
                                 tokenCount++; // Approximate token count by chunks
                             }
@@ -1221,7 +1281,7 @@ export default function ChatContainer({
                                             setStreamingReasoning(pendingReasoningRef.current);
                                         }
                                         throttleTimerRef.current = null;
-                                    }, 50);
+                                    }, 150);
                                 }
                             }
 
@@ -1412,9 +1472,18 @@ export default function ChatContainer({
             // This ensures we save to the correct conversation
             let finalMessages = [...updatedMessages];
 
-            // Handle in-stream error - save partial content if any, then show error
-            if (inStreamError) {
-                // If we have partial content, save it first
+            // Handle connection lost — server continues in background, don't persist anything.
+            // Just transition to background polling so the UI picks up when the server finishes.
+            if (connectionLost) {
+                if (!userSwitchedConversation) {
+                    // Immediately check for background streaming and start polling
+                    checkActiveStreaming(conversationId);
+                }
+                // Skip saving partial content or error messages — the server
+                // will save the complete response when it finishes.
+            } else if (inStreamError) {
+                // Genuine server-sent error (not a network disconnect)
+                // Save partial content if any, then show error
                 if (finalContent.trim()) {
                     const partialMessage = {
                         id: crypto.randomUUID(),
@@ -1449,6 +1518,7 @@ export default function ChatContainer({
                 }
                 finalMessages = [...finalMessages, errorMessage];
                 saveMessages(conversationId, finalMessages);
+                messageSaved = true;
 
                 // Show snackbar notification
                 showSnackbar(inStreamError, 'error');
@@ -1481,6 +1551,7 @@ export default function ChatContainer({
                     addMessage(assistantMessage);
                 }
                 saveMessages(conversationId, finalMessages);
+                messageSaved = true;
 
                 // Auto-continue if response was cut off by length limit
                 // The server already auto-continues up to 8 times, so this only fires
@@ -1537,44 +1608,54 @@ export default function ChatContainer({
                 }
             }
         } finally {
-            // Only clear loading/streaming UI if we're still on the same conversation
-            const currentActiveId = useChatStore.getState().activeConversationId;
-            if (currentActiveId === conversationId) {
-                // Safety net: rescue any streaming content that wasn't saved as a message.
-                // This catches edge cases where the response was visible during streaming
-                // but an error/abort prevented the normal save path from running.
-                const residualContent = useChatStore.getState().streamingContent;
-                if (residualContent && residualContent.trim()) {
-                    const currentMsgs = useChatStore.getState().messages;
-                    const lastMsg = currentMsgs[currentMsgs.length - 1];
-                    // Only rescue if the last message isn't already this content
-                    const alreadySaved = lastMsg?.role === 'assistant' &&
-                        lastMsg.content === residualContent;
-                    if (!alreadySaved) {
-                        const parsed = parseThinkTags(residualContent);
-                        if (parsed.content.trim()) {
-                            const rescuedMessage = {
-                                id: crypto.randomUUID(),
-                                role: 'assistant',
-                                content: parsed.content,
-                                reasoning: parsed.reasoning || undefined,
-                                timestamp: new Date().toISOString(),
-                                isPartial: true,
-                            };
-                            addMessage(rescuedMessage);
-                            saveMessages(conversationId, [...currentMsgs, rescuedMessage]);
-                            console.log(`[Chat] Rescued ${residualContent.length} chars of streaming content`);
+            // If connection was lost, background polling is now active — don't
+            // clear streaming UI or rescue content (server handles persistence).
+            if (connectionLost) {
+                abortControllerRef.current = null;
+                switchingConversationRef.current = false;
+                // Note: streamingConversationRef and streaming UI stay active
+                // because checkActiveStreaming took over.
+            } else {
+                // Only clear loading/streaming UI if we're still on the same conversation
+                const currentActiveId = useChatStore.getState().activeConversationId;
+                if (currentActiveId === conversationId) {
+                    // If the normal save path didn't run (e.g. an exception was thrown
+                    // between stream end and addMessage), rescue the response from the
+                    // streaming content so it doesn't vanish.
+                    if (!messageSaved) {
+                        const streamContent = useChatStore.getState().streamingContent;
+                        if (streamContent && streamContent.trim()) {
+                            console.warn('[Chat] Message was not saved — rescuing from streaming content');
+                            const parsed = parseThinkTags(streamContent);
+                            if (parsed.content.trim()) {
+                                const rescuedMessage = {
+                                    id: crypto.randomUUID(),
+                                    role: 'assistant',
+                                    content: parsed.content,
+                                    reasoning: parsed.reasoning || undefined,
+                                    timestamp: new Date().toISOString(),
+                                    responseTime: Date.now() - startTime,
+                                    isPartial: true,
+                                };
+                                addMessage(rescuedMessage);
+                                const currentMsgs = useChatStore.getState().messages;
+                                try {
+                                    await saveMessages(conversationId, currentMsgs);
+                                } catch (e) {
+                                    console.error('[Chat] Failed to save rescued message:', e);
+                                }
+                            }
                         }
                     }
-                }
 
-                setIsLoading(false);
-                clearStreaming();
-                clearProcessingStatus();
+                    setIsLoading(false);
+                    clearStreaming();
+                    clearProcessingStatus();
+                }
+                streamingConversationRef.current = null;
+                abortControllerRef.current = null;
+                switchingConversationRef.current = false;
             }
-            streamingConversationRef.current = null;
-            abortControllerRef.current = null;
-            switchingConversationRef.current = false;
         }
     };
 
@@ -1582,6 +1663,8 @@ export default function ChatContainer({
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
+        // Stop any active background polling
+        clearBackgroundPoll();
         // Immediate UI feedback — don't wait for the async cleanup
         setIsLoading(false);
         setProcessingStatus(null, null);
@@ -1642,12 +1725,23 @@ export default function ChatContainer({
             content: continuationPrompt
         });
 
-        // Start streaming - track which conversation this stream belongs to
+        // Find the original message and remember its position
+        const originalMsg = currentMsgs.find(m => m.id === messageId);
+        const originalContent = originalMsg?.content || messageContent || '';
+        const originalReasoning = originalMsg?.reasoning || '';
+        const originalMsgIndex = currentMsgs.findIndex(m => m.id === messageId);
+
+        // Temporarily hide the original message so the streaming bubble replaces it
+        // (avoids showing two bubbles: original + streaming continuation)
+        const msgsWithoutOriginal = currentMsgs.filter(m => m.id !== messageId);
+        setMessages(msgsWithoutOriginal);
+
+        // Start streaming - seed with original content so continuation appears in same bubble
         streamingConversationRef.current = conversationId;
         setIsLoading(true);
         setStreaming(true);
-        setStreamingContent('');
-        setStreamingReasoning('');
+        setStreamingContent(originalContent);
+        setStreamingReasoning(originalReasoning);
         setProcessingStatus('thinking', 'Continuing response...');
         abortControllerRef.current = new AbortController();
 
@@ -1699,8 +1793,11 @@ export default function ChatContainer({
                             // User manually stopped continuation - not an error
                             lastFinishReason = 'stop_by_user';
                         } else {
-                            console.error('Continuation stream read error:', readError);
-                            inStreamError = 'Connection lost while streaming response';
+                            // Network error — server continues in background
+                            console.log('[Chat] Continuation stream connection lost — server continues in background');
+                            // Check for background streaming instead of saving error
+                            checkActiveStreaming(conversationId);
+                            return; // Exit early — background poll handles the rest
                         }
                         break;
                     }
@@ -1740,13 +1837,16 @@ export default function ChatContainer({
                                 if (delta?.content) {
                                     assistantContent += delta.content;
                                     const thinkParsed = parseThinkTags(assistantContent);
-                                    // Only update UI if still on same conversation
+                                    // Show original content + continuation in the same streaming bubble
                                     const currentActiveId = useChatStore.getState().activeConversationId;
                                     if (currentActiveId === conversationId) {
-                                        setStreamingContent(thinkParsed.content);
+                                        setStreamingContent(originalContent + '\n\n' + thinkParsed.content);
                                         if (thinkParsed.reasoning) {
                                             assistantReasoning = thinkParsed.reasoning;
-                                            setStreamingReasoning(assistantReasoning);
+                                            const combinedReasoning = originalReasoning
+                                                ? originalReasoning + '\n\n' + assistantReasoning
+                                                : assistantReasoning;
+                                            setStreamingReasoning(combinedReasoning);
                                         }
                                     } else if (thinkParsed.reasoning) {
                                         assistantReasoning = thinkParsed.reasoning;
@@ -1758,7 +1858,10 @@ export default function ChatContainer({
                                     assistantReasoning += delta.reasoning;
                                     const currentActiveId = useChatStore.getState().activeConversationId;
                                     if (currentActiveId === conversationId) {
-                                        setStreamingReasoning(assistantReasoning);
+                                        const combinedReasoning = originalReasoning
+                                            ? originalReasoning + '\n\n' + assistantReasoning
+                                            : assistantReasoning;
+                                        setStreamingReasoning(combinedReasoning);
                                     }
                                 }
 
@@ -1798,28 +1901,30 @@ export default function ChatContainer({
             const currentActiveId = useChatStore.getState().activeConversationId;
             const userSwitchedConversation = currentActiveId !== conversationId;
 
-            if (finalContent.trim()) {
-                const assistantMessage = {
-                    id: crypto.randomUUID(),
-                    role: 'assistant',
-                    content: finalContent,
-                    reasoning: finalReasoning,
-                    timestamp: new Date().toISOString(),
-                    responseTime,
-                    tokenCount: tokenCount > 0 ? tokenCount : undefined,
-                    needsContinuation,
-                    isPartial: needsContinuation,
-                    isContinuation: true,
-                };
+            // Merge continuation content into the original message and restore it
+            const mergedMsg = {
+                ...originalMsg,
+                content: finalContent.trim()
+                    ? originalContent + '\n\n' + finalContent
+                    : originalContent,
+                reasoning: finalReasoning
+                    ? (originalReasoning ? originalReasoning + '\n\n' + finalReasoning : finalReasoning)
+                    : originalReasoning || undefined,
+                responseTime: (originalMsg.responseTime || 0) + responseTime,
+                tokenCount: ((originalMsg.tokenCount || 0) + (tokenCount > 0 ? tokenCount : 0)) || undefined,
+                needsContinuation,
+                isPartial: needsContinuation,
+            };
 
-                // Use messages captured at start for proper saving
-                const updatedMsgs = [...messagesAtStart, assistantMessage];
-                // Only update local store if still on same conversation
-                if (!userSwitchedConversation) {
-                    addMessage(assistantMessage);
-                }
-                saveMessages(conversationId, updatedMsgs);
+            // Restore the merged message at its original position
+            const currentMsgs = useChatStore.getState().messages;
+            const restoredMessages = [...currentMsgs];
+            restoredMessages.splice(originalMsgIndex, 0, mergedMsg);
+
+            if (!userSwitchedConversation) {
+                setMessages(restoredMessages);
             }
+            saveMessages(conversationId, restoredMessages);
 
             if (stoppedByUser) {
                 showSnackbar('Generation stopped', 'info');
@@ -1827,15 +1932,6 @@ export default function ChatContainer({
                 showSnackbar('Response completed in background', 'success');
             }
 
-            // Mark the original message as no longer needing continuation
-            if (!needsContinuation && !userSwitchedConversation) {
-                const msgs = useChatStore.getState().messages;
-                const updatedMessages = msgs.map(m =>
-                    m.id === messageId ? { ...m, needsContinuation: false, isPartial: false } : m
-                );
-                useChatStore.getState().setMessages(updatedMessages);
-                saveMessages(conversationId, updatedMessages);
-            }
 
         } catch (error) {
             if (error.name !== 'AbortError') {
@@ -1846,30 +1942,17 @@ export default function ChatContainer({
             // Only clear loading/streaming UI if still on same conversation
             const currentActiveId = useChatStore.getState().activeConversationId;
             if (currentActiveId === conversationId) {
-                // Safety net: rescue unsaved streaming content (same as main handler)
-                const residualContent = useChatStore.getState().streamingContent;
-                if (residualContent && residualContent.trim()) {
-                    const currentMsgs = useChatStore.getState().messages;
-                    const lastMsg = currentMsgs[currentMsgs.length - 1];
-                    const alreadySaved = lastMsg?.role === 'assistant' &&
-                        lastMsg.content === residualContent;
-                    if (!alreadySaved) {
-                        const parsed = parseThinkTags(residualContent);
-                        if (parsed.content.trim()) {
-                            const rescuedMessage = {
-                                id: crypto.randomUUID(),
-                                role: 'assistant',
-                                content: parsed.content,
-                                reasoning: parsed.reasoning || undefined,
-                                timestamp: new Date().toISOString(),
-                                isPartial: true,
-                                isContinuation: true,
-                            };
-                            addMessage(rescuedMessage);
-                            saveMessages(conversationId, [...currentMsgs, rescuedMessage]);
-                            console.log(`[Chat] Rescued ${residualContent.length} chars of continuation content`);
-                        }
-                    }
+                // Ensure the original message is restored even if an error occurred.
+                // The try block may have removed it from the list for the streaming UX.
+                const currentMsgs = useChatStore.getState().messages;
+                const msgStillPresent = currentMsgs.some(m => m.id === messageId);
+                if (!msgStillPresent && originalMsg) {
+                    // Restore original (unmodified) message at its position
+                    const restored = [...currentMsgs];
+                    restored.splice(originalMsgIndex, 0, originalMsg);
+                    setMessages(restored);
+                    saveMessages(conversationId, restored);
+                    console.log(`[Chat] Restored original message after continuation error`);
                 }
 
                 setIsLoading(false);

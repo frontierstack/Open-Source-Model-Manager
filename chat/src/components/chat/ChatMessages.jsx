@@ -105,6 +105,7 @@ export default function ChatMessages({
             {/* Streaming message with status indicator */}
             {isStreaming && (
                 <ChatMessage
+                    key="streaming-message"
                     role="assistant"
                     content={streamingContent}
                     reasoning={streamingReasoning}

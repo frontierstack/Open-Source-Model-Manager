@@ -6,7 +6,7 @@ import CodeBlock from './CodeBlock';
 /**
  * MessageContent - Renders markdown content with Tailwind styling
  */
-export default React.memo(function MessageContent({ content }) {
+export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
 
     // Pre-process content to convert <br> tags to markdown line breaks
@@ -28,6 +28,7 @@ export default React.memo(function MessageContent({ content }) {
                                 <CodeBlock
                                     code={code}
                                     language={match ? match[1] : 'text'}
+                                    isStreaming={isStreaming}
                                 />
                             );
                         }

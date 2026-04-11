@@ -97,6 +97,11 @@ export const useChatStore = create(
         streamingContent: '',
         streamingReasoning: '',
 
+        // Collapse state: object mapping messageId -> true. Lives in the store
+        // (not local component state) so it survives React remounts/re-renders.
+        // The streaming message uses the key '__streaming__'.
+        collapsedMessageIds: {},
+
         // Processing status for UI indicators
         processingStatus: null, // null, 'thinking', 'searching', 'parsing', 'processing', 'generating'
         processingMessage: null,
@@ -298,13 +303,41 @@ export const useChatStore = create(
             streamingReasoning: state.streamingReasoning + reasoning
         })),
 
-        clearStreaming: () => set({
+        clearStreaming: () => set(state => ({
             streamingContent: '',
             streamingReasoning: '',
             isStreaming: false,
             processingStatus: null,
             processingMessage: null,
             processingLog: [],
+            // Clear the streaming message collapse entry when streaming ends
+            collapsedMessageIds: (() => {
+                const next = { ...state.collapsedMessageIds };
+                delete next['__streaming__'];
+                return next;
+            })(),
+        })),
+
+        // ==================== Collapse Actions ====================
+
+        toggleMessageCollapsed: (messageId) => set(state => {
+            const next = { ...state.collapsedMessageIds };
+            if (next[messageId]) {
+                delete next[messageId];
+            } else {
+                next[messageId] = true;
+            }
+            return { collapsedMessageIds: next };
+        }),
+
+        setMessageCollapsed: (messageId, collapsed) => set(state => {
+            const next = { ...state.collapsedMessageIds };
+            if (collapsed) {
+                next[messageId] = true;
+            } else {
+                delete next[messageId];
+            }
+            return { collapsedMessageIds: next };
         }),
 
         // ==================== Processing Status Actions ====================

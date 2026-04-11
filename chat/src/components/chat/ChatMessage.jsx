@@ -6,6 +6,7 @@ import StatusIndicator from './StatusIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import SearchSources from './SearchSources';
 import ProcessingLogFeed from './ProcessingLogFeed';
+import { useChatStore } from '../../stores/useChatStore';
 
 /**
  * ChatMessage - Individual chat message bubble (Tailwind)
@@ -38,10 +39,15 @@ export default React.memo(function ChatMessage({
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
-    // Local per-message state for collapsing the main message body. Default
-    // expanded; toggle persists for the session lifetime of this component.
-    const [bodyCollapsed, setBodyCollapsed] = useState(false);
     const reasoningRef = useRef(null);
+
+    // Collapse state lives in the Zustand store (not local useState) so it
+    // survives React remounts and rapid re-renders during streaming.
+    // The streaming message has no `id`, so we use '__streaming__'.
+    const collapseKey = id || (isStreaming ? '__streaming__' : null);
+    const bodyCollapsed = useChatStore(state => collapseKey ? !!state.collapsedMessageIds[collapseKey] : false);
+    const toggleMessageCollapsed = useChatStore(state => state.toggleMessageCollapsed);
+    const setMessageCollapsed = useChatStore(state => state.setMessageCollapsed);
 
     const isUser = role === 'user';
     const displayContent = isStreaming ? streamingContent : content;
@@ -115,13 +121,12 @@ export default React.memo(function ChatMessage({
                 )}
 
                 {/* Collapse/expand toggle for the assistant message body.
-                    Only shown on final (non-streaming) assistant messages
-                    that actually have content. User messages always stay
-                    expanded. */}
-                {!isUser && !isStreaming && displayContent && (
+                    Shown on any assistant message that has content (including
+                    while streaming) so the user can collapse/expand at will. */}
+                {!isUser && displayContent && (
                     <div className="flex items-center justify-end mb-1 -mt-0.5">
                         <button
-                            onClick={() => setBodyCollapsed(v => !v)}
+                            onClick={() => collapseKey && toggleMessageCollapsed(collapseKey)}
                             className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] text-dark-500 hover:text-dark-200 hover:bg-white/[0.05] transition-colors"
                             title={bodyCollapsed ? 'Expand response' : 'Collapse response'}
                         >
@@ -182,7 +187,7 @@ export default React.memo(function ChatMessage({
                         const chars = (displayContent || '').length;
                         return (
                             <button
-                                onClick={() => setBodyCollapsed(false)}
+                                onClick={() => collapseKey && setMessageCollapsed(collapseKey, false)}
                                 className="w-full text-left group transition-colors"
                             >
                                 <div className="flex items-start gap-2 text-[12.5px]">
@@ -200,7 +205,7 @@ export default React.memo(function ChatMessage({
                         );
                     })()
                 ) : (
-                    <MessageContent content={displayContent} />
+                    <MessageContent content={displayContent} isStreaming={isStreaming} />
                 )}
 
                 {/* Web search source chips + tool-call blocks. Rendered
