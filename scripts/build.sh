@@ -298,10 +298,10 @@ start_build_spinner() {
 
     (
         local i=0
-        local last_checkpoint=""
         local last_display=""
         local tick=0
         local display="$label"
+        local seen_checkpoints=""
         while true; do
             printf "\r\033[K  \033[0;36m${frames[$i]}\033[0m  %s" "$display"
             i=$(( (i + 1) % ${#frames[@]} ))
@@ -313,16 +313,21 @@ start_build_spinner() {
                     if [ -f "$lf" ]; then
                         local latest
                         latest=$(grep -oiE "$CHECKPOINT_PATTERNS" "$lf" 2>/dev/null | tail -1)
-                        if [ -n "$latest" ] && [ "$latest" != "$last_checkpoint" ]; then
-                            last_checkpoint="$latest"
+                        if [ -n "$latest" ]; then
                             local new_display
                             new_display=$(friendly_checkpoint "$latest")
+                            # Skip if this checkpoint was already shown or is currently active
+                            if echo "$seen_checkpoints" | grep -qxF "$new_display"; then
+                                continue
+                            fi
                             # Print the previous checkpoint as completed above the spinner
                             if [ -n "$last_display" ] && [ "$last_display" != "$label" ]; then
                                 printf "\r\033[K  \033[0;32m✓\033[0m  \033[2m%s\033[0m\n" "$last_display"
+                                seen_checkpoints="${seen_checkpoints}${last_display}"$'\n'
                             fi
                             last_display="$new_display"
                             display="$new_display"
+                            seen_checkpoints="${seen_checkpoints}${new_display}"$'\n'
                         fi
                     fi
                 done
