@@ -29,6 +29,7 @@ TRUST_REMOTE_CODE=${VLLM_TRUST_REMOTE_CODE:-true}
 ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
 TOKENIZER=${VLLM_TOKENIZER:-}
 CHAT_TEMPLATE=${VLLM_CHAT_TEMPLATE:-}
+SERVED_MODEL_NAME=${VLLM_SERVED_MODEL_NAME:-}
 
 echo ">>> Starting vLLM server"
 echo "    Model: $MODEL_PATH"
@@ -116,6 +117,18 @@ if [ "$ENFORCE_EAGER" = "true" ]; then
     CMD_ARGS+=(--enforce-eager)
     echo "    [Enforce eager mode ENABLED - CUDA graphs disabled]"
 fi
+
+# Set served model name so the OpenAI-compatible API accepts it in the
+# `model` request field. Defaults to the basename of the model directory.
+if [ -z "$SERVED_MODEL_NAME" ]; then
+    SERVED_MODEL_NAME=$(basename "$(dirname "$MODEL_PATH")")
+    # Fallback for models not in a subdirectory
+    if [ "$SERVED_MODEL_NAME" = "models" ] || [ "$SERVED_MODEL_NAME" = "." ]; then
+        SERVED_MODEL_NAME=$(basename "$MODEL_PATH" .gguf)
+    fi
+fi
+CMD_ARGS+=(--served-model-name "$SERVED_MODEL_NAME")
+echo "    [Served model name: $SERVED_MODEL_NAME]"
 
 echo ""
 echo ">>> Starting vLLM with OpenAI-compatible API"

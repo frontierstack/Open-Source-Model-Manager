@@ -605,6 +605,7 @@ async function processWithMapReduce(options) {
     const {
         targetHost,
         targetPort,
+        model,
         largeContent,
         originalQuery,
         systemMessages = [],
@@ -697,6 +698,7 @@ async function processWithMapReduce(options) {
                         method: 'post',
                         url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
                         data: {
+                            model: model || undefined,
                             messages,
                             temperature,
                             top_p: topP,
@@ -867,6 +869,7 @@ async function processWithMapReduce(options) {
             method: 'post',
             url: `http://${targetHost}:${targetPort}/v1/chat/completions`,
             data: {
+                model: model || undefined,
                 messages: synthesisMessages,
                 temperature: Math.max(0.3, temperature - 0.2), // Slightly lower temp for synthesis
                 top_p: topP,
@@ -2769,6 +2772,9 @@ async function createVllmInstance(modelName, modelPath, config) {
         if (config.chatTemplate) {
             envVars.push(`VLLM_CHAT_TEMPLATE=${config.chatTemplate}`);
         }
+
+        // Set served model name so vLLM accepts it in the `model` request field
+        envVars.push(`VLLM_SERVED_MODEL_NAME=${modelName}`);
 
         const container = await docker.createContainer({
             Image: 'modelserver-vllm:latest',
@@ -8934,6 +8940,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                     messages.push({ role: 'user', content: truncatedMessage });
 
                     const requestBody = {
+                        model: targetModel,
                         messages: messages,
                         temperature: temperature || 0.7,
                         // Always clamped to contextSize - inputTokens to prevent
@@ -8983,6 +8990,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         messages.push({ role: 'user', content: userContent });
 
         const requestBody = {
+            model: targetModel,
             messages: messages,
             temperature: temperature || 0.7,
             // Always clamped to contextSize - inputTokens to prevent vLLM's
@@ -9624,6 +9632,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 const mapReduceResult = await processWithMapReduce({
                     targetHost,
                     targetPort,
+                    model: targetModel,
                     largeContent: mapReduceContent,
                     originalQuery: mapReduceQuery,
                     systemMessages: systemMsgs,
@@ -9774,6 +9783,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                 try {
                     const requestBody = {
+                        model: targetModel,
                         messages: requestMessages,
                         temperature: temperature || 0.7,
                         top_p: effectiveTopP,
@@ -10260,6 +10270,7 @@ app.post('/api/complete', requireAuth, async (req, res) => {
             : Math.min(Math.max(2048, Math.floor(contextSize * 0.2)), available);
 
         const requestBody = {
+            model: targetModel,
             prompt: finalPrompt,
             temperature: temperature || 0.7,
             max_tokens: safeMaxTokens
