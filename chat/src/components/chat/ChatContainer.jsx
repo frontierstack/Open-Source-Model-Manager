@@ -287,8 +287,13 @@ export default function ChatContainer({
                     setStreaming(true);
                     setStreamingContent(data.content || '');
                     setStreamingReasoning(data.reasoning || '');
-                    setIsLoading(true);
-                    setProcessingStatus('generating', 'Generating in background...');
+                    setIsLoading(false);
+                    clearProcessingLog();
+                    pushProcessingLog({
+                        icon: 'sparkles',
+                        text: data.content ? 'Resuming response...' : `Waiting for ${data.model || 'model'} to respond`,
+                        kind: 'generating',
+                    });
 
                     // Capture start time for response stats
                     const streamStartTime = data.startTime || Date.now();
