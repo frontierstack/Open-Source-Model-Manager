@@ -33,6 +33,7 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **Vision Models** — Send images to vision-capable models (LLaVA, Qwen-VL) with OCR fallback for non-vision models
 - **Thinking Models** — Parse and display reasoning from models like DeepSeek R1 and Qwen QwQ
 - **Map-Reduce Chunking** — Automatically splits large content across multiple model calls and synthesizes results
+- **AIMem Memory Compression** — Compresses older conversation history to reduce token usage, speeding up inference and lowering VRAM consumption during long conversations
 - **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
 - **Auto-Continuation** — Automatically continues truncated responses up to 8 times
 
@@ -41,6 +42,16 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **[Scrapling](https://github.com/D4Vinci/Scrapling) Integration** — CAPTCHA-evading web scraping with StealthyFetcher
 - **Multi-Engine Search** — DuckDuckGo → Scrapling → Brave Search → Playwright
 - **Smart Content Extraction** — Playwright SPA/XHR interception, direct file download for PDFs/DOCX/XLSX
+
+### AIMem — Memory Compression
+
+Long conversations consume increasing amounts of context window and VRAM. AIMem compresses older messages before they're sent to the model, reducing token count while preserving all factual content.
+
+- **4-stage pipeline** — Semantic deduplication, lossy prompt compression, symbolic shorthand, and relevance-gated retrieval
+- **~48% token reduction** with 100% fact retention (benchmarked across 47 strategy combinations)
+- **Faster responses** — Fewer input tokens means faster time-to-first-token and lower VRAM pressure
+- **Transparent** — Enable per-model via the "Compress Memory" toggle in the model manager; all clients (Chat UI, Koda, API) respect the setting automatically
+- **Smart triggering** — Only activates when conversations have 6+ messages and input exceeds 60% of available context, keeping short conversations untouched
 
 ### Chat Interface
 
