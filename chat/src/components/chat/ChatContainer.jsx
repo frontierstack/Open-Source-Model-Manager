@@ -217,8 +217,14 @@ export default function ChatContainer({
     useEffect(() => {
         // Clean up background polling from previous conversation
         clearBackgroundPoll();
-        // If we were streaming, clear the streaming UI so it doesn't bleed
-        // into the new conversation's display.
+        // Abort any active stream reader — the server continues in background.
+        // When the user returns, loadConversationMessages + checkActiveStreaming
+        // will pick up the response. This prevents duplicate saves.
+        if (abortControllerRef.current) {
+            switchingConversationRef.current = true;
+            abortControllerRef.current.abort();
+        }
+        // Clear streaming UI so it doesn't bleed into the new conversation.
         if (useChatStore.getState().isStreaming) {
             clearStreaming();
             setIsLoading(false);
@@ -285,6 +291,9 @@ export default function ChatContainer({
                     setIsLoading(true);
                     setProcessingStatus('generating', 'Generating in background...');
 
+                    // Capture start time for response stats
+                    const streamStartTime = data.startTime || Date.now();
+
                     // Clear any previous poll before starting a new one
                     clearBackgroundPoll();
 
@@ -308,16 +317,21 @@ export default function ChatContainer({
                                     // store — convert it into a saved message directly
                                     // instead of fetching from server (avoids race conditions).
                                     clearBackgroundPoll();
-                                    const finalContent = useChatStore.getState().streamingContent || '';
-                                    const finalReasoning = useChatStore.getState().streamingReasoning || '';
-                                    if (finalContent.trim()) {
-                                        const parsed = parseThinkTags(finalContent);
+                                    // Save the response from streaming content.
+                                    // The stream reader was aborted on conversation switch,
+                                    // so this poll is the sole owner of the save.
+                                    const storeContent = useChatStore.getState().streamingContent || '';
+                                    const storeReasoning = useChatStore.getState().streamingReasoning || '';
+                                    if (storeContent.trim()) {
+                                        const parsed = parseThinkTags(storeContent);
+                                        const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
                                         const assistantMessage = {
                                             id: crypto.randomUUID(),
                                             role: 'assistant',
-                                            content: parsed.content || finalContent,
-                                            reasoning: parsed.reasoning || finalReasoning || undefined,
+                                            content: parsed.content || storeContent,
+                                            reasoning: parsed.reasoning || storeReasoning || undefined,
                                             timestamp: new Date().toISOString(),
+                                            responseTime,
                                             backgroundCompleted: true,
                                         };
                                         addMessage(assistantMessage);
@@ -1191,8 +1205,15 @@ export default function ChatContainer({
                         readResult = await reader.read();
                     } catch (readError) {
                         if (readError.name === 'AbortError') {
-                            // User manually stopped - not an error, save partial content
-                            lastFinishReason = 'stop_by_user';
+                            if (switchingConversationRef.current) {
+                                // User switched conversations — server continues in
+                                // background. Don't save anything client-side.
+                                console.log('[Chat] Stream aborted due to conversation switch — server continues');
+                                connectionLost = true;
+                            } else {
+                                // User manually stopped - save partial content
+                                lastFinishReason = 'stop_by_user';
+                            }
                         } else {
                             // Network error (page refresh, tab close, connection drop).
                             // The server continues generating in background and will save
@@ -1546,7 +1567,9 @@ export default function ChatContainer({
                 };
 
                 finalMessages = [...finalMessages, assistantMessage];
-                // Only update local store if still on same conversation
+                // Only update local store if still on same conversation.
+                // (If user switched away, the stream was aborted and this
+                // path won't execute — server handles the save.)
                 if (!userSwitchedConversation) {
                     addMessage(assistantMessage);
                 }
@@ -1608,13 +1631,17 @@ export default function ChatContainer({
                 }
             }
         } finally {
-            // If connection was lost, background polling is now active — don't
-            // clear streaming UI or rescue content (server handles persistence).
+            // Always stop background polling — if handleSendMessage completed
+            // (saved or errored), any concurrent poll is redundant and would
+            // create duplicate messages.
+            clearBackgroundPoll();
+
             if (connectionLost) {
+                // Connection was lost — restart background polling to track
+                // the server-side stream that's still running.
+                checkActiveStreaming(conversationId);
                 abortControllerRef.current = null;
                 switchingConversationRef.current = false;
-                // Note: streamingConversationRef and streaming UI stay active
-                // because checkActiveStreaming took over.
             } else {
                 // Only clear loading/streaming UI if we're still on the same conversation
                 const currentActiveId = useChatStore.getState().activeConversationId;
