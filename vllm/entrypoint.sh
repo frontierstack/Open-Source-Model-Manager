@@ -12,6 +12,7 @@
 # - VLLM_TRUST_REMOTE_CODE: Trust remote code from model repo (default: true)
 # - VLLM_ENFORCE_EAGER: Disable CUDA graph for debugging (default: false)
 # - VLLM_TOKENIZER: HuggingFace tokenizer repo (optional, for GGUF models)
+# - VLLM_CHAT_TEMPLATE: Path or inline Jinja2 chat template (optional, auto-detected for GGUF)
 
 set -e
 
@@ -27,6 +28,7 @@ KV_CACHE_DTYPE=${VLLM_KV_CACHE_DTYPE:-auto}
 TRUST_REMOTE_CODE=${VLLM_TRUST_REMOTE_CODE:-true}
 ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
 TOKENIZER=${VLLM_TOKENIZER:-}
+CHAT_TEMPLATE=${VLLM_CHAT_TEMPLATE:-}
 
 echo ">>> Starting vLLM server"
 echo "    Model: $MODEL_PATH"
@@ -74,6 +76,27 @@ if [[ "$MODEL_PATH" == *.gguf ]]; then
     if [ -z "$TOKENIZER" ]; then
         echo "    [GGUF tokenizer: using embedded metadata (set VLLM_TOKENIZER to override)]"
     fi
+fi
+
+# For GGUF models, provide a default ChatML chat template as fallback.
+# vLLM requires a chat template for /v1/chat/completions — without one it
+# returns 400 Bad Request. Many GGUF files lack embedded template metadata.
+if [[ "$MODEL_PATH" == *.gguf ]] && [ -z "$CHAT_TEMPLATE" ]; then
+    CHAT_TEMPLATE="/tmp/default_chat_template.jinja"
+    cat > "$CHAT_TEMPLATE" << 'TMPL'
+{% for message in messages %}
+{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}
+{% endfor %}
+{% if add_generation_prompt %}
+{{'<|im_start|>assistant\n'}}
+{% endif %}
+TMPL
+    echo "    [Using default ChatML chat template (set VLLM_CHAT_TEMPLATE to override)]"
+fi
+
+# Add chat template if specified (or auto-generated for GGUF)
+if [ -n "$CHAT_TEMPLATE" ]; then
+    CMD_ARGS+=(--chat-template "$CHAT_TEMPLATE")
 fi
 
 # Add tokenizer only if the caller explicitly provided one.

@@ -1554,6 +1554,23 @@ if (originalReap) {
     };
 }
 
+// Override touch() to handle missing session files gracefully.
+// When a session cookie references a file that was deleted (reap, manual cleanup),
+// the default touch() throws ENOENT which bubbles up as a request error.
+const originalTouch = sessionStore.touch;
+if (originalTouch) {
+    sessionStore.touch = function(sessionId, session, callback) {
+        originalTouch.call(this, sessionId, session, function(err) {
+            if (err && err.code === 'ENOENT') {
+                // Session file gone — treat as expired, not a crash
+                if (callback) callback();
+                return;
+            }
+            if (callback) callback(err);
+        });
+    };
+}
+
 app.use(session({
     store: sessionStore,
     secret: SESSION_SECRET,
@@ -2670,7 +2687,8 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 contextSize: req.body.maxModelLen || 4096,  // Alias for API compatibility
                 disableThinking: req.body.disableThinking ?? false,
                 compressMemory: req.body.compressMemory ?? false,
-                tokenizer: req.body.tokenizer || ''  // HuggingFace tokenizer repo for GGUF models
+                tokenizer: req.body.tokenizer || '',  // HuggingFace tokenizer repo for GGUF models
+                chatTemplate: req.body.chatTemplate || ''  // Jinja2 chat template path (GGUF gets ChatML default)
             };
 
             broadcast({ type: 'log', message: `Creating vLLM instance for ${modelName}...` });
@@ -2745,6 +2763,11 @@ async function createVllmInstance(modelName, modelPath, config) {
         // Add tokenizer if specified (helps with GGUF models)
         if (config.tokenizer) {
             envVars.push(`VLLM_TOKENIZER=${config.tokenizer}`);
+        }
+
+        // Add chat template if specified (entrypoint auto-generates ChatML default for GGUF)
+        if (config.chatTemplate) {
+            envVars.push(`VLLM_CHAT_TEMPLATE=${config.chatTemplate}`);
         }
 
         const container = await docker.createContainer({
