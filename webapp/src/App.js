@@ -165,7 +165,8 @@ const SETTINGS_TOOLTIPS = {
     trustRemoteCode: "Whether to trust remote code from the model repository. Required for some custom model architectures.",
     enforceEager: "Disable CUDA graphs and use eager execution. Useful for debugging but slower. Keep disabled for production.",
     contextShift: "Enable context shifting to automatically truncate old context when the limit is reached. Without this, requests fail when context is full. Recommended for long conversations.",
-    disableThinking: "Disable thinking/reasoning mode for models that support it (e.g., Qwen3). When enabled, adds /no_think to prompts for faster, more direct responses."
+    disableThinking: "Disable thinking/reasoning mode for models that support it (e.g., Qwen3). When enabled, adds /no_think to prompts for faster, more direct responses.",
+    compressMemory: "Enable AIMem memory compression for long conversations. Compresses older messages using deduplication, lossy compression, and relevance ranking to reduce token usage (~48% reduction) while retaining all facts."
 };
 
 // Settings tooltips for llama.cpp configuration options
@@ -173,6 +174,7 @@ const LLAMACPP_TOOLTIPS = {
     nGpuLayers: "Number of model layers to offload to GPU. -1 = all layers (recommended). Lower values offload less to GPU, useful for large models that don't fit in VRAM.",
     contextSize: "Maximum context window size in tokens. Larger values allow longer conversations but require more memory. Common values: 2048, 4096, 8192, 16384.",
     contextShift: "Enable context shifting to automatically discard old context when the limit is reached. Without this, inference stops when context is full. Recommended for long conversations.",
+    compressMemory: "Enable AIMem memory compression for long conversations. Compresses older messages using deduplication, lossy compression, and relevance ranking to reduce token usage (~48% reduction) while retaining all facts.",
     flashAttention: "Enable flash attention for faster inference and lower memory usage. Recommended for most GPUs that support it.",
     cacheTypeK: "Data type for key cache. f16 = full precision, q8_0 = 8-bit quantized (saves memory), q4_0 = 4-bit quantized (maximum memory savings).",
     cacheTypeV: "Data type for value cache. Same options as key cache. Using quantized cache reduces memory but may slightly affect output quality.",
@@ -390,7 +392,8 @@ const App = () => {
         trustRemoteCode: true,
         enforceEager: false,
         contextShift: true,
-        disableThinking: false
+        disableThinking: false,
+        compressMemory: false
     });
 
     // Model configuration state for llama.cpp
@@ -409,7 +412,8 @@ const App = () => {
         repeatLastN: 64,
         presencePenalty: 0.0,
         frequencyPenalty: 0.0,
-        disableThinking: false
+        disableThinking: false,
+        compressMemory: false
     });
 
     // Optimal settings state
@@ -1368,7 +1372,8 @@ curl -k -X POST ${baseUrl}/api/models/Llama-2-7B-GGUF/load \\
     "cpuOffloadGb": 0,
     "gpuMemoryUtilization": 0.9,
     "tensorParallelSize": 1,
-    "maxNumSeqs": 256
+    "maxNumSeqs": 256,
+    "compressMemory": true
   }'
 
 # OR API Key + Secret Authentication
@@ -1381,8 +1386,12 @@ curl -k -X POST ${baseUrl}/api/models/Llama-2-7B-GGUF/load \\
     "cpuOffloadGb": 0,
     "gpuMemoryUtilization": 0.9,
     "tensorParallelSize": 1,
-    "maxNumSeqs": 256
-  }'`,
+    "maxNumSeqs": 256,
+    "compressMemory": true
+  }'
+
+# compressMemory: Enable AIMem memory compression for long conversations
+# Compresses older messages using dedup + lossy + relevance gating (~48% token reduction)`,
                 python: `import requests
 
 # Bearer Token Authentication
@@ -1724,7 +1733,10 @@ curl -k -N -X POST ${baseUrl}/api/chat/stream \\
 # - {"type":"chunking_progress","phase":"chunking","message":"Splitting..."}
 # - {"type":"chunking_progress","phase":"map","currentChunk":1,"totalChunks":3}
 # - {"type":"chunking_progress","phase":"reduce","message":"Synthesizing..."}
-# - {"done":true,"mapReduce":{"enabled":true,"chunkCount":3,"synthesized":true}}`,
+# - {"done":true,"mapReduce":{"enabled":true,"chunkCount":3,"synthesized":true}}
+#
+# AIMem Compression (when compressMemory enabled on model instance):
+# Final event includes: {"aimem":{"compressed":true,"tokensSaved":N,"reductionPct":N}}`,
                 python: `import requests
 import json
 
@@ -7256,6 +7268,17 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                                                 />
                                                                                             </Tooltip>
                                                                                         )}
+                                                                                        {instance.config?.compressMemory && (
+                                                                                            <Tooltip title="AIMem memory compression enabled">
+                                                                                                <Chip
+                                                                                                    label="AIMem"
+                                                                                                    size="small"
+                                                                                                    color="secondary"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
                                                                                     </>
                                                                                 ) : (
                                                                                     <>
@@ -7323,6 +7346,17 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                                                     label="CtxShift"
                                                                                                     size="small"
                                                                                                     color="success"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {instance.config?.compressMemory && (
+                                                                                            <Tooltip title="AIMem memory compression enabled">
+                                                                                                <Chip
+                                                                                                    label="AIMem"
+                                                                                                    size="small"
+                                                                                                    color="secondary"
                                                                                                     variant="outlined"
                                                                                                     sx={{ fontSize: '0.7rem' }}
                                                                                                 />
@@ -7811,6 +7845,25 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
+                                                            <Grid item xs={6}>
+                                                                <Tooltip title={SETTINGS_TOOLTIPS.compressMemory} arrow placement="top">
+                                                                    <FormControlLabel
+                                                                        control={
+                                                                            <Switch
+                                                                                checked={modelConfig.compressMemory}
+                                                                                onChange={(e) => setModelConfig({...modelConfig, compressMemory: e.target.checked})}
+                                                                                size="small"
+                                                                            />
+                                                                        }
+                                                                        label={
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                                                <Typography variant="body2">Compress Memory</Typography>
+                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                                                                            </Box>
+                                                                        }
+                                                                    />
+                                                                </Tooltip>
+                                                            </Grid>
                                                         </Grid>
                                                     </CollapsibleSection>
                                                 </Grid>
@@ -7922,6 +7975,25 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                         label={
                                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                                                                 <Typography variant="body2">Disable Thinking</Typography>
+                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                                                                            </Box>
+                                                                        }
+                                                                    />
+                                                                </Tooltip>
+                                                            </Grid>
+                                                            <Grid item xs={6}>
+                                                                <Tooltip title={LLAMACPP_TOOLTIPS.compressMemory} arrow placement="top">
+                                                                    <FormControlLabel
+                                                                        control={
+                                                                            <Switch
+                                                                                checked={llamacppConfig.compressMemory}
+                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, compressMemory: e.target.checked})}
+                                                                                size="small"
+                                                                            />
+                                                                        }
+                                                                        label={
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                                                <Typography variant="body2">Compress Memory</Typography>
                                                                                 <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
                                                                             </Box>
                                                                         }

@@ -61,6 +61,27 @@ try {
     console.log('Playwright service not available - using axios fallback:', error.message);
 }
 
+// AIMem memory compression service
+let memoryCompressorService = null;
+let aimemEnabled = false;
+
+try {
+    memoryCompressorService = require('./services/memoryCompressorService');
+    memoryCompressorService.isAvailable().then(available => {
+        aimemEnabled = available;
+        if (available) {
+            console.log('AIMem memory compression loaded - conversation compression enabled');
+        } else {
+            console.log('AIMem Python dependencies not available - compression disabled');
+        }
+    }).catch(error => {
+        console.log('AIMem availability check failed:', error.message);
+        aimemEnabled = false;
+    });
+} catch (error) {
+    console.log('AIMem service not available:', error.message);
+}
+
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
 let scraplingEnabled = false;
@@ -310,6 +331,9 @@ function scoreSentenceRelevance(sentence, keywords) {
         score += 1;
     }
 
+    // Bonus for sentences containing URLs (high-value reference content)
+    if (/https?:\/\//.test(sentence)) score += 3;
+
     return score;
 }
 
@@ -352,14 +376,19 @@ function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensat
     // Sort by score (highest first)
     scoredSentences.sort((a, b) => b.score - a.score);
 
+    // Always keep sentences containing URLs — these are high-value reference
+    // content that users frequently ask about and should never be condensed out
+    const urlSentences = scoredSentences.filter(s => /https?:\/\//.test(s.sentence));
+    const nonUrlSentences = scoredSentences.filter(s => !/https?:\/\//.test(s.sentence));
+
     // Calculate target length
     const targetLength = Math.floor(originalLength * targetRatio);
 
-    // Select top sentences until we reach target length
-    const selectedSentences = [];
-    let currentLength = 0;
+    // Start with all URL sentences, then fill remaining budget from scored non-URL sentences
+    const selectedSentences = [...urlSentences];
+    let currentLength = urlSentences.reduce((sum, s) => sum + s.length, 0);
 
-    for (const scored of scoredSentences) {
+    for (const scored of nonUrlSentences) {
         if (currentLength + scored.length <= targetLength ||
             selectedSentences.length < CHUNKING_CONFIG.minSentencesToKeep) {
             selectedSentences.push(scored);
@@ -2640,6 +2669,7 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 contextShift: req.body.contextShift ?? true,
                 contextSize: req.body.maxModelLen || 4096,  // Alias for API compatibility
                 disableThinking: req.body.disableThinking ?? false,
+                compressMemory: req.body.compressMemory ?? false,
                 tokenizer: req.body.tokenizer || ''  // HuggingFace tokenizer repo for GGUF models
             };
 
@@ -2661,7 +2691,8 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 repeatLastN: req.body.repeatLastN || 64,
                 presencePenalty: req.body.presencePenalty ?? 0.0,
                 frequencyPenalty: req.body.frequencyPenalty ?? 0.0,
-                disableThinking: req.body.disableThinking ?? false
+                disableThinking: req.body.disableThinking ?? false,
+                compressMemory: req.body.compressMemory ?? false
             };
 
             broadcast({ type: 'log', message: `Creating llama.cpp instance for ${modelName}...` });
@@ -7002,6 +7033,51 @@ const DIRECT_DOWNLOAD_CONTENT_TYPES = [
 ];
 
 /**
+ * Repair URLs broken across lines by PDF text extraction.
+ * pdf-parse often splits URLs at line boundaries, producing truncated links
+ * that models cannot recognize or follow.
+ */
+function repairPdfUrls(text) {
+    const lines = text.split('\n');
+    const result = [];
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        // Check if line ends with a URL that looks truncated
+        const urlMatch = line.match(/(https?:\/\/\S+)$/);
+        if (urlMatch) {
+            let url = urlMatch[1];
+            let joinedExtra = '';
+            // Look ahead: join continuation lines that look like URL path fragments
+            while (i + 1 < lines.length) {
+                const nextLine = lines[i + 1];
+                const trimmed = nextLine.trimStart();
+                // Continuation: starts with path-like chars and isn't a new URL or sentence
+                if (trimmed && /^[a-z0-9/\-_.#?&=%+~]/.test(trimmed) && !/^https?:\/\//.test(trimmed)) {
+                    const fragment = trimmed.split(/\s/)[0].replace(/[.,;:)"'>\]]+$/, '');
+                    if (fragment) {
+                        url += fragment;
+                        const remainder = trimmed.slice(fragment.length).trim();
+                        joinedExtra = remainder;
+                        i++;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            const prefix = line.slice(0, line.length - urlMatch[1].length);
+            result.push(prefix + url + (joinedExtra ? ' ' + joinedExtra : ''));
+        } else {
+            result.push(line);
+        }
+        i++;
+    }
+    return result.join('\n');
+}
+
+/**
  * Download a URL as a file and extract text content.
  * Handles PDF, DOCX, TXT, CSV, JSON, code files, etc.
  * Returns null if the URL is not a downloadable file type.
@@ -7127,7 +7203,7 @@ async function fetchUrlAsFile(url, options = {}) {
             try {
                 const pdfParse = require('pdf-parse');
                 const data = await pdfParse(buffer);
-                extractedText = data.text || '';
+                extractedText = repairPdfUrls(data.text || '');
                 title = data.info?.Title || filename;
                 if (data.numpages) {
                     title += ` (${data.numpages} pages)`;
@@ -8125,7 +8201,7 @@ async function extractEmailAttachmentContent(attachments, depth = 0) {
                     const data = await pdfParse(content);
                     if (data.text?.trim()) {
                         extractedContent += `\n\n=== PDF Attachment: ${filename} ===\n`;
-                        extractedContent += data.text.substring(0, 20000); // Limit PDF content
+                        extractedContent += repairPdfUrls(data.text).substring(0, 20000); // Limit PDF content
                         extractedContent += '\n=== End PDF ===\n';
                     }
                 } catch (pdfErr) {
@@ -8347,6 +8423,9 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                         finalText = extractedText + '\n\n--- OCR Extracted Content ---\n\n' + ocrText;
                     }
                 }
+
+                // Repair URLs broken across lines by pdf-parse
+                finalText = repairPdfUrls(finalText);
 
                 const originalLength = finalText.length;
                 // PDFs often contain problematic characters - sanitize after optimization
@@ -9156,6 +9235,58 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
         console.log(`[Chat Stream] Context check: totalInputTokens=${totalInputTokens}, contextSize=${contextSize}, responseReserve=${responseReserve}, desiredResponse=${desiredResponseTokens}, availableForInput=${availableContextForInput}, needsChunking=${totalInputTokens > availableContextForInput}`);
 
+        // AIMem compression: compress older conversation messages to save tokens
+        // Controlled by compressMemory in model instance config (set at load time in model manager)
+        // When enabled, triggers when conversation has 6+ non-system messages and input exceeds 60% of context
+        const compressMemory = targetInstance.config?.compressMemory || false;
+        const aimemThreshold = Math.floor(availableContextForInput * 0.6);
+        const nonSystemCount = chatMessages.filter(m => m.role !== 'system').length;
+        let aimemApplied = false;
+        let aimemStats = null;
+
+        if (aimemEnabled && memoryCompressorService && compressMemory && nonSystemCount >= 6 && totalInputTokens > aimemThreshold) {
+            try {
+                // Extract the current user query for relevance ranking
+                let currentQuery = '';
+                for (let i = chatMessages.length - 1; i >= 0; i--) {
+                    if (chatMessages[i].role === 'user') {
+                        const content = chatMessages[i].content;
+                        currentQuery = typeof content === 'string' ? content :
+                            (Array.isArray(content) ? (content.find(p => p.type === 'text')?.text || '') : '');
+                        // Truncate long queries for relevance matching
+                        if (currentQuery.length > 500) currentQuery = currentQuery.substring(0, 500);
+                        break;
+                    }
+                }
+
+                console.log(`[AIMem] Attempting compression: ${nonSystemCount} non-system messages, ${totalInputTokens} tokens (threshold: ${aimemThreshold})`);
+
+                const compressResult = await memoryCompressorService.compressConversation(
+                    chatMessages, currentQuery, availableContextForInput,
+                    { keepRecentCount: 4, dedupThreshold: 0.45 }
+                );
+
+                if (compressResult.success && compressResult.compressed && compressResult.stats) {
+                    chatMessages.length = 0;
+                    chatMessages.push(...compressResult.messages);
+
+                    // Recalculate token count after compression
+                    totalInputTokens = 0;
+                    for (const msg of chatMessages) {
+                        totalInputTokens += estimateTokens(msg.content);
+                    }
+
+                    aimemApplied = true;
+                    aimemStats = compressResult.stats;
+                    console.log(`[AIMem] Compression applied: ${compressResult.stats.original_tokens} → ${compressResult.stats.compressed_tokens} tokens (${compressResult.stats.reduction_pct}% reduction). New total input: ${totalInputTokens}`);
+                } else if (compressResult.error) {
+                    console.log(`[AIMem] Compression skipped: ${compressResult.error}`);
+                }
+            } catch (aimemErr) {
+                console.warn('[AIMem] Compression error (continuing without):', aimemErr.message);
+            }
+        }
+
         if (totalInputTokens > availableContextForInput) {
             // Find the last user message (which typically contains the large content)
             for (let i = chatMessages.length - 1; i >= 0; i--) {
@@ -9881,6 +10012,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         hasMore: true,
                         ...truncationInfo,
                         message: `Content was split into ${truncationInfo.totalChunks} chunks. Processed chunk ${truncationInfo.currentChunk}. ~${truncationInfo.remainingTokens.toLocaleString()} tokens remaining.`
+                    }
+                }),
+                // Include AIMem compression info if applied
+                ...(aimemApplied && {
+                    aimem: {
+                        compressed: true,
+                        tokensSaved: aimemStats?.tokens_saved || 0,
+                        reductionPct: aimemStats?.reduction_pct || 0
                     }
                 })
             };
@@ -11551,7 +11690,7 @@ async function initializeDefaultSkillsOld() {
                 const pdfParse = require('pdf-parse');
                 const buffer = await fs.readFile(filePath);
                 const data = await pdfParse(buffer);
-                return { success: true, format, text: data.text, pages: data.numpages, info: data.info };
+                return { success: true, format, text: repairPdfUrls(data.text), pages: data.numpages, info: data.info };
             } catch (e) {
                 throw new Error(\`Failed to parse PDF: \${e.message}. Make sure pdf-parse package is installed.\`);
             }

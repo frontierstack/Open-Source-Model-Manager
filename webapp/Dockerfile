@@ -80,7 +80,11 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     # HTML to PDF conversion (html_to_pdf skill)
     weasyprint==63.* \
     # Web scraping with captcha evasion (Scrapling with all dependencies)
-    "scrapling[all]>=0.2,<1.0"
+    "scrapling[all]>=0.2,<1.0" \
+    # AIMem memory compression (TF-IDF dedup, lossy compression, relevance gating)
+    tiktoken==0.9.* \
+    numpy==2.2.* \
+    scikit-learn==1.6.*
 
 # Install Playwright browsers for Python (shares with Node.js)
 RUN python3 -m playwright install chromium
