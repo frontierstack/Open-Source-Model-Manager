@@ -255,6 +255,15 @@ const CHUNKING_CONFIG = {
     minSentencesToKeep: 50
 };
 
+// Default chat-completion stop strings. Needed for vLLM + GGUF chat models
+// whose tokenizer EOS doesn't match the chat template turn terminator.
+// Example: Qwen3 GGUF tokenizer EOS = <|endoftext|> (151643), but the ChatML
+// template ends each turn with <|im_end|> (151645). Without explicit stops,
+// vLLM happily generates past <|im_end|> and hallucinates further turns.
+// These strings are safe to send for any backend/model — if the model never
+// emits them, they're no-ops.
+const DEFAULT_STOP_STRINGS = ['<|im_end|>', '<|im_start|>', '<|endoftext|>', '<|end|>', '<|eot_id|>'];
+
 /**
  * Extract keywords from a query for relevance matching
  * @param {string} query - The user's query
@@ -703,7 +712,8 @@ async function processWithMapReduce(options) {
                             temperature,
                             top_p: topP,
                             max_tokens: responseReserve,
-                            stream: false
+                            stream: false,
+                            stop: DEFAULT_STOP_STRINGS
                         },
                         timeout: baseTimeout
                     });
@@ -874,7 +884,8 @@ async function processWithMapReduce(options) {
                 temperature: Math.max(0.3, temperature - 0.2), // Slightly lower temp for synthesis
                 top_p: topP,
                 max_tokens: responseReserve,
-                stream: false
+                stream: false,
+                stop: DEFAULT_STOP_STRINGS
             },
             timeout: 180000 // 3 minute timeout for synthesis
         });
@@ -8945,7 +8956,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                         temperature: temperature || 0.7,
                         // Always clamped to contextSize - inputTokens to prevent
                         // vLLM's "0 input tokens" VLLMValidationError.
-                        max_tokens: responseReserve
+                        max_tokens: responseReserve,
+                        stop: DEFAULT_STOP_STRINGS
                     };
 
                     const response = await axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody);
@@ -8996,7 +9008,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             // Always clamped to contextSize - inputTokens to prevent vLLM's
             // "0 input tokens" VLLMValidationError when the caller sends a
             // raw max_tokens value equal to contextSize.
-            max_tokens: responseReserve
+            max_tokens: responseReserve,
+            stop: DEFAULT_STOP_STRINGS
         };
 
         const response = await axios.post(`http://${targetHost}:${targetPort}/v1/chat/completions`, requestBody);
@@ -9788,7 +9801,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         temperature: temperature || 0.7,
                         top_p: effectiveTopP,
                         stream: true,
-                        max_tokens: maxTokens
+                        max_tokens: maxTokens,
+                        stop: DEFAULT_STOP_STRINGS
                     };
 
                     const response = await axios({
