@@ -11,6 +11,7 @@ const fsSync = require('fs');
 const axios = require('axios');
 const Docker = require('dockerode');
 const crypto = require('crypto');
+const { StringDecoder } = require('string_decoder');
 const os = require('os');
 const session = require('express-session');
 const FileStore = require('session-file-store')(session);
@@ -9813,11 +9814,22 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         signal: streamAbortController.signal
                     });
 
+                    // Persistent buffer across chunks — TCP packet boundaries do not
+                    // align with SSE line boundaries. Without buffering, a frame split
+                    // across two 'data' events causes JSON.parse to fail silently and
+                    // the content tokens inside it to be dropped. StringDecoder also
+                    // holds partial multi-byte UTF-8 sequences until the next chunk.
+                    const sseDecoder = new StringDecoder('utf8');
+                    let sseBuffer = '';
                     response.data.on('data', (chunk) => {
                         try {
-                            const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+                            sseBuffer += sseDecoder.write(chunk);
+                            const lines = sseBuffer.split('\n');
+                            sseBuffer = lines.pop() || ''; // keep incomplete tail for next chunk
 
-                            for (const line of lines) {
+                            for (const rawLine of lines) {
+                                const line = rawLine.trim();
+                                if (!line) continue;
                                 if (line.startsWith('data: ')) {
                                     const data = line.slice(6);
 
@@ -9892,6 +9904,44 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     });
 
                     response.data.on('end', () => {
+                        // Flush any residual bytes held by StringDecoder (partial
+                        // multi-byte UTF-8) and process any trailing buffered line
+                        // that didn't end with '\n'.
+                        sseBuffer += sseDecoder.end();
+                        const trailing = sseBuffer.trim();
+                        sseBuffer = '';
+                        if (trailing && trailing.startsWith('data: ')) {
+                            const data = trailing.slice(6);
+                            if (data && data !== '[DONE]') {
+                                try {
+                                    const parsed = JSON.parse(data);
+                                    if (parsed.choices && parsed.choices[0]?.finish_reason) {
+                                        lastFinishReason = parsed.choices[0].finish_reason;
+                                    }
+                                    const delta = parsed.choices?.[0]?.delta;
+                                    if (delta) {
+                                        const content = delta.content || '';
+                                        const reasoning = delta.reasoning_content || delta.reasoning || '';
+                                        if (content) fullResponse += content;
+                                        if (reasoning) fullReasoning += reasoning;
+                                        if ((content || reasoning) && clientConnected) {
+                                            try {
+                                                res.write(`data: ${JSON.stringify({
+                                                    token: content || undefined,
+                                                    choices: [{
+                                                        delta: {
+                                                            content: content || undefined,
+                                                            reasoning: reasoning || undefined
+                                                        },
+                                                        index: 0
+                                                    }]
+                                                })}\n\n`);
+                                            } catch (writeErr) { clientConnected = false; }
+                                        }
+                                    }
+                                } catch (e) { /* ignore trailing parse errors */ }
+                            }
+                        }
                         resolve(lastFinishReason);
                     });
 
