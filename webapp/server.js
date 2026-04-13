@@ -9500,6 +9500,44 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
+        // Refine totalInputTokens with an exact /tokenize count. The char-based
+        // estimator above uses ~3.3 effective chars/token, which works for
+        // prose but undercounts dense content (unicode, code, base64) by 2x+
+        // and lets messages past the chunking gate that then get rejected by
+        // the backend with "request exceeds context size". /tokenize is cheap
+        // (one POST) and authoritative for exactly this model's tokenizer.
+        try {
+            const concatenatedText = chatMessages.map(m => {
+                if (typeof m.content === 'string') return m.content;
+                if (Array.isArray(m.content)) {
+                    return m.content.filter(p => p.type === 'text').map(p => p.text || '').join('\n');
+                }
+                return '';
+            }).join('\n');
+            if (concatenatedText.length > 0) {
+                const exactCount = await getExactTokenCount(targetHost, targetPort, concatenatedText);
+                if (exactCount !== null && exactCount > 0) {
+                    // Chat templates add per-message turn markers (role, separators).
+                    // Budget ~8 tokens per message as a conservative overhead.
+                    const templateOverhead = chatMessages.length * 8;
+                    // Array-format messages count ~1000 tokens per image_url part.
+                    let imageOverhead = 0;
+                    for (const m of chatMessages) {
+                        if (Array.isArray(m.content)) {
+                            imageOverhead += m.content.filter(p => p.type === 'image_url').length * 1000;
+                        }
+                    }
+                    const refinedTotal = exactCount + templateOverhead + imageOverhead;
+                    if (Math.abs(refinedTotal - totalInputTokens) > 50) {
+                        console.log(`[Chat Stream] Token count refined via /tokenize: estimate=${totalInputTokens} → exact=${refinedTotal} (raw=${exactCount}, template=${templateOverhead}, images=${imageOverhead})`);
+                    }
+                    totalInputTokens = refinedTotal;
+                }
+            }
+        } catch (e) {
+            console.warn(`[Chat Stream] /tokenize refinement failed: ${e.message} — using estimate ${totalInputTokens}`);
+        }
+
         if (totalInputTokens > availableContextForInput) {
             // Find the last user message (which typically contains the large content)
             for (let i = chatMessages.length - 1; i >= 0; i--) {
