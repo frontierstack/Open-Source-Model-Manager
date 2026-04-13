@@ -165,7 +165,7 @@ const SETTINGS_TOOLTIPS = {
     trustRemoteCode: "Whether to trust remote code from the model repository. Required for some custom model architectures.",
     enforceEager: "Disable CUDA graphs and use eager execution. Useful for debugging but slower. Keep disabled for production.",
     contextShift: "Enable context shifting to automatically truncate old context when the limit is reached. Without this, requests fail when context is full. Recommended for long conversations.",
-    disableThinking: "Disable thinking/reasoning mode for models that support it (e.g., Qwen3). When enabled, adds /no_think to prompts for faster, more direct responses.",
+    disableThinking: "Controls reasoning/thinking mode for models that support it (e.g., Qwen3, Gemma thinking variants). ON = reasoning enabled (model shows its work in <think> blocks). OFF = reasoning disabled (model answers directly, faster).",
     compressMemory: "Enable AIMem memory compression for long conversations. Compresses older messages using deduplication, lossy compression, and relevance ranking to reduce token usage (~48% reduction) while retaining all facts."
 };
 
@@ -186,7 +186,7 @@ const LLAMACPP_TOOLTIPS = {
     repeatLastN: "Number of recent tokens to consider for repetition penalty. 64-128 is usually sufficient.",
     presencePenalty: "Penalty for tokens that have appeared at all (0.0-1.0). Encourages the model to talk about new topics.",
     frequencyPenalty: "Penalty based on token frequency (0.0-1.0). Higher values reduce repetition of common phrases.",
-    disableThinking: "Disable thinking/reasoning mode for models that support it (e.g., Qwen3). When enabled, adds /no_think to prompts for faster, more direct responses."
+    disableThinking: "Controls reasoning/thinking mode for models that support it (e.g., Qwen3, Gemma thinking variants). ON = reasoning enabled (model shows its work in <think> blocks). OFF = reasoning disabled (model answers directly, faster)."
 };
 
 // Section Header Component
@@ -7860,14 +7860,17 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                     <FormControlLabel
                                                                         control={
                                                                             <Switch
-                                                                                checked={modelConfig.disableThinking}
-                                                                                onChange={(e) => setModelConfig({...modelConfig, disableThinking: e.target.checked})}
+                                                                                checked={!modelConfig.disableThinking}
+                                                                                onChange={(e) => setModelConfig({...modelConfig, disableThinking: !e.target.checked})}
+                                                                                color="success"
                                                                                 size="small"
                                                                             />
                                                                         }
                                                                         label={
                                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Disable Thinking</Typography>
+                                                                                <Typography variant="body2" sx={{ fontWeight: 600, color: modelConfig.disableThinking ? 'text.secondary' : 'success.main' }}>
+                                                                                    {modelConfig.disableThinking ? 'Reasoning Disabled' : 'Reasoning Enabled'}
+                                                                                </Typography>
                                                                                 <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
                                                                             </Box>
                                                                         }
@@ -7996,14 +7999,17 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                     <FormControlLabel
                                                                         control={
                                                                             <Switch
-                                                                                checked={llamacppConfig.disableThinking}
-                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, disableThinking: e.target.checked})}
+                                                                                checked={!llamacppConfig.disableThinking}
+                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, disableThinking: !e.target.checked})}
+                                                                                color="success"
                                                                                 size="small"
                                                                             />
                                                                         }
                                                                         label={
                                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Disable Thinking</Typography>
+                                                                                <Typography variant="body2" sx={{ fontWeight: 600, color: llamacppConfig.disableThinking ? 'text.secondary' : 'success.main' }}>
+                                                                                    {llamacppConfig.disableThinking ? 'Reasoning Disabled' : 'Reasoning Enabled'}
+                                                                                </Typography>
                                                                                 <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
                                                                             </Box>
                                                                         }

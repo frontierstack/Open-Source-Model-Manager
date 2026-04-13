@@ -330,28 +330,60 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                 },
             },
             // Switches need a much clearer on/off visual. The MUI default
-            // uses a low-contrast grey track in both states, which makes
-            // it easy to misread the current value. Force a bright
-            // saturated track when ON and a muted grey track when OFF,
-            // and flip the thumb color to reinforce the state.
+            // uses color=primary, and in dark/light themes primary.main is
+            // a grey — so checked switches were indistinguishable from
+            // unchecked ones. Force color=success globally (green palette)
+            // and override the track opacity/contrast so the state reads
+            // unambiguously from across the room.
             MuiSwitch: {
+                defaultProps: {
+                    color: 'success',
+                },
                 styleOverrides: {
                     root: {
+                        width: 44,
+                        height: 24,
+                        padding: 0,
                         '& .MuiSwitch-switchBase': {
-                            color: alpha(colors.text.secondary, 0.85),
+                            padding: 2,
                             '&.Mui-checked': {
-                                color: '#ffffff',
+                                transform: 'translateX(20px)',
                                 '& + .MuiSwitch-track': {
                                     backgroundColor: colors.success.main,
                                     opacity: 1,
-                                    border: `1px solid ${colors.success.main}`,
+                                    border: 'none',
+                                },
+                                '& .MuiSwitch-thumb': {
+                                    backgroundColor: '#ffffff',
                                 },
                             },
-                            '& + .MuiSwitch-track': {
-                                backgroundColor: alpha(colors.text.secondary, 0.25),
-                                opacity: 1,
-                                border: `1px solid ${alpha(colors.text.secondary, 0.35)}`,
+                        },
+                        '& .MuiSwitch-thumb': {
+                            width: 20,
+                            height: 20,
+                            backgroundColor: alpha(colors.text.secondary, 0.9),
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                        },
+                        '& .MuiSwitch-track': {
+                            borderRadius: 12,
+                            backgroundColor: alpha(colors.text.secondary, 0.2),
+                            opacity: 1,
+                            border: `1px solid ${alpha(colors.text.secondary, 0.3)}`,
+                            transition: 'background-color 150ms ease, border-color 150ms ease',
+                        },
+                    },
+                    sizeSmall: {
+                        width: 36,
+                        height: 20,
+                        '& .MuiSwitch-switchBase': {
+                            padding: 2,
+                            '&.Mui-checked': {
+                                transform: 'translateX(16px)',
                             },
+                        },
+                        '& .MuiSwitch-thumb': {
+                            width: 16,
+                            height: 16,
                         },
                     },
                 },
