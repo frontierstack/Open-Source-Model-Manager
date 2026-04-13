@@ -1235,7 +1235,14 @@ async function syncModelInstances() {
                     batchSize: parseInt(getEnvValue('LLAMA_BATCH_SIZE') || '2048'),
                     ubatchSize: parseInt(getEnvValue('LLAMA_UBATCH_SIZE') || '512'),
                     repeatPenalty: parseFloat(getEnvValue('LLAMA_REPEAT_PENALTY') || '1.1'),
-                    repeatLastN: parseInt(getEnvValue('LLAMA_REPEAT_LAST_N') || '64')
+                    repeatLastN: parseInt(getEnvValue('LLAMA_REPEAT_LAST_N') || '64'),
+                    presencePenalty: parseFloat(getEnvValue('LLAMA_PRESENCE_PENALTY') || '0.0'),
+                    frequencyPenalty: parseFloat(getEnvValue('LLAMA_FREQUENCY_PENALTY') || '0.0'),
+                    // Reconstruct disableThinking from the llama.cpp --reasoning
+                    // env var. Without this, the UI always shows the toggle as
+                    // OFF for containers recovered on startup, even when the
+                    // running process actually has --reasoning off.
+                    disableThinking: getEnvValue('LLAMA_REASONING') === 'off'
                 };
             }
 
