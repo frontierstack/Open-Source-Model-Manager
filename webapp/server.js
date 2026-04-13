@@ -2870,6 +2870,11 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             `LLAMA_CTX_SIZE=${config.contextSize}`,
             `LLAMA_CTX_SHIFT=${config.contextShift}`,
             `LLAMA_FLASH_ATTN=${config.flashAttention}`,
+            // disableThinking flows through the server-side --reasoning off
+            // flag so it actually disables <think> blocks for any reasoning
+            // model llama.cpp recognizes. The /no_think prompt prefix (added
+            // elsewhere) stays as a fallback for Qwen models that respect it.
+            `LLAMA_REASONING=${config.disableThinking ? 'off' : 'auto'}`,
             `LLAMA_CACHE_TYPE_K=${config.cacheTypeK}`,
             `LLAMA_CACHE_TYPE_V=${config.cacheTypeV}`,
             `LLAMA_PARALLEL=${config.parallelSlots}`,

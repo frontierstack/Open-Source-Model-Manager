@@ -7,6 +7,11 @@
 # - LLAMA_CTX_SIZE: Context size (default: 4096)
 # - LLAMA_CTX_SHIFT: Enable context shifting (default: true)
 # - LLAMA_FLASH_ATTN: Flash attention — true|false|auto (default: false)
+# - LLAMA_REASONING: Reasoning/thinking mode — on|off|auto (default: auto).
+#                    Set to 'off' to disable <think> blocks server-side for
+#                    reasoning models (e.g. Gemma thinking variants, DeepSeek
+#                    R1). Works for any model llama.cpp recognizes — unlike
+#                    the '/no_think' prompt prefix which is Qwen-specific.
 # - LLAMA_CACHE_TYPE_K: KV cache type for keys (f16/q8_0/q4_0, default: f16)
 # - LLAMA_CACHE_TYPE_V: KV cache type for values (f16/q8_0/q4_0, default: f16)
 # - LLAMA_THREADS: Number of CPU threads (default: auto-detect)
@@ -27,6 +32,7 @@ N_GPU_LAYERS=${LLAMA_N_GPU_LAYERS:--1}
 CTX_SIZE=${LLAMA_CTX_SIZE:-4096}
 CTX_SHIFT=${LLAMA_CTX_SHIFT:-true}
 FLASH_ATTN=${LLAMA_FLASH_ATTN:-false}
+REASONING=${LLAMA_REASONING:-auto}
 CACHE_TYPE_K=${LLAMA_CACHE_TYPE_K:-f16}
 CACHE_TYPE_V=${LLAMA_CACHE_TYPE_V:-f16}
 THREADS=${LLAMA_THREADS:-}
@@ -45,6 +51,7 @@ echo "    GPU Layers: $N_GPU_LAYERS"
 echo "    Context Size: $CTX_SIZE"
 echo "    Context Shift: $CTX_SHIFT"
 echo "    Flash Attention: $FLASH_ATTN"
+echo "    Reasoning: $REASONING"
 echo "    Cache Type K/V: $CACHE_TYPE_K / $CACHE_TYPE_V"
 echo "    Threads: ${THREADS:-auto}"
 echo "    Parallel Slots: $PARALLEL"
@@ -97,6 +104,17 @@ case "$FLASH_ATTN" in
 esac
 CMD_ARGS+=(--flash-attn "$FA_MODE")
 echo "    [Flash attention: $FA_MODE]"
+
+# Reasoning/thinking mode — same on/off/auto shape as --flash-attn.
+# Passing 'off' makes llama.cpp disable <think> blocks server-side for
+# any reasoning model it recognizes from the chat template.
+case "$REASONING" in
+    on|1|true)   REASONING_MODE=on ;;
+    off|0|false) REASONING_MODE=off ;;
+    *)           REASONING_MODE=auto ;;
+esac
+CMD_ARGS+=(--reasoning "$REASONING_MODE")
+echo "    [Reasoning: $REASONING_MODE]"
 
 echo ""
 echo ">>> Starting llama.cpp with OpenAI-compatible API"
