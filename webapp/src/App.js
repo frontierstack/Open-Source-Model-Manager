@@ -8082,6 +8082,19 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
+                                                            {/* Non-blocking warning when the user picks quantized KV cache
+                                                                without Flash Attention. llama.cpp refuses to start this
+                                                                combo ("V cache quantization requires flash_attn"), but
+                                                                the rejection happens at container init time as a segfault
+                                                                with exit 139 — surfaced here so the mistake is visible
+                                                                before the user clicks Load. */}
+                                                            {((llamacppConfig.cacheTypeK !== 'f16' || llamacppConfig.cacheTypeV !== 'f16') && !llamacppConfig.flashAttention) && (
+                                                                <Grid item xs={12}>
+                                                                    <Alert severity="warning" sx={{ fontSize: '0.8rem', py: 0.5, '& .MuiAlert-message': { py: 0.5 } }}>
+                                                                        <strong>Quantized KV cache requires Flash Attention.</strong> llama.cpp will reject this combo at load time with a segfault. Either set both cache types back to <code>f16</code>, or enable the Flash Attention toggle below. On Maxwell GPUs (compute 5.2) the FA flag is accepted but falls back to non-FA kernels at inference time — performance is reduced but the model will load.
+                                                                    </Alert>
+                                                                </Grid>
+                                                            )}
                                                         </Grid>
                                                     </CollapsibleSection>
                                                 </Grid>
