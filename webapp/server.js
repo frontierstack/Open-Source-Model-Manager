@@ -496,8 +496,11 @@ function estimateTokenCount(content) {
  * @param {number} overlapTokens - Overlap between chunks
  * @returns {Array<{content: string, index: number, isFirst: boolean, isLast: boolean}>}
  */
-function splitIntoChunks(content, chunkSizeTokens, overlapTokens = CHUNKING_CONFIG.overlapTokens) {
-    const { charsPerToken, safetyMargin } = CHUNKING_CONFIG;
+function splitIntoChunks(content, chunkSizeTokens, overlapTokens = CHUNKING_CONFIG.overlapTokens, charsPerTokenOverride = null) {
+    const { safetyMargin } = CHUNKING_CONFIG;
+    // Use the measured ratio when caller provides one (from /tokenize),
+    // otherwise fall back to the generic prose default.
+    const charsPerToken = charsPerTokenOverride ?? CHUNKING_CONFIG.charsPerToken;
 
     // Convert token counts to character counts
     const chunkSizeChars = Math.floor((chunkSizeTokens * charsPerToken) / safetyMargin);
@@ -640,6 +643,34 @@ Provide your synthesized response:`;
  * @param {function} options.onProgress - Callback for progress updates
  * @returns {Promise<{success: boolean, response: string, chunkCount: number, error?: string}>}
  */
+/**
+ * Ask the backend's /tokenize endpoint for an exact token count. Both
+ * llama.cpp and vLLM expose this. Used to replace our chars/token
+ * estimator for map-reduce sizing — the estimator assumes ~4 chars/token
+ * (prose-shaped) but code with heavy punctuation tokenizes at ~2
+ * chars/token, so chunks sized by the estimator regularly blow past
+ * the real context limit and the backend returns 400.
+ *
+ * Returns null on any failure so callers can fall back to estimation.
+ */
+async function getExactTokenCount(host, port, text) {
+    if (!text) return 0;
+    try {
+        const response = await axios({
+            method: 'post',
+            url: `http://${host}:${port}/tokenize`,
+            data: { content: text },
+            timeout: 8000
+        });
+        const tokens = response.data?.tokens;
+        if (Array.isArray(tokens)) return tokens.length;
+        return null;
+    } catch (e) {
+        console.warn(`[Map-Reduce] /tokenize call failed: ${e.message} — falling back to estimation`);
+        return null;
+    }
+}
+
 async function processWithMapReduce(options) {
     const {
         targetHost,
@@ -657,15 +688,43 @@ async function processWithMapReduce(options) {
 
     const { overlapTokens, maxParallelChunks, synthesisPromptReserve } = CHUNKING_CONFIG;
 
-    // Calculate available tokens for each chunk
-    const systemTokens = systemMessages.reduce((sum, msg) => sum + estimateTokenCount(msg.content), 0);
-    const queryTokens = estimateTokenCount(originalQuery);
+    // Ask the backend for EXACT token counts instead of trusting our
+    // 4 chars/token estimator. On code/obfuscated payloads the
+    // estimator is off by 2-3x and produces chunks that the backend
+    // rejects with HTTP 400 ("request exceeds context size").
+    const systemMessagesText = systemMessages.map(m =>
+        typeof m.content === 'string'
+            ? m.content
+            : (Array.isArray(m.content) ? m.content.filter(p => p.type === 'text').map(p => p.text || '').join('\n') : '')
+    ).join('\n');
+    const [exactContentTokens, exactSystemTokens, exactQueryTokens] = await Promise.all([
+        getExactTokenCount(targetHost, targetPort, largeContent),
+        getExactTokenCount(targetHost, targetPort, systemMessagesText),
+        getExactTokenCount(targetHost, targetPort, originalQuery)
+    ]);
+
+    // Derive actual chars-per-token from the measurement so splitIntoChunks
+    // can cut chunks at the right character boundary. Fall back to the
+    // config default if /tokenize is unavailable.
+    const exactRatioAvailable = exactContentTokens !== null && exactContentTokens > 0;
+    const effectiveCharsPerToken = exactRatioAvailable
+        ? Math.max(1.2, largeContent.length / exactContentTokens)
+        : CHUNKING_CONFIG.charsPerToken;
+
+    // Use exact counts when available, fall back to estimates otherwise.
+    const systemTokens = exactSystemTokens ?? systemMessages.reduce((sum, msg) => sum + estimateTokenCount(msg.content), 0);
+    const queryTokens = exactQueryTokens ?? estimateTokenCount(originalQuery);
+    // Wrapper overhead from buildChunkPrompt — measured empirically; add
+    // a conservative 200 tokens for the CHUNK/POSITION/NOTES boilerplate.
+    const wrapperTokens = 200;
     // Cap response reserve at 80% of context to always leave room for chunk content
     const maxResponseReserve = Math.floor(contextSize * 0.8);
     const responseReserve = Math.min(maxTokens || Math.floor(contextSize * 0.2), maxResponseReserve);
 
-    // Available for chunk content = context - system - query wrapper - response reserve - buffer
-    const availableForChunkContent = contextSize - systemTokens - queryTokens - responseReserve - 500;
+    // Available for chunk content = context - system - query - wrapper - response reserve - safety buffer
+    const availableForChunkContent = contextSize - systemTokens - queryTokens - wrapperTokens - responseReserve - 500;
+
+    console.log(`[Map-Reduce] Token budget: context=${contextSize}, system=${systemTokens}, query=${queryTokens}, wrapper=${wrapperTokens}, response=${responseReserve}, available=${availableForChunkContent} (charsPerToken=${effectiveCharsPerToken.toFixed(2)}, exact=${exactRatioAvailable})`);
 
     if (availableForChunkContent < 1000) {
         return {
@@ -675,8 +734,9 @@ async function processWithMapReduce(options) {
         };
     }
 
-    // Split content into overlapping chunks
-    const chunks = splitIntoChunks(largeContent, availableForChunkContent, overlapTokens);
+    // Split content into overlapping chunks using the derived ratio so
+    // the chunks match what the backend will actually see at tokenize time.
+    const chunks = splitIntoChunks(largeContent, availableForChunkContent, overlapTokens, effectiveCharsPerToken);
     const totalChunks = chunks.length;
 
     console.log(`[Map-Reduce] Splitting content into ${totalChunks} chunks (${availableForChunkContent} tokens each, ${overlapTokens} token overlap)`);
