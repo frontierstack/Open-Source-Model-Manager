@@ -7391,6 +7391,16 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                                                                 />
                                                                                             </Tooltip>
                                                                                         )}
+                                                                                        {/* Always show the reasoning state so it's unambiguous at a glance. */}
+                                                                                        <Tooltip title={instance.config?.disableThinking ? 'Reasoning disabled — model will not emit <think> blocks' : 'Reasoning enabled — model may use <think> blocks for chain-of-thought'}>
+                                                                                            <Chip
+                                                                                                label={instance.config?.disableThinking ? 'Reasoning: Off' : 'Reasoning: On'}
+                                                                                                size="small"
+                                                                                                color={instance.config?.disableThinking ? 'default' : 'success'}
+                                                                                                variant="outlined"
+                                                                                                sx={{ fontSize: '0.7rem' }}
+                                                                                            />
+                                                                                        </Tooltip>
                                                                                     </>
                                                                                 )}
                                                                             </Box>
