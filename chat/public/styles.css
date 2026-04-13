@@ -970,11 +970,6 @@ body.font-size-large .markdown-content,
         font-size: 0.8125rem;
     }
 /* Divider - subtle */
-.divider {
-        height: 1px;
-        background: var(--border-secondary);
-        margin: 0.75rem 0;
-    }
 /* Loading skeleton */
 /* Empty state - compact */
 .pointer-events-none{
@@ -1160,6 +1155,9 @@ body.font-size-large .markdown-content,
 }
 .ml-2{
   margin-left: 0.5rem;
+}
+.ml-\[13px\]{
+  margin-left: 13px;
 }
 .ml-auto{
   margin-left: auto;

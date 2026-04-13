@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     X,
     ChevronDown,
+    ChevronRight,
     Settings,
     MessageSquare,
     Palette,
@@ -51,12 +52,16 @@ export default function ChatSettings({
     const fontDropdownRef = useRef(null);
     const confirm = useConfirm();
 
-    // Memories tab state — fetched lazily when the tab opens.
+    // Memories tab state.
     const [memories, setMemories] = useState([]);
     const [memoriesLoading, setMemoriesLoading] = useState(false);
     const [memoriesError, setMemoriesError] = useState(null);
     const [editingMemoryId, setEditingMemoryId] = useState(null);
     const [editingMemoryText, setEditingMemoryText] = useState('');
+    // Collapse state per turn group id. Default-expanded on first view;
+    // the user can collapse groups they've already seen. Using an object
+    // instead of a Set so react's shallow compare catches updates.
+    const [collapsedGroups, setCollapsedGroups] = useState({});
     // Pull the active conversation's messages so we can show each turn's
     // user prompt as a group header. The chat store already holds them
     // for the conversation the user is currently viewing.
@@ -85,12 +90,23 @@ export default function ChatSettings({
         }
     }, [activeConversationId]);
 
-    // Refetch whenever the Memories tab is opened or the conversation changes.
+    // Fetch memories eagerly whenever the active conversation changes,
+    // regardless of whether the settings modal is open or which tab is
+    // active. This prevents a stale-empty render on refresh: previously
+    // the effect only ran when the modal+tab were both "memories", which
+    // meant if the user switched conversations while the modal was shut,
+    // the next open would see empty state. A GET is cheap (one round-trip,
+    // no server-side side effects) and the result is immediately ready
+    // when the user does click through to the tab. The refresh button
+    // still calls fetchMemories directly for a manual re-pull.
     useEffect(() => {
-        if (open && activeTab === 'memories') {
+        if (activeConversationId) {
             fetchMemories();
+        } else {
+            setMemories([]);
+            setMemoriesError(null);
         }
-    }, [open, activeTab, fetchMemories]);
+    }, [activeConversationId, fetchMemories]);
 
     const handleDeleteMemory = async (memId) => {
         const confirmed = await confirm({
@@ -952,38 +968,77 @@ export default function ChatSettings({
                                 </div>
                             ) : (
                                 <>
-                                    <div className="text-[10px] text-dark-500 -mt-1">
-                                        {memories.length} {memories.length === 1 ? 'memory' : 'memories'} across {groupedMemories.length} {groupedMemories.length === 1 ? 'turn' : 'turns'}
+                                    <div className="flex items-center justify-between -mt-1">
+                                        <div className="text-[10px] text-dark-500">
+                                            {memories.length} {memories.length === 1 ? 'memory' : 'memories'} across {groupedMemories.length} {groupedMemories.length === 1 ? 'turn' : 'turns'}
+                                        </div>
+                                        {groupedMemories.length > 1 && (
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const next = {};
+                                                        for (const g of groupedMemories) next[g.turnId] = true;
+                                                        setCollapsedGroups(next);
+                                                    }}
+                                                    className="text-[10px] text-dark-400 hover:text-dark-200 transition-colors"
+                                                >
+                                                    Collapse all
+                                                </button>
+                                                <span className="text-dark-600">·</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setCollapsedGroups({})}
+                                                    className="text-[10px] text-dark-400 hover:text-dark-200 transition-colors"
+                                                >
+                                                    Expand all
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
-                                    <div className="space-y-4">
-                                        {groupedMemories.map((group) => (
-                                            <div key={group.turnId} className="space-y-1.5">
-                                                {/* Turn header */}
-                                                <div className="flex items-center gap-2 px-1">
-                                                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                    <div className="space-y-3">
+                                        {groupedMemories.map((group) => {
+                                            const isCollapsed = !!collapsedGroups[group.turnId];
+                                            return (
+                                                <div key={group.turnId} className="space-y-1.5">
+                                                    {/* Turn header (click to toggle collapse) */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setCollapsedGroups(prev => ({
+                                                            ...prev,
+                                                            [group.turnId]: !prev[group.turnId],
+                                                        }))}
+                                                        className="w-full flex items-center gap-2 px-1 py-1 rounded hover:bg-white/5 transition-colors text-left"
+                                                    >
+                                                        {isCollapsed
+                                                            ? <ChevronRight className="w-3 h-3 text-dark-400 shrink-0" />
+                                                            : <ChevronDown className="w-3 h-3 text-dark-400 shrink-0" />
+                                                        }
                                                         <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-500/15 border border-primary-500/30 text-[9px] font-bold text-primary-300">
                                                             {group.turnId === '__unlinked__' ? '·' : (group.turnNumber ?? '?')}
                                                         </span>
-                                                        <span className="text-[11px] font-medium text-dark-200 truncate">
+                                                        <span className="text-[11px] font-medium text-dark-200 truncate flex-1">
                                                             {group.turnId === '__unlinked__'
                                                                 ? 'Unlinked memories'
                                                                 : group.promptText
                                                                     ? truncate(group.promptText, 60)
                                                                     : `Turn ${group.turnNumber ?? ''}`}
                                                         </span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2 text-[9px] text-dark-500 shrink-0">
-                                                        {group.groupTs && <span>{formatTurnTime(group.groupTs)}</span>}
-                                                        <span>{group.memories.length} {group.memories.length === 1 ? 'memory' : 'memories'}</span>
-                                                        <span>{group.tokens} tok</span>
-                                                    </div>
+                                                        <div className="flex items-center gap-2 text-[9px] text-dark-500 shrink-0">
+                                                            {group.groupTs && <span>{formatTurnTime(group.groupTs)}</span>}
+                                                            <span>{group.memories.length} {group.memories.length === 1 ? 'memory' : 'memories'}</span>
+                                                            <span>{group.tokens} tok</span>
+                                                        </div>
+                                                    </button>
+                                                    {/* Group body */}
+                                                    {!isCollapsed && (
+                                                        <div className="border-l-2 border-primary-500/20 pl-3 ml-[13px] space-y-2">
+                                                            {group.memories.map(renderMemoryCard)}
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                {/* Group divider line */}
-                                                <div className="border-l-2 border-primary-500/20 pl-3 space-y-2">
-                                                    {group.memories.map(renderMemoryCard)}
-                                                </div>
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 </>
                             )}
