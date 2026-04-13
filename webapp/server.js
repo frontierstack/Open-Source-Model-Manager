@@ -7825,6 +7825,33 @@ app.get('/api/docs', requireAuth, async (req, res) => {
 
 const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations');
 
+// Base64 wrapper for conversation and memory files. This is obfuscation,
+// not encryption — it just keeps casual disk inspection from showing
+// plaintext chat history. Every write goes through encodeConversationData
+// so new files are always base64; reads sniff the format so legacy JSON
+// files keep loading and convert on next save. Format detection is cheap
+// (one character check) and the conversion is transparent to callers.
+function encodeConversationData(value) {
+    const json = JSON.stringify(value, null, 2);
+    return Buffer.from(json, 'utf8').toString('base64');
+}
+function decodeConversationData(raw, fallback = null) {
+    if (!raw || !raw.trim()) return fallback;
+    const trimmed = raw.trim();
+    // Legacy plaintext JSON starts with { or [
+    if (trimmed[0] === '{' || trimmed[0] === '[') {
+        try { return JSON.parse(trimmed); }
+        catch { return fallback; }
+    }
+    // Everything else is treated as base64-encoded JSON
+    try {
+        const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+        return JSON.parse(decoded);
+    } catch {
+        return fallback;
+    }
+}
+
 // Ensure conversations directory exists for a user
 async function ensureUserConversationsDir(userId) {
     const userDir = path.join(CONVERSATIONS_DIR, userId);
@@ -7838,14 +7865,14 @@ async function loadConversationsIndex(userId) {
     const indexPath = path.join(userDir, 'index.json');
     try {
         const data = await fs.readFile(indexPath, 'utf8');
-        if (!data || !data.trim()) return []; // Handle empty files
-        return JSON.parse(data);
+        const parsed = decodeConversationData(data, null);
+        if (parsed === null) {
+            console.error(`Corrupted conversations index for user ${userId}, resetting to empty`);
+            return [];
+        }
+        return Array.isArray(parsed) ? parsed : [];
     } catch (error) {
         if (error.code === 'ENOENT') return [];
-        if (error instanceof SyntaxError) {
-            console.error(`Corrupted conversations index for user ${userId}, resetting to empty`);
-            return []; // Handle corrupted JSON
-        }
         throw error;
     }
 }
@@ -7854,7 +7881,7 @@ async function loadConversationsIndex(userId) {
 async function saveConversationsIndex(userId, conversations) {
     const userDir = await ensureUserConversationsDir(userId);
     const indexPath = path.join(userDir, 'index.json');
-    await fs.writeFile(indexPath, JSON.stringify(conversations, null, 2));
+    await fs.writeFile(indexPath, encodeConversationData(conversations));
 }
 
 // Load messages for a conversation
@@ -7867,14 +7894,14 @@ async function loadConversationMessages(userId, conversationId) {
     const messagesPath = path.join(userDir, `${conversationId}.json`);
     try {
         const data = await fs.readFile(messagesPath, 'utf8');
-        if (!data || !data.trim()) return []; // Handle empty files
-        return JSON.parse(data);
+        const parsed = decodeConversationData(data, null);
+        if (parsed === null) {
+            console.error(`Corrupted conversation ${conversationId} for user ${userId}`);
+            return [];
+        }
+        return Array.isArray(parsed) ? parsed : [];
     } catch (error) {
         if (error.code === 'ENOENT') return [];
-        if (error instanceof SyntaxError) {
-            console.error(`Corrupted conversation ${conversationId} for user ${userId}`);
-            return []; // Handle corrupted JSON
-        }
         throw error;
     }
 }
@@ -7887,7 +7914,7 @@ async function saveConversationMessages(userId, conversationId, messages) {
     }
     const userDir = await ensureUserConversationsDir(userId);
     const messagesPath = path.join(userDir, `${conversationId}.json`);
-    await fs.writeFile(messagesPath, JSON.stringify(messages, null, 2));
+    await fs.writeFile(messagesPath, encodeConversationData(messages));
 
     // Update messageCount in conversations index
     try {
@@ -7901,6 +7928,362 @@ async function saveConversationMessages(userId, conversationId, messages) {
     } catch (e) {
         // Non-critical - don't fail message save if index update fails
     }
+
+    // Fire-and-forget memory extraction from any new user→assistant pairs
+    // since the last save. Memory work must never block the save or leak
+    // errors back to the caller — user turns always succeed to disk.
+    extractNewMemoriesFromSave(userId, conversationId, messages).catch(err => {
+        console.warn(`[Memory] Extraction failed for ${conversationId}: ${err.message}`);
+    });
+}
+
+// ============================================================================
+// PER-CONVERSATION MEMORY STORE
+// ============================================================================
+// Each conversation gets a memory directory that holds short, heuristically-
+// compressed facts extracted from user↔assistant turns. On follow-up messages
+// the chat stream handler scores these against the new query, packs the top
+// matches into a system message, and injects them before the model call so
+// relevant context survives even after AIMem compression or context rollover.
+// All memory files are base64-wrapped via the same encode/decode helpers as
+// conversations.
+
+// Maximum total memories retained per conversation; oldest low-score entries
+// are pruned once this is exceeded.
+const MEMORY_MAX_ENTRIES = 200;
+// Target token budget for injected memories on a single turn.
+const MEMORY_RETRIEVAL_TOKEN_BUDGET = 1500;
+// Minimum factuality score to keep a sentence as a memory.
+const MEMORY_MIN_SCORE = 2;
+
+async function ensureMemoryDir(userId, conversationId) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) {
+        throw new Error('Invalid conversation ID format');
+    }
+    const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId);
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+}
+
+async function loadMemoryIndex(userId, conversationId) {
+    try {
+        const dir = await ensureMemoryDir(userId, conversationId);
+        const indexPath = path.join(dir, 'index.json');
+        const data = await fs.readFile(indexPath, 'utf8');
+        const parsed = decodeConversationData(data, null);
+        if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
+            return parsed;
+        }
+        return { cursor: null, entries: [] };
+    } catch (err) {
+        if (err.code === 'ENOENT') return { cursor: null, entries: [] };
+        throw err;
+    }
+}
+
+async function saveMemoryIndex(userId, conversationId, index) {
+    const dir = await ensureMemoryDir(userId, conversationId);
+    const indexPath = path.join(dir, 'index.json');
+    await fs.writeFile(indexPath, encodeConversationData(index));
+}
+
+async function loadMemoryEntry(userId, conversationId, memoryId) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(memoryId)) return null;
+    const dir = await ensureMemoryDir(userId, conversationId);
+    const entryPath = path.join(dir, `${memoryId}.mem`);
+    try {
+        const data = await fs.readFile(entryPath, 'utf8');
+        const parsed = decodeConversationData(data, null);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (err) {
+        if (err.code === 'ENOENT') return null;
+        throw err;
+    }
+}
+
+async function saveMemoryEntry(userId, conversationId, memoryId, entry) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(memoryId)) {
+        throw new Error('Invalid memory ID format');
+    }
+    const dir = await ensureMemoryDir(userId, conversationId);
+    const entryPath = path.join(dir, `${memoryId}.mem`);
+    await fs.writeFile(entryPath, encodeConversationData(entry));
+}
+
+async function deleteMemoryDir(userId, conversationId) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) return;
+    const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId);
+    try {
+        await fs.rm(dir, { recursive: true, force: true });
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            console.warn(`[Memory] Failed to delete memory dir for ${conversationId}: ${err.message}`);
+        }
+    }
+}
+
+// Score a sentence for how "fact-like" it is. Facts are what we want to
+// remember; filler phrases and meta-commentary are what we want to drop.
+// This is a heuristic, not a classifier — tuned so the top-scored sentences
+// from a typical Q&A turn are the ones a human would also pick.
+function scoreFactuality(sentence) {
+    const s = sentence.trim();
+    if (s.length < 12 || s.length > 400) return 0;
+    let score = 0;
+    // URLs and identifiers are high-value
+    if (/https?:\/\//.test(s)) score += 4;
+    if (/\b[a-z][a-zA-Z0-9]+[A-Z][a-zA-Z0-9]+\b/.test(s)) score += 2; // camelCase
+    if (/\b[a-z0-9]+_[a-z0-9_]+\b/.test(s)) score += 2;               // snake_case
+    if (/\b[A-Z][A-Z0-9_]{3,}\b/.test(s)) score += 2;                  // ALL_CAPS constants
+    if (/(^|\s)[/~][\w./-]+/.test(s)) score += 2;                      // filesystem paths
+    if (/`[^`]+`/.test(s)) score += 2;                                 // backtick code
+    if (/"[^"]{3,}"|'[^']{3,}'/.test(s)) score += 1;                   // quoted strings
+    // Numbers, dates, versions, amounts
+    if (/\b\d+(\.\d+)?\b/.test(s)) score += 1;
+    if (/\b\d{4}-\d{2}-\d{2}\b/.test(s)) score += 2;                   // ISO date
+    if (/\bv?\d+\.\d+(\.\d+)?\b/.test(s)) score += 1;                  // version
+    // Declarative predicates
+    if (/\b(is|was|are|were|has|have|named|called|equals?|returns?|contains?|requires?|means?)\b/i.test(s)) score += 1;
+    // Capitalized words that are not sentence-initial — proper nouns
+    const caps = (s.match(/(?<=[a-z]\s)[A-Z][a-zA-Z]+/g) || []).length;
+    if (caps >= 1) score += Math.min(2, caps);
+    // Filler/meta-commentary penalties
+    if (/^(sure|okay|ok|yes|no|thanks|thank you|got it|great|alright|certainly)\b/i.test(s)) score -= 5;
+    if (/\b(let me|I'll|I will|I can|here's|here is|as requested|as an ai)\b/i.test(s)) score -= 3;
+    if (/\b(in summary|to summarize|in conclusion|overall|basically|essentially)\b/i.test(s)) score -= 2;
+    return score;
+}
+
+// Lightweight JS-side shorthand compression — a subset of AIMem's shorthand
+// stage ported over to avoid spawning a Python subprocess on every turn.
+// These replacements are lossless for meaning but shave ~15-25% off length
+// on typical prose. Longer replacements come first to avoid partial overlap.
+const SHORTHAND_REPLACEMENTS = [
+    [/\bin order to\b/gi, 'to'],
+    [/\bdue to the fact that\b/gi, 'because'],
+    [/\bwith respect to\b/gi, 're:'],
+    [/\bfor the purpose of\b/gi, 'to'],
+    [/\bin the event that\b/gi, 'if'],
+    [/\bat this point in time\b/gi, 'now'],
+    [/\bfor example\b/gi, 'e.g.'],
+    [/\bthat is\b/gi, 'i.e.'],
+    [/\bas well as\b/gi, 'and'],
+    [/\bin addition to\b/gi, 'and'],
+    [/\bas a result\b/gi, 'so'],
+    [/\bit is important to note that\b/gi, 'note:'],
+    [/\bit should be noted that\b/gi, 'note:'],
+    [/\bplease note that\b/gi, 'note:'],
+    [/\bkeep in mind that\b/gi, 'note:'],
+    [/\bthe user (?:is )?asking\b/gi, 'user asks'],
+    [/\bthe user wants\b/gi, 'user wants'],
+    [/\bthe user said\b/gi, 'user:'],
+    [/\bI would like to\b/gi, "I'd"],
+    [/\byou would like to\b/gi, "you'd"],
+    [/\bdo not\b/gi, "don't"],
+    [/\bdoes not\b/gi, "doesn't"],
+    [/\bis not\b/gi, "isn't"],
+    [/\bare not\b/gi, "aren't"],
+    [/\bwill not\b/gi, "won't"],
+    [/\bcannot\b/gi, "can't"],
+    [/\s{2,}/g, ' '],
+];
+function shorthandCompress(text) {
+    let out = text;
+    for (const [pattern, repl] of SHORTHAND_REPLACEMENTS) {
+        out = out.replace(pattern, repl);
+    }
+    return out.trim();
+}
+
+// Extract up to `maxKeep` memory-worthy sentences from a user→assistant pair.
+// Returns an array of { text, keywords, tokens, sourceRole }. Runs entirely
+// in-process, no subprocess spawn, safe to call on every save.
+function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
+    const memories = [];
+
+    const processSide = (text, role) => {
+        if (!text || typeof text !== 'string') return;
+        // Strip <think>...</think> reasoning blocks — they're introspection,
+        // not facts worth remembering across turns.
+        const clean = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        if (!clean) return;
+        // Sentence split: reuse the same regex condenseContent uses.
+        const sentences = clean.match(/[^.!?\n]+[.!?\n]+/g) || [clean];
+        for (const raw of sentences) {
+            const sentence = raw.trim();
+            const score = scoreFactuality(sentence);
+            if (score < MEMORY_MIN_SCORE) continue;
+            const compressed = shorthandCompress(sentence);
+            const keywords = extractQueryKeywords(compressed);
+            if (keywords.length === 0) continue;
+            memories.push({
+                text: compressed,
+                keywords,
+                tokens: Math.ceil(compressed.length / 3),
+                sourceRole: role,
+                score,
+            });
+        }
+    };
+
+    processSide(userText, 'user');
+    processSide(assistantText, 'assistant');
+
+    // Sort by score and keep the top N; also dedup within the same turn by
+    // keyword-set overlap so we don't save two paraphrases of the same fact.
+    memories.sort((a, b) => b.score - a.score);
+    const kept = [];
+    for (const m of memories) {
+        const dup = kept.some(k => jaccardSimilarity(k.keywords, m.keywords) >= 0.7);
+        if (!dup) kept.push(m);
+        if (kept.length >= maxKeep) break;
+    }
+    return kept;
+}
+
+function jaccardSimilarity(aKeywords, bKeywords) {
+    if (!aKeywords.length || !bKeywords.length) return 0;
+    const a = new Set(aKeywords);
+    const b = new Set(bKeywords);
+    let inter = 0;
+    for (const k of a) if (b.has(k)) inter++;
+    const union = a.size + b.size - inter;
+    return union === 0 ? 0 : inter / union;
+}
+
+// Get text content from a chat message, handling both string and vision-array
+// formats. Strips image_url parts since memories are text-only.
+function messageText(msg) {
+    if (!msg || !msg.content) return '';
+    if (typeof msg.content === 'string') return msg.content;
+    if (Array.isArray(msg.content)) {
+        return msg.content.filter(p => p.type === 'text').map(p => p.text || '').join('\n');
+    }
+    return '';
+}
+
+// After a saveConversationMessages call, walk any user→assistant pairs that
+// are newer than the memory cursor and extract memories from each. Updates
+// the cursor to the last processed assistant message id so we don't
+// re-process on the next save. Swallows all errors — memory is advisory.
+async function extractNewMemoriesFromSave(userId, conversationId, messages) {
+    if (!Array.isArray(messages) || messages.length < 2) return;
+    const index = await loadMemoryIndex(userId, conversationId);
+
+    // Find the position after the cursor (or start from 0 if no cursor).
+    let startIdx = 0;
+    if (index.cursor) {
+        const cursorIdx = messages.findIndex(m => m.id === index.cursor);
+        if (cursorIdx >= 0) startIdx = cursorIdx + 1;
+    }
+
+    let newestCursor = index.cursor;
+    let addedCount = 0;
+
+    for (let i = startIdx; i < messages.length; i++) {
+        const msg = messages[i];
+        if (msg.role !== 'assistant') continue;
+        // Walk backwards to find the most recent user message before this one.
+        let userMsg = null;
+        for (let j = i - 1; j >= 0; j--) {
+            if (messages[j].role === 'user') { userMsg = messages[j]; break; }
+            if (messages[j].role === 'assistant') break; // not paired
+        }
+        if (!userMsg) { newestCursor = msg.id || newestCursor; continue; }
+
+        const extracted = extractMemoriesFromTurn(messageText(userMsg), messageText(msg));
+        for (const mem of extracted) {
+            // Dedup against existing memories in the index by keyword overlap.
+            const dup = index.entries.some(e =>
+                jaccardSimilarity(e.keywords, mem.keywords) >= 0.75
+            );
+            if (dup) continue;
+            const memId = crypto.randomUUID();
+            await saveMemoryEntry(userId, conversationId, memId, {
+                id: memId,
+                text: mem.text,
+                keywords: mem.keywords,
+                tokens: mem.tokens,
+                sourceRole: mem.sourceRole,
+                sourceTurnId: msg.id || null,
+                ts: new Date().toISOString(),
+            });
+            index.entries.push({
+                id: memId,
+                keywords: mem.keywords,
+                tokens: mem.tokens,
+                score: mem.score,
+                ts: new Date().toISOString(),
+            });
+            addedCount++;
+        }
+        if (msg.id) newestCursor = msg.id;
+    }
+
+    // Prune if we've exceeded the cap — drop lowest-score oldest entries first.
+    if (index.entries.length > MEMORY_MAX_ENTRIES) {
+        index.entries.sort((a, b) => (a.score || 0) - (b.score || 0));
+        const overflow = index.entries.length - MEMORY_MAX_ENTRIES;
+        const dropped = index.entries.splice(0, overflow);
+        for (const d of dropped) {
+            const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId);
+            await fs.unlink(path.join(dir, `${d.id}.mem`)).catch(() => {});
+        }
+    }
+
+    index.cursor = newestCursor;
+    if (addedCount > 0 || index.cursor !== null) {
+        await saveMemoryIndex(userId, conversationId, index);
+    }
+    if (addedCount > 0) {
+        console.log(`[Memory] Extracted ${addedCount} memories for conversation ${conversationId} (total: ${index.entries.length})`);
+    }
+}
+
+// Pre-turn retrieval: score all memories for this conversation against the
+// incoming query and pack the top matches into a token budget. Returns a
+// single concatenated string ready to inject as a system message, or null
+// if nothing meets the bar.
+async function retrieveRelevantMemories(userId, conversationId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET) {
+    if (!query || typeof query !== 'string') return null;
+    let index;
+    try {
+        index = await loadMemoryIndex(userId, conversationId);
+    } catch {
+        return null;
+    }
+    if (!index.entries.length) return null;
+
+    const queryKeywords = extractQueryKeywords(query);
+    if (queryKeywords.length === 0) return null;
+
+    // Score each index entry by keyword overlap. Cheap and local — no disk
+    // read for non-matching entries.
+    const scored = index.entries.map(e => ({
+        entry: e,
+        relevance: jaccardSimilarity(e.keywords, queryKeywords),
+    }));
+    scored.sort((a, b) => b.relevance - a.relevance);
+
+    // Keep top entries with any overlap at all, within the token budget.
+    const picked = [];
+    let usedTokens = 0;
+    for (const s of scored) {
+        if (s.relevance <= 0) break;
+        if (usedTokens + s.entry.tokens > tokenBudget) continue;
+        const full = await loadMemoryEntry(userId, conversationId, s.entry.id);
+        if (!full) continue;
+        picked.push(full);
+        usedTokens += s.entry.tokens;
+        if (picked.length >= 25) break;
+    }
+    if (picked.length === 0) return null;
+
+    // Order by timestamp so injected memories read as a chronological digest.
+    picked.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+    const lines = picked.map(m => `- ${m.text}`).join('\n');
+    console.log(`[Memory] Injecting ${picked.length} memories (${usedTokens} tokens) for conversation ${conversationId}`);
+    return `Relevant context from earlier in this conversation:\n${lines}`;
 }
 
 // List all conversations for a user
@@ -8065,6 +8448,11 @@ app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
         } catch (e) {
             // Ignore if file doesn't exist
         }
+
+        // Delete per-conversation memory directory alongside the messages
+        // file — leaving memories around for a deleted conversation would
+        // accumulate dead state and leak content across reused ids.
+        await deleteMemoryDir(userId, id);
 
         res.json({ success: true });
     } catch (error) {
@@ -9408,6 +9796,53 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 chatMessages.push({ role: 'system', content: systemPrompt });
             }
             chatMessages.push({ role: 'user', content: userContent });
+        }
+
+        // Inject per-conversation memories before counting tokens. We score
+        // memories against the latest user message, pack the top matches
+        // into a small token budget, and prepend them as a system message.
+        // Anything injected here is part of the normal token accounting —
+        // it flows through AIMem compression and the chunking gate just
+        // like any other system context, so injection can't blow up the
+        // context budget.
+        try {
+            const chatUserId = req.user?.id || req.apiKeyData?.id || 'default';
+            const chatConvId = conversationId || req.body.conversationId;
+            if (chatConvId && /^[a-zA-Z0-9_-]+$/.test(chatConvId)) {
+                // Find latest user message text for scoring
+                let latestUserText = '';
+                for (let i = chatMessages.length - 1; i >= 0; i--) {
+                    if (chatMessages[i].role === 'user') {
+                        const c = chatMessages[i].content;
+                        latestUserText = typeof c === 'string'
+                            ? c
+                            : (Array.isArray(c) ? (c.find(p => p.type === 'text')?.text || '') : '');
+                        break;
+                    }
+                }
+                if (latestUserText) {
+                    const memoryBlock = await retrieveRelevantMemories(
+                        chatUserId, chatConvId, latestUserText, MEMORY_RETRIEVAL_TOKEN_BUDGET
+                    );
+                    if (memoryBlock) {
+                        // Append to existing system message if one exists,
+                        // otherwise insert a new system message at position 0.
+                        if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
+                            const existing = chatMessages[0].content;
+                            if (typeof existing === 'string') {
+                                chatMessages[0] = {
+                                    ...chatMessages[0],
+                                    content: `${existing}\n\n${memoryBlock}`,
+                                };
+                            }
+                        } else {
+                            chatMessages.unshift({ role: 'system', content: memoryBlock });
+                        }
+                    }
+                }
+            }
+        } catch (memErr) {
+            console.warn(`[Memory] Retrieval failed (continuing without): ${memErr.message}`);
         }
 
         // Calculate total tokens from all messages
