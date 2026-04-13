@@ -6,7 +6,7 @@
 # - LLAMA_N_GPU_LAYERS: Number of layers to offload to GPU (-1 = all, default: -1)
 # - LLAMA_CTX_SIZE: Context size (default: 4096)
 # - LLAMA_CTX_SHIFT: Enable context shifting (default: true)
-# - LLAMA_FLASH_ATTN: Enable flash attention (default: false)
+# - LLAMA_FLASH_ATTN: Flash attention — true|false|auto (default: false)
 # - LLAMA_CACHE_TYPE_K: KV cache type for keys (f16/q8_0/q4_0, default: f16)
 # - LLAMA_CACHE_TYPE_V: KV cache type for values (f16/q8_0/q4_0, default: f16)
 # - LLAMA_THREADS: Number of CPU threads (default: auto-detect)
@@ -85,11 +85,18 @@ if [ "$CTX_SHIFT" = "false" ]; then
     echo "    [Context shift DISABLED]"
 fi
 
-# Enable flash attention if requested
-if [ "$FLASH_ATTN" = "true" ]; then
-    CMD_ARGS+=(--flash-attn)
-    echo "    [Flash attention ENABLED]"
-fi
+# Flash attention — current llama.cpp requires an explicit value.
+# Map LLAMA_FLASH_ATTN to on/off/auto and always pass it so the UI
+# toggle has deterministic, observable behavior (default 'auto'
+# would otherwise silently enable FA on capable hardware regardless
+# of the user's toggle state).
+case "$FLASH_ATTN" in
+    true|on|1)   FA_MODE=on ;;
+    auto)        FA_MODE=auto ;;
+    *)           FA_MODE=off ;;
+esac
+CMD_ARGS+=(--flash-attn "$FA_MODE")
+echo "    [Flash attention: $FA_MODE]"
 
 echo ""
 echo ">>> Starting llama.cpp with OpenAI-compatible API"
