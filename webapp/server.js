@@ -244,8 +244,24 @@ const CHUNKING_CONFIG = {
     charsPerToken: 4,
     // Safety margin for token estimation
     safetyMargin: 1.05,
-    // Per-chunk timeout in milliseconds (5 minutes)
+    // Per-chunk timeout in milliseconds (legacy; kept for backward compat).
+    // The active timeout used by the chunk request is chunkMaxTimeoutMs below.
     chunkTimeout: 300000,
+    // Activity-based idle timeout (ms) — reserved for future streaming chunk
+    // requests. The current chunk request is NON-streaming (stream: false),
+    // so there is no per-token data-arrival event to reset against and this
+    // value is NOT currently enforced. If the chunk path is ever converted
+    // to SSE/streaming, wire setTimeout/reset to the response 'data' event
+    // and abort via AbortController when the idle window elapses.
+    chunkIdleTimeoutMs: 90000,
+    // Wall-clock cap (ms) for a single chunk request. Because the request
+    // is non-streaming we cannot reset on progress, so this is the hard
+    // upper bound. Set generously (30 min) so legitimately-slow big chunks
+    // on heavily-loaded backends are not killed mid-generation — the
+    // previous 5 min cap was killing chunks the model was clearly still
+    // working on. A model stuck in an infinite loop will still eventually
+    // hit this cap and be aborted, preserving the safety net.
+    chunkMaxTimeoutMs: 1800000,
     // Maximum retry attempts per chunk
     maxRetries: 3,
     // Enable content condensation before chunking
@@ -782,7 +798,17 @@ async function processWithMapReduce(options) {
             });
         }
 
-        const baseTimeout = 300000; // 5 minute timeout per chunk
+        // Per-chunk request wall-clock cap. The chunk request is non-streaming
+        // (stream: false) so we have no per-token data-arrival event to reset
+        // against — the whole response lands at once. That means a smart
+        // activity-based idle timeout isn't possible here without converting
+        // the request to SSE. Instead we use a generous wall-clock cap from
+        // CHUNKING_CONFIG.chunkMaxTimeoutMs (30 min) so large chunks on a
+        // busy backend have room to finish. The model still dies if it hangs
+        // indefinitely. NOTE: if/when this is converted to streaming, use
+        // CHUNKING_CONFIG.chunkIdleTimeoutMs with setTimeout + response.data
+        // event reset + AbortController for a proper smart timeout.
+        const baseTimeout = CHUNKING_CONFIG.chunkMaxTimeoutMs;
         const maxRetries = 3;
 
         // Process a chunk with progressive shrinking on "context too large"
@@ -808,6 +834,18 @@ async function processWithMapReduce(options) {
             ];
 
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                // Fresh AbortController + wall-clock timer per attempt so
+                // retries never leak timers across iterations. The axios
+                // `timeout` option is the primary mechanism; the abort
+                // controller is a belt-and-suspenders safety net and the
+                // hook we'd use if this path were ever converted to
+                // streaming (idle timer reset on response.data events).
+                const abortController = new AbortController();
+                const attemptStart = Date.now();
+                const wallClockTimer = setTimeout(() => {
+                    console.warn(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} hit wall-clock cap of ${Math.round(baseTimeout / 1000)}s — aborting (non-streaming request, no idle signal available)`);
+                    abortController.abort();
+                }, baseTimeout);
                 try {
                     const response = await axios({
                         method: 'post',
@@ -821,13 +859,16 @@ async function processWithMapReduce(options) {
                             stream: false,
                             stop: DEFAULT_STOP_STRINGS
                         },
-                        timeout: baseTimeout
+                        timeout: baseTimeout,
+                        signal: abortController.signal
                     });
+                    clearTimeout(wallClockTimer);
 
                     const responseContent = response.data?.choices?.[0]?.message?.content || '';
                     completedChunks++;
                     const shrinkNote = shrinkDepth > 0 ? ` (shrunk x${shrinkDepth})` : '';
-                    console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} completed (${responseContent.length} chars)${attempt > 1 ? ` after ${attempt} attempts` : ''}${shrinkNote}`);
+                    const elapsedSec = ((Date.now() - attemptStart) / 1000).toFixed(1);
+                    console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} completed in ${elapsedSec}s (${responseContent.length} chars)${attempt > 1 ? ` after ${attempt} attempts` : ''}${shrinkNote}`);
 
                     if (onProgress) {
                         onProgress({
@@ -850,8 +891,10 @@ async function processWithMapReduce(options) {
                         shrinkDepth
                     };
                 } catch (error) {
+                    clearTimeout(wallClockTimer);
                     const status = error.response?.status;
-                    const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
+                    const isAborted = error.name === 'CanceledError' || error.code === 'ERR_CANCELED' || abortController.signal.aborted;
+                    const isTimeout = isAborted || error.code === 'ECONNABORTED' || error.message.includes('timeout');
                     const isContextTooLarge = status === 400 || status === 413;
                     const isRetryable = isTimeout || error.code === 'ECONNRESET' || (status && status >= 500);
 
@@ -8554,6 +8597,9 @@ async function ownsConversation(userId, conversationId) {
 // GET /api/conversations/:id/memories — list all memories for a conversation
 app.get('/api/conversations/:id/memories', requireAuth, async (req, res) => {
     try {
+        if (!checkPermission(req.apiKeyData, 'query')) {
+            return res.status(403).json({ error: 'Query permission required for memory access' });
+        }
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const { id } = req.params;
         if (!(await ownsConversation(userId, id))) {
@@ -8595,6 +8641,9 @@ app.get('/api/conversations/:id/memories', requireAuth, async (req, res) => {
 // DELETE /api/conversations/:id/memories — clear all memories for a conversation
 app.delete('/api/conversations/:id/memories', requireAuth, async (req, res) => {
     try {
+        if (!checkPermission(req.apiKeyData, 'query')) {
+            return res.status(403).json({ error: 'Query permission required for memory access' });
+        }
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const { id } = req.params;
         if (!(await ownsConversation(userId, id))) {
@@ -8611,6 +8660,9 @@ app.delete('/api/conversations/:id/memories', requireAuth, async (req, res) => {
 // DELETE /api/conversations/:id/memories/:memId — delete one memory
 app.delete('/api/conversations/:id/memories/:memId', requireAuth, async (req, res) => {
     try {
+        if (!checkPermission(req.apiKeyData, 'query')) {
+            return res.status(403).json({ error: 'Query permission required for memory access' });
+        }
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const { id, memId } = req.params;
         if (!/^[a-zA-Z0-9_-]+$/.test(memId)) {
@@ -8639,6 +8691,9 @@ app.delete('/api/conversations/:id/memories/:memId', requireAuth, async (req, re
 // PUT /api/conversations/:id/memories/:memId — edit a memory's text
 app.put('/api/conversations/:id/memories/:memId', requireAuth, async (req, res) => {
     try {
+        if (!checkPermission(req.apiKeyData, 'query')) {
+            return res.status(403).json({ error: 'Query permission required for memory access' });
+        }
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const { id, memId } = req.params;
         const { text } = req.body;

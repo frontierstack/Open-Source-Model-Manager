@@ -5231,6 +5231,307 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}/messages\`, {
 .catch(err => console.error(err));`
             },
             // ============================================================================
+            // CONVERSATION MEMORIES
+            // ============================================================================
+            '/api/conversations/:id/memories': {
+                curl: `# List all memories for a conversation
+curl -k -X GET "${baseUrl}/api/conversations/conv-abc123/memories" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET "${baseUrl}/api/conversations/conv-abc123/memories" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Response:
+# {
+#   "conversationId": "conv-abc123",
+#   "cursor": 0,
+#   "count": 2,
+#   "memories": [
+#     { "id": "mem-xyz789", "text": "The webapp listens on port 3001.",
+#       "keywords": ["webapp", "port"], "tokens": 9,
+#       "sourceRole": "assistant", "sourceTurnId": "turn-1",
+#       "ts": 1712345678000, "score": 0.87 }
+#   ]
+# }`,
+                python: `import requests
+
+conversation_id = "conv-abc123"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+data = response.json()
+print(f"Memories ({data['count']}) for {data['conversationId']}:")
+for mem in data['memories']:
+    print(f"- [{mem['id']}] {mem['text']}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$conversationId = "conv-abc123"
+
+$data = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories" -Headers $headers
+Write-Output "Memories ($($data.count)) for $($data.conversationId):"
+$data.memories | ForEach-Object {
+    Write-Output "- [$($_.id)] $($_.text)"
+}`,
+                javascript: `const conversationId = 'conv-abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(data => {
+  console.log(\`Memories (\${data.count}) for \${data.conversationId}:\`);
+  data.memories.forEach(m => console.log(\`- [\${m.id}] \${m.text}\`));
+})
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id/memories/clear': {
+                curl: `# Clear all memories for a conversation
+curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Response: { "success": true }`,
+                python: `import requests
+
+conversation_id = "conv-abc123"
+
+# Bearer Token Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print("Memories cleared" if response.ok else f"Error: {response.json()}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$conversationId = "conv-abc123"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories" -Method Delete -Headers $headers
+Write-Output "Memories cleared"`,
+                javascript: `const conversationId = 'conv-abc123';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories\`, {
+  method: 'DELETE',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(() => console.log('Memories cleared'))
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id/memories/:memId': {
+                curl: `# Delete a single memory
+curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Response: { "success": true }
+# 404 if memory not found`,
+                python: `import requests
+
+conversation_id = "conv-abc123"
+memory_id = "mem-xyz789"
+
+# Bearer Token Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.delete(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+print("Memory deleted" if response.ok else f"Error: {response.json()}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$conversationId = "conv-abc123"
+$memoryId = "mem-xyz789"
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories/$memoryId" -Method Delete -Headers $headers
+Write-Output "Memory deleted"`,
+                javascript: `const conversationId = 'conv-abc123';
+const memoryId = 'mem-xyz789';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories/\${memoryId}\`, {
+  method: 'DELETE',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(() => console.log('Memory deleted'))
+.catch(err => console.error(err));`
+            },
+            '/api/conversations/:id/memories/:memId/update': {
+                curl: `# Edit a memory's text
+curl -k -X PUT "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "text": "The webapp listens on port 3001."
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X PUT "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "text": "The webapp listens on port 3001."
+  }'
+
+# Response:
+# {
+#   "success": true,
+#   "memory": {
+#     "id": "mem-xyz789",
+#     "text": "The webapp listens on port 3001.",
+#     "keywords": ["webapp", "port"],
+#     "tokens": 9,
+#     "sourceRole": "assistant",
+#     "sourceTurnId": "turn-1",
+#     "ts": 1712345678000,
+#     "editedAt": 1712999999000
+#   }
+# }`,
+                python: `import requests
+
+conversation_id = "conv-abc123"
+memory_id = "mem-xyz789"
+
+# Bearer Token Authentication
+response = requests.put(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'text': 'The webapp listens on port 3001.'
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.put(
+    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'text': 'The webapp listens on port 3001.'
+    },
+    verify=False
+)
+
+result = response.json()
+if result.get('success'):
+    print(f"Updated memory: {result['memory']['text']}")
+else:
+    print(f"Error: {result}")`,
+                powershell: `$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+    "Content-Type" = "application/json"
+}
+$conversationId = "conv-abc123"
+$memoryId = "mem-xyz789"
+
+$body = @{
+    text = "The webapp listens on port 3001."
+} | ConvertTo-Json
+
+$result = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories/$memoryId" -Method Put -Headers $headers -Body $body
+Write-Output "Updated memory: $($result.memory.text)"`,
+                javascript: `const conversationId = 'conv-abc123';
+const memoryId = 'mem-xyz789';
+
+// Bearer Token Authentication
+fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories/\${memoryId}\`, {
+  method: 'PUT',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ text: 'The webapp listens on port 3001.' })
+})
+.then(res => res.json())
+.then(result => console.log('Updated memory:', result.memory.text))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
             // STREAMING STATUS & CONTROL
             // ============================================================================
             '/api/conversations/:id/streaming': {
@@ -9120,6 +9421,10 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             <MenuItem value="/api/conversations/:id/update">PUT /api/conversations/:id - Update Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/delete">DELETE /api/conversations/:id - Delete Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/messages">POST /api/conversations/:id/messages - Add Message</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/memories">GET /api/conversations/:id/memories - List Memories</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/memories/clear">DELETE /api/conversations/:id/memories - Clear Memories</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/memories/:memId">DELETE /api/conversations/:id/memories/:memId - Delete Memory</MenuItem>
+                                                            <MenuItem value="/api/conversations/:id/memories/:memId/update">PUT /api/conversations/:id/memories/:memId - Edit Memory</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming/cancel">DELETE /api/conversations/:id/streaming - Cancel Stream</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>

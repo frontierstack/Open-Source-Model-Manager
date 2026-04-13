@@ -970,6 +970,11 @@ body.font-size-large .markdown-content,
         font-size: 0.8125rem;
     }
 /* Divider - subtle */
+.divider {
+        height: 1px;
+        background: var(--border-secondary);
+        margin: 0.75rem 0;
+    }
 /* Loading skeleton */
 /* Empty state - compact */
 .pointer-events-none{
@@ -2216,6 +2221,9 @@ body.font-size-large .markdown-content,
 }
 .pl-1\.5{
   padding-left: 0.375rem;
+}
+.pl-3{
+  padding-left: 0.75rem;
 }
 .pl-4{
   padding-left: 1rem;

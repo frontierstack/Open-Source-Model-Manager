@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
 import { loadGoogleFonts } from '../../fontLoader';
+import { useChatStore } from '../../stores/useChatStore';
 
 /**
  * ChatSettings - Modern tabbed settings modal with chat, prompts, and appearance (Tailwind)
@@ -56,6 +57,10 @@ export default function ChatSettings({
     const [memoriesError, setMemoriesError] = useState(null);
     const [editingMemoryId, setEditingMemoryId] = useState(null);
     const [editingMemoryText, setEditingMemoryText] = useState('');
+    // Pull the active conversation's messages so we can show each turn's
+    // user prompt as a group header. The chat store already holds them
+    // for the conversation the user is currently viewing.
+    const storeMessages = useChatStore((state) => state.messages);
 
     const fetchMemories = useCallback(async () => {
         if (!activeConversationId) {
@@ -159,6 +164,173 @@ export default function ChatSettings({
         } catch (e) {
             setMemoriesError(e.message || 'Failed to save memory edit');
         }
+    };
+
+    // Group memories by the turn (assistant message id) that produced them.
+    // Each group gets a header showing the user prompt that triggered it,
+    // looked up from the chat store's messages for the active conversation.
+    // Memories without a sourceTurnId (older or externally-created entries)
+    // fall into an "Unlinked" bucket rendered last.
+    const getMessageText = (msg) => {
+        if (!msg) return '';
+        const c = msg.content;
+        if (typeof c === 'string') return c;
+        if (Array.isArray(c)) {
+            return c.filter(p => p.type === 'text').map(p => p.text || '').join(' ');
+        }
+        return '';
+    };
+    const groupedMemories = (() => {
+        if (!memories.length) return [];
+        const byTurn = new Map();
+        for (const m of memories) {
+            const key = m.sourceTurnId || '__unlinked__';
+            if (!byTurn.has(key)) byTurn.set(key, []);
+            byTurn.get(key).push(m);
+        }
+        // Build a lookup of assistant id → index so we can derive a
+        // 1-based turn number and grab the preceding user prompt.
+        const assistantIds = new Map();
+        let turnCounter = 0;
+        for (let i = 0; i < storeMessages.length; i++) {
+            if (storeMessages[i].role === 'assistant') {
+                turnCounter++;
+                if (storeMessages[i].id) assistantIds.set(storeMessages[i].id, { index: i, turnNumber: turnCounter });
+            }
+        }
+        const groups = [];
+        for (const [turnId, items] of byTurn.entries()) {
+            let promptText = '';
+            let turnNumber = null;
+            let turnTs = null;
+            if (turnId !== '__unlinked__' && assistantIds.has(turnId)) {
+                const { index, turnNumber: tn } = assistantIds.get(turnId);
+                turnNumber = tn;
+                turnTs = storeMessages[index].timestamp || null;
+                for (let j = index - 1; j >= 0; j--) {
+                    if (storeMessages[j].role === 'user') {
+                        promptText = getMessageText(storeMessages[j]);
+                        break;
+                    }
+                    if (storeMessages[j].role === 'assistant') break;
+                }
+            }
+            // Earliest ts inside the group, so groups sort consistently even
+            // when the message text isn't reachable via the store.
+            const groupTs = items
+                .map(m => m.ts)
+                .filter(Boolean)
+                .sort()[0] || turnTs;
+            groups.push({
+                turnId,
+                turnNumber,
+                promptText,
+                groupTs,
+                tokens: items.reduce((s, m) => s + (m.tokens || 0), 0),
+                memories: items,
+            });
+        }
+        // Newest turn first. Unlinked group sinks to the bottom.
+        groups.sort((a, b) => {
+            if (a.turnId === '__unlinked__') return 1;
+            if (b.turnId === '__unlinked__') return -1;
+            return (b.groupTs || '').localeCompare(a.groupTs || '');
+        });
+        return groups;
+    })();
+
+    const formatTurnTime = (ts) => {
+        if (!ts) return '';
+        try {
+            return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        } catch { return ''; }
+    };
+    const truncate = (text, n) => {
+        if (!text) return '';
+        const single = text.replace(/\s+/g, ' ').trim();
+        return single.length > n ? single.slice(0, n - 1) + '…' : single;
+    };
+
+    // Reusable memory card render — same shape as before, just factored
+    // out so the grouped layout can render it without nested JSX sprawl.
+    const renderMemoryCard = (mem) => {
+        const isEditing = editingMemoryId === mem.id;
+        return (
+            <div
+                key={mem.id}
+                className="group p-2.5 rounded-lg bg-dark-800/50 border border-white/5 hover:border-white/10 transition-colors"
+            >
+                {isEditing ? (
+                    <>
+                        <textarea
+                            value={editingMemoryText}
+                            onChange={(e) => setEditingMemoryText(e.target.value)}
+                            rows={3}
+                            className="w-full px-2 py-1.5 bg-dark-900 border border-white/10 rounded-md text-[12px] text-dark-100 resize-none focus:border-primary-500/50 focus:outline-none"
+                            autoFocus
+                        />
+                        <div className="flex items-center justify-end gap-1.5 mt-1.5">
+                            <button
+                                type="button"
+                                onClick={handleCancelEditMemory}
+                                className="px-2 py-1 rounded text-[10px] font-medium text-dark-300 hover:bg-white/5 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleSaveMemoryEdit}
+                                disabled={!editingMemoryText.trim()}
+                                className="px-2 py-1 rounded text-[10px] font-medium bg-primary-500/20 hover:bg-primary-500/30 text-primary-300 border border-primary-500/30 transition-colors disabled:opacity-40"
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <div className="flex items-start gap-2">
+                            <p className="flex-1 text-[12px] text-dark-200 leading-relaxed break-words">
+                                {mem.text}
+                            </p>
+                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={() => handleStartEditMemory(mem)}
+                                    className="p-1 rounded hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
+                                    title="Edit"
+                                >
+                                    <Edit3 className="w-3 h-3" />
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleDeleteMemory(mem.id)}
+                                    className="p-1 rounded hover:bg-red-500/20 text-dark-400 hover:text-red-300 transition-colors"
+                                    title="Delete"
+                                >
+                                    <Trash2 className="w-3 h-3" />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1.5 text-[9px] text-dark-500">
+                            <span className={`px-1.5 py-0.5 rounded font-medium ${
+                                mem.sourceRole === 'user'
+                                    ? 'bg-blue-500/10 text-blue-300'
+                                    : 'bg-emerald-500/10 text-emerald-300'
+                            }`}>
+                                {mem.sourceRole}
+                            </span>
+                            <span>{mem.tokens || 0} tokens</span>
+                            {mem.keywords?.length > 0 && (
+                                <span className="truncate">
+                                    {mem.keywords.slice(0, 4).join(' · ')}
+                                </span>
+                            )}
+                        </div>
+                    </>
+                )}
+            </div>
+        );
     };
 
     const {
@@ -781,88 +953,37 @@ export default function ChatSettings({
                             ) : (
                                 <>
                                     <div className="text-[10px] text-dark-500 -mt-1">
-                                        {memories.length} {memories.length === 1 ? 'memory' : 'memories'} stored
+                                        {memories.length} {memories.length === 1 ? 'memory' : 'memories'} across {groupedMemories.length} {groupedMemories.length === 1 ? 'turn' : 'turns'}
                                     </div>
-                                    <div className="space-y-2">
-                                        {memories.map((mem) => {
-                                            const isEditing = editingMemoryId === mem.id;
-                                            return (
-                                                <div
-                                                    key={mem.id}
-                                                    className="group p-2.5 rounded-lg bg-dark-800/50 border border-white/5 hover:border-white/10 transition-colors"
-                                                >
-                                                    {isEditing ? (
-                                                        <>
-                                                            <textarea
-                                                                value={editingMemoryText}
-                                                                onChange={(e) => setEditingMemoryText(e.target.value)}
-                                                                rows={3}
-                                                                className="w-full px-2 py-1.5 bg-dark-900 border border-white/10 rounded-md text-[12px] text-dark-100 resize-none focus:border-primary-500/50 focus:outline-none"
-                                                                autoFocus
-                                                            />
-                                                            <div className="flex items-center justify-end gap-1.5 mt-1.5">
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={handleCancelEditMemory}
-                                                                    className="px-2 py-1 rounded text-[10px] font-medium text-dark-300 hover:bg-white/5 transition-colors"
-                                                                >
-                                                                    Cancel
-                                                                </button>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={handleSaveMemoryEdit}
-                                                                    disabled={!editingMemoryText.trim()}
-                                                                    className="px-2 py-1 rounded text-[10px] font-medium bg-primary-500/20 hover:bg-primary-500/30 text-primary-300 border border-primary-500/30 transition-colors disabled:opacity-40"
-                                                                >
-                                                                    Save
-                                                                </button>
-                                                            </div>
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <div className="flex items-start gap-2">
-                                                                <p className="flex-1 text-[12px] text-dark-200 leading-relaxed break-words">
-                                                                    {mem.text}
-                                                                </p>
-                                                                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => handleStartEditMemory(mem)}
-                                                                        className="p-1 rounded hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
-                                                                        title="Edit"
-                                                                    >
-                                                                        <Edit3 className="w-3 h-3" />
-                                                                    </button>
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => handleDeleteMemory(mem.id)}
-                                                                        className="p-1 rounded hover:bg-red-500/20 text-dark-400 hover:text-red-300 transition-colors"
-                                                                        title="Delete"
-                                                                    >
-                                                                        <Trash2 className="w-3 h-3" />
-                                                                    </button>
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex items-center gap-2 mt-1.5 text-[9px] text-dark-500">
-                                                                <span className={`px-1.5 py-0.5 rounded font-medium ${
-                                                                    mem.sourceRole === 'user'
-                                                                        ? 'bg-blue-500/10 text-blue-300'
-                                                                        : 'bg-emerald-500/10 text-emerald-300'
-                                                                }`}>
-                                                                    {mem.sourceRole}
-                                                                </span>
-                                                                <span>{mem.tokens || 0} tokens</span>
-                                                                {mem.keywords?.length > 0 && (
-                                                                    <span className="truncate">
-                                                                        {mem.keywords.slice(0, 4).join(' · ')}
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                        </>
-                                                    )}
+                                    <div className="space-y-4">
+                                        {groupedMemories.map((group) => (
+                                            <div key={group.turnId} className="space-y-1.5">
+                                                {/* Turn header */}
+                                                <div className="flex items-center gap-2 px-1">
+                                                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                                        <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-500/15 border border-primary-500/30 text-[9px] font-bold text-primary-300">
+                                                            {group.turnId === '__unlinked__' ? '·' : (group.turnNumber ?? '?')}
+                                                        </span>
+                                                        <span className="text-[11px] font-medium text-dark-200 truncate">
+                                                            {group.turnId === '__unlinked__'
+                                                                ? 'Unlinked memories'
+                                                                : group.promptText
+                                                                    ? truncate(group.promptText, 60)
+                                                                    : `Turn ${group.turnNumber ?? ''}`}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 text-[9px] text-dark-500 shrink-0">
+                                                        {group.groupTs && <span>{formatTurnTime(group.groupTs)}</span>}
+                                                        <span>{group.memories.length} {group.memories.length === 1 ? 'memory' : 'memories'}</span>
+                                                        <span>{group.tokens} tok</span>
+                                                    </div>
                                                 </div>
-                                            );
-                                        })}
+                                                {/* Group divider line */}
+                                                <div className="border-l-2 border-primary-500/20 pl-3 space-y-2">
+                                                    {group.memories.map(renderMemoryCard)}
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
                                 </>
                             )}
