@@ -9414,26 +9414,23 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const availableForContent = availableContextForInput - otherTokens - 200;
 
                     if (availableForContent > 0 && contentTokens > availableForContent) {
-                        // Code content (obfuscated scripts, source files, logs with
-                        // heavy punctuation) must NOT go through condensation or
-                        // map-reduce. Condensation drops whole sentences by
-                        // relevance which shatters the payload; map-reduce splits
-                        // it so no single request ever sees the whole program.
-                        // Force the 'truncate' path for code-like input so the
-                        // model at least sees a contiguous slice of the raw text.
+                        // Code content still goes through map-reduce — we just
+                        // skip the CONDENSATION step inside it, because that's
+                        // the part that drops whole sentences by relevance and
+                        // mangles the payload. Raw overlapping chunks are fine
+                        // for code; sentence-level relevance scoring is not.
                         const contentIsCode = looksLikeCode(textContent);
                         if (contentIsCode) {
-                            console.log(`[Chat Stream] Content looks like code (${contentTokens} tokens) — skipping condensation/map-reduce and falling back to truncate so the payload is not mangled`);
+                            console.log(`[Chat Stream] Content looks like code (${contentTokens} tokens) — map-reduce will run, condensation will be skipped`);
                             broadcast({
                                 type: 'log',
-                                level: 'warning',
-                                message: `Content looks like code (${contentTokens} tokens > ${availableForContent} available). Skipping condensation/chunking — model will see a truncated-from-end slice.`
+                                level: 'info',
+                                message: `Content looks like code (${contentTokens} tokens > ${availableForContent} available). Map-reduce enabled, condensation skipped.`
                             });
                         }
 
                         // Determine if we should use map-reduce or simple truncation
-                        const shouldUseMapReduce = !contentIsCode &&
-                            CHUNKING_CONFIG.enabled &&
+                        const shouldUseMapReduce = CHUNKING_CONFIG.enabled &&
                             (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce') &&
                             contentTokens >= CHUNKING_CONFIG.minTokensForChunking;
 
@@ -9459,11 +9456,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 queryPart = 'Please analyze and summarize this content.';
                             }
 
-                            // Apply content condensation if enabled
+                            // Apply content condensation if enabled, but NEVER on
+                            // code content — condenseContent scores "sentences"
+                            // by TF-IDF relevance to the query and drops ~60% of
+                            // them. On code that shatters the payload (dropped
+                            // declarations, missing function bodies) and the
+                            // prepended "[Note: condensed ... N% reduction]"
+                            // header leaks into the model's context where it
+                            // reads it as evidence the user's input was cut.
                             let finalContent = contentPart;
                             let condensationInfo = null;
 
-                            if (CHUNKING_CONFIG.enableCondensation) {
+                            if (CHUNKING_CONFIG.enableCondensation && !contentIsCode) {
                                 const condensationResult = condenseContent(
                                     contentPart,
                                     queryPart,
@@ -9565,10 +9569,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         : '');
                 const lastUserTokens = estimateTokens(lastUserContent);
 
-                // Same rule as above: don't map-reduce code content — it fragments
-                // variable references across chunks and none of them see the whole program.
-                const lastUserIsCode = looksLikeCode(lastUserContent);
-                if (!lastUserIsCode && CHUNKING_CONFIG.enabled && lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
+                if (CHUNKING_CONFIG.enabled && lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
                     (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce')) {
                     console.log(`[Chat Stream] Fallback to map-reduce: condensation did not reduce enough (totalInputTokens=${totalInputTokens}, available=${availableContextForInput})`);
                     useMapReduce = true;
