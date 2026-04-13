@@ -244,6 +244,14 @@ export default function ChatContainer({
             if (response.ok) {
                 const data = await response.json();
                 setConversations(data);
+                // If we have a restored activeConversationId (from localStorage
+                // on page refresh) that no longer exists server-side, clear it
+                // so the UI doesn't try to load a ghost conversation. This also
+                // prevents the Memories tab from firing a GET that would 404.
+                const currentActive = useChatStore.getState().activeConversationId;
+                if (currentActive && Array.isArray(data) && !data.some(c => c.id === currentActive)) {
+                    setActiveConversation(null);
+                }
             }
         } catch (error) {
             console.error('Failed to load conversations:', error);

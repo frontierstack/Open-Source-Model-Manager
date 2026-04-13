@@ -5,7 +5,8 @@ import { devtools, persist } from 'zustand/middleware';
 const STORAGE_KEYS = {
     THEME: 'chat-theme',
     SYSTEM_PROMPTS: 'chat-system-prompts',
-    SETTINGS: 'chat-settings'
+    SETTINGS: 'chat-settings',
+    ACTIVE_CONVERSATION: 'chat-active-conversation-id'
 };
 
 // Load persisted data from localStorage
@@ -89,7 +90,11 @@ export const useChatStore = create(
 
         // Conversations
         conversations: [],
-        activeConversationId: null,
+        // Restored from localStorage so that a browser refresh reopens the
+        // last-viewed conversation (and its memories) without requiring
+        // the user to re-click a sidebar item. Falls back to null if no
+        // prior selection exists.
+        activeConversationId: loadFromStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null),
         messages: [],
 
         // Streaming
@@ -209,26 +214,32 @@ export const useChatStore = create(
 
         setConversations: (conversations) => set({ conversations }),
 
-        setActiveConversation: (conversationId) => set(state => ({
-            activeConversationId: conversationId,
-            // Only keep messages if staying on same conversation; otherwise clear streaming
-            // but DON'T clear messages[] - let loadConversationMessages() replace them
-            // This prevents flash of empty state and race conditions during long streaming
-            streamingContent: '',
-            streamingReasoning: '',
-            isStreaming: false
-        })),
+        setActiveConversation: (conversationId) => {
+            saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, conversationId);
+            set(state => ({
+                activeConversationId: conversationId,
+                // Only keep messages if staying on same conversation; otherwise clear streaming
+                // but DON'T clear messages[] - let loadConversationMessages() replace them
+                // This prevents flash of empty state and race conditions during long streaming
+                streamingContent: '',
+                streamingReasoning: '',
+                isStreaming: false
+            }));
+        },
 
         // Create a new conversation and set it as active
-        createNewConversation: (conversation) => set(state => ({
-            conversations: [conversation, ...state.conversations],
-            activeConversationId: conversation.id,
-            messages: [],
-            streamingContent: '',
-            streamingReasoning: '',
-            isStreaming: false,
-            attachments: []
-        })),
+        createNewConversation: (conversation) => {
+            saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, conversation.id);
+            set(state => ({
+                conversations: [conversation, ...state.conversations],
+                activeConversationId: conversation.id,
+                messages: [],
+                streamingContent: '',
+                streamingReasoning: '',
+                isStreaming: false,
+                attachments: []
+            }));
+        },
 
         addConversation: (conversation) => set(state => ({
             conversations: [conversation, ...state.conversations]
@@ -240,21 +251,28 @@ export const useChatStore = create(
             )
         })),
 
-        deleteConversation: (id) => set(state => ({
-            conversations: state.conversations.filter(c => c.id !== id),
-            activeConversationId: state.activeConversationId === id ? null : state.activeConversationId,
-            messages: state.activeConversationId === id ? [] : state.messages
-        })),
+        deleteConversation: (id) => {
+            const current = get().activeConversationId;
+            if (current === id) saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null);
+            set(state => ({
+                conversations: state.conversations.filter(c => c.id !== id),
+                activeConversationId: state.activeConversationId === id ? null : state.activeConversationId,
+                messages: state.activeConversationId === id ? [] : state.messages
+            }));
+        },
 
         // Start a fresh chat (clears active conversation without deleting it)
-        startNewChat: () => set({
-            activeConversationId: null,
-            messages: [],
-            streamingContent: '',
-            streamingReasoning: '',
-            isStreaming: false,
-            attachments: []
-        }),
+        startNewChat: () => {
+            saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null);
+            set({
+                activeConversationId: null,
+                messages: [],
+                streamingContent: '',
+                streamingReasoning: '',
+                isStreaming: false,
+                attachments: []
+            });
+        },
 
         // ==================== Message Actions ====================
 
@@ -470,25 +488,31 @@ export const useChatStore = create(
 
         // ==================== Utility Actions ====================
 
-        resetChat: () => set({
-            activeConversationId: null,
-            messages: [],
-            streamingContent: '',
-            streamingReasoning: '',
-            isStreaming: false,
-            attachments: []
-        }),
+        resetChat: () => {
+            saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null);
+            set({
+                activeConversationId: null,
+                messages: [],
+                streamingContent: '',
+                streamingReasoning: '',
+                isStreaming: false,
+                attachments: []
+            });
+        },
 
         // Full reset including conversations
-        resetAll: () => set({
-            conversations: [],
-            activeConversationId: null,
-            messages: [],
-            streamingContent: '',
-            streamingReasoning: '',
-            isStreaming: false,
-            attachments: []
-        }),
+        resetAll: () => {
+            saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null);
+            set({
+                conversations: [],
+                activeConversationId: null,
+                messages: [],
+                streamingContent: '',
+                streamingReasoning: '',
+                isStreaming: false,
+                attachments: []
+            });
+        },
 
         // Get current conversation
         getCurrentConversation: () => {
