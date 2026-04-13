@@ -8028,7 +8028,7 @@ async function deleteMemoryDir(userId, conversationId) {
 // from a typical Q&A turn are the ones a human would also pick.
 function scoreFactuality(sentence) {
     const s = sentence.trim();
-    if (s.length < 12 || s.length > 400) return 0;
+    if (s.length < 15 || s.length > 500) return 0;
     let score = 0;
     // URLs and identifiers are high-value
     if (/https?:\/\//.test(s)) score += 4;
@@ -8095,6 +8095,29 @@ function shorthandCompress(text) {
     return out.trim();
 }
 
+// Split text into sentences without breaking on dots inside filesystem
+// paths, URLs, version numbers, decimals, or mid-word abbreviations. A
+// sentence boundary is either a newline OR a .!? terminator followed by
+// whitespace and a capital-letter sentence start (optionally preceded by
+// an opening quote or paren). This preserves /etc/foo.conf, v1.2.3,
+// https://example.com/a.html, and 3.14 as single tokens inside whatever
+// sentence they belong to.
+function splitIntoSentences(text) {
+    if (!text) return [];
+    const out = [];
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine) continue;
+        const parts = trimmedLine.split(/(?<=[.!?]["')\]]?)\s+(?=["'(\[]?[A-Z])/);
+        for (const p of parts) {
+            const t = p.trim();
+            if (t) out.push(t);
+        }
+    }
+    return out;
+}
+
 // Extract up to `maxKeep` memory-worthy sentences from a user→assistant pair.
 // Returns an array of { text, keywords, tokens, sourceRole }. Runs entirely
 // in-process, no subprocess spawn, safe to call on every save.
@@ -8107,10 +8130,12 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
         // not facts worth remembering across turns.
         const clean = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
         if (!clean) return;
-        // Sentence split: reuse the same regex condenseContent uses.
-        const sentences = clean.match(/[^.!?\n]+[.!?\n]+/g) || [clean];
-        for (const raw of sentences) {
-            const sentence = raw.trim();
+        // Skip pure-code payloads entirely — splitting code into "sentences"
+        // produces garbage and the useful facts about code live in the prose
+        // around it, not the code itself.
+        if (looksLikeCode(clean)) return;
+        const sentences = splitIntoSentences(clean);
+        for (const sentence of sentences) {
             const score = scoreFactuality(sentence);
             if (score < MEMORY_MIN_SCORE) continue;
             const compressed = shorthandCompress(sentence);
