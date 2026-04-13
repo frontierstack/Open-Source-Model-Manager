@@ -2192,6 +2192,7 @@ export default function ChatContainer({
                 onThemeChange={setTheme}
                 contextSize={selectedModelContextSize}
                 activeConversationId={activeConversationId}
+                activeConversationTitle={conversations.find(c => c.id === activeConversationId)?.title || ''}
             />
         </div>
     );

@@ -8072,6 +8072,14 @@ async function deleteMemoryDir(userId, conversationId) {
     }
 }
 
+async function updateConversationMemoryCount(userId, conversationId, count) {
+    const conversations = await loadConversationsIndex(userId);
+    const conv = conversations.find(c => c.id === conversationId);
+    if (!conv) return;
+    conv.memoryCount = count;
+    await saveConversationsIndex(userId, conversations);
+}
+
 // Score a sentence for how "fact-like" it is. Facts are what we want to
 // remember; filler phrases and meta-commentary are what we want to drop.
 // This is a heuristic, not a classifier — tuned so the top-scored sentences
@@ -8322,6 +8330,11 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
     }
     if (addedCount > 0) {
         console.log(`[Memory] Extracted ${addedCount} memories for conversation ${conversationId} (total: ${index.entries.length})`);
+        try {
+            await updateConversationMemoryCount(userId, conversationId, index.entries.length);
+        } catch (err) {
+            console.warn(`[Memory] Failed to sync memoryCount for ${conversationId}: ${err.message}`);
+        }
     }
 }
 
@@ -8388,6 +8401,15 @@ app.get('/api/conversations', requireAuth, async (req, res) => {
                 } catch {
                     conv.messageCount = 0;
                 }
+            }
+            if (conv.memoryCount === undefined) {
+                try {
+                    const memIndex = await loadMemoryIndex(userId, conv.id);
+                    conv.memoryCount = memIndex.entries.length;
+                } catch {
+                    conv.memoryCount = 0;
+                }
+                needsSave = true;
             }
         }
         if (needsSave) {
@@ -8650,6 +8672,11 @@ app.delete('/api/conversations/:id/memories', requireAuth, async (req, res) => {
             return res.status(404).json({ error: 'Conversation not found' });
         }
         await deleteMemoryDir(userId, id);
+        try {
+            await updateConversationMemoryCount(userId, id, 0);
+        } catch (err) {
+            console.warn(`[Memory] Failed to sync memoryCount for ${id}: ${err.message}`);
+        }
         res.json({ success: true });
     } catch (error) {
         console.error('Error clearing memories:', error);
@@ -8681,6 +8708,11 @@ app.delete('/api/conversations/:id/memories/:memId', requireAuth, async (req, re
         // Remove the .mem file — best-effort, index is source of truth.
         const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', id);
         await fs.unlink(path.join(dir, `${memId}.mem`)).catch(() => {});
+        try {
+            await updateConversationMemoryCount(userId, id, index.entries.length);
+        } catch (err) {
+            console.warn(`[Memory] Failed to sync memoryCount for ${id}: ${err.message}`);
+        }
         res.json({ success: true });
     } catch (error) {
         console.error('Error deleting memory:', error);

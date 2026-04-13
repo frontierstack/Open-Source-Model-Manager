@@ -19,7 +19,7 @@ import {
     PanelLeft,
     Rows3,
     Type,
-    Brain,
+    BookMarked,
     RefreshCw,
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
@@ -41,6 +41,7 @@ export default function ChatSettings({
     onThemeChange,
     contextSize = 4096,
     activeConversationId = null,
+    activeConversationTitle = '',
 }) {
     const [activeTab, setActiveTab] = useState('chat');
     const [editingPrompt, setEditingPrompt] = useState(null);
@@ -100,13 +101,36 @@ export default function ChatSettings({
     // when the user does click through to the tab. The refresh button
     // still calls fetchMemories directly for a manual re-pull.
     useEffect(() => {
+        if (!open) return;
         if (activeConversationId) {
             fetchMemories();
         } else {
             setMemories([]);
             setMemoriesError(null);
         }
-    }, [activeConversationId, fetchMemories]);
+    }, [open, activeConversationId, fetchMemories]);
+
+    // Collapse all groups by default when memories first populate.
+    // Preserve existing collapse state so a user's manual expand survives refetches.
+    useEffect(() => {
+        if (!memories.length) return;
+        setCollapsedGroups(prev => {
+            const byTurn = new Map();
+            for (const m of memories) {
+                const key = m.sourceTurnId || '__unlinked__';
+                if (!byTurn.has(key)) byTurn.set(key, true);
+            }
+            const next = { ...prev };
+            let changed = false;
+            for (const key of byTurn.keys()) {
+                if (!(key in next)) {
+                    next[key] = true;
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }, [memories]);
 
     const handleDeleteMemory = async (memId) => {
         const confirmed = await confirm({
@@ -565,7 +589,7 @@ export default function ChatSettings({
     const tabs = [
         { id: 'chat', label: 'Chat Settings', icon: Settings },
         { id: 'prompts', label: 'System Prompts', icon: MessageSquare },
-        { id: 'memories', label: 'Memories', icon: Brain },
+        { id: 'memories', label: 'Memories', icon: BookMarked },
         { id: 'appearance', label: 'Appearance', icon: Palette },
     ];
 
@@ -907,8 +931,8 @@ export default function ChatSettings({
                         <>
                             <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                    <h3 className="text-xs font-semibold text-dark-200 mb-1">
-                                        Conversation Memories
+                                    <h3 className="text-xs font-semibold text-dark-200 mb-1 truncate">
+                                        Memories{activeConversationTitle ? ` — ${activeConversationTitle}` : ''}
                                     </h3>
                                     <p className="text-[11px] text-dark-400 leading-relaxed">
                                         Facts automatically extracted from this conversation.
@@ -946,7 +970,7 @@ export default function ChatSettings({
 
                             {!activeConversationId ? (
                                 <div className="text-center py-8">
-                                    <Brain className="w-8 h-8 text-dark-500 mx-auto mb-2" />
+                                    <BookMarked className="w-8 h-8 text-dark-500 mx-auto mb-2" />
                                     <p className="text-xs text-dark-400">
                                         Select a conversation to view its memories.
                                     </p>
@@ -958,7 +982,7 @@ export default function ChatSettings({
                                 </div>
                             ) : memories.length === 0 ? (
                                 <div className="text-center py-8">
-                                    <Brain className="w-8 h-8 text-dark-500 mx-auto mb-2" />
+                                    <BookMarked className="w-8 h-8 text-dark-500 mx-auto mb-2" />
                                     <p className="text-xs text-dark-400 mb-1">
                                         No memories yet for this conversation.
                                     </p>

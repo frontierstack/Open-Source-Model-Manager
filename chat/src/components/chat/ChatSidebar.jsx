@@ -214,6 +214,9 @@ export default function ChatSidebar({
                                 </span>
                                 <span className="text-[10px] text-dark-600 truncate block">
                                     {conv.messageCount || conv.messages?.length || 0} msgs
+                                    {conv.memoryCount > 0 && (
+                                        <> · {conv.memoryCount} {conv.memoryCount === 1 ? 'memory' : 'memories'}</>
+                                    )}
                                 </span>
                             </div>
                             {conv.favorite && (
