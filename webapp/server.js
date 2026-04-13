@@ -348,6 +348,35 @@ function scoreSentenceRelevance(sentence, keywords) {
 }
 
 /**
+ * Cheap heuristic for "this content is code, not prose". Condensation and
+ * map-reduce are both destructive on code: condenseContent drops ~60% of
+ * sentences by relevance, and map-reduce splits the content so no single
+ * chunk ever sees the whole program. For analytical tasks like malware
+ * deobfuscation the model needs the raw payload, even if it means
+ * truncating older chat turns instead.
+ *
+ * We look at two signals in the first ~3KB:
+ *  1. Density of programming punctuation (brace / paren / semicolon /
+ *     equals / brackets). Natural prose hovers around 1-2%; code is
+ *     usually 6%+.
+ *  2. Presence of common code keywords across multiple languages. Three
+ *     or more distinct hits in the sample is a strong indicator.
+ */
+function looksLikeCode(content) {
+    if (!content || content.length < 200) return false;
+    const sample = content.slice(0, 3000);
+    const codeSymbols = new Set(['{', '}', '(', ')', ';', '=', '[', ']', '<', '>']);
+    let symbolHits = 0;
+    for (let i = 0; i < sample.length; i++) {
+        if (codeSymbols.has(sample[i])) symbolHits++;
+    }
+    const symbolDensity = symbolHits / sample.length;
+    const keywordRegex = /\b(function|var|const|let|return|import|export|class|def|if|else|for|while|try|catch|throw|new|async|await|require|module\.exports|public|private|struct|typedef|#include|package|interface)\b/g;
+    const keywordMatches = new Set(sample.match(keywordRegex) || []);
+    return symbolDensity >= 0.06 || keywordMatches.size >= 3;
+}
+
+/**
  * Condense content using query-focused extractive summarization
  * @param {string} content - The content to condense
  * @param {string} query - The user's query for relevance matching
@@ -9385,8 +9414,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const availableForContent = availableContextForInput - otherTokens - 200;
 
                     if (availableForContent > 0 && contentTokens > availableForContent) {
+                        // Code content (obfuscated scripts, source files, logs with
+                        // heavy punctuation) must NOT go through condensation or
+                        // map-reduce. Condensation drops whole sentences by
+                        // relevance which shatters the payload; map-reduce splits
+                        // it so no single request ever sees the whole program.
+                        // Force the 'truncate' path for code-like input so the
+                        // model at least sees a contiguous slice of the raw text.
+                        const contentIsCode = looksLikeCode(textContent);
+                        if (contentIsCode) {
+                            console.log(`[Chat Stream] Content looks like code (${contentTokens} tokens) — skipping condensation/map-reduce and falling back to truncate so the payload is not mangled`);
+                            broadcast({
+                                type: 'log',
+                                level: 'warning',
+                                message: `Content looks like code (${contentTokens} tokens > ${availableForContent} available). Skipping condensation/chunking — model will see a truncated-from-end slice.`
+                            });
+                        }
+
                         // Determine if we should use map-reduce or simple truncation
-                        const shouldUseMapReduce = CHUNKING_CONFIG.enabled &&
+                        const shouldUseMapReduce = !contentIsCode &&
+                            CHUNKING_CONFIG.enabled &&
                             (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce') &&
                             contentTokens >= CHUNKING_CONFIG.minTokensForChunking;
 
@@ -9518,7 +9565,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         : '');
                 const lastUserTokens = estimateTokens(lastUserContent);
 
-                if (CHUNKING_CONFIG.enabled && lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
+                // Same rule as above: don't map-reduce code content — it fragments
+                // variable references across chunks and none of them see the whole program.
+                const lastUserIsCode = looksLikeCode(lastUserContent);
+                if (!lastUserIsCode && CHUNKING_CONFIG.enabled && lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
                     (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce')) {
                     console.log(`[Chat Stream] Fallback to map-reduce: condensation did not reduce enough (totalInputTokens=${totalInputTokens}, available=${availableContextForInput})`);
                     useMapReduce = true;
