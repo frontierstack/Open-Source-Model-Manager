@@ -7966,9 +7966,15 @@ async function ensureMemoryDir(userId, conversationId) {
 }
 
 async function loadMemoryIndex(userId, conversationId) {
+    // Reads only — do NOT call ensureMemoryDir here. A GET that finds
+    // no memories should not leave an empty directory behind on disk.
+    // Writes go through saveMemoryIndex / saveMemoryEntry which create
+    // the directory lazily.
+    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) {
+        throw new Error('Invalid conversation ID format');
+    }
+    const indexPath = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId, 'index.json');
     try {
-        const dir = await ensureMemoryDir(userId, conversationId);
-        const indexPath = path.join(dir, 'index.json');
         const data = await fs.readFile(indexPath, 'utf8');
         const parsed = decodeConversationData(data, null);
         if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
@@ -7989,8 +7995,9 @@ async function saveMemoryIndex(userId, conversationId, index) {
 
 async function loadMemoryEntry(userId, conversationId, memoryId) {
     if (!/^[a-zA-Z0-9_-]+$/.test(memoryId)) return null;
-    const dir = await ensureMemoryDir(userId, conversationId);
-    const entryPath = path.join(dir, `${memoryId}.mem`);
+    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) return null;
+    // Pure read — do not create the memory directory as a side effect.
+    const entryPath = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId, `${memoryId}.mem`);
     try {
         const data = await fs.readFile(entryPath, 'utf8');
         const parsed = decodeConversationData(data, null);
@@ -8035,15 +8042,25 @@ function scoreFactuality(sentence) {
     if (/\b[a-z][a-zA-Z0-9]+[A-Z][a-zA-Z0-9]+\b/.test(s)) score += 2; // camelCase
     if (/\b[a-z0-9]+_[a-z0-9_]+\b/.test(s)) score += 2;               // snake_case
     if (/\b[A-Z][A-Z0-9_]{3,}\b/.test(s)) score += 2;                  // ALL_CAPS constants
-    if (/(^|\s)[/~][\w./-]+/.test(s)) score += 2;                      // filesystem paths
+    // Filesystem paths: absolute (/etc/foo), home (~/foo), or relative
+    // (./foo, ../foo) — the dot-prefixed forms appear constantly in build
+    // instructions ("./build.sh") and must score as high-value.
+    if (/(^|\s)(\.{1,2}\/|[/~])[\w./-]+/.test(s)) score += 2;
+    // Bare filenames with a common extension ("build.sh", "config.yaml",
+    // "model.gguf") are also path-like facts worth keeping.
+    if (/\b[\w-]+\.(sh|py|js|jsx|ts|tsx|json|ya?ml|toml|conf|cfg|ini|md|txt|log|sql|go|rs|rb|java|cpp|c|h|hpp|html|css|xml|env|lock|gguf|bin|onnx)\b/i.test(s)) score += 2;
     if (/`[^`]+`/.test(s)) score += 2;                                 // backtick code
     if (/"[^"]{3,}"|'[^']{3,}'/.test(s)) score += 1;                   // quoted strings
     // Numbers, dates, versions, amounts
     if (/\b\d+(\.\d+)?\b/.test(s)) score += 1;
     if (/\b\d{4}-\d{2}-\d{2}\b/.test(s)) score += 2;                   // ISO date
     if (/\bv?\d+\.\d+(\.\d+)?\b/.test(s)) score += 1;                  // version
-    // Declarative predicates
-    if (/\b(is|was|are|were|has|have|named|called|equals?|returns?|contains?|requires?|means?)\b/i.test(s)) score += 1;
+    // Declarative predicates — expanded beyond the basic copula to cover
+    // the verbs that most often introduce concrete facts in technical
+    // prose. Missing these produces lots of false-negatives on simple
+    // statements like "the webapp listens on port 3001" or "the build
+    // runs ./build.sh".
+    if (/\b(is|was|are|were|has|have|had|named|called|equals?|returns?|contains?|requires?|means?|uses|runs|listens?|provides?|accepts?|includes?|mounts?|exports?|handles?|matches?|starts?|stops?|binds?|loads?|writes?|reads?|stores?|points?|lives?|located|depends?\s+on)\b/i.test(s)) score += 1;
     // Capitalized words that are not sentence-initial — proper nouns
     const caps = (s.match(/(?<=[a-z]\s)[A-Z][a-zA-Z]+/g) || []).length;
     if (caps >= 1) score += Math.min(2, caps);
@@ -8512,6 +8529,163 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error saving messages:', error);
         res.status(500).json({ error: 'Failed to save messages' });
+    }
+});
+
+// ----------------------------------------------------------------------------
+// MEMORY MANAGEMENT ROUTES
+// ----------------------------------------------------------------------------
+// List, edit, and delete per-conversation memories. The store is populated
+// automatically on save (via extractNewMemoriesFromSave) and consumed on the
+// next turn (via retrieveRelevantMemories). These routes exist so the chat
+// UI has a management view — users can correct facts the heuristic got
+// wrong, prune noise, or wipe the whole store for a conversation.
+
+// Shared ownership check: the conversation must exist in this user's index
+// before we touch its memory directory. Prevents a different user's API key
+// from listing / editing / deleting someone else's memories by guessing an
+// id. Returns the conversation object on success, null on 404.
+async function ownsConversation(userId, conversationId) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) return null;
+    const list = await loadConversationsIndex(userId);
+    return list.find(c => c.id === conversationId) || null;
+}
+
+// GET /api/conversations/:id/memories — list all memories for a conversation
+app.get('/api/conversations/:id/memories', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id } = req.params;
+        if (!(await ownsConversation(userId, id))) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+        const index = await loadMemoryIndex(userId, id);
+        // Hydrate each index entry with its full text. We return full entries
+        // (not just metadata) so the UI can render without a second round-trip.
+        const entries = [];
+        for (const meta of index.entries) {
+            const full = await loadMemoryEntry(userId, id, meta.id);
+            if (full) {
+                entries.push({
+                    id: meta.id,
+                    text: full.text,
+                    keywords: full.keywords || meta.keywords || [],
+                    tokens: full.tokens || meta.tokens || 0,
+                    sourceRole: full.sourceRole || 'assistant',
+                    sourceTurnId: full.sourceTurnId || null,
+                    ts: full.ts || meta.ts || null,
+                    score: meta.score ?? null,
+                });
+            }
+        }
+        // Newest first for a more useful default sort in the UI.
+        entries.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+        res.json({
+            conversationId: id,
+            cursor: index.cursor,
+            count: entries.length,
+            memories: entries,
+        });
+    } catch (error) {
+        console.error('Error listing memories:', error);
+        res.status(500).json({ error: 'Failed to list memories' });
+    }
+});
+
+// DELETE /api/conversations/:id/memories — clear all memories for a conversation
+app.delete('/api/conversations/:id/memories', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id } = req.params;
+        if (!(await ownsConversation(userId, id))) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+        await deleteMemoryDir(userId, id);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error clearing memories:', error);
+        res.status(500).json({ error: 'Failed to clear memories' });
+    }
+});
+
+// DELETE /api/conversations/:id/memories/:memId — delete one memory
+app.delete('/api/conversations/:id/memories/:memId', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id, memId } = req.params;
+        if (!/^[a-zA-Z0-9_-]+$/.test(memId)) {
+            return res.status(400).json({ error: 'Invalid memory id' });
+        }
+        if (!(await ownsConversation(userId, id))) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+        const index = await loadMemoryIndex(userId, id);
+        const before = index.entries.length;
+        index.entries = index.entries.filter(e => e.id !== memId);
+        if (index.entries.length === before) {
+            return res.status(404).json({ error: 'Memory not found' });
+        }
+        await saveMemoryIndex(userId, id, index);
+        // Remove the .mem file — best-effort, index is source of truth.
+        const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', id);
+        await fs.unlink(path.join(dir, `${memId}.mem`)).catch(() => {});
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting memory:', error);
+        res.status(500).json({ error: 'Failed to delete memory' });
+    }
+});
+
+// PUT /api/conversations/:id/memories/:memId — edit a memory's text
+app.put('/api/conversations/:id/memories/:memId', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const { id, memId } = req.params;
+        const { text } = req.body;
+        if (!/^[a-zA-Z0-9_-]+$/.test(memId)) {
+            return res.status(400).json({ error: 'Invalid memory id' });
+        }
+        if (typeof text !== 'string' || !text.trim()) {
+            return res.status(400).json({ error: 'Memory text must be a non-empty string' });
+        }
+        if (text.length > 2000) {
+            return res.status(400).json({ error: 'Memory text too long (max 2000 chars)' });
+        }
+        if (!(await ownsConversation(userId, id))) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+        const entry = await loadMemoryEntry(userId, id, memId);
+        if (!entry) {
+            return res.status(404).json({ error: 'Memory not found' });
+        }
+        const trimmed = text.trim();
+        // Re-derive keywords and token count from the edited text so retrieval
+        // scoring stays consistent with extractor output.
+        const keywords = extractQueryKeywords(trimmed);
+        const tokens = Math.ceil(trimmed.length / 3);
+        const updated = {
+            ...entry,
+            text: trimmed,
+            keywords,
+            tokens,
+            editedAt: new Date().toISOString(),
+        };
+        await saveMemoryEntry(userId, id, memId, updated);
+
+        // Update the corresponding index entry so retrieval scoring uses the
+        // new keyword set without a second disk read.
+        const index = await loadMemoryIndex(userId, id);
+        const idxEntry = index.entries.find(e => e.id === memId);
+        if (idxEntry) {
+            idxEntry.keywords = keywords;
+            idxEntry.tokens = tokens;
+            await saveMemoryIndex(userId, id, index);
+        }
+
+        res.json({ success: true, memory: { id: memId, ...updated } });
+    } catch (error) {
+        console.error('Error editing memory:', error);
+        res.status(500).json({ error: 'Failed to edit memory' });
     }
 });
 

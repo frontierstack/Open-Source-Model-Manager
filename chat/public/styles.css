@@ -1120,6 +1120,9 @@ body.font-size-large .markdown-content,
 .-mt-0\.5{
   margin-top: -0.125rem;
 }
+.-mt-1{
+  margin-top: -0.25rem;
+}
 .mb-0\.5{
   margin-bottom: 0.125rem;
 }
@@ -1439,6 +1442,9 @@ body.font-size-large .markdown-content,
 .flex-shrink-0{
   flex-shrink: 0;
 }
+.shrink-0{
+  flex-shrink: 0;
+}
 .grow{
   flex-grow: 1;
 }
@@ -1588,6 +1594,9 @@ body.font-size-large .markdown-content,
      -moz-user-select: none;
           user-select: none;
 }
+.resize-none{
+  resize: none;
+}
 .resize-y{
   resize: vertical;
 }
@@ -1673,6 +1682,11 @@ body.font-size-large .markdown-content,
   --tw-space-y-reverse: 0;
   margin-top: calc(0.375rem * calc(1 - var(--tw-space-y-reverse)));
   margin-bottom: calc(0.375rem * var(--tw-space-y-reverse));
+}
+.space-y-2 > :not([hidden]) ~ :not([hidden]){
+  --tw-space-y-reverse: 0;
+  margin-top: calc(0.5rem * calc(1 - var(--tw-space-y-reverse)));
+  margin-bottom: calc(0.5rem * var(--tw-space-y-reverse));
 }
 .space-y-3 > :not([hidden]) ~ :not([hidden]){
   --tw-space-y-reverse: 0;
@@ -2173,6 +2187,10 @@ body.font-size-large .markdown-content,
 .py-6{
   padding-top: 1.5rem;
   padding-bottom: 1.5rem;
+}
+.py-8{
+  padding-top: 2rem;
+  padding-bottom: 2rem;
 }
 .py-px{
   padding-top: 1px;
@@ -5360,6 +5378,9 @@ html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.c
 }
 .disabled\:opacity-30:disabled{
   opacity: 0.3;
+}
+.disabled\:opacity-40:disabled{
+  opacity: 0.4;
 }
 .disabled\:opacity-50:disabled{
   opacity: 0.5;

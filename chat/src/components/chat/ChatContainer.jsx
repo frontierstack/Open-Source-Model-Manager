@@ -2183,6 +2183,7 @@ export default function ChatContainer({
                 theme={theme}
                 onThemeChange={setTheme}
                 contextSize={selectedModelContextSize}
+                activeConversationId={activeConversationId}
             />
         </div>
     );

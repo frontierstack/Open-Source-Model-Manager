@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     X,
     ChevronDown,
@@ -17,7 +17,9 @@ import {
     MessageCircle,
     PanelLeft,
     Rows3,
-    Type
+    Type,
+    Brain,
+    RefreshCw,
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
 import { loadGoogleFonts } from '../../fontLoader';
@@ -36,6 +38,7 @@ export default function ChatSettings({
     theme,
     onThemeChange,
     contextSize = 4096,
+    activeConversationId = null,
 }) {
     const [activeTab, setActiveTab] = useState('chat');
     const [editingPrompt, setEditingPrompt] = useState(null);
@@ -46,6 +49,117 @@ export default function ChatSettings({
     const [fontSearch, setFontSearch] = useState('');
     const fontDropdownRef = useRef(null);
     const confirm = useConfirm();
+
+    // Memories tab state — fetched lazily when the tab opens.
+    const [memories, setMemories] = useState([]);
+    const [memoriesLoading, setMemoriesLoading] = useState(false);
+    const [memoriesError, setMemoriesError] = useState(null);
+    const [editingMemoryId, setEditingMemoryId] = useState(null);
+    const [editingMemoryText, setEditingMemoryText] = useState('');
+
+    const fetchMemories = useCallback(async () => {
+        if (!activeConversationId) {
+            setMemories([]);
+            setMemoriesError(null);
+            return;
+        }
+        setMemoriesLoading(true);
+        setMemoriesError(null);
+        try {
+            const res = await fetch(`/api/conversations/${activeConversationId}/memories`, {
+                credentials: 'include',
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            setMemories(Array.isArray(data.memories) ? data.memories : []);
+        } catch (e) {
+            setMemoriesError(e.message || 'Failed to load memories');
+            setMemories([]);
+        } finally {
+            setMemoriesLoading(false);
+        }
+    }, [activeConversationId]);
+
+    // Refetch whenever the Memories tab is opened or the conversation changes.
+    useEffect(() => {
+        if (open && activeTab === 'memories') {
+            fetchMemories();
+        }
+    }, [open, activeTab, fetchMemories]);
+
+    const handleDeleteMemory = async (memId) => {
+        const confirmed = await confirm({
+            title: 'Delete Memory',
+            message: 'Delete this memory? The assistant will no longer use it as context on future turns in this conversation.',
+            confirmText: 'Delete',
+            cancelText: 'Cancel',
+            variant: 'danger',
+        });
+        if (!confirmed) return;
+        try {
+            const res = await fetch(`/api/conversations/${activeConversationId}/memories/${memId}`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            setMemories(prev => prev.filter(m => m.id !== memId));
+        } catch (e) {
+            setMemoriesError(e.message || 'Failed to delete memory');
+        }
+    };
+
+    const handleClearAllMemories = async () => {
+        const confirmed = await confirm({
+            title: 'Clear All Memories',
+            message: `Delete all ${memories.length} memories for this conversation? They will be regenerated automatically as the conversation continues.`,
+            confirmText: 'Clear All',
+            cancelText: 'Cancel',
+            variant: 'danger',
+        });
+        if (!confirmed) return;
+        try {
+            const res = await fetch(`/api/conversations/${activeConversationId}/memories`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            setMemories([]);
+        } catch (e) {
+            setMemoriesError(e.message || 'Failed to clear memories');
+        }
+    };
+
+    const handleStartEditMemory = (mem) => {
+        setEditingMemoryId(mem.id);
+        setEditingMemoryText(mem.text);
+    };
+
+    const handleCancelEditMemory = () => {
+        setEditingMemoryId(null);
+        setEditingMemoryText('');
+    };
+
+    const handleSaveMemoryEdit = async () => {
+        if (!editingMemoryId || !editingMemoryText.trim()) return;
+        try {
+            const res = await fetch(`/api/conversations/${activeConversationId}/memories/${editingMemoryId}`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: editingMemoryText.trim() }),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            setMemories(prev => prev.map(m =>
+                m.id === editingMemoryId
+                    ? { ...m, ...data.memory, id: editingMemoryId }
+                    : m
+            ));
+            handleCancelEditMemory();
+        } catch (e) {
+            setMemoriesError(e.message || 'Failed to save memory edit');
+        }
+    };
 
     const {
         temperature = 0.7,
@@ -263,6 +377,7 @@ export default function ChatSettings({
     const tabs = [
         { id: 'chat', label: 'Chat Settings', icon: Settings },
         { id: 'prompts', label: 'System Prompts', icon: MessageSquare },
+        { id: 'memories', label: 'Memories', icon: Brain },
         { id: 'appearance', label: 'Appearance', icon: Palette },
     ];
 
@@ -595,6 +710,161 @@ export default function ChatSettings({
                                         ))
                                     )}
                                 </div>
+                            )}
+                        </>
+                    )}
+
+                    {/* Memories Tab */}
+                    {activeTab === 'memories' && (
+                        <>
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <h3 className="text-xs font-semibold text-dark-200 mb-1">
+                                        Conversation Memories
+                                    </h3>
+                                    <p className="text-[11px] text-dark-400 leading-relaxed">
+                                        Facts automatically extracted from this conversation.
+                                        They're injected as context on future turns so details
+                                        survive even after older messages roll off the context window.
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={fetchMemories}
+                                        disabled={!activeConversationId || memoriesLoading}
+                                        className="p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                        title="Refresh"
+                                    >
+                                        <RefreshCw className={`w-3.5 h-3.5 ${memoriesLoading ? 'animate-spin' : ''}`} />
+                                    </button>
+                                    {memories.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={handleClearAllMemories}
+                                            className="px-2 py-1 rounded-md text-[10px] font-medium bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-colors"
+                                        >
+                                            Clear All
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {memoriesError && (
+                                <div className="p-2 rounded-md bg-red-500/10 border border-red-500/20 text-red-300 text-[11px]">
+                                    {memoriesError}
+                                </div>
+                            )}
+
+                            {!activeConversationId ? (
+                                <div className="text-center py-8">
+                                    <Brain className="w-8 h-8 text-dark-500 mx-auto mb-2" />
+                                    <p className="text-xs text-dark-400">
+                                        Select a conversation to view its memories.
+                                    </p>
+                                </div>
+                            ) : memoriesLoading && memories.length === 0 ? (
+                                <div className="text-center py-8">
+                                    <RefreshCw className="w-5 h-5 text-dark-500 mx-auto mb-2 animate-spin" />
+                                    <p className="text-xs text-dark-400">Loading memories…</p>
+                                </div>
+                            ) : memories.length === 0 ? (
+                                <div className="text-center py-8">
+                                    <Brain className="w-8 h-8 text-dark-500 mx-auto mb-2" />
+                                    <p className="text-xs text-dark-400 mb-1">
+                                        No memories yet for this conversation.
+                                    </p>
+                                    <p className="text-[10px] text-dark-500">
+                                        Memories are extracted automatically as you chat.
+                                    </p>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="text-[10px] text-dark-500 -mt-1">
+                                        {memories.length} {memories.length === 1 ? 'memory' : 'memories'} stored
+                                    </div>
+                                    <div className="space-y-2">
+                                        {memories.map((mem) => {
+                                            const isEditing = editingMemoryId === mem.id;
+                                            return (
+                                                <div
+                                                    key={mem.id}
+                                                    className="group p-2.5 rounded-lg bg-dark-800/50 border border-white/5 hover:border-white/10 transition-colors"
+                                                >
+                                                    {isEditing ? (
+                                                        <>
+                                                            <textarea
+                                                                value={editingMemoryText}
+                                                                onChange={(e) => setEditingMemoryText(e.target.value)}
+                                                                rows={3}
+                                                                className="w-full px-2 py-1.5 bg-dark-900 border border-white/10 rounded-md text-[12px] text-dark-100 resize-none focus:border-primary-500/50 focus:outline-none"
+                                                                autoFocus
+                                                            />
+                                                            <div className="flex items-center justify-end gap-1.5 mt-1.5">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={handleCancelEditMemory}
+                                                                    className="px-2 py-1 rounded text-[10px] font-medium text-dark-300 hover:bg-white/5 transition-colors"
+                                                                >
+                                                                    Cancel
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={handleSaveMemoryEdit}
+                                                                    disabled={!editingMemoryText.trim()}
+                                                                    className="px-2 py-1 rounded text-[10px] font-medium bg-primary-500/20 hover:bg-primary-500/30 text-primary-300 border border-primary-500/30 transition-colors disabled:opacity-40"
+                                                                >
+                                                                    Save
+                                                                </button>
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <div className="flex items-start gap-2">
+                                                                <p className="flex-1 text-[12px] text-dark-200 leading-relaxed break-words">
+                                                                    {mem.text}
+                                                                </p>
+                                                                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleStartEditMemory(mem)}
+                                                                        className="p-1 rounded hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
+                                                                        title="Edit"
+                                                                    >
+                                                                        <Edit3 className="w-3 h-3" />
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleDeleteMemory(mem.id)}
+                                                                        className="p-1 rounded hover:bg-red-500/20 text-dark-400 hover:text-red-300 transition-colors"
+                                                                        title="Delete"
+                                                                    >
+                                                                        <Trash2 className="w-3 h-3" />
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 mt-1.5 text-[9px] text-dark-500">
+                                                                <span className={`px-1.5 py-0.5 rounded font-medium ${
+                                                                    mem.sourceRole === 'user'
+                                                                        ? 'bg-blue-500/10 text-blue-300'
+                                                                        : 'bg-emerald-500/10 text-emerald-300'
+                                                                }`}>
+                                                                    {mem.sourceRole}
+                                                                </span>
+                                                                <span>{mem.tokens || 0} tokens</span>
+                                                                {mem.keywords?.length > 0 && (
+                                                                    <span className="truncate">
+                                                                        {mem.keywords.slice(0, 4).join(' · ')}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </>
                             )}
                         </>
                     )}
