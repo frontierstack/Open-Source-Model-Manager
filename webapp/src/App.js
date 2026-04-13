@@ -537,6 +537,11 @@ const App = () => {
     const logsContainerRef = useRef(null);
     const wsRef = useRef(null);
     const isUserNearBottomRef = useRef(true);
+    // Incoming log lines are accumulated here and flushed to React state
+    // on a short interval. Without this buffer, a model startup emitting
+    // 100+ log lines/sec triggers a full re-render + auto-scroll + localStorage
+    // write per line, which visibly "spazzes" the logs pane.
+    const logBufferRef = useRef([]);
 
     // Dynamic base URLs from current host
     const protocol = window.location.protocol;
@@ -563,19 +568,41 @@ const App = () => {
 
     const scrollToBottom = () => {
         if (isUserNearBottomRef.current) {
-            logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            // 'auto' (instant) avoids animation queueing when many log lines
+            // arrive in quick succession — 'smooth' fights itself and stutters.
+            logsEndRef.current?.scrollIntoView({ behavior: "auto" });
         }
     };
 
+    // Flush the incoming log buffer into state on a fixed interval so we
+    // re-render at most ~6 times/sec even when the WebSocket is firehosing
+    // lines during model startup.
+    useEffect(() => {
+        const flushId = setInterval(() => {
+            if (logBufferRef.current.length === 0) return;
+            const batch = logBufferRef.current;
+            logBufferRef.current = [];
+            setLogs(prev => [...prev, ...batch]);
+        }, 150);
+        return () => clearInterval(flushId);
+    }, []);
+
     useEffect(() => {
         scrollToBottom();
-        // Save logs to localStorage (keep last 500 entries to avoid storage issues)
-        try {
-            const logsToSave = logs.slice(-500);
-            localStorage.setItem('modelserver_logs', JSON.stringify(logsToSave));
-        } catch (error) {
-            console.error('Failed to save logs to localStorage:', error);
-        }
+    }, [logs]);
+
+    // Persist logs to localStorage on a 2s debounce instead of on every
+    // state change — JSON.stringify of 500 entries was running on every
+    // log arrival and blocking the main thread.
+    useEffect(() => {
+        const saveId = setTimeout(() => {
+            try {
+                localStorage.setItem('modelserver_logs', JSON.stringify(logs.slice(-500)));
+            } catch (error) {
+                console.error('Failed to save logs to localStorage:', error);
+            }
+        }, 2000);
+        return () => clearTimeout(saveId);
     }, [logs]);
 
     // Reset search page when sort/size filters change
@@ -649,11 +676,13 @@ const App = () => {
                             else if (lower.includes('warning') || lower.includes('⚠️') || lower.includes('warn')) level = 'warning';
                             else if (lower.includes('✓') || lower.includes('success') || lower.includes('complete') || lower.includes('ready') || lower.includes('started') || lower.includes('running')) level = 'success';
                         }
-                        setLogs(prevLogs => [...prevLogs, {
+                        // Push to the ref-backed buffer; the flush interval
+                        // above drains it into React state on a throttle.
+                        logBufferRef.current.push({
                             message: msg,
                             level: level,
                             timestamp: dockerTime ? dockerTime.getTime() : Date.now()
-                        }]);
+                        });
                     } else if (data.type === 'status') {
                         const severity = data.level === 'error' ? 'error' :
                                          data.level === 'success' ? 'success' :

@@ -329,6 +329,33 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                     },
                 },
             },
+            // Switches need a much clearer on/off visual. The MUI default
+            // uses a low-contrast grey track in both states, which makes
+            // it easy to misread the current value. Force a bright
+            // saturated track when ON and a muted grey track when OFF,
+            // and flip the thumb color to reinforce the state.
+            MuiSwitch: {
+                styleOverrides: {
+                    root: {
+                        '& .MuiSwitch-switchBase': {
+                            color: alpha(colors.text.secondary, 0.85),
+                            '&.Mui-checked': {
+                                color: '#ffffff',
+                                '& + .MuiSwitch-track': {
+                                    backgroundColor: colors.success.main,
+                                    opacity: 1,
+                                    border: `1px solid ${colors.success.main}`,
+                                },
+                            },
+                            '& + .MuiSwitch-track': {
+                                backgroundColor: alpha(colors.text.secondary, 0.25),
+                                opacity: 1,
+                                border: `1px solid ${alpha(colors.text.secondary, 0.35)}`,
+                            },
+                        },
+                    },
+                },
+            },
         },
     });
 };
