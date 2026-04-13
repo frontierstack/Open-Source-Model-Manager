@@ -678,7 +678,15 @@ async function processWithMapReduce(options) {
         model,
         largeContent,
         originalQuery,
-        systemMessages = [],
+        // priorMessages carries BOTH the system prompt AND the recent
+        // conversation turns (user/assistant) so chunk and synthesis
+        // requests have access to prior conversation context. The
+        // caller is responsible for trimming it to a reasonable size
+        // before handing it off — everything passed here is sent on
+        // every chunk request, so it eats directly into the per-chunk
+        // content budget.
+        priorMessages = [],
+        systemMessages, // legacy alias, still accepted
         contextSize,
         temperature = 0.7,
         topP = 1.0,
@@ -686,20 +694,22 @@ async function processWithMapReduce(options) {
         onProgress
     } = options;
 
+    const contextMessages = priorMessages.length > 0 ? priorMessages : (systemMessages || []);
+
     const { overlapTokens, maxParallelChunks, synthesisPromptReserve } = CHUNKING_CONFIG;
 
     // Ask the backend for EXACT token counts instead of trusting our
     // 4 chars/token estimator. On code/obfuscated payloads the
     // estimator is off by 2-3x and produces chunks that the backend
     // rejects with HTTP 400 ("request exceeds context size").
-    const systemMessagesText = systemMessages.map(m =>
+    const contextMessagesText = contextMessages.map(m =>
         typeof m.content === 'string'
             ? m.content
             : (Array.isArray(m.content) ? m.content.filter(p => p.type === 'text').map(p => p.text || '').join('\n') : '')
     ).join('\n');
-    const [exactContentTokens, exactSystemTokens, exactQueryTokens] = await Promise.all([
+    const [exactContentTokens, exactContextTokens, exactQueryTokens] = await Promise.all([
         getExactTokenCount(targetHost, targetPort, largeContent),
-        getExactTokenCount(targetHost, targetPort, systemMessagesText),
+        getExactTokenCount(targetHost, targetPort, contextMessagesText),
         getExactTokenCount(targetHost, targetPort, originalQuery)
     ]);
 
@@ -712,7 +722,7 @@ async function processWithMapReduce(options) {
         : CHUNKING_CONFIG.charsPerToken;
 
     // Use exact counts when available, fall back to estimates otherwise.
-    const systemTokens = exactSystemTokens ?? systemMessages.reduce((sum, msg) => sum + estimateTokenCount(msg.content), 0);
+    const contextMsgTokens = exactContextTokens ?? contextMessages.reduce((sum, msg) => sum + estimateTokenCount(msg.content), 0);
     const queryTokens = exactQueryTokens ?? estimateTokenCount(originalQuery);
     // Wrapper overhead from buildChunkPrompt — measured empirically; add
     // a conservative 200 tokens for the CHUNK/POSITION/NOTES boilerplate.
@@ -721,10 +731,10 @@ async function processWithMapReduce(options) {
     const maxResponseReserve = Math.floor(contextSize * 0.8);
     const responseReserve = Math.min(maxTokens || Math.floor(contextSize * 0.2), maxResponseReserve);
 
-    // Available for chunk content = context - system - query - wrapper - response reserve - safety buffer
-    const availableForChunkContent = contextSize - systemTokens - queryTokens - wrapperTokens - responseReserve - 500;
+    // Available for chunk content = context - prior messages - query - wrapper - response reserve - safety buffer
+    const availableForChunkContent = contextSize - contextMsgTokens - queryTokens - wrapperTokens - responseReserve - 500;
 
-    console.log(`[Map-Reduce] Token budget: context=${contextSize}, system=${systemTokens}, query=${queryTokens}, wrapper=${wrapperTokens}, response=${responseReserve}, available=${availableForChunkContent} (charsPerToken=${effectiveCharsPerToken.toFixed(2)}, exact=${exactRatioAvailable})`);
+    console.log(`[Map-Reduce] Token budget: context=${contextSize}, priorMsgs=${contextMsgTokens}, query=${queryTokens}, wrapper=${wrapperTokens}, response=${responseReserve}, available=${availableForChunkContent} (charsPerToken=${effectiveCharsPerToken.toFixed(2)}, exact=${exactRatioAvailable})`);
 
     if (availableForChunkContent < 1000) {
         return {
@@ -772,7 +782,17 @@ async function processWithMapReduce(options) {
             });
         }
 
-        const batchPromises = batch.map(async (chunk) => {
+        const baseTimeout = 300000; // 5 minute timeout per chunk
+        const maxRetries = 3;
+
+        // Process a chunk with progressive shrinking on "context too large"
+        // errors. A backend that returns 400 on a chunk means the chunk
+        // content plus our wrapper/prior messages exceeded the real
+        // context window (tokenizer mismatch, tighter limit than reported,
+        // etc). Shrinking the chunk content in half and re-submitting is
+        // more useful than returning an error string that gets stitched
+        // into the user's synthesized response.
+        const runChunk = async (chunk, shrinkDepth = 0) => {
             const chunkPrompt = buildChunkPrompt(
                 chunk.content,
                 chunk.index,
@@ -783,13 +803,9 @@ async function processWithMapReduce(options) {
             );
 
             const messages = [
-                ...systemMessages,
+                ...contextMessages,
                 { role: 'user', content: chunkPrompt }
             ];
-
-            // Retry logic with exponential backoff
-            const maxRetries = 3;
-            const baseTimeout = 300000; // 5 minute timeout per chunk
 
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
@@ -810,9 +826,9 @@ async function processWithMapReduce(options) {
 
                     const responseContent = response.data?.choices?.[0]?.message?.content || '';
                     completedChunks++;
-                    console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} completed (${responseContent.length} chars)${attempt > 1 ? ` after ${attempt} attempts` : ''}`);
+                    const shrinkNote = shrinkDepth > 0 ? ` (shrunk x${shrinkDepth})` : '';
+                    console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} completed (${responseContent.length} chars)${attempt > 1 ? ` after ${attempt} attempts` : ''}${shrinkNote}`);
 
-                    // Send per-chunk completion progress
                     if (onProgress) {
                         onProgress({
                             phase: 'map',
@@ -830,17 +846,58 @@ async function processWithMapReduce(options) {
                         chunkIndex: chunk.index,
                         response: responseContent,
                         success: true,
-                        attempts: attempt
+                        attempts: attempt,
+                        shrinkDepth
                     };
                 } catch (error) {
+                    const status = error.response?.status;
                     const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
-                    const isRetryable = isTimeout || error.code === 'ECONNRESET' || error.response?.status >= 500;
+                    const isContextTooLarge = status === 400 || status === 413;
+                    const isRetryable = isTimeout || error.code === 'ECONNRESET' || (status && status >= 500);
+
+                    // A 400 "context size" failure won't recover on retry —
+                    // but will recover if we split the chunk in half. Cap
+                    // the shrink recursion so a pathological input can't
+                    // explode into many tiny chunks.
+                    if (isContextTooLarge && shrinkDepth < 3 && chunk.content.length > 1000) {
+                        console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} rejected as too large (HTTP ${status}) — splitting in half (shrink depth ${shrinkDepth + 1})`);
+
+                        const mid = Math.floor(chunk.content.length / 2);
+                        // Break at nearest whitespace to avoid splitting mid-token
+                        let splitPoint = chunk.content.lastIndexOf(' ', mid);
+                        if (splitPoint < chunk.content.length * 0.3) splitPoint = mid;
+
+                        const firstHalf = { ...chunk, content: chunk.content.substring(0, splitPoint) };
+                        const secondHalf = { ...chunk, content: chunk.content.substring(splitPoint) };
+
+                        const [firstResult, secondResult] = await Promise.all([
+                            runChunk(firstHalf, shrinkDepth + 1),
+                            runChunk(secondHalf, shrinkDepth + 1)
+                        ]);
+
+                        // Merge the two half-responses into a single logical
+                        // chunk result. If either half succeeded we return
+                        // combined content; success is true if ANY half worked.
+                        const combined = [firstResult.response, secondResult.response]
+                            .filter(r => r && !r.startsWith('[Error'))
+                            .join('\n\n');
+
+                        if (combined) {
+                            return {
+                                chunkIndex: chunk.index,
+                                response: combined,
+                                success: true,
+                                attempts: attempt,
+                                shrinkDepth: shrinkDepth + 1
+                            };
+                        }
+                        // Both halves still failed — fall through to error path below
+                    }
 
                     if (attempt < maxRetries && isRetryable) {
-                        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
+                        const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
                         console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} attempt ${attempt} failed (${error.message}), retrying in ${delay/1000}s...`);
 
-                        // Send retry progress
                         if (onProgress) {
                             onProgress({
                                 phase: 'map',
@@ -883,7 +940,6 @@ async function processWithMapReduce(options) {
                 }
             }
 
-            // Should not reach here, but return error just in case
             return {
                 chunkIndex: chunk.index,
                 response: `[Error processing chunk ${chunk.index + 1}: Max retries exceeded]`,
@@ -891,7 +947,9 @@ async function processWithMapReduce(options) {
                 error: 'Max retries exceeded',
                 attempts: maxRetries
             };
-        });
+        };
+
+        const batchPromises = batch.map(chunk => runChunk(chunk));
 
         const batchResults = await Promise.all(batchPromises);
 
@@ -958,7 +1016,7 @@ async function processWithMapReduce(options) {
 
     // Perform synthesis
     const synthesisMessages = [
-        ...systemMessages,
+        ...contextMessages,
         { role: 'user', content: synthesisPrompt }
     ];
 
@@ -9762,8 +9820,40 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             };
             res.write(`data: ${JSON.stringify(progressEvent)}\n\n`);
 
-            // Extract system messages for the chunks
+            // Build the context messages to forward to map-reduce:
+            //   - ALL system messages
+            //   - Recent user/assistant turns EXCLUDING the large message
+            //     we're chunking (it's in mapReduceContent already)
+            //
+            // Without this, follow-up questions in a multi-turn
+            // conversation lose all prior context the moment chunking
+            // triggers — the user sees "the context is lost".
+            //
+            // Budget prior turns to ~15% of the context window so the
+            // chunks still have room to work. Walk the message list
+            // newest-first and include turns until we hit the budget.
+            const lastUserIdx = chatMessages.map(m => m.role).lastIndexOf('user');
+            const priorBudgetTokens = Math.max(0, Math.floor(contextSize * 0.15));
             const systemMsgs = chatMessages.filter(m => m.role === 'system');
+            const nonSystemMsgs = chatMessages
+                .map((m, idx) => ({ m, idx }))
+                .filter(({ m, idx }) => m.role !== 'system' && idx !== lastUserIdx);
+
+            const priorTurns = [];
+            let priorTokensUsed = 0;
+            for (let i = nonSystemMsgs.length - 1; i >= 0; i--) {
+                const { m } = nonSystemMsgs[i];
+                const msgTokens = estimateTokens(m.content);
+                if (priorTokensUsed + msgTokens > priorBudgetTokens && priorTurns.length > 0) break;
+                priorTurns.unshift(m);
+                priorTokensUsed += msgTokens;
+                if (priorTokensUsed >= priorBudgetTokens) break;
+            }
+
+            const priorMsgs = [...systemMsgs, ...priorTurns];
+            if (priorTurns.length > 0) {
+                console.log(`[Chat Stream] Map-reduce: forwarding ${priorTurns.length} prior turns (${priorTokensUsed} tokens) + ${systemMsgs.length} system message(s)`);
+            }
 
             try {
                 const mapReduceResult = await processWithMapReduce({
@@ -9772,7 +9862,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     model: targetModel,
                     largeContent: mapReduceContent,
                     originalQuery: mapReduceQuery,
-                    systemMessages: systemMsgs,
+                    priorMessages: priorMsgs,
                     contextSize,
                     temperature: temperature || 0.7,
                     topP: effectiveTopP,
