@@ -371,12 +371,16 @@ function scoreSentenceRelevance(sentence, keywords) {
  * deobfuscation the model needs the raw payload, even if it means
  * truncating older chat turns instead.
  *
- * We look at two signals in the first ~3KB:
+ * Two signals in the first ~3KB:
  *  1. Density of programming punctuation (brace / paren / semicolon /
  *     equals / brackets). Natural prose hovers around 1-2%; code is
- *     usually 6%+.
- *  2. Presence of common code keywords across multiple languages. Three
- *     or more distinct hits in the sample is a strong indicator.
+ *     usually 6%+. This alone catches JSON, XML, minified JS, etc.
+ *  2. Strict syntactic patterns — keywords only count when they appear
+ *     in a position only real code uses (e.g. "function foo(",
+ *     "const x =", "class Foo:", "require('..."). Bare English words
+ *     like "for", "while", "public", "class" are NOT counted, because
+ *     prose hits on them constantly and used to mis-classify markdown
+ *     summaries as code, silently suppressing memory extraction.
  */
 function looksLikeCode(content) {
     if (!content || content.length < 200) return false;
@@ -387,9 +391,27 @@ function looksLikeCode(content) {
         if (codeSymbols.has(sample[i])) symbolHits++;
     }
     const symbolDensity = symbolHits / sample.length;
-    const keywordRegex = /\b(function|var|const|let|return|import|export|class|def|if|else|for|while|try|catch|throw|new|async|await|require|module\.exports|public|private|struct|typedef|#include|package|interface)\b/g;
-    const keywordMatches = new Set(sample.match(keywordRegex) || []);
-    return symbolDensity >= 0.06 || keywordMatches.size >= 3;
+    const strongPatterns = [
+        /\bfunction\s+[A-Za-z_$][\w$]*\s*\(/,          // function foo(
+        /\bconst\s+[A-Za-z_$][\w$]*\s*=/,              // const x =
+        /\blet\s+[A-Za-z_$][\w$]*\s*=/,                // let x =
+        /\bvar\s+[A-Za-z_$][\w$]*\s*=/,                // var x =
+        /\bdef\s+[A-Za-z_$][\w$]*\s*\(/,               // def foo(
+        /\bclass\s+[A-Z][\w$]*\s*[\(:{]/,              // class Foo{/(/:
+        /\bimport\s+.+?\s+from\s+['"]/,                // import X from '
+        /\bfrom\s+['"][^'"]+['"]\s+import\b/,          // from "x" import
+        /\brequire\s*\(\s*['"]/,                       // require('
+        /\bmodule\.exports\s*=/,                       // module.exports =
+        /#include\s*[<"]/,                             // C include
+        /\btypedef\s+struct\b/,                        // C typedef struct
+        /\basync\s+(function|def)\b/,                  // async function/def
+        /\bthrow\s+new\s+\w+/,                         // throw new X
+        /=>\s*[{(]/,                                   // arrow function
+        /```[\w]*\n[\s\S]*?```/,                       // markdown fenced block
+    ];
+    let patternHits = 0;
+    for (const p of strongPatterns) if (p.test(sample)) patternHits++;
+    return symbolDensity >= 0.06 || patternHits >= 2;
 }
 
 /**
