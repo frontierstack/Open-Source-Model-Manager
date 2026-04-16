@@ -211,6 +211,16 @@ function isPrivateUrl(urlString) {
     }
 }
 
+// Validate model name to prevent path traversal (e.g. ../../etc/passwd)
+function isValidModelName(modelName) {
+    if (!modelName || typeof modelName !== 'string') return false;
+    // Reject path traversal sequences and absolute paths
+    if (modelName.includes('..') || modelName.startsWith('/') || modelName.startsWith('\\')) return false;
+    // Ensure resolved path stays within /models
+    const resolved = path.resolve('/models', modelName);
+    return resolved.startsWith('/models/');
+}
+
 // In-memory store for model instances (supports both vLLM and llama.cpp backends)
 // Map structure: modelName -> { containerId, port, status, config, backend }
 const modelInstances = new Map();
@@ -1315,12 +1325,12 @@ process.on('unhandledRejection', (reason, promise) => {
         ? `\n${reason.stack.split('\n').slice(1, 3).join('\n').trim()}`
         : '';
 
-    // Try to broadcast error to connected clients
+    // Broadcast error to connected clients (no stack traces — logged server-side only)
     try {
         if (typeof broadcast === 'function') {
             broadcast({
                 type: 'log',
-                message: `[Error] Unhandled rejection: ${errorMsg}${stack}`,
+                message: `[Error] Unhandled rejection: ${errorMsg}`,
                 level: 'error'
             });
         }
@@ -1342,12 +1352,12 @@ process.on('uncaughtException', (error) => {
         ? `\n${error.stack.split('\n').slice(1, 3).join('\n').trim()}`
         : '';
 
-    // Try to broadcast error to connected clients
+    // Broadcast error to connected clients (no stack traces — logged server-side only)
     try {
         if (typeof broadcast === 'function') {
             broadcast({
                 type: 'log',
-                message: `[Error] Uncaught exception: ${errorMsg}${stack}`,
+                message: `[Error] Uncaught exception: ${errorMsg}`,
                 level: 'error'
             });
         }
@@ -1897,7 +1907,7 @@ wss.on('connection', async (ws, req) => {
     }
 
     if (!userId) {
-        console.warn('[WebSocket] Connection without session - will not receive user-targeted messages');
+        console.warn('[WebSocket] Connection without session - will not receive messages');
     }
 
     ws.on('close', () => {
@@ -2823,6 +2833,10 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
     // Backend defaults to llamacpp (works with older GPUs)
     const backend = req.body.backend || 'llamacpp';
 
+    if (!isValidModelName(modelName)) {
+        return res.status(400).json({ error: 'Invalid model name' });
+    }
+
     console.log(`Request to load model: ${modelName} with backend: ${backend}`);
 
     try {
@@ -3443,53 +3457,64 @@ function sampleCpuPercent() {
 }
 
 let gpuErrorLogged = false; // Only log nvidia-smi errors once to avoid log spam
+let gpuUnavailable = false; // Skip nvidia-smi calls after persistent failure
+let gpuRetryAt = 0;         // Timestamp to retry nvidia-smi after failure
+const GPU_RETRY_INTERVAL = 60000; // Retry nvidia-smi every 60s after failure
 
 async function broadcastSystemMonitoring() {
     try {
         // ---- GPUs ----
         const gpus = [];
         let gpuError = null;
-        try {
-            const { stdout } = await execPromise('nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits');
-            const lines = stdout.trim().split('\n');
-            for (const line of lines) {
-                const parts = line.split(',').map(s => s.trim());
-                const [index, name, gpuUtil, memUtil, memUsed, memTotal, temp, power] = parts;
-                const memUsedMb = parseInt(memUsed, 10);
-                const memTotalMb = parseInt(memTotal, 10);
-                gpus.push({
-                    index: parseInt(index, 10),
-                    name,
-                    utilizationPct: parseInt(gpuUtil, 10) || 0,
-                    vramUsedMb: Number.isFinite(memUsedMb) ? memUsedMb : 0,
-                    vramTotalMb: Number.isFinite(memTotalMb) ? memTotalMb : 0,
-                    vramUsedPct: memTotalMb > 0 ? Math.round((memUsedMb / memTotalMb) * 100) : 0,
-                    temperatureC: parseInt(temp, 10) || 0,
-                    powerW: parseFloat(power) || 0
-                });
-            }
-            // Reset the flag if nvidia-smi starts working again
-            if (gpus.length > 0) gpuErrorLogged = false;
-        } catch (err) {
-            // Determine the specific reason nvidia-smi failed
-            const errMsg = err.message || String(err);
-            if (errMsg.includes('not found') || errMsg.includes('ENOENT') || errMsg.includes('No such file')) {
-                gpuError = 'nvidia-smi not found — NVIDIA drivers may not be installed in the container';
-            } else if (errMsg.includes('NVML') || errMsg.includes('driver')) {
-                gpuError = 'NVIDIA driver communication failed — GPU passthrough may not be configured';
-            } else {
-                gpuError = `nvidia-smi error: ${errMsg.substring(0, 120)}`;
-            }
 
-            // Log once to avoid flooding at 3s interval
-            if (!gpuErrorLogged) {
-                gpuErrorLogged = true;
-                console.warn(`[Monitoring] GPU detection failed: ${gpuError}`);
-                broadcast({
-                    type: 'log',
-                    message: `[Warning] GPU monitoring unavailable: ${gpuError}`,
-                    level: 'warning'
-                });
+        // Skip nvidia-smi if it previously failed — retry every 60s
+        if (gpuUnavailable && Date.now() < gpuRetryAt) {
+            // Use cached error state, don't re-run nvidia-smi
+        } else {
+            try {
+                const { stdout } = await execPromise('nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits');
+                const lines = stdout.trim().split('\n');
+                for (const line of lines) {
+                    const parts = line.split(',').map(s => s.trim());
+                    const [index, name, gpuUtil, memUtil, memUsed, memTotal, temp, power] = parts;
+                    const memUsedMb = parseInt(memUsed, 10);
+                    const memTotalMb = parseInt(memTotal, 10);
+                    gpus.push({
+                        index: parseInt(index, 10),
+                        name,
+                        utilizationPct: parseInt(gpuUtil, 10) || 0,
+                        vramUsedMb: Number.isFinite(memUsedMb) ? memUsedMb : 0,
+                        vramTotalMb: Number.isFinite(memTotalMb) ? memTotalMb : 0,
+                        vramUsedPct: memTotalMb > 0 ? Math.round((memUsedMb / memTotalMb) * 100) : 0,
+                        temperatureC: parseInt(temp, 10) || 0,
+                        powerW: parseFloat(power) || 0
+                    });
+                }
+                // nvidia-smi recovered — reset failure state
+                if (gpus.length > 0) {
+                    gpuErrorLogged = false;
+                    gpuUnavailable = false;
+                }
+            } catch (err) {
+                // Determine the specific reason nvidia-smi failed
+                const errMsg = err.message || String(err);
+                if (errMsg.includes('not found') || errMsg.includes('ENOENT') || errMsg.includes('No such file')) {
+                    gpuError = 'nvidia-smi not found — NVIDIA drivers may not be installed in the container';
+                } else if (errMsg.includes('NVML') || errMsg.includes('driver')) {
+                    gpuError = 'NVIDIA driver communication failed — GPU passthrough may not be configured';
+                } else {
+                    gpuError = `nvidia-smi error: ${errMsg.substring(0, 120)}`;
+                }
+
+                // Mark unavailable and schedule retry so we stop hammering a broken nvidia-smi
+                gpuUnavailable = true;
+                gpuRetryAt = Date.now() + GPU_RETRY_INTERVAL;
+
+                // Log once to avoid flooding at 3s interval
+                if (!gpuErrorLogged) {
+                    gpuErrorLogged = true;
+                    console.warn(`[Monitoring] GPU detection failed: ${gpuError}`);
+                }
             }
         }
 
@@ -4102,10 +4127,6 @@ app.delete('/api/system-prompts/:modelName', requireAuth, async (req, res) => {
 
 // Get system resource information
 app.get('/api/system/resources', requireAuth, async (req, res) => {
-    // Check permission
-    if (!checkPermission(req.apiKeyData, 'admin')) {
-        return res.status(403).json({ error: 'Admin permission required' });
-    }
 
     try {
         // Get memory info
@@ -4896,8 +4917,11 @@ function checkOwnership(item, userId) {
 async function requireAdmin(req, res, next) {
     // Priority 1: Check for session authentication (Passport.js)
     if (req.isAuthenticated && req.isAuthenticated()) {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin permission required' });
+        }
         req.userId = req.user.id;
-        req.apiKeyData = null; // Session users have full access
+        req.apiKeyData = null;
         return next();
     }
 
@@ -7610,6 +7634,13 @@ app.post('/api/url/fetch', requireAuth, async (req, res) => {
     // Limit to 3 URLs per request
     const urlsToFetch = urls.slice(0, 3);
 
+    // SSRF protection: block requests to private/internal networks
+    for (const url of urlsToFetch) {
+        if (isPrivateUrl(url)) {
+            return res.status(400).json({ error: 'URLs pointing to private/internal networks are not allowed' });
+        }
+    }
+
     try {
         const results = await Promise.all(
             urlsToFetch.map(async (url) => {
@@ -7664,6 +7695,14 @@ app.post('/api/playwright/fetch', requireAuth, async (req, res) => {
 
     if (!url && !urls) {
         return res.status(400).json({ error: 'URL or URLs array required' });
+    }
+
+    // SSRF protection: block requests to private/internal networks
+    const allUrls = urls ? urls.slice(0, 10) : (url ? [url] : []);
+    for (const u of allUrls) {
+        if (isPrivateUrl(u)) {
+            return res.status(400).json({ error: 'URLs pointing to private/internal networks are not allowed' });
+        }
     }
 
     // Check if Playwright is available
@@ -7722,6 +7761,11 @@ app.post('/api/playwright/interact', requireAuth, async (req, res) => {
 
     if (!url) {
         return res.status(400).json({ error: 'URL required' });
+    }
+
+    // SSRF protection: block requests to private/internal networks
+    if (isPrivateUrl(url)) {
+        return res.status(400).json({ error: 'URLs pointing to private/internal networks are not allowed' });
     }
 
     if (!playwrightEnabled || !playwrightService) {
@@ -8558,6 +8602,11 @@ app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
     try {
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const { id } = req.params;
+
+        // Validate conversation ID format to prevent path traversal
+        if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+            return res.status(400).json({ error: 'Invalid conversation ID' });
+        }
 
         const conversations = await loadConversationsIndex(userId);
         const index = conversations.findIndex(c => c.id === id);
@@ -11406,6 +11455,11 @@ app.delete('/api/models/:modelName', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Models permission required' });
     }
     const { modelName } = req.params;
+
+    if (!isValidModelName(modelName)) {
+        return res.status(400).json({ error: 'Invalid model name' });
+    }
+
     console.log(`Request to delete model: ${modelName}`);
 
     try {
@@ -11581,11 +11635,7 @@ function getHostIp() {
 }
 
 // List all manageable apps
-app.get('/api/apps', requireAuth, async (req, res) => {
-    // Check permission
-    if (!checkPermission(req.apiKeyData, 'admin')) {
-        return res.status(403).json({ error: 'Admin permission required' });
-    }
+app.get('/api/apps', requireAdmin, async (req, res) => {
 
     try {
         const hostIp = getHostIp();
@@ -11639,11 +11689,7 @@ app.get('/api/apps', requireAuth, async (req, res) => {
 });
 
 // Start a service
-app.post('/api/apps/:name/start', requireAuth, async (req, res) => {
-    // Check permission
-    if (!checkPermission(req.apiKeyData, 'admin')) {
-        return res.status(403).json({ error: 'Admin permission required' });
-    }
+app.post('/api/apps/:name/start', requireAdmin, async (req, res) => {
 
     const { name } = req.params;
 
@@ -11668,11 +11714,7 @@ app.post('/api/apps/:name/start', requireAuth, async (req, res) => {
 });
 
 // Stop a service
-app.post('/api/apps/:name/stop', requireAuth, async (req, res) => {
-    // Check permission
-    if (!checkPermission(req.apiKeyData, 'admin')) {
-        return res.status(403).json({ error: 'Admin permission required' });
-    }
+app.post('/api/apps/:name/stop', requireAdmin, async (req, res) => {
 
     const { name } = req.params;
 
@@ -11698,11 +11740,7 @@ app.post('/api/apps/:name/stop', requireAuth, async (req, res) => {
 });
 
 // Restart a service
-app.post('/api/apps/:name/restart', requireAuth, async (req, res) => {
-    // Check permission
-    if (!checkPermission(req.apiKeyData, 'admin')) {
-        return res.status(403).json({ error: 'Admin permission required' });
-    }
+app.post('/api/apps/:name/restart', requireAdmin, async (req, res) => {
 
     const { name } = req.params;
 
@@ -11760,10 +11798,7 @@ app.get('/api/backend/active', requireAuth, async (req, res) => {
 });
 
 // Set active backend (switches backends, stops instances of old backend)
-app.post('/api/backend/active', requireAuth, async (req, res) => {
-    if (!checkPermission(req.apiKeyData, 'admin')) {
-        return res.status(403).json({ error: 'Admin permission required' });
-    }
+app.post('/api/backend/active', requireAdmin, async (req, res) => {
 
     const { backend, stopInstances } = req.body;
 
@@ -11835,11 +11870,7 @@ app.post('/api/backend/active', requireAuth, async (req, res) => {
 // SYSTEM RESET ENDPOINT
 // ============================================================================
 
-app.post('/api/system/reset', requireAuth, async (req, res) => {
-    // Check permission
-    if (!checkPermission(req.apiKeyData, 'admin')) {
-        return res.status(403).json({ error: 'Admin permission required' });
-    }
+app.post('/api/system/reset', requireAdmin, async (req, res) => {
 
     const { confirmation } = req.body;
 
@@ -13410,11 +13441,12 @@ app.use((err, req, res, next) => {
         ? err.stack.split('\n').slice(1, 3).join('\n').trim()
         : '';
 
-    // Broadcast detailed error to connected clients (visible in Logs tab)
+    // Broadcast error to connected clients (visible in Logs tab)
+    // Stack traces are logged server-side only — not broadcast to prevent info leakage
     try {
         broadcast({
             type: 'log',
-            message: `[Error] ${route}: ${errorDetail}${stack ? `\n${stack}` : ''}`,
+            message: `[Error] ${route}: ${errorDetail}`,
             level: 'error'
         });
     } catch (broadcastError) {
