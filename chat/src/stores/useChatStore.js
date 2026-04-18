@@ -410,6 +410,13 @@ export const useChatStore = create(
 
         clearProcessingLog: () => set({ processingLog: [] }),
 
+        // Replace the log wholesale. Used on reconnect (refresh /
+        // switch-back) to replay the server-side event log so the
+        // ProcessingLogFeed looks identical to a stay-connected client.
+        setProcessingLog: (processingLog) => set({
+            processingLog: Array.isArray(processingLog) ? processingLog.slice(-20) : [],
+        }),
+
         // ==================== Attachment Actions ====================
 
         setAttachments: (attachments) => set({ attachments }),

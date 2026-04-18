@@ -434,9 +434,43 @@ function looksLikeCode(content) {
 function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensationRatio) {
     const originalLength = content.length;
 
+    // Extract fenced code blocks and YARA-like rule blocks BEFORE splitting
+    // into sentences. The sentence splitter doesn't understand multi-line
+    // braced blocks — it would shatter a YARA rule or JSON object into
+    // fragments that individually score near zero against a summarize-style
+    // query and get stripped. Preserving these as atomic units (like URLs)
+    // means users who ask follow-up questions about code in an article
+    // ("give me the YARA rules", "show the config snippet") still find it
+    // in the condensed content.
+    const codeBlocks = [];
+    let contentWithPlaceholders = content;
+    const placeholder = (i) => `\u2063CODEBLOCK${i}\u2063`;
+
+    // Markdown fenced blocks: ```lang\n...\n```
+    contentWithPlaceholders = contentWithPlaceholders.replace(
+        /```[\s\S]*?```/g,
+        (match) => {
+            const i = codeBlocks.length;
+            codeBlocks.push(match);
+            return placeholder(i);
+        }
+    );
+    // Rule-style blocks: keyword Name { ... } where keyword is one the
+    // detection/security community uses for standalone rule definitions.
+    // Matches YARA (rule Foo {}), Sigma-like (detection: {}), Snort-ish
+    // (alert tcp any ... (...)). Conservative — requires keyword + braces.
+    contentWithPlaceholders = contentWithPlaceholders.replace(
+        /\b(rule|detection|signature)\s+[A-Za-z_][\w]*\s*\{[\s\S]*?\n\}/g,
+        (match) => {
+            const i = codeBlocks.length;
+            codeBlocks.push(match);
+            return placeholder(i);
+        }
+    );
+
     // Split into sentences (handle various sentence endings)
     const sentenceRegex = /[^.!?\n]+[.!?\n]+/g;
-    const sentences = content.match(sentenceRegex) || [content];
+    const sentences = contentWithPlaceholders.match(sentenceRegex) || [contentWithPlaceholders];
 
     if (sentences.length <= CHUNKING_CONFIG.minSentencesToKeep) {
         // Not enough sentences to condense meaningfully
@@ -457,25 +491,30 @@ function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensat
         sentence: sentence.trim(),
         index,
         score: scoreSentenceRelevance(sentence, keywords),
-        length: sentence.length
+        length: sentence.length,
+        // Sentences containing code block placeholders are preserved
+        // unconditionally — they stand in for the verbatim block that
+        // gets restored at the end of condensation.
+        hasCodeBlock: /\u2063CODEBLOCK\d+\u2063/.test(sentence),
     }));
 
     // Sort by score (highest first)
     scoredSentences.sort((a, b) => b.score - a.score);
 
-    // Always keep sentences containing URLs — these are high-value reference
-    // content that users frequently ask about and should never be condensed out
-    const urlSentences = scoredSentences.filter(s => /https?:\/\//.test(s.sentence));
-    const nonUrlSentences = scoredSentences.filter(s => !/https?:\/\//.test(s.sentence));
+    // Always keep sentences containing URLs or code blocks — these are
+    // high-value reference content that users frequently ask about and
+    // should never be condensed out.
+    const preserved = scoredSentences.filter(s => /https?:\/\//.test(s.sentence) || s.hasCodeBlock);
+    const regular = scoredSentences.filter(s => !/https?:\/\//.test(s.sentence) && !s.hasCodeBlock);
 
     // Calculate target length
     const targetLength = Math.floor(originalLength * targetRatio);
 
-    // Start with all URL sentences, then fill remaining budget from scored non-URL sentences
-    const selectedSentences = [...urlSentences];
-    let currentLength = urlSentences.reduce((sum, s) => sum + s.length, 0);
+    // Start with all preserved sentences, then fill remaining budget from scored regular sentences
+    const selectedSentences = [...preserved];
+    let currentLength = preserved.reduce((sum, s) => sum + s.length, 0);
 
-    for (const scored of nonUrlSentences) {
+    for (const scored of regular) {
         if (currentLength + scored.length <= targetLength ||
             selectedSentences.length < CHUNKING_CONFIG.minSentencesToKeep) {
             selectedSentences.push(scored);
@@ -492,10 +531,15 @@ function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensat
     // Re-sort by original index to maintain document order
     selectedSentences.sort((a, b) => a.index - b.index);
 
-    // Build condensed content with section markers
-    const condensed = selectedSentences.map(s => s.sentence).join(' ');
+    // Build condensed content then restore the verbatim code blocks that
+    // were substituted out above.
+    let condensed = selectedSentences.map(s => s.sentence).join(' ');
+    condensed = condensed.replace(/\u2063CODEBLOCK(\d+)\u2063/g, (_, i) => codeBlocks[Number(i)] || '');
     const condensedLength = condensed.length;
     const reductionPercent = Math.round((1 - condensedLength / originalLength) * 100);
+    if (codeBlocks.length > 0) {
+        console.log(`[Condensation] Preserved ${codeBlocks.length} code block(s) verbatim`);
+    }
 
     console.log(`[Condensation] Reduced content from ${originalLength} to ${condensedLength} chars (${reductionPercent}% reduction, ${selectedSentences.length}/${sentences.length} sentences kept)`);
 
@@ -8875,6 +8919,7 @@ app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
             clientConnected: job.clientConnected,
             phase: job.phase || null,
             progress: job.progress || null,
+            events: Array.isArray(job.events) ? job.events : [],
         });
     } catch (error) {
         console.error('Error checking streaming status:', error);
@@ -10093,6 +10138,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const streamStartTime = Date.now();
         const streamAbortController = new AbortController();
         if (streamingConversationId) {
+            // Seed with a "Processing request" entry so a reconnecting client
+            // starts from a rolling-credits feed with at least one line, not
+            // a bare spinner — matches what a stay-connected client sees
+            // immediately after hitting send.
+            const seedEvent = {
+                id: `evt-${streamStartTime}-0`,
+                at: streamStartTime,
+                status: 'active',
+                icon: 'edit',
+                text: 'Processing request',
+                kind: 'setup',
+            };
             activeStreamingJobs.set(streamingConversationId, {
                 userId,
                 content: '',
@@ -10101,6 +10158,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 model: targetModel,
                 clientConnected: true,
                 phase: 'preparing',
+                // Server-side mirror of the rolling-credits processing log
+                // entries the client would otherwise only see via SSE. On
+                // refresh / switch-back the client replays these so the
+                // reconnected bubble shows the same rich feed (chunking,
+                // map progress, synthesis) instead of a single stub line.
+                events: [seedEvent],
                 abortController: streamAbortController
             });
         }
@@ -10111,11 +10174,36 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             job.phase = phase;
             if (extra) Object.assign(job, extra);
         };
+        const pushJobEvent = (entry) => {
+            if (!streamingConversationId) return;
+            const job = activeStreamingJobs.get(streamingConversationId);
+            if (!job) return;
+            if (!Array.isArray(job.events)) job.events = [];
+            job.events.push({
+                id: `evt-${Date.now()}-${job.events.length}`,
+                at: Date.now(),
+                status: 'active',
+                ...entry,
+            });
+            // Keep the log bounded — the UI only ever displays the last
+            // ~5 anyway, but a runaway chunking operation could otherwise
+            // let this grow unbounded for the lifetime of the job.
+            if (job.events.length > 100) job.events.splice(0, job.events.length - 100);
+        };
         const clearStreamingJob = () => {
             if (streamingConversationId) {
                 activeStreamingJobs.delete(streamingConversationId);
             }
         };
+        // Broadcast to the Process Logs tab so chat activity shows up in
+        // real time alongside model / download logs. The completion log
+        // already exists below; this covers the start and prep phases.
+        const logChatActivity = (message, level = 'info') => {
+            try {
+                broadcast({ type: 'log', message: `[Chat] ${message}`, level });
+            } catch (e) { /* broadcast is best-effort */ }
+        };
+        logChatActivity(`Request received for ${targetModel}${streamingConversationId ? ` (conv ${streamingConversationId.substring(0, 8)})` : ''}`);
 
         // Get context size configuration
         const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
@@ -10683,6 +10771,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (useMapReduce && mapReduceContent && mapReduceQuery) {
             console.log(`[Chat Stream] Starting map-reduce processing...`);
             updateJobPhase('chunking');
+            logChatActivity(`Map-reduce started: ${estimateTokens(mapReduceContent).toLocaleString()} tokens`);
 
             // Send initial progress event with token and condensation details
             const mapReduceTokens = estimateTokens(mapReduceContent);
@@ -10699,6 +10788,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 message: 'Splitting content into chunks for parallel processing...'
             };
             res.write(`data: ${JSON.stringify(progressEvent)}\n\n`);
+            // Mirror the 'starting' entry to the server-side event log so
+            // a reconnected client sees the same opening line as a client
+            // that stayed connected.
+            {
+                let startMsg = `Preparing ${mapReduceTokens.toLocaleString()} tokens for parallel processing...`;
+                if (mapReduceCondensationInfo) {
+                    startMsg += ` (condensed ${mapReduceCondensationInfo.reductionPercent}%)`;
+                }
+                pushJobEvent({ icon: 'layers', text: startMsg, kind: 'chunk_start' });
+            }
 
             // Build the context messages to forward to map-reduce:
             //   - ALL system messages
@@ -10758,6 +10857,55 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             complete: 'generating',
                         };
                         updateJobPhase(phaseMap[progress.phase] || 'mapping', { progress });
+
+                        // Mirror to the server-side event log so the
+                        // reconnected client's ProcessingLogFeed matches
+                        // exactly what a continuously-connected client
+                        // would have seen. The message text duplicates
+                        // the client-side formatting in ChatContainer.jsx.
+                        const {
+                            phase: pPhase,
+                            totalChunks = 0,
+                            totalTokens = 0,
+                            completedChunks = 0,
+                            failedChunks = 0,
+                            elapsedMs = 0,
+                            retrying,
+                            chunkTokens,
+                        } = progress;
+                        const elapsed = elapsedMs > 0 ? `${Math.round(elapsedMs / 1000)}s` : '';
+                        const tokenStr = totalTokens ? `${totalTokens.toLocaleString()} tokens` : '';
+                        const chunkWord = (n) => n === 1 ? 'chunk' : 'chunks';
+                        if (pPhase === 'chunking') {
+                            let msg = `Splitting into ${totalChunks} ${chunkWord(totalChunks)}`;
+                            if (tokenStr) msg += ` — ${tokenStr}`;
+                            if (chunkTokens) msg += ` (~${chunkTokens.toLocaleString()} tokens/chunk)`;
+                            pushJobEvent({ icon: 'scissors', text: msg, kind: 'chunk_split' });
+                            logChatActivity(msg);
+                        } else if (pPhase === 'map') {
+                            const done = completedChunks + failedChunks;
+                            const pct = totalChunks > 0 ? Math.round((done / totalChunks) * 100) : 0;
+                            let msg;
+                            if (retrying) {
+                                msg = `Retrying chunk ${retrying.chunk}/${totalChunks} (attempt ${retrying.attempt}/${retrying.maxRetries}) — ${elapsed}`;
+                            } else if (done === 0) {
+                                msg = `Analyzing ${totalChunks} ${chunkWord(totalChunks)} in parallel`;
+                                if (tokenStr) msg += ` — ${tokenStr} total`;
+                            } else {
+                                msg = `Analyzed ${completedChunks}/${totalChunks} ${chunkWord(totalChunks)} (${pct}%)`;
+                                if (failedChunks) msg += ` — ${failedChunks} failed`;
+                                if (elapsed) msg += ` — ${elapsed}`;
+                            }
+                            pushJobEvent({ icon: 'cpu', text: msg, kind: 'chunk_map' });
+                        } else if (pPhase === 'reduce') {
+                            let msg = `Synthesizing ${completedChunks} ${chunkWord(completedChunks)} into final response`;
+                            if (elapsed) msg += ` — ${elapsed} elapsed`;
+                            pushJobEvent({ icon: 'combine', text: msg, kind: 'chunk_reduce' });
+                            logChatActivity(msg);
+                        } else if (pPhase === 'complete') {
+                            const msg = `Streaming synthesized response${elapsed ? ` — completed in ${elapsed}` : ''}`;
+                            pushJobEvent({ icon: 'sparkles', text: msg, kind: 'chunk_complete' });
+                        }
 
                         // Stream progress events to client
                         const event = {
@@ -10909,6 +11057,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // inputMessages snapshot and flip phase to 'waiting' (model about to
         // receive the first request).
         updateJobPhase('waiting', { inputMessages });
+        pushJobEvent({
+            icon: 'brain',
+            text: `Sending request to ${targetModel}`,
+            kind: 'waiting',
+        });
 
         // Helper: stream one request to the model and return the finish_reason
         const streamOneRequest = (requestMessages, maxTokens) => {
@@ -11083,6 +11236,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // "0 input tokens" VLLMValidationError.
             const initialMaxTokens = responseReserve;
             updateJobPhase('generating');
+            pushJobEvent({
+                icon: 'sparkles',
+                text: 'Generating response',
+                kind: 'generating',
+            });
+            logChatActivity(`Generating response (context: ${contextSize}, input: ${totalInputTokens} tokens, reserve: ${responseReserve})`);
             let finishReason = await streamOneRequest(chatMessages, initialMaxTokens);
 
             // Auto-continuation loop: if model hit length limit, keep going

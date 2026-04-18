@@ -137,6 +137,7 @@ export default function ChatContainer({
         pushProcessingLog,
         resolveProcessingLog,
         clearProcessingLog,
+        setProcessingLog,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -346,8 +347,22 @@ export default function ChatContainer({
                     };
                     const { kind, text } = phaseToStatus(data.phase, !!data.content);
                     setProcessingStatus(kind, text);
-                    clearProcessingLog();
-                    pushProcessingLog({ icon: 'sparkles', text, kind });
+                    // Replay the server-side event log so the ProcessingLogFeed
+                    // on a reconnected client matches what a continuously-
+                    // connected client would have shown (rolling credits of
+                    // chunking → map → synthesize → generate events instead
+                    // of a single stub line). Mark all replayed events as
+                    // done except the newest, which becomes the active row.
+                    if (Array.isArray(data.events) && data.events.length > 0) {
+                        const replayed = data.events.map((e, i) => ({
+                            ...e,
+                            status: i === data.events.length - 1 ? 'active' : 'done',
+                        }));
+                        setProcessingLog(replayed);
+                    } else {
+                        clearProcessingLog();
+                        pushProcessingLog({ icon: 'sparkles', text, kind });
+                    }
 
                     // Capture start time for response stats
                     const streamStartTime = data.startTime || Date.now();
@@ -400,6 +415,18 @@ export default function ChatContainer({
                                             ptext = 'Synthesizing chunks into final response...';
                                         }
                                         setProcessingStatus(pkind, ptext);
+                                        // Keep the event feed in sync with
+                                        // the server's log so new rolling-
+                                        // credits lines appear as phases
+                                        // progress (same behavior the
+                                        // stay-connected client sees).
+                                        if (Array.isArray(poll.events) && poll.events.length > 0) {
+                                            const replayed = poll.events.map((e, i) => ({
+                                                ...e,
+                                                status: i === poll.events.length - 1 ? 'active' : 'done',
+                                            }));
+                                            setProcessingLog(replayed);
+                                        }
                                         // Schedule next poll AFTER this one completes
                                         schedulePoll();
                                     } else {
