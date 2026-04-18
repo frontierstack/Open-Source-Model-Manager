@@ -851,6 +851,11 @@ async function processWithMapReduce(options) {
         // more useful than returning an error string that gets stitched
         // into the user's synthesized response.
         const runChunk = async (chunk, shrinkDepth = 0) => {
+            // Only the top-level call for a logical chunk should touch the
+            // completed/failed counters. Recursive shrink calls (shrinkDepth >
+            // 0) are splits of a single chunk — counting each half would
+            // push "done" past totalChunks (e.g. 65/60) and confuse the UI.
+            const isTopLevel = shrinkDepth === 0;
             const chunkPrompt = buildChunkPrompt(
                 chunk.content,
                 chunk.index,
@@ -897,7 +902,7 @@ async function processWithMapReduce(options) {
                     clearTimeout(wallClockTimer);
 
                     const responseContent = response.data?.choices?.[0]?.message?.content || '';
-                    completedChunks++;
+                    if (isTopLevel) completedChunks++;
                     const shrinkNote = shrinkDepth > 0 ? ` (shrunk x${shrinkDepth})` : '';
                     const elapsedSec = ((Date.now() - attemptStart) / 1000).toFixed(1);
                     console.log(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} completed in ${elapsedSec}s (${responseContent.length} chars)${attempt > 1 ? ` after ${attempt} attempts` : ''}${shrinkNote}`);
@@ -958,6 +963,10 @@ async function processWithMapReduce(options) {
                             .join('\n\n');
 
                         if (combined) {
+                            // The sub-calls were not top-level so they did
+                            // not increment completedChunks. Count the parent
+                            // chunk exactly once on successful combine.
+                            if (isTopLevel) completedChunks++;
                             return {
                                 chunkIndex: chunk.index,
                                 response: combined,
@@ -990,7 +999,7 @@ async function processWithMapReduce(options) {
                         continue;
                     }
 
-                    failedChunks++;
+                    if (isTopLevel) failedChunks++;
                     console.error(`[Map-Reduce] Chunk ${chunk.index + 1}/${totalChunks} failed after ${attempt} attempts:`, error.message);
 
                     if (onProgress) {

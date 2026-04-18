@@ -292,11 +292,30 @@ export default function ChatContainer({
             if (response.ok) {
                 const data = await response.json();
                 if (data.streaming) {
+                    // The fetch is async — the user may have switched to a
+                    // different conversation between the request and response.
+                    // Setting streaming state here would leak this conversation's
+                    // in-progress response into the bubble the user is now
+                    // viewing. Bail out if the active conversation no longer
+                    // matches.
+                    const currentActiveId = useChatStore.getState().activeConversationId;
+                    if (currentActiveId !== conversationId) {
+                        return;
+                    }
                     // There's active streaming - show the content and start polling
                     setStreaming(true);
                     setStreamingContent(data.content || '');
                     setStreamingReasoning(data.reasoning || '');
                     setIsLoading(false);
+                    // Restore the status indicator — normal streaming sets this
+                    // to 'generating' when tokens start arriving. On refresh /
+                    // conversation switch-back we bypass the send path, so
+                    // without this the assistant bubble shows no "still
+                    // generating" signal until new tokens arrive.
+                    setProcessingStatus(
+                        'generating',
+                        data.content ? 'Resuming response...' : `Waiting for ${data.model || 'model'} to respond`
+                    );
                     clearProcessingLog();
                     pushProcessingLog({
                         icon: 'sparkles',
