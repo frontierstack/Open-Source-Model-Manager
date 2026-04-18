@@ -307,21 +307,47 @@ export default function ChatContainer({
                     setStreamingContent(data.content || '');
                     setStreamingReasoning(data.reasoning || '');
                     setIsLoading(false);
-                    // Restore the status indicator — normal streaming sets this
-                    // to 'generating' when tokens start arriving. On refresh /
-                    // conversation switch-back we bypass the send path, so
-                    // without this the assistant bubble shows no "still
-                    // generating" signal until new tokens arrive.
-                    setProcessingStatus(
-                        'generating',
-                        data.content ? 'Resuming response...' : `Waiting for ${data.model || 'model'} to respond`
-                    );
+                    // Map the server's phase to a user-facing status. The
+                    // server registers the job up front, so phase can be any
+                    // of: preparing, waiting, generating, chunking, mapping,
+                    // synthesizing. Without this the bubble sat empty during
+                    // heavy prep work (tokenizing, chunking 24k+ tokens) with
+                    // no "in progress" signal.
+                    const modelLabel = data.model || 'model';
+                    const phaseToStatus = (phase, hasContent) => {
+                        switch (phase) {
+                            case 'preparing':
+                                return { kind: 'processing', text: 'Preparing request...' };
+                            case 'chunking':
+                                return { kind: 'chunking', text: 'Preparing content for parallel processing...' };
+                            case 'mapping': {
+                                const p = data.progress || {};
+                                const done = (p.completedChunks || 0) + (p.failedChunks || 0);
+                                const total = p.totalChunks || 0;
+                                const label = total
+                                    ? `Analyzing chunks (${done}/${total})`
+                                    : 'Analyzing chunks in parallel';
+                                return { kind: 'processing', text: label };
+                            }
+                            case 'synthesizing':
+                                return { kind: 'synthesizing', text: 'Synthesizing chunks into final response...' };
+                            case 'generating':
+                                return {
+                                    kind: 'generating',
+                                    text: hasContent ? 'Resuming response...' : 'Generating response',
+                                };
+                            case 'waiting':
+                            default:
+                                return {
+                                    kind: 'generating',
+                                    text: hasContent ? 'Resuming response...' : `Waiting for ${modelLabel} to respond`,
+                                };
+                        }
+                    };
+                    const { kind, text } = phaseToStatus(data.phase, !!data.content);
+                    setProcessingStatus(kind, text);
                     clearProcessingLog();
-                    pushProcessingLog({
-                        icon: 'sparkles',
-                        text: data.content ? 'Resuming response...' : `Waiting for ${data.model || 'model'} to respond`,
-                        kind: 'generating',
-                    });
+                    pushProcessingLog({ icon: 'sparkles', text, kind });
 
                     // Capture start time for response stats
                     const streamStartTime = data.startTime || Date.now();
@@ -346,6 +372,34 @@ export default function ChatContainer({
                                     if (pollData.streaming) {
                                         setStreamingContent(pollData.content || '');
                                         setStreamingReasoning(pollData.reasoning || '');
+                                        // Keep the status indicator in sync as
+                                        // the server transitions through phases
+                                        // (preparing → chunking → mapping →
+                                        // synthesizing → generating). Once
+                                        // tokens appear, the content displaces
+                                        // the indicator anyway, but this keeps
+                                        // the pre-token phases meaningful.
+                                        const poll = pollData;
+                                        const hasContent = !!poll.content;
+                                        let pkind = 'generating';
+                                        let ptext = hasContent ? 'Resuming response...' : `Waiting for ${poll.model || 'model'} to respond`;
+                                        if (poll.phase === 'preparing') {
+                                            pkind = 'processing';
+                                            ptext = 'Preparing request...';
+                                        } else if (poll.phase === 'chunking') {
+                                            pkind = 'chunking';
+                                            ptext = 'Preparing content for parallel processing...';
+                                        } else if (poll.phase === 'mapping') {
+                                            const pr = poll.progress || {};
+                                            const done = (pr.completedChunks || 0) + (pr.failedChunks || 0);
+                                            const total = pr.totalChunks || 0;
+                                            pkind = 'processing';
+                                            ptext = total ? `Analyzing chunks (${done}/${total})` : 'Analyzing chunks in parallel';
+                                        } else if (poll.phase === 'synthesizing') {
+                                            pkind = 'synthesizing';
+                                            ptext = 'Synthesizing chunks into final response...';
+                                        }
+                                        setProcessingStatus(pkind, ptext);
                                         // Schedule next poll AFTER this one completes
                                         schedulePoll();
                                     } else {

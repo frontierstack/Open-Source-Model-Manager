@@ -8872,7 +8872,9 @@ app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
             reasoning: job.reasoning || '',
             startTime: job.startTime,
             model: job.model,
-            clientConnected: job.clientConnected
+            clientConnected: job.clientConnected,
+            phase: job.phase || null,
+            progress: job.progress || null,
         });
     } catch (error) {
         console.error('Error checking streaming status:', error);
@@ -10080,6 +10082,41 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const targetHost = targetInstance.containerName || `host.docker.internal`;
         const targetPort = targetInstance.internalPort || targetInstance.port;
 
+        // Register the streaming job IMMEDIATELY so refresh / conversation
+        // switch-back can see that work is in flight. Prep work (memory
+        // compression, chunking prep, file parsing) can take many seconds and
+        // the map-reduce path never reaches the old registration site at all,
+        // so without this the UI shows an empty bubble during those phases.
+        // The job's `phase` field is updated at each transition below.
+        const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        const streamingConversationId = conversationId || req.body.conversationId;
+        const streamStartTime = Date.now();
+        const streamAbortController = new AbortController();
+        if (streamingConversationId) {
+            activeStreamingJobs.set(streamingConversationId, {
+                userId,
+                content: '',
+                reasoning: '',
+                startTime: streamStartTime,
+                model: targetModel,
+                clientConnected: true,
+                phase: 'preparing',
+                abortController: streamAbortController
+            });
+        }
+        const updateJobPhase = (phase, extra) => {
+            if (!streamingConversationId) return;
+            const job = activeStreamingJobs.get(streamingConversationId);
+            if (!job) return;
+            job.phase = phase;
+            if (extra) Object.assign(job, extra);
+        };
+        const clearStreamingJob = () => {
+            if (streamingConversationId) {
+                activeStreamingJobs.delete(streamingConversationId);
+            }
+        };
+
         // Get context size configuration
         const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;
         const contextShift = targetInstance.config?.contextShift || false;
@@ -10551,6 +10588,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const availableForConversation = availableContextForInput - systemTokens;
 
                     if (availableForConversation <= 0) {
+                        clearStreamingJob();
                         return res.status(400).json({
                             success: false,
                             error: `System prompt alone exceeds context window. Please reduce system prompt size.`
@@ -10599,6 +10637,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                     // If we couldn't keep any messages, error out
                     if (keptMessages.length === 0) {
+                        clearStreamingJob();
                         return res.status(400).json({
                             success: false,
                             error: `Input too large even with context shifting. Please reduce message size or clear conversation history.`
@@ -10615,6 +10654,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                     console.log(`[Chat Stream] Context shift removed ${removedCount} old messages. New total: ${totalInputTokens} tokens`);
                 } else {
+                    clearStreamingJob();
                     return res.status(400).json({
                         success: false,
                         error: `Not enough context window: Input requires ~${totalInputTokens} tokens but only ${availableContextForInput} available (context: ${contextSize}, reserved for response: ${responseReserve}). Enable context shifting or reduce input size.`
@@ -10642,6 +10682,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // process chunks in parallel and synthesize the response
         if (useMapReduce && mapReduceContent && mapReduceQuery) {
             console.log(`[Chat Stream] Starting map-reduce processing...`);
+            updateJobPhase('chunking');
 
             // Send initial progress event with token and condensation details
             const mapReduceTokens = estimateTokens(mapReduceContent);
@@ -10707,6 +10748,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     topP: effectiveTopP,
                     maxTokens: responseReserve,
                     onProgress: (progress) => {
+                        // Mirror progress into the persisted job so a reconnected
+                        // client (refresh / switch-back) can show the current
+                        // map-reduce phase without the SSE stream.
+                        const phaseMap = {
+                            chunking: 'chunking',
+                            map: 'mapping',
+                            reduce: 'synthesizing',
+                            complete: 'generating',
+                        };
+                        updateJobPhase(phaseMap[progress.phase] || 'mapping', { progress });
+
                         // Stream progress events to client
                         const event = {
                             type: 'chunking_progress',
@@ -10721,12 +10773,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 });
 
                 if (mapReduceResult.success) {
+                    updateJobPhase('generating');
                     // Stream the synthesized response token by token for consistent UX
                     const words = mapReduceResult.response.split(/(\s+)/);
                     let fullResponse = '';
 
                     for (const word of words) {
                         fullResponse += word;
+                        // Mirror streamed content into the job so a reconnected
+                        // client can pick up the synthesized response mid-flow.
+                        updateJobPhase('generating', { content: fullResponse });
                         const event = {
                             token: word,
                             choices: [{
@@ -10741,6 +10797,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                         // Small delay to simulate streaming
                         await new Promise(resolve => setTimeout(resolve, 5));
+                    }
+
+                    // If the client disconnected mid-stream, persist the full
+                    // synthesized response to the conversation so switching
+                    // back shows the completed answer instead of a stub.
+                    const jobAtEnd = streamingConversationId ? activeStreamingJobs.get(streamingConversationId) : null;
+                    if (streamingConversationId && jobAtEnd && !jobAtEnd.clientConnected && fullResponse) {
+                        try {
+                            const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
+                            conversationMsgs.push({
+                                id: crypto.randomUUID(),
+                                role: 'assistant',
+                                content: fullResponse,
+                                timestamp: new Date().toISOString(),
+                                responseTime: Date.now() - streamStartTime,
+                                backgroundCompleted: true,
+                            });
+                            await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
+                            console.log(`[Chat Stream] Map-reduce background response saved to conversation ${streamingConversationId}`);
+                        } catch (saveErr) {
+                            console.error(`[Chat Stream] Failed to save map-reduce background response:`, saveErr);
+                        }
                     }
 
                     // Send final event
@@ -10760,9 +10838,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             failedChunks: mapReduceResult.failedChunks || 0
                         }
                     };
-                    res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
-                    res.write(`data: [DONE]\n\n`);
-                    res.end();
+                    try { res.write(`data: ${JSON.stringify(finalEvent)}\n\n`); } catch (e) {}
+                    try { res.write(`data: [DONE]\n\n`); } catch (e) {}
+                    try { res.end(); } catch (e) {}
+                    clearStreamingJob();
 
                     console.log(`[Chat Stream] Map-reduce complete: ${mapReduceResult.chunkCount} chunks, synthesized=${mapReduceResult.synthesized}`);
                     return;
@@ -10772,8 +10851,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         error: mapReduceResult.error || 'Map-reduce processing failed',
                         done: true
                     };
-                    res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
-                    res.end();
+                    try { res.write(`data: ${JSON.stringify(errorEvent)}\n\n`); } catch (e) {}
+                    try { res.end(); } catch (e) {}
+                    clearStreamingJob();
                     return;
                 }
             } catch (mapReduceError) {
@@ -10782,8 +10862,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     error: `Map-reduce processing failed: ${mapReduceError.message}`,
                     done: true
                 };
-                res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
-                res.end();
+                try { res.write(`data: ${JSON.stringify(errorEvent)}\n\n`); } catch (e) {}
+                try { res.end(); } catch (e) {}
+                clearStreamingJob();
                 return;
             }
         }
@@ -10823,24 +10904,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let clientConnected = true;
         let continuationCount = 0;
 
-        // Track this streaming job for background processing
-        const userId = req.user?.id || req.apiKeyData?.id || 'default';
-        const streamingConversationId = conversationId || req.body.conversationId;
-        const streamStartTime = Date.now();
-
-        const streamAbortController = new AbortController();
-        if (streamingConversationId) {
-            activeStreamingJobs.set(streamingConversationId, {
-                userId,
-                content: '',
-                reasoning: '',
-                startTime: streamStartTime,
-                model: targetModel,
-                clientConnected: true,
-                inputMessages: inputMessages,
-                abortController: streamAbortController
-            });
-        }
+        // Job was registered at the top of the handler so refresh / switch-back
+        // can see prep-phase work. Update the existing record with the live
+        // inputMessages snapshot and flip phase to 'waiting' (model about to
+        // receive the first request).
+        updateJobPhase('waiting', { inputMessages });
 
         // Helper: stream one request to the model and return the finish_reason
         const streamOneRequest = (requestMessages, maxTokens) => {
@@ -11014,6 +11082,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // could equal contextSize and make vLLM reject the request with
             // "0 input tokens" VLLMValidationError.
             const initialMaxTokens = responseReserve;
+            updateJobPhase('generating');
             let finishReason = await streamOneRequest(chatMessages, initialMaxTokens);
 
             // Auto-continuation loop: if model hit length limit, keep going
@@ -11324,6 +11393,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             };
             res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
             res.end();
+        }
+
+        // If we registered a streaming job before the failure, clear it so
+        // reconnecting clients don't see a ghost "in-progress" response.
+        // streamingConversationId is scoped to the try block above, so pull
+        // it from req.body directly here.
+        const failedConvId = req.body.conversationId;
+        if (failedConvId) {
+            activeStreamingJobs.delete(failedConvId);
         }
     }
 });
