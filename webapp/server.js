@@ -467,6 +467,22 @@ function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensat
             return placeholder(i);
         }
     );
+    // YAARA-L / Chronicle-style detection blocks: bare "events:" through
+    // "condition:" body, no fence, no rule{} wrapper. These appear in
+    // Google Cloud's threat intel posts (e.g. the ShinyHunters defense
+    // article). The article has no consistent blank-line boundary between
+    // a rule's condition body and the next rule's prose heading, so the
+    // cleanest split is "from each events: to the next events: or end of
+    // document". Each capture is atomic — rule body plus any trailing
+    // description — and gets restored verbatim after condensation.
+    contentWithPlaceholders = contentWithPlaceholders.replace(
+        /(?:^|\n)events:\s*\n[\s\S]*?(?=\nevents:|$)/g,
+        (match) => {
+            const i = codeBlocks.length;
+            codeBlocks.push(match.replace(/^\n/, ''));
+            return (match.startsWith('\n') ? '\n' : '') + placeholder(i);
+        }
+    );
 
     // Split into sentences (handle various sentence endings)
     const sentenceRegex = /[^.!?\n]+[.!?\n]+/g;
@@ -532,9 +548,16 @@ function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensat
     selectedSentences.sort((a, b) => a.index - b.index);
 
     // Build condensed content then restore the verbatim code blocks that
-    // were substituted out above.
+    // were substituted out above. Sentences are joined with spaces, so a
+    // placeholder that replaced a `\nevents:...` match now sits between
+    // two spaces. Prepend `\n` on restoration so the restored block still
+    // starts on its own line — both for the model's readability and for
+    // downstream regexes (the YAARA-L detector relies on line-start).
     let condensed = selectedSentences.map(s => s.sentence).join(' ');
-    condensed = condensed.replace(/\u2063CODEBLOCK(\d+)\u2063/g, (_, i) => codeBlocks[Number(i)] || '');
+    condensed = condensed.replace(
+        /\u2063CODEBLOCK(\d+)\u2063/g,
+        (_, i) => '\n' + (codeBlocks[Number(i)] || '')
+    );
     const condensedLength = condensed.length;
     const reductionPercent = Math.round((1 - condensedLength / originalLength) * 100);
     if (codeBlocks.length > 0) {
@@ -696,6 +719,12 @@ CRITICAL PRESERVATION RULES — these override any instinct to summarize:
 - If the chunk contains N code blocks or rules, your response must contain all N reproduced verbatim. These are the only way the synthesizer sees them.
 - You may still add analysis PROSE around the preserved content. But the raw content must be present.
 - When in doubt, include more, not less. A slightly long response is fine; a lossy summary is not.
+
+CRITICAL ANTI-HALLUCINATION RULES:
+- If the chunk REFERENCES code, rules, or data that are NOT actually present in the chunk text (e.g. placeholders like "21 lines hidden", "code omitted", "[collapsed]", or a section heading followed by no actual code), DO NOT invent or fabricate replacement content.
+- Instead, explicitly record it as: "[SECTION "<section name>": code/rules referenced but NOT PRESENT in the chunk text]". The synthesizer will tell the user honestly that the content was missing from the source.
+- NEVER write plausible-looking code, rules, regex, or configuration that approximates what you think the document probably contained. Output only what is literally present in the chunk text.
+- If you are unsure whether a block is present or placeholder, include it verbatim only if the actual code tokens are visible. Otherwise mark as missing.
 ${isLast ? 'This is the final chunk.' : 'Your response will be combined with analyses of other chunks.'}`;
 }
 
@@ -736,6 +765,11 @@ CRITICAL PRESERVATION RULES:
   about; paraphrasing them loses information.
 - If two chunks show the same code block due to overlap, include it once.
 - Prefer a longer, lossless response over a shorter one that drops code.
+
+CRITICAL ANTI-HALLUCINATION RULES:
+- If a chunk marked a section as missing (e.g. "[SECTION X: code/rules referenced but NOT PRESENT in the chunk text]"), pass that notice through to the user. State plainly in your response that the source document did not include the code for that section.
+- NEVER invent code, rules, regex, or configuration that was not in the chunk analyses. If the user might later ask "give me the code for section X" and the code is not in the analyses, it is better to tell them up front than to fabricate.
+- Distinguish clearly between "the document describes detection for X" and "here is the verbatim code for X" — only include the latter if the code actually appears above.
 
 Provide your synthesized response:`;
 }
