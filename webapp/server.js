@@ -685,6 +685,17 @@ ${chunkContent}
 USER'S QUERY: ${originalQuery}
 
 Please analyze this chunk and provide relevant findings. Focus on information pertinent to the user's query.
+
+CRITICAL PRESERVATION RULES — these override any instinct to summarize:
+- Copy the following content VERBATIM (byte-for-byte) from the chunk into your response, inside fenced code blocks. Do NOT paraphrase, abbreviate, describe, or omit them:
+  * Fenced code blocks of any kind (\`\`\`...\`\`\`)
+  * YARA rules, Sigma rules, Snort rules (blocks starting with "rule", "detection:", or "alert")
+  * Regex patterns, SQL queries, shell commands, config snippets
+  * JSON / XML / YAML objects that define structure or rules
+  * Specific CVEs, IOCs (hashes, IPs, domains, URLs)
+- If the chunk contains N code blocks or rules, your response must contain all N reproduced verbatim. These are the only way the synthesizer sees them.
+- You may still add analysis PROSE around the preserved content. But the raw content must be present.
+- When in doubt, include more, not less. A slightly long response is fine; a lossy summary is not.
 ${isLast ? 'This is the final chunk.' : 'Your response will be combined with analyses of other chunks.'}`;
 }
 
@@ -716,6 +727,15 @@ Please synthesize these partial analyses into a single, coherent, and comprehens
 3. Presents information in a logical order
 4. Directly addresses the user's original query
 5. Notes if any information might be missing due to chunking
+
+CRITICAL PRESERVATION RULES:
+- If any chunk analysis contains fenced code blocks, YARA/Sigma/Snort rules,
+  regex patterns, SQL, shell commands, config snippets, JSON/XML/YAML, or
+  specific IOCs (hashes, IPs, domains, CVEs), reproduce them VERBATIM in
+  your synthesis. These are data the user will ask follow-up questions
+  about; paraphrasing them loses information.
+- If two chunks show the same code block due to overlap, include it once.
+- Prefer a longer, lossless response over a shorter one that drops code.
 
 Provide your synthesized response:`;
 }
