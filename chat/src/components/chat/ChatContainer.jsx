@@ -131,6 +131,7 @@ export default function ChatContainer({
         appendStreamingContent,
         appendStreamingReasoning,
         clearStreaming,
+        commitStreamingMessage,
         setProcessingStatus,
         clearProcessingStatus,
         processingLog,
@@ -482,7 +483,7 @@ export default function ChatContainer({
                                             const parsed = parseThinkTags(storeContent);
                                             const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
                                             const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
-                                            addMessage({
+                                            commitStreamingMessage({
                                                 id: crypto.randomUUID(),
                                                 role: 'assistant',
                                                 content: parsed.content || storeContent,
@@ -493,8 +494,9 @@ export default function ChatContainer({
                                                 backgroundCompleted: true,
                                             });
                                             saveMessages(conversationId, useChatStore.getState().messages);
+                                        } else {
+                                            clearStreaming();
                                         }
-                                        clearStreaming();
                                         setIsLoading(false);
                                         clearProcessingStatus();
                                         showSnackbar('Background response completed', 'success');
@@ -506,21 +508,20 @@ export default function ChatContainer({
                                 console.error('Failed to poll streaming status:', pollError);
                                 clearBackgroundPoll();
                                 const rescueContent = useChatStore.getState().streamingContent || '';
-                                if (rescueContent.trim()) {
-                                    const parsed = parseThinkTags(rescueContent);
-                                    if (parsed.content.trim()) {
-                                        addMessage({
-                                            id: crypto.randomUUID(),
-                                            role: 'assistant',
-                                            content: parsed.content,
-                                            reasoning: parsed.reasoning || undefined,
-                                            timestamp: new Date().toISOString(),
-                                            isPartial: true,
-                                        });
-                                        saveMessages(conversationId, useChatStore.getState().messages);
-                                    }
+                                const parsed = rescueContent.trim() ? parseThinkTags(rescueContent) : null;
+                                if (parsed && parsed.content.trim()) {
+                                    commitStreamingMessage({
+                                        id: crypto.randomUUID(),
+                                        role: 'assistant',
+                                        content: parsed.content,
+                                        reasoning: parsed.reasoning || undefined,
+                                        timestamp: new Date().toISOString(),
+                                        isPartial: true,
+                                    });
+                                    saveMessages(conversationId, useChatStore.getState().messages);
+                                } else {
+                                    clearStreaming();
                                 }
-                                clearStreaming();
                                 setIsLoading(false);
                             }
                         }, 100);
@@ -1689,8 +1690,8 @@ export default function ChatContainer({
             } else if (inStreamError) {
                 // Genuine server-sent error (not a network disconnect)
                 // Save partial content if any, then show error
-                if (finalContent.trim()) {
-                    const partialMessage = {
+                const partialMessage = finalContent.trim()
+                    ? {
                         id: crypto.randomUUID(),
                         role: 'assistant',
                         content: finalContent,
@@ -1700,16 +1701,9 @@ export default function ChatContainer({
                         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
                         responseTime,
                         tokenCount: tokenCount > 0 ? tokenCount : undefined,
-                        isPartial: true, // Mark as partial response
-                    };
-                    // Only update local store if still on same conversation
-                    if (!userSwitchedConversation) {
-                        addMessage(partialMessage);
+                        isPartial: true,
                     }
-                    finalMessages = [...finalMessages, partialMessage];
-                }
-
-                // Add error message explaining why the stream stopped
+                    : null;
                 const errorMessage = {
                     id: crypto.randomUUID(),
                     role: 'assistant',
@@ -1717,15 +1711,17 @@ export default function ChatContainer({
                     isError: true,
                     timestamp: new Date().toISOString(),
                 };
-                // Only update local store if still on same conversation
-                if (!userSwitchedConversation) {
-                    addMessage(errorMessage);
-                }
+                if (partialMessage) finalMessages = [...finalMessages, partialMessage];
                 finalMessages = [...finalMessages, errorMessage];
+                // Atomic commit — partial (if any) + error together, plus
+                // clearing streaming, so no frame has the streaming bubble
+                // visible alongside the new final bubbles.
+                if (!userSwitchedConversation) {
+                    commitStreamingMessage([partialMessage, errorMessage]);
+                }
                 saveMessages(conversationId, finalMessages);
                 messageSaved = true;
 
-                // Show snackbar notification
                 showSnackbar(inStreamError, 'error');
             } else {
                 // Normal completion or user-stopped
@@ -1754,8 +1750,14 @@ export default function ChatContainer({
                 // Only update local store if still on same conversation.
                 // (If user switched away, the stream was aborted and this
                 // path won't execute — server handles the save.)
+                // Commit the final message AND clear streaming state in a
+                // single atomic store update so there's no frame where
+                // both the message-list bubble and the StreamingMessage
+                // bubble are rendered side-by-side. Without this the user
+                // saw the finished response briefly "underneath" the final
+                // bubble before the streaming one unmounted.
                 if (!userSwitchedConversation) {
-                    addMessage(assistantMessage);
+                    commitStreamingMessage(assistantMessage);
                 }
                 saveMessages(conversationId, finalMessages);
                 messageSaved = true;
@@ -1848,19 +1850,27 @@ export default function ChatContainer({
                                     responseTime: Date.now() - startTime,
                                     isPartial: true,
                                 };
-                                addMessage(rescuedMessage);
+                                // Atomic append + streaming-clear so the
+                                // rescued bubble replaces the streaming
+                                // bubble in a single frame.
+                                commitStreamingMessage(rescuedMessage);
                                 const currentMsgs = useChatStore.getState().messages;
                                 try {
                                     await saveMessages(conversationId, currentMsgs);
                                 } catch (e) {
                                     console.error('[Chat] Failed to save rescued message:', e);
                                 }
+                            } else {
+                                clearStreaming();
                             }
+                        } else {
+                            clearStreaming();
                         }
+                    } else {
+                        clearStreaming();
                     }
 
                     setIsLoading(false);
-                    clearStreaming();
                     clearProcessingStatus();
                 }
                 streamingConversationRef.current = null;

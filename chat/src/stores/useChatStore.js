@@ -321,6 +321,34 @@ export const useChatStore = create(
             streamingReasoning: state.streamingReasoning + reasoning
         })),
 
+        // Atomically append the final assistant message(s) AND clear the
+        // streaming state in one set() call. Doing these separately (append
+        // first, clear in a later finally block) left a one-frame window
+        // where both the messages-list bubble and the StreamingMessage
+        // bubble rendered simultaneously — the user saw the response "under"
+        // the final bubble for a moment before the streaming one unmounted.
+        // Accepts a single message object or an array (for the partial +
+        // error two-bubble case on in-stream errors).
+        commitStreamingMessage: (messageOrArray) => set(state => {
+            const toAdd = Array.isArray(messageOrArray)
+                ? messageOrArray.filter(Boolean)
+                : messageOrArray ? [messageOrArray] : [];
+            return {
+                messages: toAdd.length ? [...state.messages, ...toAdd] : state.messages,
+                streamingContent: '',
+                streamingReasoning: '',
+                isStreaming: false,
+                processingStatus: null,
+                processingMessage: null,
+                processingLog: [],
+                collapsedMessageIds: (() => {
+                    const next = { ...state.collapsedMessageIds };
+                    delete next['__streaming__'];
+                    return next;
+                })(),
+            };
+        }),
+
         clearStreaming: () => set(state => ({
             streamingContent: '',
             streamingReasoning: '',
