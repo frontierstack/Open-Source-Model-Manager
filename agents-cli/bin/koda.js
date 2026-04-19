@@ -1682,7 +1682,17 @@ function getWorkingSetSummary() {
     return files.join('\n');
 }
 
-// Build context from working files
+// Build context from working files.
+//
+// Files are emitted as a "peek" manifest rather than a full content dump:
+//   - tiny files (<= SMALL_FILE_THRESHOLD chars) are included verbatim,
+//   - larger files show a header (size, line count) plus a short preview
+//     and an instruction telling the model to use read_file with
+//     startLine/endLine or chunkIndex to pull in the rest on demand.
+//
+// koda.md is deliberately excluded — /init writes it as a structured
+// summary, and re-injecting its content every turn is what was pushing
+// small-context models over the edge.
 function buildWorkingFilesContext() {
     if (workingFiles.size === 0) {
         return '';
@@ -1694,16 +1704,33 @@ function buildWorkingFilesContext() {
         filesToInclude = filesToInclude.filter(([filePath]) => focusFiles.has(filePath));
     }
 
+    // Skip koda.md — it's a summary the model can read_file on demand.
+    filesToInclude = filesToInclude.filter(([filePath]) => path.basename(filePath) !== 'koda.md');
+
     if (filesToInclude.length === 0) {
         return '';
     }
 
-    let context = '\n[Working Files Context]\n';
+    const SMALL_FILE_THRESHOLD = 1500; // chars — fully inline below this
+    const PEEK_LINES = 20;             // preview line count for larger files
+
+    let context = '\n[Working Files — peek only; use read_file to see more]\n';
     for (const [filePath, info] of filesToInclude) {
         const relativePath = filePath.replace(userWorkingDirectory, '.');
-        context += `\n--- ${relativePath} ---\n`;
-        context += info.content;
-        context += '\n';
+        const content = info.content || '';
+        const lines = content.split('\n');
+        const lineCount = lines.length;
+
+        if (content.length <= SMALL_FILE_THRESHOLD) {
+            context += `\n--- ${relativePath} (${content.length} chars, ${lineCount} lines) ---\n`;
+            context += content;
+            context += '\n';
+        } else {
+            const preview = lines.slice(0, PEEK_LINES).join('\n');
+            context += `\n--- ${relativePath} (${content.length} chars, ${lineCount} lines — preview of first ${PEEK_LINES}) ---\n`;
+            context += preview;
+            context += `\n... (${lineCount - PEEK_LINES} more lines — call read_file with startLine/endLine or chunkIndex to see them, and search_replace_file to edit targeted sections without rewriting the whole file)\n`;
+        }
     }
     context += '[End Working Files]\n\n';
 
@@ -3153,8 +3180,11 @@ const INTENT_KEYWORDS = {
 
 // Detect which skill categories are relevant based on user message
 function detectIntentCategories(userMessage, websearchEnabled) {
-    // Core categories always available
-    const coreCategories = ['FILE_OPS', 'PROCESS', 'SYSTEM', 'GIT', 'ENV'];
+    // FILE_OPS is the only always-on category — file CRUD is the most common
+    // Koda workflow and small models get confused if it ever disappears.
+    // Everything else (PROCESS/SYSTEM/GIT/ENV/WEB/…) ships only when the
+    // message actually asks for it, keeping the skill catalog lean.
+    const coreCategories = ['FILE_OPS'];
 
     if (!userMessage) {
         return websearchEnabled ? [...coreCategories, 'WEB'] : coreCategories;
@@ -3439,15 +3469,27 @@ IMPORTANT FILE PLACEMENT RULES:
     // Display order
     const categoryOrder = ['FILE_OPS', 'WEB', 'NETWORK', 'PROCESS', 'SYSTEM', 'GIT', 'ENV', 'PDF', 'ARCHIVE', 'DATA', 'CODE', 'SHELL', 'IMAGE', 'MEDIA', 'DATABASE', 'EMAIL', 'CLIPBOARD', 'UTILITY', 'WINDOWS', 'OTHER'];
 
-    // Show ALL skills organized by category
+    // Only emit categories the message actually needs. Shipping all 20
+    // categories every turn was blowing past small context windows (~65
+    // skills × ~80 chars each = ~5 KB of catalog alone). The unused
+    // category names are listed at the bottom so the model knows they
+    // exist and can ask the user to re-phrase if a different tool is
+    // needed; `OTHER` is always included because it catches user-added
+    // skills that don't match any built-in category.
+    const emittedCategories = new Set([...relevantCategories, 'OTHER']);
+    const skippedCategories = [];
+
     for (const category of categoryOrder) {
         const skills = skillsByCategory[category];
         if (!skills || skills.length === 0) continue;
 
-        const isExpanded = relevantCategories.includes(category);
-        const categoryName = categoryNames[category] || category;
+        if (!emittedCategories.has(category)) {
+            skippedCategories.push(categoryNames[category] || category);
+            continue;
+        }
 
-        prompt += `\n${categoryName}${isExpanded ? ' [ACTIVE]' : ''}:\n`;
+        const categoryName = categoryNames[category] || category;
+        prompt += `\n${categoryName}:\n`;
 
         for (const skill of skills) {
             const params = skill.parameters || {};
@@ -3455,15 +3497,24 @@ IMPORTANT FILE PLACEMENT RULES:
                 .map(([name, type]) => `${name}`)
                 .join(', ');
 
-            if (isExpanded && skill.systemPrompt) {
-                // Expanded: show full details for relevant categories
+            // Expanded usage only for the first (most-relevant) category
+            // and only for skills whose behavior isn't obvious from the
+            // name (read_file/update_file/etc. are self-explanatory; search_
+            // replace_file / head_file / diff_files benefit from the hint).
+            // Usage excerpt capped at 120 chars to keep the prompt lean.
+            const isTopCategory = relevantCategories[0] === category;
+            const obviousNames = new Set(['create_file', 'read_file', 'update_file', 'delete_file', 'delete_directory', 'list_directory', 'create_directory', 'move_file', 'copy_file', 'append_to_file']);
+            if (isTopCategory && skill.systemPrompt && !obviousNames.has(skill.name)) {
                 prompt += `  • ${skill.name}(${paramList}) - ${skill.description || ''}\n`;
-                prompt += `    Usage: ${skill.systemPrompt.substring(0, 200)}${skill.systemPrompt.length > 200 ? '...' : ''}\n`;
+                prompt += `    Usage: ${skill.systemPrompt.substring(0, 120)}${skill.systemPrompt.length > 120 ? '…' : ''}\n`;
             } else {
-                // Compact: just name, params, description
                 prompt += `  • ${skill.name}(${paramList}) - ${skill.description || ''}\n`;
             }
         }
+    }
+
+    if (skippedCategories.length > 0) {
+        prompt += `\nOther categories available on request: ${skippedCategories.join(', ')}.\n`;
     }
 
     // Dynamic examples based on detected categories
@@ -3597,8 +3648,16 @@ To analyze a file, first read_file then pass its content to analyze_code.
         }
     }
 
-    // Build dynamic available skills list
-    const availableSkillsList = allSkillNames.join(', ');
+    // Build dynamic available skills list — only the skills we actually
+    // emitted above. Dumping all 65 skill names here every turn was
+    // reintroducing most of the catalog size we'd just saved by filtering
+    // categories. The model only needs to see the names it can use *now*.
+    const emittedSkillNames = [];
+    for (const category of Object.keys(skillsByCategory)) {
+        if (!emittedCategories.has(category)) continue;
+        for (const s of skillsByCategory[category]) emittedSkillNames.push(s.name);
+    }
+    const availableSkillsList = emittedSkillNames.join(', ');
 
     prompt += `
 === CRITICAL EXECUTION RULES ===
@@ -3637,7 +3696,7 @@ RIGHT: [SKILL:create_file(filePath="${userWorkingDirectory}/test.txt", content="
     }
 
     prompt += `
-Use skills naturally based on user requests. The catalog shows all ${enabledSkills.length} available skills organized by category.
+Use skills naturally based on user requests. The catalog above shows the skills relevant to this turn; ${enabledSkills.length} total are available across all categories.
 `;
 
     return prompt;
@@ -6967,13 +7026,17 @@ async function handleInit(api) {
     let kodaContent = `# ${projectName}\n\n`;
     kodaContent += `Project analyzed on ${new Date().toISOString()}\n\n`;
 
-    // Add key files content
+    // Key files list (no content dump — the model can read_file on demand).
+    // Dumping 5 KB of every key file blew past small-context models and got
+    // re-injected every turn via the working-set. Keep koda.md as a
+    // structured summary only.
     if (projectInfo.keyFiles.length > 0) {
         kodaContent += `## Key Files\n\n`;
         for (const file of projectInfo.keyFiles) {
-            kodaContent += `### ${file.name}\n\n`;
-            kodaContent += `\`\`\`\n${file.content}\n\`\`\`\n\n`;
+            const lineCount = (file.content.match(/\n/g) || []).length + 1;
+            kodaContent += `- \`${file.name}\` (${file.content.length} chars, ${lineCount} lines)\n`;
         }
+        kodaContent += `\n`;
     }
 
     // Add file structure
@@ -7052,12 +7115,24 @@ async function handleInit(api) {
     fsSync.writeFileSync(kodaPath, kodaContent);
     addToWorkingSet(kodaPath, kodaContent);
 
+    // Also seed the actual source files. Working-files context emits a
+    // peek manifest (first 20 lines + line count), so this is cheap and
+    // lets the model act on "the snake game" without inventing a new one.
+    // Keep headroom in MAX_WORKING_FILES for files the user /add-files later.
+    const SEED_LIMIT = 10;
+    let seeded = 0;
+    for (const f of projectInfo.keyFiles) {
+        if (seeded >= SEED_LIMIT) break;
+        if (f.path === kodaPath) continue;
+        if (addToWorkingSet(f.path)) seeded++;
+    }
+
     logSuccess(`Project understanding saved to koda.md`);
     logDim(`File: ${kodaPath}\n`);
 
     // Persist a marker in chat history so the context remains visible
     // after the next displayChatHistory() redraw.
-    addToHistory('system', `/init complete — wrote koda.md (${files.length} files, ${directories.length} dirs) and added it to the working set`);
+    addToHistory('system', `/init complete — wrote koda.md (${files.length} files, ${directories.length} dirs), seeded ${seeded} source file${seeded === 1 ? '' : 's'} into the working set`);
 }
 
 async function handleHelp() {
@@ -7954,10 +8029,29 @@ async function handleChat(api, message) {
     // the file it just created.
     const pronounRefersToFile = workingFiles.size > 0 &&
         /\b(it|this|that|them|those|these)\b/i.test(message);
+    // If the user's message names a file (or filename stem) that's already
+    // in the working set, or expresses any "modify / change / add to"
+    // intent while files are loaded, route through the full catalog.
+    // Without this, "Make the snake game bigger" hits the lean prompt,
+    // the model ignores the peeked snake.html and writes fresh pygame
+    // from scratch — exactly the bug the working-set was supposed to prevent.
+    const msgLower = message.toLowerCase();
+    const mentionsWorkingFile = workingFiles.size > 0 &&
+        Array.from(workingFiles.keys()).some(fp => {
+            const base = path.basename(fp).toLowerCase();
+            if (base === 'koda.md') return false;
+            const stem = base.replace(/\.[^.]+$/, '');
+            return (base && msgLower.includes(base)) ||
+                   (stem && stem.length >= 3 && new RegExp(`\\b${stem.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`).test(msgLower));
+        });
+    const modifyIntent = workingFiles.size > 0 &&
+        /\b(make|add|change|update|modify|fix|adjust|tweak|edit|refactor|rename|rewrite|enlarge|shrink|resize|convert|remove|delete|insert|replace|improve|optimize|extend|support|enable|disable|set|turn)\b/i.test(message);
     const useFullSkillCatalog =
         queryType === 'skill' ||
         websearchMode ||
-        pronounRefersToFile;
+        pronounRefersToFile ||
+        mentionsWorkingFile ||
+        modifyIntent;
 
     let systemPrefix = '';
     if (useFullSkillCatalog) {
