@@ -1543,69 +1543,58 @@ function displayDiff(oldContent, newContent, filePath, options = {}) {
     log('');
 }
 
-// Prompt user for confirmation
-// Uses raw stdin to avoid conflicts with main readline interface
+// Prompt user for confirmation. Enter / empty line accepts (Y is the
+// default) — this matches the common CLI convention and avoids the
+// accidental-cancellation footgun. The main readline (if any) is paused
+// so stdin isn't double-consumed while we're waiting on y/n/s.
 function promptConfirmation(message, timeoutMs = 30000) {
     // Non-interactive / single-shot / CI mode auto-accepts.
-    // Activated when KODA_YES=1 is set, when the harness flipped the
-    // __kodaAutoConfirm global (set by runSingleShot), or when stdin is
-    // not a TTY (piped). Without this, single-shot queries that legitimately
-    // need to create or delete a file hang forever waiting on a (y/n)
-    // prompt that no human will ever answer.
     const autoYes = process.env.KODA_YES === '1' ||
         global.__kodaAutoConfirm === true ||
         (!process.stdin.isTTY && process.env.KODA_YES !== '0');
     if (autoYes) {
-        process.stdout.write(colorize(`${message} (y/n/s=skip): `, 'yellow') + colorize('y [auto]\n', 'dim'));
+        process.stdout.write(colorize(`${message} [Y/n/s]: `, 'yellow') + colorize('Y [auto]\n', 'dim'));
         return Promise.resolve('yes');
     }
 
     return new Promise((resolve) => {
-        // Save terminal state
-        const wasRaw = process.stdin.isRaw;
-        if (process.stdin.setRawMode) {
-            process.stdin.setRawMode(false);
-        }
+        const mainRl = global.__kodaMainRl;
+        if (mainRl && typeof mainRl.pause === 'function') mainRl.pause();
 
-        // Write prompt
-        process.stdout.write(colorize(`${message} (y/n/s=skip): `, 'yellow'));
+        const wasRaw = process.stdin.isRaw;
+        if (process.stdin.setRawMode) process.stdin.setRawMode(false);
+
+        // Y is highlighted as the default; n / s are available options.
+        process.stdout.write(
+            colorize(`${message} `, 'yellow') +
+            colorize('[', 'dim') +
+            colorize('Y', 'green') +
+            colorize('/n/s=skip] ', 'dim')
+        );
 
         let timeoutId = null;
-
-        // Listen for a single line of input
-        const onData = (data) => {
-            const answer = data.toString().trim().toLowerCase();
-
-            // Remove listener and clear timeout
+        const cleanup = () => {
             process.stdin.removeListener('data', onData);
             if (timeoutId) clearTimeout(timeoutId);
-
-            // Restore terminal state
-            if (process.stdin.setRawMode && wasRaw) {
-                process.stdin.setRawMode(true);
-            }
-
-            // Resolve based on answer
-            if (answer === 'y' || answer === 'yes') {
-                resolve('yes');
-            } else if (answer === 's' || answer === 'skip') {
-                resolve('skip');
-            } else {
-                resolve('no');
-            }
+            if (process.stdin.setRawMode && wasRaw) process.stdin.setRawMode(true);
+            if (mainRl && typeof mainRl.resume === 'function') mainRl.resume();
         };
 
-        // Timeout - auto-cancel if no response
+        const onData = (data) => {
+            const answer = data.toString().trim().toLowerCase();
+            cleanup();
+            // Default (empty / Enter) = yes. Explicit 'n' or 'no' = no. 's' = skip.
+            if (answer === '' || answer === 'y' || answer === 'yes') resolve('yes');
+            else if (answer === 's' || answer === 'skip') resolve('skip');
+            else resolve('no');
+        };
+
         timeoutId = setTimeout(() => {
-            process.stdin.removeListener('data', onData);
-            if (process.stdin.setRawMode && wasRaw) {
-                process.stdin.setRawMode(true);
-            }
-            process.stdout.write(colorize('\n(timed out - cancelled)\n', 'dim'));
-            resolve('no');
+            cleanup();
+            process.stdout.write(colorize('\n(timed out - accepting default: yes)\n', 'dim'));
+            resolve('yes');
         }, timeoutMs);
 
-        // Attach listener
         process.stdin.once('data', onData);
     });
 }
@@ -1643,6 +1632,29 @@ function addToWorkingSet(filePath, content = null) {
     });
 
     return true;
+}
+
+// Scan the current working directory for well-known project context files
+// (koda.md, AGENTS.md, CLAUDE.md, README.md) and load them into the working
+// set so every query automatically carries that context. This is the
+// difference between koda saying "I don't have access to your project" and
+// actually knowing what the project is on turn one.
+function autoLoadProjectContext() {
+    const candidates = ['koda.md', 'AGENTS.md', 'CLAUDE.md', 'README.md', 'README'];
+    const loaded = [];
+    for (const name of candidates) {
+        const full = path.join(userWorkingDirectory, name);
+        try {
+            if (!fsSync.existsSync(full)) continue;
+            const stat = fsSync.statSync(full);
+            if (!stat.isFile()) continue;
+            // Skip absurdly large context files — the working set should stay
+            // cheap, and anything >200 KB probably isn't hand-written guidance.
+            if (stat.size > 200 * 1024) continue;
+            if (addToWorkingSet(full)) loaded.push(name);
+        } catch { /* unreadable — ignore */ }
+    }
+    return loaded;
 }
 
 // Remove file from working set
@@ -1770,59 +1782,56 @@ function displayChatHistory() {
         log('');
     } else {
         let lastWasSystem = false;
+        let prevRole = null;
         for (const msg of chatHistory) {
+            // Dim separator between turns so each exchange reads as its own block
+            if (prevRole && (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'assistant-streaming')
+                && prevRole !== msg.role) {
+                log('');
+            }
+
             if (msg.role === 'user') {
-                // Add blank line when transitioning from system messages to user message
-                if (lastWasSystem) {
-                    log('');
-                    lastWasSystem = false;
-                }
-                // User messages with modern styling
+                if (lastWasSystem) { log(''); lastWasSystem = false; }
                 const lines = msg.content.split('\n');
+                const labelPlain = '▶ You ';
+                const label = colorize('▶', 'green') + ' ' + colorize('You', 'bright') + ' ';
                 if (lines.length > 1) {
-                    // Multi-line message - show in a contained format
-                    log(colorize('▶ You:', 'green'));
-                    const boxWidth = Math.min(getTerminalWidth() - 4, 100);
-                    log(colorize('╭' + '─'.repeat(boxWidth - 2) + '╮', 'dim'));
+                    // Multi-line message: render as a quote-bar block so the
+                    // bounds are obvious without the heavy box-drawing.
+                    log(label);
                     for (const line of lines) {
-                        // Wrap long lines
-                        if (line.length > boxWidth - 4) {
-                            const chunks = line.match(new RegExp(`.{1,${boxWidth - 4}}`, 'g')) || [line];
-                            for (const chunk of chunks) {
-                                log(colorize('│ ', 'dim') + chunk.padEnd(boxWidth - 4) + colorize(' │', 'dim'));
-                            }
-                        } else {
-                            log(colorize('│ ', 'dim') + line.padEnd(boxWidth - 4) + colorize(' │', 'dim'));
-                        }
+                        log('  ' + colorize('│', 'green') + ' ' + line);
                     }
-                    log(colorize('╰' + '─'.repeat(boxWidth - 2) + '╯', 'dim'));
                 } else {
-                    // Single line message - cleaner inline format
-                    log(colorize('▶ You: ', 'green') + msg.content);
+                    log(label + msg.content);
                 }
             } else if (msg.role === 'assistant' || msg.role === 'assistant-streaming') {
-                // Add blank line when transitioning from system messages to assistant message
-                if (lastWasSystem) {
-                    log('');
-                    lastWasSystem = false;
-                }
-                // Clean any skill syntax before displaying
+                if (lastWasSystem) { log(''); lastWasSystem = false; }
                 const cleanedContent = cleanSkillSyntax(msg.content);
                 if (cleanedContent) {
+                    const label = colorize('◆', 'cyan') + ' ' + colorize('Koda', 'bright') + ' ';
                     if (msg.role === 'assistant') {
-                        // Final message — render markdown properly: headers,
-                        // lists, inline styling, fenced code blocks, and
-                        // paragraph wrapping to terminal width. This is what
-                        // the user actually reads.
-                        log(colorize('◆ Koda:', 'cyan'));
-                        const rendered = renderMarkdown(cleanedContent);
-                        if (rendered) log(rendered);
+                        // Final message — run the markdown renderer with no
+                        // indent so it sits flush left, then inline the label
+                        // with the first line for a compact "Koda: answer"
+                        // look. Multi-line responses still wrap cleanly.
+                        const rendered = renderMarkdown(cleanedContent, { indent: '' });
+                        if (rendered) {
+                            const firstNl = rendered.indexOf('\n');
+                            if (firstNl === -1) {
+                                log(label + rendered);
+                            } else {
+                                log(label + rendered.slice(0, firstNl));
+                                log(rendered.slice(firstNl + 1));
+                            }
+                        } else {
+                            log(label);
+                        }
                     } else {
-                        // Streaming in progress — keep the legacy minimal
-                        // formatting so tokens don't cause visual reflow.
-                        // The final redraw will run the full markdown pass.
+                        // Streaming fallback (rare — usually streamed directly
+                        // via stdout.write during generation). Keep minimal.
                         const formattedContent = formatCodeBlocks(cleanedContent);
-                        log(colorize('◆ Koda: ', 'cyan') + formattedContent);
+                        log(label + formattedContent);
                     }
                 }
             } else if (msg.role === 'tool') {
@@ -1836,6 +1845,7 @@ function displayChatHistory() {
                 log(colorize('  [i] ', 'dim') + colorize(msg.content, 'dim'));
                 lastWasSystem = true;
             }
+            prevRole = msg.role;
         }
         log('');
     }
@@ -2155,7 +2165,10 @@ function updateStreamingMessage(message) {
     // On first message, write the prefix and content
     if (lastRawCleanedContent === '') {
         const formattedContent = formatCodeBlocks(cleanedMessage);
-        process.stdout.write(colorize('◆ Koda: ', 'cyan'));
+        process.stdout.write(
+            colorize('◆', 'cyan') + ' ' +
+            colorize('Koda', 'bright') + ' '
+        );
         process.stdout.write(formattedContent);
         lastStreamedMessage = message;
         lastRawCleanedContent = cleanedMessage;
@@ -3156,16 +3169,29 @@ function getSkillsInCategory(category) {
 // short, focused system prompt.
 // ============================================================================
 
-// Keywords that signal a request that actually needs a skill call. Kept
-// deliberately tight: "file", "folder", "directory", git verbs, network
-// verbs, shell/process, archive. We avoid noisy matches like "read" alone
-// because "read the docs" is conversational.
+// Keywords that signal a request that actually needs a skill call. Broader
+// than the original "create/list/delete" set — it also catches natural
+// project-state questions ("how many files in this project?"), file-refs
+// with extensions ("edit README.md"), and review verbs ("check for bugs")
+// which otherwise fell through to the lean prompt with no tool access.
 const SKILL_TRIGGER_REGEX = new RegExp([
-    // File / directory operations
-    '\\b(create|make|write|save|export|delete|remove|rm|erase|list|move|rename|copy|append|tail|head)\\b.*\\b(file|folder|directory|dir|path|pdf|txt|json|yaml|yml|csv|md|zip|tar|archive)\\b',
+    // File / directory operations (broad verb set)
+    '\\b(create|make|write|save|export|delete|remove|rm|erase|list|move|rename|copy|append|tail|head|edit|update|modify|change|fix|refactor|replace|rewrite|insert|add|open|read|view|show|display|cat|print|check|inspect|review|scan|analyze|audit)\\b.*\\b(file|folder|directory|dir|path|pdf|txt|json|yaml|yml|csv|md|zip|tar|archive|readme|changelog|license|contributing|makefile|dockerfile|gitignore)\\b',
     '\\b(file|folder|directory|dir)\\b.*\\b(named|called)\\b',
     '\\b(ls|list)\\b.*(dir|directory|folder|files)',
     '\\blist\\s+(the\\s+)?(files|contents|directory|dir)\\b',
+    // Explicit filename with extension anywhere in the query
+    '\\b[\\w\\-\\.]+\\.(py|js|ts|jsx|tsx|mjs|cjs|md|txt|json|yaml|yml|toml|ini|env|csv|html|htm|css|scss|sh|bash|zsh|ps1|bat|cmd|conf|cfg|xml|log|sql|go|rs|rb|php|java|kt|swift|c|h|cpp|hpp|cs|dockerfile|makefile|gitignore)\\b',
+    // Project-state questions ("how many files?", "what\'s in this project?")
+    '\\bhow\\s+many\\b.*\\b(files?|folders?|directories|dirs?|lines?|tests?|functions?|classes?|modules?)\\b',
+    '\\bwhat(\'?s| is)\\b.*\\bin\\s+(this|the|my|current)\\b.*\\b(project|folder|dir|directory|repo|repository|codebase)\\b',
+    '\\b(project|folder|directory|codebase|repo)\\s+(structure|layout|tree|contents|files|overview)\\b',
+    '\\b(show|list|display|dump)\\b.*\\b(project|directory|folder|files|structure|tree|contents)\\b',
+    '\\bwhere\\s+(is|are)\\b.*\\b(files?|folders?|dirs?)\\b',
+    // Review / diagnose verbs applied to code or project
+    '\\b(check|scan|review|analyze|inspect|audit|lint)\\b.*\\b(code|project|codebase|repo|repository|file|files|folder|app|script)\\b',
+    '\\b(check|find|scan|look)\\b.*\\b(for\\s+)?(bugs?|issues?|errors?|security|vulnerabilit|problems?|typos?|dead code|todos?)\\b',
+    '\\b(any|possible)\\s+(improvements?|fixes|bugs?|issues?|suggestions?)\\b',
     // Git
     '\\bgit\\b',
     '\\b(commit|branch|staged|unstaged|repo|repository)\\b',
@@ -6790,12 +6816,18 @@ async function handleInit(api) {
         }
     }
 
-    // Write koda.md
+    // Write koda.md and seed the working set so this turn's analysis
+    // is available to every follow-up query without needing /add-file.
     const kodaPath = path.join(cwd, 'koda.md');
     fsSync.writeFileSync(kodaPath, kodaContent);
+    addToWorkingSet(kodaPath, kodaContent);
 
     logSuccess(`Project understanding saved to koda.md`);
     logDim(`File: ${kodaPath}\n`);
+
+    // Persist a marker in chat history so the context remains visible
+    // after the next displayChatHistory() redraw.
+    addToHistory('system', `/init complete — wrote koda.md (${files.length} files, ${directories.length} dirs) and added it to the working set`);
 }
 
 async function handleHelp() {
@@ -7685,9 +7717,17 @@ async function handleChat(api, message) {
     // the prompt length by 90%+ for casual queries and eliminates the model
     // confusion bugs (the infamous "20 words" hallucination).
     const queryType = classifyQuery(message, websearchMode);
+    // If the user has files in the working set OR has a pronoun that likely
+    // refers to one ("edit it", "fix this", "add X to that"), use the full
+    // skill catalog so the model can actually act on them. Otherwise the
+    // follow-up gets the lean prompt and the model insists it can't touch
+    // the file it just created.
+    const pronounRefersToFile = workingFiles.size > 0 &&
+        /\b(it|this|that|them|those|these)\b/i.test(message);
     const useFullSkillCatalog =
         queryType === 'skill' ||
-        websearchMode;              // web results need to be sourced + cited
+        websearchMode ||
+        pronounRefersToFile;
 
     let systemPrefix = '';
     if (useFullSkillCatalog) {
@@ -8265,6 +8305,12 @@ async function startShell() {
         if (apiKeyUsage.name) {
             addToHistory('system', `API Key: ${apiKeyUsage.name}`);
         }
+        // Seed the working set with project-level context files so the
+        // first query already knows what the project is.
+        const loaded = autoLoadProjectContext();
+        if (loaded.length > 0) {
+            addToHistory('system', `Loaded project context: ${loaded.join(', ')}`);
+        }
         addToHistory('system', 'Type a message to chat or /help for commands.');
     }
 
@@ -8309,6 +8355,10 @@ async function startShell() {
         prompt: colorize('> ', 'cyan'),
         completer: completer
     });
+    // Expose the main readline instance so promptConfirmation can pause
+    // it while waiting on y/n/s input — otherwise both the readline and
+    // our stdin listener race to consume the same keystrokes.
+    global.__kodaMainRl = rl;
 
     // Live suggestion state
     let currentSuggestion = '';
