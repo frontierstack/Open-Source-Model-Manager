@@ -87,7 +87,11 @@ export default React.memo(function ChatMessage({
                 </div>
             )}
 
-            {/* Message bubble */}
+            {/* Message bubble — skip entirely for a user message with no
+                text (happens after paste-as-file converts the pasted text
+                to an attachment; the attachment chip renders above, so an
+                empty bubble here just shows as a blank green bar). */}
+            {isUser && !displayContent ? null : (
             <div
                 className={`group relative min-w-[60px] ${
                     isUser
@@ -283,6 +287,7 @@ export default React.memo(function ChatMessage({
                     </div>
                 )}
             </div>
+            )}
 
             {/* Timestamp and stats */}
             <div className="flex items-center gap-2 mt-0.5 px-1">
