@@ -3075,40 +3075,59 @@ function detectMalformedSkillCalls(response) {
     const parsedCalls = parseSkillCalls(response);
     const parsedMatches = parsedCalls.map(sc => sc.fullMatch);
 
+    const noteIssue = (skillName, startIndex, hasCloser) => {
+        const contextEnd = Math.min(startIndex + 100, response.length);
+        const context = response.substring(startIndex, contextEnd);
+        if (!hasCloser) {
+            issues.push({
+                type: 'incomplete_bracket',
+                skillName,
+                context: context.substring(0, 50) + '...'
+            });
+        } else {
+            issues.push({
+                type: 'malformed_params',
+                skillName,
+                context: context.substring(0, 50) + '...'
+            });
+        }
+    };
+
     // Find all [SKILL: starts in the response
     const skillStartPattern = /\[SKILL:(\w+)\(/g;
     let match;
     while ((match = skillStartPattern.exec(response)) !== null) {
         const skillName = match[1];
         const startIndex = match.index;
-
-        // Check if this skill start was successfully parsed
         const wasParsed = parsedMatches.some(fullMatch => {
             const matchIndex = response.indexOf(fullMatch);
             return matchIndex === startIndex;
         });
-
         if (!wasParsed) {
-            // This skill call wasn't successfully parsed - it's likely incomplete
-            // Extract some context for the error message
-            const contextEnd = Math.min(startIndex + 100, response.length);
-            const context = response.substring(startIndex, contextEnd);
+            const hasCloser = response.substring(startIndex).includes(')]');
+            noteIssue(skillName, startIndex, hasCloser);
+        }
+    }
 
-            // Check if it looks like it might just be missing the closing bracket
-            if (!response.substring(startIndex).includes(')]')) {
-                issues.push({
-                    type: 'incomplete_bracket',
-                    skillName: skillName,
-                    context: context.substring(0, 50) + '...'
-                });
-            } else {
-                // It has )] somewhere but still didn't parse - likely malformed params
-                issues.push({
-                    type: 'malformed_params',
-                    skillName: skillName,
-                    context: context.substring(0, 50) + '...'
-                });
-            }
+    // Also detect bare `call:name(...)` that failed to parse (Gemma-style
+    // calls whose argument got truncated mid-string). Without this the
+    // [SKILL SYNTAX ERROR] feedback never fires for the most common
+    // failure mode on small models.
+    const bareStartPattern = /(^|\n)[ \t]*call:(\w+)\s*\(/g;
+    while ((match = bareStartPattern.exec(response)) !== null) {
+        const skillName = match[2];
+        const startIndex = match.index + (match[1] ? match[1].length : 0);
+        const wasParsed = parsedMatches.some(fullMatch => {
+            const matchIndex = response.indexOf(fullMatch);
+            return matchIndex >= startIndex - 2 && matchIndex <= startIndex + 2;
+        });
+        if (!wasParsed) {
+            // Does the rest of the string contain a plausible closing `)`
+            // at the same nesting depth? Cheap heuristic: look for `\n)` or
+            // `")` anywhere after the start.
+            const tail = response.substring(startIndex);
+            const hasCloser = /\)\s*($|\n)/.test(tail);
+            noteIssue(skillName, startIndex, hasCloser);
         }
     }
 
@@ -8291,6 +8310,12 @@ YOU MUST NOT:
     let intentWithoutActionRetries = 0;
     const MAX_INTENT_RETRIES = 3;
 
+    // Cap for the [SKILL SYNTAX ERROR] retry loop. Without a cap the
+    // model can burn all 10 iterations emitting malformed calls back to
+    // back — common with small models whose output gets truncated mid-arg.
+    let syntaxErrorRetries = 0;
+    const MAX_SYNTAX_RETRIES = 2;
+
     // Loop-detection: if the model re-emits the same skill call (or same
     // truncated response) across iterations, we're wedged in a retry spiral
     // — typically the model can't produce a working search_replace_file
@@ -8451,6 +8476,16 @@ YOU MUST NOT:
             const malformedCalls = detectMalformedSkillCalls(response);
 
             if (malformedCalls.length > 0) {
+                // Cap the retry loop — without this a small model that
+                // keeps producing truncated calls will burn every
+                // iteration re-failing the same way.
+                if (syntaxErrorRetries >= MAX_SYNTAX_RETRIES) {
+                    addToHistory('system', `Skill syntax errors persisted after ${MAX_SYNTAX_RETRIES} retries — stopping. The model's output is likely getting truncated mid-argument. Try breaking the change into smaller edits, or raise the model's max_tokens.`);
+                    displayChatHistory();
+                    break;
+                }
+                syntaxErrorRetries++;
+
                 // AI tried to use skills but syntax was wrong
                 // Clean the display and provide feedback
                 const cleanedResponse = cleanSkillSyntax(response);
@@ -8477,10 +8512,10 @@ YOU MUST NOT:
                         errorFeedback += `- Parameters must use key="value" format\n`;
                     }
                 }
-                errorFeedback += '\nPlease retry with correct syntax. Make sure to close all brackets and quotes.\n';
+                errorFeedback += '\nPlease retry with correct syntax. Make sure to close all brackets and quotes. If your edit is large, split it into multiple smaller search_replace_file calls rather than one update_file that rewrites the whole file.\n';
 
                 // Show error to user
-                addToHistory('system', 'Skill syntax error detected - asking AI to retry...');
+                addToHistory('system', `Skill syntax error detected - asking AI to retry (${syntaxErrorRetries}/${MAX_SYNTAX_RETRIES})...`);
                 displayChatHistory();
 
                 // Continue the conversation with error feedback
