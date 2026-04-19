@@ -3236,6 +3236,20 @@ const SKILL_TRIGGER_REGEX = new RegExp([
     '\\b(file|folder|directory|dir)\\b.*\\b(named|called)\\b',
     '\\b(ls|list)\\b.*(dir|directory|folder|files)',
     '\\blist\\s+(the\\s+)?(files|contents|directory|dir)\\b',
+    // Shell-flavored commands at the start — "ls X", "list X", "cat X".
+    // These verbs are rarely conversational, so any target is fine.
+    '^\\s*(ls|list|cat|tail|head|dump)\\s+\\S+',
+    // English verbs that are also conversational ("read the docs" means
+    // consult documentation, not load a file). Only match when the target
+    // looks file-shaped: contains ./_ or is a known project filename.
+    // Note: [A-Z]{3,} is unusable here because the /i flag makes it match
+    // lowercase too, so "read the docs" slipped through.
+    '^\\s*(show|display|print|open|read|edit)\\s+(?:the\\s+)?(?=\\S*[./_]|(?:README|LICENSE|CHANGELOG|CONTRIBUTING|MAKEFILE|DOCKERFILE|TODO|NOTES|AUTHORS|INSTALL)\\b)[\\w\\-./]+',
+    // "what\'s inside X", "what\'s in X", "contents of X"
+    '\\b(what\'?s|what is|what are|whats)\\s+(the\\s+)?(files?|contents?|stuff|things?|items?|file|directory|dir|folder)?\\s*(in|inside|under|within|on)\\s+\\S+',
+    '\\bcontents?\\s+of\\s+\\S+',
+    '\\b(inside|under|within)\\s+(of\\s+)?(the\\s+)?[\\w\\-./]+',
+    '\\b(what\'?s|whats)\\s+(in|inside)\\s+here\\b',
     // Explicit filename with extension anywhere in the query
     '\\b[\\w\\-\\.]+\\.(py|js|ts|jsx|tsx|mjs|cjs|md|txt|json|yaml|yml|toml|ini|env|csv|html|htm|css|scss|sh|bash|zsh|ps1|bat|cmd|conf|cfg|xml|log|sql|go|rs|rb|php|java|kt|swift|c|h|cpp|hpp|cs|dockerfile|makefile|gitignore)\\b',
     // Project-state questions ("how many files?", "what\'s in this project?")
