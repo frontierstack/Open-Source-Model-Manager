@@ -8490,6 +8490,36 @@ YOU MUST NOT:
                 continue;
             }
 
+            // FUTURE-INTENT WITHOUT ACTION: the model acknowledges what it
+            // needs to do but never calls the skill ("I'll now examine the
+            // file", "I will proceed to rewrite the script", "Let me fix
+            // that"). Without this check the loop exits and the user has to
+            // manually prompt "ok, do it" for every step of a multi-step
+            // task. Retry up to 2 times so the model chains skill calls
+            // within a single turn instead of between turns.
+            const userRequestedAction = /\b(fix|debug|rewrite|refactor|modify|update|change|tweak|adjust|improve|implement|build|add|remove|insert|rename|enable|disable|make.*(bigger|larger|smaller|better|playable|work)|go\s+through)\b/i.test(originalMessage);
+            const announcesFutureIntent = /\b(i('ll| will| am going to|'m going to)|let me|next,?\s*i('ll| will)|i can|i should|i need to|i'm about to|i'll now|i will now|now\s+i('ll| will))\s+(now\s+)?(examine|analyze|look|read|review|check|inspect|investigate|proceed|start|begin|go\s+through|rewrite|edit|modify|update|fix|add|implement|change|replace|write|create|generate|build|make)\b/i.test(response);
+            const announcesPlannedNextStep = /\b(next(\s+step)?|then|after that|once i|after (i|that)|going to|plan(ning)?\s+to|moving on|i'll move)\b[\s\S]{0,40}\b(rewrite|edit|modify|update|fix|implement|change|replace|write|create|add)/i.test(response);
+            const saidWillFix = userRequestedAction && (announcesFutureIntent || announcesPlannedNextStep);
+
+            if (saidWillFix && iteration <= 2) {
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    chatHistory.pop();
+                }
+
+                let correctionFeedback = '\n\n[CONTINUE — DO NOT STOP]\n';
+                correctionFeedback += 'You announced you would take an action but never called a skill. Do not narrate the plan — execute it.\n';
+                correctionFeedback += 'Call the next skill right now (search_replace_file for targeted edits, update_file for full rewrites, read_file with startLine/endLine if you need to re-examine a specific region first).\n';
+                correctionFeedback += 'If the task is multi-step, chain the skill calls in this same response — do not wait to be prompted again.\n';
+
+                addToHistory('system', 'Model announced intent without acting — asking it to continue...');
+                displayChatHistory();
+
+                currentMessages = buildFeedbackMessages(response, correctionFeedback);
+                continue;
+            }
+
             // No skill calls and no malformed attempts - we're done
             // Display final response now that streaming is complete
             displayChatHistory();
