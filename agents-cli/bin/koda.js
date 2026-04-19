@@ -8343,6 +8343,10 @@ YOU MUST NOT:
     // This prevents false completion detection from triggering after delete/move/copy operations complete
     const executedFileOpSkills = new Set();
 
+    // Track every successfully executed skill name this turn so the
+    // continuation/retry feedback can name them and forbid re-running.
+    const executedSkillsThisTurn = new Set();
+
     // Track retries triggered by the "announced intent, no skill call"
     // detector. Capped independently of the overall loop counter so a
     // multi-step task (read → search_replace → search_replace → …) can
@@ -8704,7 +8708,19 @@ YOU MUST NOT:
 
                 let correctionFeedback = '\n\n[CONTINUE — DO NOT STOP]\n';
                 correctionFeedback += 'You identified what needs to change but never called a skill. Do not describe the fix — apply it.\n';
-                correctionFeedback += 'Call the next skill right now (search_replace_file for targeted edits, update_file for full rewrites, read_file with startLine/endLine if you need to re-examine a specific region first).\n';
+
+                // Name the skills already executed this turn so the model
+                // doesn't just repeat list_directory / read_file on every
+                // continuation. For discovery-heavy models this is the
+                // difference between making progress and spinning.
+                const discoverySkills = ['list_directory', 'read_file', 'get_file_metadata', 'search_files', 'head_file', 'tail_file'];
+                const alreadyRanDiscovery = [...executedSkillsThisTurn].filter(s => discoverySkills.includes(s));
+                if (alreadyRanDiscovery.length > 0) {
+                    correctionFeedback += `You already ran ${alreadyRanDiscovery.join(', ')} this turn. DO NOT call those again — you already have the info. `;
+                    correctionFeedback += 'Move directly to the edit: emit one or more search_replace_file calls right now.\n';
+                } else {
+                    correctionFeedback += 'Call the next skill right now (search_replace_file for targeted edits; read_file ONLY if you have not already read the relevant region).\n';
+                }
                 correctionFeedback += 'Do NOT claim "I have applied" or "fixes are in place" unless you actually emit a [SKILL:...] call in this same response.\n';
                 correctionFeedback += 'If the task is multi-step, chain the skill calls in this same response — do not wait to be prompted again.\n';
 
@@ -8769,6 +8785,17 @@ YOU MUST NOT:
         for (const result of skillResults) {
             if (result.success && fileOpSkillNames.includes(result.skill)) {
                 executedFileOpSkills.add(result.skill);
+            }
+        }
+
+        // Track ALL successfully executed skills this turn (not just file
+        // ops) so the continuation feedback can remind the model not to
+        // re-run the same discovery skills. Without this, the model
+        // responds to every "CONTINUE" prompt by calling list_directory
+        // or read_file yet again instead of moving on to the actual edit.
+        for (const result of skillResults) {
+            if (result.success) {
+                executedSkillsThisTurn.add(result.skill);
             }
         }
 
