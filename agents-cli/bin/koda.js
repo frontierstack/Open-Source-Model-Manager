@@ -5717,32 +5717,73 @@ async function executeFileExtraSkill(skillName, params) {
                 }
 
                 if (count === 0) {
-                    // Try to give the model a useful hint: find the closest
-                    // lines in the file that share a distinctive token from
-                    // the failed search. This tells the model "you looked
-                    // for X but the file has Y on line N" instead of a
-                    // generic "no match", which usually lets it fix the
-                    // snippet on the next attempt instead of guessing again.
-                    const firstSearchLine = String(search).split('\n')[0].trim();
-                    const hintTokens = firstSearchLine.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || [];
+                    // Common words we strip from hint tokens — otherwise
+                    // a search containing `let`, `if`, or `<head>` scores
+                    // every line that has those keywords (noisy hints).
+                    const STOP = new Set([
+                        'let','const','var','function','return','else','true','false','null','undefined',
+                        'this','new','class','import','export','from','default','async','await','for','while',
+                        'head','body','div','span','html','style','script','link','meta','title','input','button',
+                        'label','form','canvas','main','nav','section','article','aside','footer','header',
+                    ]);
+                    // Prefer identifiers from the whole search (not just
+                    // the first line) and require length ≥ 4 so generic
+                    // 3-letter words don't dominate.
+                    const rawTokens = String(search).match(/[A-Za-z_][A-Za-z0-9_]{3,}/g) || [];
+                    const hintTokens = [...new Set(rawTokens.filter(t => !STOP.has(t.toLowerCase())))];
                     const hintsByLine = [];
+                    let topContextBlock = '';
                     if (hintTokens.length > 0 && !useRegex) {
                         const fileLines = content.split('\n');
-                        // Score each file line by how many of the search's
-                        // distinctive identifiers appear in it. Return the
-                        // top 3 non-trivial matches.
+                        const minScore = Math.max(1, Math.ceil(hintTokens.length * 0.5));
                         const scored = fileLines.map((line, i) => {
                             let score = 0;
                             for (const tok of hintTokens) {
                                 if (line.includes(tok)) score++;
                             }
                             return { line, lineNum: i + 1, score };
-                        }).filter(r => r.score >= Math.max(1, Math.ceil(hintTokens.length * 0.4)))
+                        }).filter(r => r.score >= minScore)
                           .sort((a, b) => b.score - a.score || a.lineNum - b.lineNum)
                           .slice(0, 3);
                         for (const r of scored) {
                             const trimmed = r.line.trim();
                             hintsByLine.push(`  line ${r.lineNum}: ${trimmed.length > 120 ? trimmed.slice(0, 117) + '…' : trimmed}`);
+                        }
+                        // For the single best match, also include the actual
+                        // surrounding lines exactly as they appear in the
+                        // file — this is what the model needs to build a
+                        // correct search value without a separate read_file.
+                        if (scored.length > 0) {
+                            const top = scored[0];
+                            const start = Math.max(0, top.lineNum - 3);
+                            const end = Math.min(fileLines.length, top.lineNum + 6);
+                            const blockLines = [];
+                            for (let i = start; i < end; i++) {
+                                blockLines.push(`  ${String(i + 1).padStart(4)}: ${fileLines[i]}`);
+                            }
+                            topContextBlock = `\nActual file content around line ${top.lineNum} (copy EXACTLY from here — whitespace matters):\n${blockLines.join('\n')}\n`;
+                        }
+                    }
+
+                    // Fallback: when no strong identifier match exists, the
+                    // model is probably using variable names that don't
+                    // exist in the file at all. Show the file's actual
+                    // top-level function / const / let / var declarations
+                    // so it can see the real identifier names.
+                    let declHint = '';
+                    if (hintsByLine.length === 0) {
+                        const decls = [];
+                        const lines = content.split('\n');
+                        const declRe = /^\s*(?:(?:async\s+)?function\s+|class\s+|const\s+|let\s+|var\s+)([A-Za-z_][A-Za-z0-9_]*)/;
+                        for (let i = 0; i < lines.length; i++) {
+                            const m = lines[i].match(declRe);
+                            if (m) {
+                                decls.push(`  line ${i + 1}: ${lines[i].trim().slice(0, 100)}`);
+                                if (decls.length >= 6) break;
+                            }
+                        }
+                        if (decls.length > 0) {
+                            declHint = `\nIdentifiers/declarations that DO exist in this file:\n${decls.join('\n')}\n`;
                         }
                     }
 
@@ -5750,7 +5791,11 @@ async function executeFileExtraSkill(skillName, params) {
                     let err = `No matches for search="${preview}${String(search).length > 100 ? '…' : ''}" in ${filePath}.\n`;
                     if (hintsByLine.length > 0) {
                         err += `Closest matches in the file (by shared identifiers):\n${hintsByLine.join('\n')}\n`;
-                        err += `Read those line ranges with read_file(filePath, startLine=N, endLine=M) and use the EXACT text shown there (including whitespace and quotes) as your next search value.`;
+                        err += topContextBlock;
+                        err += `Rebuild your search using the EXACT text from the block above (whitespace, quotes, identifiers must match byte-for-byte).`;
+                    } else if (declHint) {
+                        err += `The file does not contain any identifier from your search.${declHint}`;
+                        err += `Read the file with read_file(filePath) and use the ACTUAL names shown above — do not guess.`;
                     } else {
                         err += `The file does not contain that snippet. Re-read the file with read_file(filePath, startLine=1, endLine=<total>) to see the actual contents before trying again — do not guess.`;
                     }
