@@ -578,6 +578,19 @@ function condenseContent(content, query, targetRatio = CHUNKING_CONFIG.condensat
 }
 
 /**
+ * Whether a given model name recognises the `/no_think` control prefix as
+ * a "disable chain-of-thought" directive. Qwen3 and DeepSeek-R1-style
+ * checkpoints do; Gemma / Llama / Mistral / Phi / gpt-oss etc. treat it
+ * as plain text and happily echo it back ("I don't understand the command
+ * /no_think y"). Gate the prefix on this check so we don't poison turns
+ * on models that aren't in on the protocol.
+ */
+function modelSupportsNoThinkPrefix(modelName) {
+    if (!modelName) return false;
+    return /qwen\s?[23]|qwen-?3|deepseek[-_ ]?r1|deepseek[-_ ]?v?3\.?\d*/i.test(modelName);
+}
+
+/**
  * Estimate token count from content (string or vision array)
  * @param {string|Array} content - The content to estimate tokens for
  * @returns {number} Estimated token count
@@ -9944,9 +9957,11 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
-        // Apply thinking mode control - prepend /no_think for models that support it (e.g., Qwen3)
+        // Apply thinking mode control — only models that recognise the
+        // /no_think control prefix (Qwen3, DeepSeek-R1) get it. Other
+        // families would surface it as literal text in the response.
         let userContent = message;
-        if (disableThinking) {
+        if (disableThinking && modelSupportsNoThinkPrefix(targetModel)) {
             userContent = `/no_think\n${message}`;
         }
 
@@ -10339,8 +10354,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // Add remaining messages in order
             chatMessages.push(...nonSystemMessages.map(msg => ({ ...msg })));
 
-            // Apply thinking mode control to the last user message if disableThinking is enabled
-            if (disableThinking) {
+            // Apply thinking mode control to the last user message if
+            // disableThinking is enabled AND the model actually recognises
+            // /no_think (Qwen3 / DeepSeek-R1). Other models echo it.
+            if (disableThinking && modelSupportsNoThinkPrefix(targetModel)) {
                 for (let i = chatMessages.length - 1; i >= 0; i--) {
                     if (chatMessages[i].role === 'user') {
                         const content = chatMessages[i].content;
@@ -10360,7 +10377,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         } else {
             // Legacy single message format
             let userContent = message;
-            if (disableThinking) {
+            if (disableThinking && modelSupportsNoThinkPrefix(targetModel)) {
                 userContent = `/no_think\n${message}`;
             }
 

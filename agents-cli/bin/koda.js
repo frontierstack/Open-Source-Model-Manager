@@ -6828,18 +6828,35 @@ function readProjectFiles(cwd) {
         keyFiles: []
     };
 
-    // Key files to look for
+    // Standard project-root markers.
     const keyFileNames = [
-        'README.md', 'README', 'package.json', 'requirements.txt',
-        'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle',
-        'Makefile', 'docker-compose.yml', 'Dockerfile'
+        'README.md', 'README', 'README.txt',
+        'AGENTS.md', 'CLAUDE.md', 'koda.md',
+        'package.json', 'requirements.txt', 'pyproject.toml',
+        'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'build.gradle.kts',
+        'Makefile', 'makefile',
+        'docker-compose.yml', 'docker-compose.yaml', 'Dockerfile',
+        '.gitignore', 'tsconfig.json'
     ];
+    const MAX_KEY_FILE_CHARS = 5000;
+    const MAX_SOURCE_FALLBACK = 5;         // files to pull in when no markers
+    const MAX_SOURCE_CHARS = 4000;         // per source file
+    // Source extensions we'll read as fallback when the project has no
+    // standard marker files — covers single-file scripts / static pages
+    // where the "project" is literally just main.py, snake.html, etc.
+    const SOURCE_EXTS = new Set([
+        '.html', '.htm', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
+        '.py', '.rb', '.go', '.rs', '.java', '.kt', '.swift', '.c', '.cpp',
+        '.h', '.hpp', '.cs', '.php', '.sh', '.bash', '.ps1',
+        '.css', '.scss', '.sass',
+        '.sql', '.yaml', '.yml', '.toml', '.ini',
+        '.md', '.mdx'
+    ]);
 
-    // Scan directory structure
     const allFiles = scanDirectory(cwd);
     projectInfo.files = allFiles;
 
-    // Find and read key files
+    // Pass 1: named key files in the project root.
     for (const fileName of keyFileNames) {
         const filePath = path.join(cwd, fileName);
         if (fsSync.existsSync(filePath)) {
@@ -6848,11 +6865,32 @@ function readProjectFiles(cwd) {
                 projectInfo.keyFiles.push({
                     name: fileName,
                     path: filePath,
-                    content: content.substring(0, 5000) // Limit to first 5000 chars
+                    content: content.substring(0, MAX_KEY_FILE_CHARS)
                 });
-            } catch (error) {
-                // Skip if can't read
-            }
+            } catch { /* skip unreadable */ }
+        }
+    }
+
+    // Pass 2: if the project has no standard markers, pull in up to a
+    // handful of source files so the AI analysis step has *something*
+    // concrete to describe. Largest files first — for most single-file
+    // projects the largest file is the one doing the work.
+    if (projectInfo.keyFiles.length === 0) {
+        const sourceFiles = allFiles
+            .filter(f => f.type === 'file' && SOURCE_EXTS.has(path.extname(f.name).toLowerCase()))
+            .sort((a, b) => (b.size || 0) - (a.size || 0))
+            .slice(0, MAX_SOURCE_FALLBACK);
+
+        for (const f of sourceFiles) {
+            try {
+                const content = fsSync.readFileSync(f.path, 'utf8');
+                projectInfo.keyFiles.push({
+                    name: path.relative(cwd, f.path),
+                    path: f.path,
+                    content: content.substring(0, MAX_SOURCE_CHARS),
+                    isFallback: true
+                });
+            } catch { /* skip unreadable */ }
         }
     }
 
@@ -6948,14 +6986,37 @@ async function handleInit(api) {
         kodaContent += `**${ext}** (${fileList.length} files)\n`;
     }
 
-    // Ask AI for analysis if configured
+    // Ask AI for analysis if configured. Include the *content* of the
+    // key / source files (truncated) so the model can actually see what
+    // the project does, not just its filenames — on a single-file project
+    // like a snake.html game, names alone leave the model guessing.
     if (api) {
         logInfo('Analyzing project with AI...');
 
-        const analysisPrompt = `I'm analyzing a project called "${projectName}". Here's what I found:\n\n` +
-            `Key files:\n${projectInfo.keyFiles.map(f => `- ${f.name}`).join('\n')}\n\n` +
-            `File types: ${Object.keys(filesByExt).join(', ')}\n\n` +
-            `Please provide a brief 2-3 sentence summary of what this project appears to be and its main purpose.`;
+        const fileNameList = projectInfo.keyFiles.map(f => `- ${f.name}`).join('\n') || '(none)';
+        // Budget ~10 KB total across files so we don't blow past context
+        // on big readmes. Each file is already capped in readProjectFiles.
+        const CONTENT_BUDGET = 10000;
+        let used = 0;
+        const contentParts = [];
+        for (const f of projectInfo.keyFiles) {
+            if (used >= CONTENT_BUDGET) break;
+            const slice = f.content.slice(0, Math.max(400, CONTENT_BUDGET - used));
+            const ext = path.extname(f.name).slice(1) || '';
+            contentParts.push(`### ${f.name}\n\`\`\`${ext}\n${slice}${f.content.length > slice.length ? '\n… (truncated)' : ''}\n\`\`\``);
+            used += slice.length;
+        }
+        const fileContents = contentParts.length > 0
+            ? `\n\nFile contents:\n\n${contentParts.join('\n\n')}`
+            : '';
+
+        const analysisPrompt =
+            `I'm analyzing a project called "${projectName}". Here's what I found:\n\n` +
+            `Files (${projectInfo.files.filter(f => f.type === 'file').length} total, ` +
+            `${projectInfo.files.filter(f => f.type === 'directory').length} directories):\n${fileNameList}\n\n` +
+            `File types: ${Object.keys(filesByExt).join(', ')}` +
+            fileContents +
+            `\n\nBased on the files above (names AND contents), write a 2–4 sentence summary describing what this project actually is and does. Be concrete: mention the tech stack, the entry point, and the user-facing purpose. Do NOT hedge with phrases like "appears to be" — just describe it from what you can see.`;
 
         try {
             const result = await api.chat(analysisPrompt);
