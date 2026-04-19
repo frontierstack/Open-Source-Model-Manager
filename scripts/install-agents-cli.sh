@@ -358,10 +358,15 @@ fi
 # Make executable
 chmod +x "$CLI_DIR/bin/koda.js"
 
-# Install dependencies
+# Install dependencies. Wipe any leftover lockfile from a prior install
+# so npm re-resolves against the freshly downloaded package.json (and
+# honours the `overrides` block) instead of pinning older transitives
+# from an earlier session. --omit=dev is the modern flag name; fall back
+# to --production for older npm.
 echo ">>> Installing dependencies..."
 cd "$CLI_DIR"
-if npm install --production 2>&1; then
+rm -f package-lock.json
+if npm install --omit=dev 2>&1 || npm install --production 2>&1; then
     echo "  Dependencies installed successfully"
 else
     echo ""
