@@ -616,6 +616,198 @@ function showInfoFlash(message, icon = '[i]') {
     process.stdout.write(`\r\x1b[K${colorize(icon, 'cyan')} ${colorize(message, 'dim')}\n`);
 }
 
+// ============================================================================
+// TOOL-CALL TRAIL (Claude Code / Gemini CLI style)
+// ============================================================================
+
+// Short action label used as the verb in "● Action(target)"
+function skillActionLabel(skillName) {
+    const map = {
+        create_file: 'Write', update_file: 'Edit', read_file: 'Read',
+        delete_file: 'Delete', append_to_file: 'Append', move_file: 'Move',
+        copy_file: 'Copy', list_directory: 'List', create_directory: 'Mkdir',
+        delete_directory: 'Rmdir', tail_file: 'Tail', head_file: 'Head',
+        search_files: 'Search', search_replace_file: 'Replace',
+        diff_files: 'Diff', download_file: 'Download',
+        get_file_metadata: 'Stat',
+        git_status: 'Git', git_diff: 'Git', git_log: 'Git', git_branch: 'Git',
+        web_search: 'WebSearch', fetch_url: 'Fetch',
+        playwright_fetch: 'Fetch', playwright_interact: 'Browse',
+        run_bash: 'Bash', run_python: 'Python',
+        run_powershell: 'PowerShell', run_cmd: 'Cmd',
+        dns_lookup: 'DNS', check_port: 'Port', ping_host: 'Ping',
+        http_request: 'HTTP', curl_request: 'Curl',
+        list_processes: 'Processes', list_ports: 'Ports',
+        list_services: 'Services', system_info: 'SysInfo',
+        disk_usage: 'Disk', read_pdf: 'Read', create_pdf: 'Write',
+        html_to_pdf: 'Render', markdown_to_html: 'Render',
+        sqlite_query: 'SQL', sqlite_list_tables: 'SQL',
+        parse_json: 'Parse', parse_csv: 'Parse',
+        base64_encode: 'Encode', base64_decode: 'Decode',
+        hash_data: 'Hash', zip_files: 'Zip', unzip_file: 'Unzip',
+        tar_create: 'Tar', tar_extract: 'Untar', extract_archive: 'Extract',
+        ocr_image: 'OCR', screenshot: 'Screenshot', convert_image: 'Convert',
+        read_email_file: 'ReadEmail'
+    };
+    if (map[skillName]) return map[skillName];
+    return skillName.split('_')
+        .map(w => w ? w[0].toUpperCase() + w.slice(1) : '')
+        .join('');
+}
+
+// Reduce the skill's params to a compact "(target)" string
+function summarizeSkillTarget(skillName, params) {
+    params = params || {};
+    const rel = (p) => (p || '').replace(userWorkingDirectory, '.');
+    if (params.filePath) return rel(params.filePath);
+    if (params.path) return rel(params.path);
+    if (params.source && params.destination) return `${rel(params.source)} → ${rel(params.destination)}`;
+    if (params.dirPath || params.directory) return rel(params.dirPath || params.directory);
+    if (params.url) {
+        try { return new URL(params.url).hostname; } catch { return String(params.url).slice(0, 60); }
+    }
+    if (params.query) {
+        const q = String(params.query);
+        return `"${q.slice(0, 40)}${q.length > 40 ? '…' : ''}"`;
+    }
+    if (params.command) return String(params.command).split(/\s+/)[0];
+    if (params.host || params.hostname) return params.host || params.hostname;
+    if (params.domain) return params.domain;
+    if (params.pattern) return `/${String(params.pattern).slice(0, 40)}/`;
+    return '';
+}
+
+// Build the "⎿ …" one-line summary that appears under the tool call
+function summarizeSkillResult(skillName, params, result) {
+    if (!result || result.success === false) {
+        const err = (result && result.error) ? String(result.error) : 'failed';
+        return colorize('✗ ' + err.split('\n')[0].slice(0, 200), 'red');
+    }
+    const data = (result.data && typeof result.data === 'object') ? result.data : result;
+    const rel = (p) => (p || '').replace(userWorkingDirectory, '.');
+
+    switch (skillName) {
+        case 'read_file': {
+            const content = data.content || '';
+            const lineCount = content ? content.split('\n').length : 0;
+            const fp = rel(data.filePath || params.filePath);
+            return `Read ${lineCount} lines from ${fp}`;
+        }
+        case 'tail_file':
+        case 'head_file': {
+            const content = data.content || '';
+            const lineCount = content ? content.split('\n').length : 0;
+            return `Read ${lineCount} lines`;
+        }
+        case 'create_file': {
+            const lines = (params.content || '').split('\n').length;
+            return `Created ${rel(data.filePath || params.filePath)} (${lines} lines)`;
+        }
+        case 'update_file':
+            return `Updated ${rel(data.filePath || params.filePath)}`;
+        case 'append_to_file':
+            return `Appended to ${rel(data.filePath || params.filePath)}`;
+        case 'delete_file':
+            return `Deleted ${rel(data.filePath || params.filePath)}`;
+        case 'move_file':
+            return `Moved to ${rel(data.destination || params.destination || params.dest)}`;
+        case 'copy_file':
+            return `Copied to ${rel(data.destination || params.destination || params.dest)}`;
+        case 'list_directory': {
+            const entries = data.entries || data.files || data.items || [];
+            return `Listed ${entries.length} entries`;
+        }
+        case 'create_directory':
+            return `Created ${rel(data.dirPath || params.dirPath || params.directory)}`;
+        case 'delete_directory':
+            return `Removed ${rel(data.dirPath || params.dirPath || params.directory)}`;
+        case 'search_files': {
+            const matches = data.matches || data.results || [];
+            return `Found ${matches.length} matches`;
+        }
+        case 'web_search': {
+            const count = data.count || (data.results || []).length;
+            return `Found ${count} results`;
+        }
+        case 'fetch_url':
+        case 'playwright_fetch': {
+            const len = (data.content || data.html || '').length;
+            return `Fetched ${(len / 1024).toFixed(1)} KB`;
+        }
+        case 'git_status':
+            return `Branch ${data.branch || '?'}${data.dirty ? ' (dirty)' : ''}`;
+        case 'git_diff':
+        case 'git_log':
+        case 'git_branch':
+            return 'Done';
+        case 'run_bash':
+        case 'run_python':
+        case 'run_powershell':
+        case 'run_cmd': {
+            const out = (data.stdout || data.output || '');
+            const outLines = out ? out.split('\n').length : 0;
+            const code = data.exitCode !== undefined ? ` exit=${data.exitCode}` : '';
+            return `Ran command · ${outLines} output lines${code}`;
+        }
+        case 'dns_lookup':
+            return (data.addresses || data.records || []).slice(0, 3).join(', ') || 'Done';
+        case 'check_port':
+            return data.open ? 'Open' : 'Closed';
+        case 'ping_host':
+            return data.reachable ? `Reachable (${data.avgTime || '?'}ms)` : 'Unreachable';
+        case 'http_request':
+        case 'curl_request':
+            return `HTTP ${data.status || data.statusCode || '?'}`;
+        case 'list_processes': {
+            const procs = data.processes || data.list || [];
+            return `${procs.length} processes`;
+        }
+        case 'hash_data':
+            return `${params.algorithm || 'sha256'}: ${(data.hash || '').slice(0, 16)}…`;
+        case 'base64_encode':
+        case 'base64_decode':
+            return `${(data.result || '').length} bytes`;
+        case 'read_pdf': {
+            const pages = data.pageCount || data.pages || '?';
+            return `Read PDF · ${pages} pages`;
+        }
+    }
+
+    // Generic fallbacks
+    if (typeof data === 'string') return data.slice(0, 120);
+    if (data.summary) return String(data.summary).slice(0, 160);
+    if (data.message) return String(data.message).slice(0, 160);
+    return 'Done';
+}
+
+// Format and print a tool-call trail entry. Also returns the rendered
+// block so it can be replayed on redraw.
+function renderToolCall(entry) {
+    const bulletColor = entry.success ? 'cyan' : 'red';
+    const targetStr = entry.target ? colorize(`(${entry.target})`, 'dim') : '';
+    // Clear any lingering animation cursor and write a persistent trail block
+    process.stdout.write('\r\x1b[K');
+    log('  ' + colorize('●', bulletColor) + ' ' +
+        colorize(entry.action, 'bright') + targetStr);
+    log('    ' + colorize('⎿ ', 'dim') + entry.summary);
+}
+
+// Push a tool-call entry to chatHistory AND render it immediately. The entry
+// survives re-renders of the chat history because 'tool' role is rendered by
+// displayChatHistory().
+function recordToolCall(skillName, params, result) {
+    const entry = {
+        skillName,
+        action: skillActionLabel(skillName),
+        target: summarizeSkillTarget(skillName, params),
+        success: !!(result && result.success !== false),
+        summary: summarizeSkillResult(skillName, params, result)
+    };
+    chatHistory.push({ role: 'tool', content: entry });
+    if (chatHistory.length > MAX_HISTORY) chatHistory.shift();
+    renderToolCall(entry);
+}
+
 // Get a random thinking message for variety
 function getRandomThinkingMessage() {
     return thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
@@ -1182,27 +1374,129 @@ function renderMarkdown(text, options = {}) {
 }
 
 // Display colored diff
-function displayDiff(oldContent, newContent, filePath) {
-    const diff = Diff.createPatch(filePath, oldContent || '', newContent || '', 'original', 'modified');
-    const lines = diff.split('\n');
+// Modern unified diff renderer — Claude Code / Gemini CLI aesthetic.
+// Shows a summary line with +/− stats, then line-numbered hunks with coloured
+// gutter and soft-grey context lines. Safely truncates very large diffs.
+function displayDiff(oldContent, newContent, filePath, options = {}) {
+    const {
+        context = 3,
+        maxLines = 120,
+        indent = '    ',
+        showHeader = true
+    } = options;
 
-    log('\n' + colorize('━━━ DIFF PREVIEW ━━━', 'yellow'));
-    log(colorize(`File: ${filePath}`, 'cyan'));
-    log(colorize('━'.repeat(60), 'dim'));
+    const oldText = oldContent || '';
+    const newText = newContent || '';
+    const relativePath = filePath.replace(userWorkingDirectory, '.');
+    const isNew = !oldText && newText;
+    const isDelete = oldText && !newText;
 
-    for (const line of lines.slice(4)) { // Skip header lines
-        if (line.startsWith('+') && !line.startsWith('+++')) {
-            log(colorize(line, 'green')); // Added lines
-        } else if (line.startsWith('-') && !line.startsWith('---')) {
-            log(colorize(line, 'red')); // Removed lines
-        } else if (line.startsWith('@@')) {
-            log(colorize(line, 'cyan')); // Line numbers
-        } else {
-            logDim(line); // Context lines
+    const structured = Diff.structuredPatch(
+        relativePath,
+        relativePath,
+        oldText,
+        newText,
+        '',
+        '',
+        { context }
+    );
+
+    // Count additions / removals for the summary chip
+    let added = 0;
+    let removed = 0;
+    for (const hunk of structured.hunks) {
+        for (const line of hunk.lines) {
+            if (line.startsWith('+')) added++;
+            else if (line.startsWith('-')) removed++;
         }
     }
 
-    log(colorize('━'.repeat(60), 'dim') + '\n');
+    const label = isNew ? 'Create' : isDelete ? 'Delete' : 'Edit';
+    const labelColor = isNew ? 'green' : isDelete ? 'red' : 'cyan';
+    const stats = `${colorize('+' + added, 'green')} ${colorize('−' + removed, 'red')}`;
+
+    log('');
+    if (showHeader) {
+        log('  ' + colorize('●', labelColor) + ' ' +
+            colorize(label, labelColor) + colorize(`(${relativePath})`, 'bright') +
+            '  ' + stats);
+    }
+
+    // For pure create / delete, show the content with a single marker column
+    if (isNew || isDelete) {
+        const body = (isNew ? newText : oldText).split('\n');
+        const gutterWidth = Math.max(2, String(body.length).length);
+        const marker = isNew ? '+' : '-';
+        const color = isNew ? 'green' : 'red';
+        const shown = Math.min(body.length, maxLines);
+        for (let i = 0; i < shown; i++) {
+            const gutter = colorize(String(i + 1).padStart(gutterWidth), 'dim');
+            log(indent + gutter + ' ' + colorize(marker + ' ' + body[i], color));
+        }
+        if (body.length > shown) {
+            log(indent + colorize(`… ${body.length - shown} more lines`, 'dim'));
+        }
+        log('');
+        return;
+    }
+
+    if (structured.hunks.length === 0) {
+        log(indent + colorize('(no changes)', 'dim'));
+        log('');
+        return;
+    }
+
+    const lastHunk = structured.hunks[structured.hunks.length - 1];
+    const maxLineNo = Math.max(
+        lastHunk.oldStart + lastHunk.oldLines,
+        lastHunk.newStart + lastHunk.newLines
+    );
+    const gutterWidth = Math.max(2, String(maxLineNo).length);
+
+    let linesShown = 0;
+    let truncated = false;
+
+    for (let h = 0; h < structured.hunks.length && !truncated; h++) {
+        const hunk = structured.hunks[h];
+        let oldLn = hunk.oldStart;
+        let newLn = hunk.newStart;
+
+        if (h > 0) {
+            log(indent + colorize('⋮'.padStart(gutterWidth + 2), 'dim'));
+        }
+
+        for (const line of hunk.lines) {
+            if (linesShown >= maxLines) { truncated = true; break; }
+            const marker = line[0];
+            const body = line.slice(1);
+            let gutterNum;
+            let coloredBody;
+            if (marker === '+') {
+                gutterNum = String(newLn).padStart(gutterWidth);
+                coloredBody = colorize('+ ' + body, 'green');
+                newLn++;
+            } else if (marker === '-') {
+                gutterNum = String(oldLn).padStart(gutterWidth);
+                coloredBody = colorize('- ' + body, 'red');
+                oldLn++;
+            } else if (marker === '\\') {
+                // "\ No newline at end of file" — render as context
+                gutterNum = ' '.repeat(gutterWidth);
+                coloredBody = colorize('  ' + body, 'dim');
+            } else {
+                gutterNum = String(newLn).padStart(gutterWidth);
+                coloredBody = colorize('  ' + body, 'gray');
+                oldLn++;
+                newLn++;
+            }
+            log(indent + colorize(gutterNum, 'dim') + ' ' + coloredBody);
+            linesShown++;
+        }
+    }
+    if (truncated) {
+        log(indent + colorize(`… diff truncated (${added + removed} total changes)`, 'dim'));
+    }
+    log('');
 }
 
 // Prompt user for confirmation
@@ -1417,10 +1711,20 @@ function displayChatHistory() {
 
     // Display chat messages with improved formatting
     if (chatHistory.length === 0) {
-        log(colorize('  ┌─ Getting Started ─────────────────────┐', 'dim'));
-        log(colorize('  │', 'dim') + ' Type a message to start chatting     ' + colorize('│', 'dim'));
-        log(colorize('  │', 'dim') + colorize(' /help', 'cyan') + ' for commands  ' + colorize('/exit', 'yellow') + ' to quit  ' + colorize('│', 'dim'));
-        log(colorize('  └─────────────────────────────────────────┘', 'dim'));
+        const cwdLabel = userWorkingDirectory.length > 50
+            ? '…' + userWorkingDirectory.slice(-49)
+            : userWorkingDirectory;
+        log('  ' + colorize('●', 'cyan') + '  ' + colorize('Ready.', 'bright') +
+            colorize(`  cwd ${cwdLabel}`, 'dim'));
+        log('  ' + colorize('⎿ ', 'dim') +
+            colorize('type a message, or ', 'dim') +
+            colorize('/help', 'cyan') +
+            colorize(' · ', 'dim') +
+            colorize('/web', 'cyan') +
+            colorize(' · ', 'dim') +
+            colorize('/mode', 'cyan') +
+            colorize(' · ', 'dim') +
+            colorize('/exit', 'yellow'));
         log('');
     } else {
         let lastWasSystem = false;
@@ -1479,6 +1783,12 @@ function displayChatHistory() {
                         log(colorize('◆ Koda: ', 'cyan') + formattedContent);
                     }
                 }
+            } else if (msg.role === 'tool') {
+                // Tool-call trail entry — Claude Code / Gemini CLI style
+                if (msg.content && typeof msg.content === 'object') {
+                    renderToolCall(msg.content);
+                }
+                lastWasSystem = true;
             } else if (msg.role === 'system') {
                 // System messages with subtle styling (ASCII-safe icon)
                 log(colorize('  [i] ', 'dim') + colorize(msg.content, 'dim'));
@@ -5628,23 +5938,17 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
     for (const call of skillCalls) {
         // Check if skill is enabled before execution
         if (enabledSkillNames && !enabledSkillNames.has(call.skillName)) {
-            results.push({
-                skill: call.skillName,
-                success: false,
-                error: `Skill '${call.skillName}' is disabled`
-            });
-            showCompletionFlash(`${call.skillName} is disabled`, false);
+            const denial = { success: false, error: `Skill '${call.skillName}' is disabled` };
+            results.push({ skill: call.skillName, success: false, error: denial.error });
+            recordToolCall(call.skillName, call.params, denial);
             continue;
         }
 
         // Block web-dependent skills when websearch mode is not enabled
         if (webDependentSkills.includes(call.skillName) && !websearchMode) {
-            results.push({
-                skill: call.skillName,
-                success: false,
-                error: `Skill '${call.skillName}' requires web search mode. Use /web to enable it.`
-            });
-            showCompletionFlash(`${call.skillName} requires /web mode`, false);
+            const denial = { success: false, error: `requires /web mode` };
+            results.push({ skill: call.skillName, success: false, error: `Skill '${call.skillName}' requires web search mode. Use /web to enable it.` });
+            recordToolCall(call.skillName, call.params, denial);
             continue;
         }
 
@@ -5773,52 +6077,26 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                 result: result.data || result
             });
 
-            // Show compact completion flash instead of verbose messages
-            let completionMsg = skillAction;
-
-            // Add brief context for file operations
+            // Track working-set side effects (unchanged behaviour)
             if (call.skillName === 'create_file' && (result.data?.filePath || result.filePath)) {
-                const filePath = result.data?.filePath || result.filePath;
-                const relativePath = filePath.replace(userWorkingDirectory, '.');
-                completionMsg = `Created ${relativePath}`;
-                addToWorkingSet(filePath, call.params.content);
+                addToWorkingSet(result.data?.filePath || result.filePath, call.params.content);
             } else if (call.skillName === 'read_file') {
                 const filePath = result.data?.filePath || result.filePath || call.params.filePath;
                 const content = result.data?.content || result.content;
-                const relativePath = (filePath || '').replace(userWorkingDirectory, '.');
-                completionMsg = `Read ${relativePath}`;
-                if (filePath && content) {
-                    addToWorkingSet(filePath, content);
-                }
+                if (filePath && content) addToWorkingSet(filePath, content);
             } else if (call.skillName === 'update_file' && (result.data?.filePath || result.filePath)) {
-                const filePath = result.data?.filePath || result.filePath;
-                const relativePath = filePath.replace(userWorkingDirectory, '.');
-                completionMsg = `Updated ${relativePath}`;
-                addToWorkingSet(filePath);
-            } else if (call.skillName === 'delete_file' && (result.data?.filePath || result.filePath)) {
-                const filePath = result.data?.filePath || result.filePath;
-                const relativePath = filePath.replace(userWorkingDirectory, '.');
-                completionMsg = `Deleted ${relativePath}`;
-            } else if (call.skillName === 'web_search') {
-                const count = result.data?.count || result.count || 0;
-                completionMsg = `Found ${count} results`;
-            } else if (call.skillName === 'git_status') {
-                const branch = result.data?.branch || result.branch || '';
-                completionMsg = `Git: ${branch}`;
-            } else if (call.skillName === 'base64_encode' || call.skillName === 'base64_decode') {
-                completionMsg = skillAction;
+                addToWorkingSet(result.data?.filePath || result.filePath);
             }
 
-            // Show compact completion indicator
-            showCompletionFlash(completionMsg, true);
+            // Record the tool-call trail (persistent, Claude Code-style)
+            recordToolCall(call.skillName, call.params, result);
         } else {
             results.push({
                 skill: call.skillName,
                 success: false,
                 error: result.error
             });
-            // Show error flash
-            showCompletionFlash(`${skillAction}: ${result.error}`, false);
+            recordToolCall(call.skillName, call.params, result);
         }
     }
 
