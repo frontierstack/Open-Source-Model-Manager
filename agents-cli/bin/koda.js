@@ -1962,6 +1962,25 @@ function cleanSkillSyntax(text) {
     // Remove orphaned closing tags
     result = result.replace(/<\/think>/g, '');
 
+    // Step 0b: Strip Harmony / "OSS" formatting tokens that leak through from
+    // gpt-oss / Kimi / DeepSeek style checkpoints. The tool-call body itself
+    // is parsed elsewhere; here we just make sure the user never reads raw
+    // "<|channel>thought" / "<|tool_call>" / "<eos>" text on screen.
+    //
+    // Strategy: scrub any paired <|tag>…<tag|> block (with or without the
+    // underscore / namespace variants), then sweep up lone markers. The
+    // filter only triggers on tags containing a vertical bar, so regular
+    // HTML like <div> survives untouched.
+    result = result.replace(/<\|?\/?tool_?call\|?>[\s\S]*?<\|?\/?tool_?call\|?>/g, '');
+    result = result.replace(/<\|?\/?tool_?response\|?>[\s\S]*?<\|?\/?tool_?response\|?>/g, '');
+    // Lone / unmatched markers (streaming, truncated output, etc.)
+    result = result.replace(/<\|?\/?tool_?call\|?>/g, '');
+    result = result.replace(/<\|?\/?tool_?response\|?>/g, '');
+    result = result.replace(/<\|?channel\|?>[^<\n]*?<\|?channel\|?>/g, '');
+    result = result.replace(/<\|?channel\|?>\s*(thought|analysis|commentary)?/gi, '');
+    result = result.replace(/<channel\|>/g, '');
+    result = result.replace(/<\|?(eos|bos|im_start|im_end|start|end|assistant|user|system|return)\|?>/g, '');
+
     // Step 1: Remove complete multi-line skill calls with triple-quoted strings
     // Pattern: [SKILL:name(param="""...multiline...""")]
     // Use a function-based replacement to handle nested content
@@ -2917,7 +2936,41 @@ function parseSkillCalls(response) {
         }
     }
 
+    // Pattern 4: Harmony / "OSS" tool-call tokens the GPT-style models emit
+    // natively (gpt-oss, Kimi, some DeepSeek checkpoints). Variants in the
+    // wild: <|tool_call>…<tool_call|>, <|toolcall>…<toolcall|>,
+    // <|tool_call|>…<|/tool_call|>, with or without a "call:Ns:" namespace
+    // prefix. The tag, the pipe position, and the function-name underscore
+    // are all optional — the body is always `name(args)`.
+    //
+    // Without this, koda misses the call, the file op never runs, and the
+    // model still claims success because *it* thinks it just ran the tool.
+    const harmonyPattern = /<\|?\/?tool_?call\|?>\s*(?:call:)?(?:[\w\-]+:)?([\w_]+)\s*\(([\s\S]*?)\)\s*<\|?\/?tool_?call\|?>/g;
+    while ((match = harmonyPattern.exec(response)) !== null) {
+        const rawName = match[1];
+        const paramsStr = match[2];
+        const skillName = normalizeSkillName(rawName);
+        const params = {};
+        const paramPattern = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
+        let pm;
+        while ((pm = paramPattern.exec(paramsStr)) !== null) {
+            params[pm[1]] = unescapeString(pm[2]);
+        }
+        skillCalls.push({ skillName, params, fullMatch: match[0] });
+    }
+
     return skillCalls;
+}
+
+// Harmony models sometimes emit concatenated names like "updatefile"
+// instead of "update_file". Resolve to the real skill name by matching
+// against the cached catalogue (case + underscore-insensitive).
+function normalizeSkillName(name) {
+    if (!name) return name;
+    if (cachedSkills.some(s => s.name === name)) return name;
+    const key = name.toLowerCase().replace(/_/g, '');
+    const hit = cachedSkills.find(s => s.name.toLowerCase().replace(/_/g, '') === key);
+    return hit ? hit.name : name;
 }
 
 // Detect incomplete/malformed skill calls that the AI started but didn't finish
@@ -3176,7 +3229,10 @@ function getSkillsInCategory(category) {
 // which otherwise fell through to the lean prompt with no tool access.
 const SKILL_TRIGGER_REGEX = new RegExp([
     // File / directory operations (broad verb set)
-    '\\b(create|make|write|save|export|delete|remove|rm|erase|list|move|rename|copy|append|tail|head|edit|update|modify|change|fix|refactor|replace|rewrite|insert|add|open|read|view|show|display|cat|print|check|inspect|review|scan|analyze|audit)\\b.*\\b(file|folder|directory|dir|path|pdf|txt|json|yaml|yml|csv|md|zip|tar|archive|readme|changelog|license|contributing|makefile|dockerfile|gitignore)\\b',
+    '\\b(create|make|write|save|export|delete|remove|rm|erase|list|move|rename|copy|append|tail|head|edit|update|modify|change|fix|refactor|replace|rewrite|insert|add|open|read|view|show|display|cat|print|check|inspect|review|scan|analyze|audit|look\\s+at|describe|summariz|explain)\\b.*\\b(file|folder|directory|dir|path|pdf|txt|json|yaml|yml|csv|md|zip|tar|archive|readme|changelog|license|contributing|makefile|dockerfile|gitignore|code|codebase|project|repo|app|script|module|function|class)\\b',
+    // "what does this project / app / repo do / for?" and similar
+    '\\bwhat\\s+(does|is|are)\\s+(this|the|my|current)\\s+(project|repo|repository|codebase|app|script|folder|directory|code)\\b',
+    '\\btell\\s+me\\s+(about|what.?s in)\\s+(this|the|my|current)?\\s*(project|repo|repository|codebase|app|folder|directory|file|code)\\b',
     '\\b(file|folder|directory|dir)\\b.*\\b(named|called)\\b',
     '\\b(ls|list)\\b.*(dir|directory|folder|files)',
     '\\blist\\s+(the\\s+)?(files|contents|directory|dir)\\b',
@@ -6809,10 +6865,13 @@ async function handleInit(api) {
                 kodaContent += `\n## AI Analysis\n\n${result.data.response}\n`;
                 log('\n' + result.data.response + '\n', 'white');
             } else {
-                logDim('Could not get AI analysis (no models loaded or error occurred)\n');
+                // Surface the real error instead of the "no models loaded"
+                // boilerplate — half the time it's actually an auth or
+                // routing issue, and the blanket message hid that.
+                logDim(`AI analysis skipped: ${result.error || 'unknown error'}\n`);
             }
         } catch (error) {
-            logDim('AI analysis timed out or failed\n');
+            logDim(`AI analysis failed: ${error.message || 'timeout'}\n`);
         }
     }
 
@@ -8291,7 +8350,20 @@ YOU MUST NOT:
 
 // Main interactive shell
 async function startShell() {
-    const config = loadConfig();
+    // Prefer KODA_API_KEY / KODA_API_SECRET env vars over the saved config
+    // so CI, tests, and ad-hoc "try it" flows don't need /auth. Config is
+    // still the default for day-to-day use.
+    const envKey = process.env.KODA_API_KEY;
+    const envSecret = process.env.KODA_API_SECRET;
+    const envUrl = process.env.KODA_API_URL;
+    let config = loadConfig();
+    if (envKey && envSecret) {
+        config = {
+            apiUrl: envUrl || (config && config.apiUrl) || 'https://localhost:3001',
+            apiKey: envKey,
+            apiSecret: envSecret
+        };
+    }
 
     let api = config ? new AgentAPI(config.apiUrl, config.apiKey, config.apiSecret) : null;
 
@@ -8859,6 +8931,12 @@ async function runSingleShot(prompt) {
     }
 
     try {
+        // Seed the working set with project docs before the single-shot
+        // query runs. Without this, single-shot koda has no awareness of
+        // README.md / CLAUDE.md / AGENTS.md / koda.md in the cwd — which
+        // is the whole point of running it inside a project.
+        autoLoadProjectContext();
+
         // handleChat does its own streaming output; we just wait for it and
         // then print the cleaned final assistant message once, so test
         // harnesses can grep for it reliably.
