@@ -3250,6 +3250,11 @@ const SKILL_TRIGGER_REGEX = new RegExp([
     '\\bcontents?\\s+of\\s+\\S+',
     '\\b(inside|under|within)\\s+(of\\s+)?(the\\s+)?[\\w\\-./]+',
     '\\b(what\'?s|whats)\\s+(in|inside)\\s+here\\b',
+    // Short imperative retries — "redo", "retry", "try again", "do it",
+    // "again". On their own these have no file-keywords so they were
+    // falling to the lean prompt, and the model kept hallucinating
+    // refusals instead of re-running the original request.
+    '^(redo|retry|try\\s+again|again|do\\s+(it|that|this)|continue|keep\\s+going|go|proceed)\\s*[.!?]?$',
     // Explicit filename with extension anywhere in the query
     '\\b[\\w\\-\\.]+\\.(py|js|ts|jsx|tsx|mjs|cjs|md|txt|json|yaml|yml|toml|ini|env|csv|html|htm|css|scss|sh|bash|zsh|ps1|bat|cmd|conf|cfg|xml|log|sql|go|rs|rb|php|java|kt|swift|c|h|cpp|hpp|cs|dockerfile|makefile|gitignore)\\b',
     // Project-state questions ("how many files?", "what\'s in this project?")
@@ -8328,11 +8333,21 @@ YOU MUST NOT:
         const requestedCreateDirDone = /\b(create|make|new)\b.*\b(folder|directory|dir)\b/i.test(originalMessage) &&
             !/\b(file|\.txt|\.pdf|\.json|\.csv|\.md)\b/i.test(originalMessage) &&
             skillResults.some(r => r.success && r.skill === 'create_directory');
-        const requestedCreateFileDone = /\b(create|make|write|save)\b.*\b(file|\.txt|\.pdf|\.json|\.csv|\.md)\b/i.test(originalMessage) &&
+        const requestedCreateFileDone = /\b(create|make|write|save|put|place|store|output|export|dump|record|log|append)\b.*\b(file|\.txt|\.pdf|\.json|\.csv|\.md|into\s+a\s+\w+|to\s+a\s+\w+\s+file)\b/i.test(originalMessage) &&
             !/\b(search|find|web|browse|fetch)\b/i.test(originalMessage) &&
-            skillResults.some(r => r.success && (r.skill === 'create_file' || r.skill === 'update_file'));
+            skillResults.some(r => r.success && (r.skill === 'create_file' || r.skill === 'update_file' || r.skill === 'write_file' || r.skill === 'append_to_file'));
 
-        if (requestedDeleteDone || requestedCreateDirDone || requestedCreateFileDone) {
+        // Catch-all: any successful file-writing skill in a multi-skill iteration
+        // means the user got what they asked for (e.g. "list processes and put
+        // into a file" — list_processes + create_file). Without this, a second
+        // model turn runs and often hallucinates a refusal ("I cannot access
+        // your OS…") that directly contradicts the first success narrative.
+        const multiSkillWriteDone = skillResults.length >= 2 &&
+            skillResults.some(r => r.success &&
+                (r.skill === 'create_file' || r.skill === 'update_file' ||
+                 r.skill === 'write_file' || r.skill === 'append_to_file'));
+
+        if (requestedDeleteDone || requestedCreateDirDone || requestedCreateFileDone || multiSkillWriteDone) {
             // Simple file operation completed - show results and stop looping
             displayChatHistory();
             break;
