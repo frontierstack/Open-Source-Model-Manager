@@ -2038,6 +2038,23 @@ function cleanSkillSyntax(text) {
     result = result.replace(/\{"skill"\s*:\s*"\w+"\s*,\s*"params"\s*:\s*\{[^}]+\}\}/g, '');
     result = result.replace(/\{"skill"\s*:\s*"[^"]*"?\s*,?\s*"?params"?\s*:?\s*\{?[^}]*$/g, '');
 
+    // Step 5b: Bare `call:name(args)` — parsed as Pattern 5 skill calls but
+    // still show up verbatim in the streamed text. Strip both complete and
+    // truncated forms so the user only sees the clean `● SkillName(...)`
+    // display from the skill runner.
+    result = result.replace(/(^|\n)[ \t]*call:[\w_]+\s*\([\s\S]*?\)\s*/g, '$1');
+    result = result.replace(/(^|\n)[ \t]*call:[\w_]+\s*\([\s\S]*$/g, '$1');
+
+    // Step 5c: Strip lone "thought" / "thinking" preambles that Gemma and
+    // a few other checkpoints emit between calls. Single-word lines only —
+    // don't eat a sentence that starts with "thought" in normal prose.
+    // Loop until stable so back-to-back "thought\nthought\n" both vanish.
+    let prev;
+    do {
+        prev = result;
+        result = result.replace(/(^|\n)[ \t]*(thought|thinking|reasoning)[ \t]*(\n|$)/gi, '$1');
+    } while (result !== prev);
+
     // Step 6: Clean up whitespace artifacts
     result = result
         .replace(/^\s*$/gm, '')           // Remove lines that are only whitespace
@@ -2986,6 +3003,54 @@ function parseSkillCalls(response) {
             params[pm[1]] = unescapeString(pm[2]);
         }
         skillCalls.push({ skillName, params, fullMatch: match[0] });
+    }
+
+    // Pattern 5: BARE `call:name(params)` emitted by Gemma and a few other
+    // models that learned the syntax from tool-use training data without the
+    // surrounding <|tool_call|> wrapper. Without this koda misses the call
+    // entirely, dumps the raw `call:...` text to the user as narration, and
+    // the model retries repeatedly thinking it never worked.
+    //
+    // Must track parens through quoted strings because edit-style skills
+    // (search_replace_file) frequently contain unbalanced `(` or `)` inside
+    // their search/replace params.
+    const barePrefix = /(^|\n)[ \t]*call:([\w_]+)\s*\(/g;
+    let bm;
+    while ((bm = barePrefix.exec(response)) !== null) {
+        const rawName = bm[2];
+        const openParenIdx = bm.index + bm[0].length; // index AFTER "("
+        let depth = 1;
+        let i = openParenIdx;
+        let inQuote = false;
+        let escapeNext = false;
+        while (i < response.length && depth > 0) {
+            const ch = response[i];
+            if (escapeNext) { escapeNext = false; i++; continue; }
+            if (ch === '\\') { escapeNext = true; i++; continue; }
+            if (ch === '"' && !escapeNext) { inQuote = !inQuote; i++; continue; }
+            if (!inQuote) {
+                if (ch === '(') depth++;
+                else if (ch === ')') depth--;
+                if (depth === 0) break;
+                // Guard: don't consume another `call:...(` as inner body.
+                if (response.substr(i, 5) === '\ncall') break;
+            }
+            i++;
+        }
+        if (depth !== 0) continue; // unbalanced — skip, model will retry
+        const paramsStr = response.substring(openParenIdx, i);
+        const fullMatch = response.substring(bm.index + (bm[1] ? bm[1].length : 0), i + 1);
+        const skillName = normalizeSkillName(rawName);
+        const params = {};
+        const paramPattern = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
+        let pm2;
+        while ((pm2 = paramPattern.exec(paramsStr)) !== null) {
+            params[pm2[1]] = unescapeString(pm2[2]);
+        }
+        // Avoid duplicates if another pattern already captured this span.
+        if (!skillCalls.some(sc => sc.fullMatch === fullMatch)) {
+            skillCalls.push({ skillName, params, fullMatch });
+        }
     }
 
     return skillCalls;
@@ -8218,6 +8283,26 @@ YOU MUST NOT:
     // This prevents false completion detection from triggering after delete/move/copy operations complete
     const executedFileOpSkills = new Set();
 
+    // Track retries triggered by the "announced intent, no skill call"
+    // detector. Capped independently of the overall loop counter so a
+    // multi-step task (read → search_replace → search_replace → …) can
+    // chain across many iterations while a stuck "I'll now do X" narration
+    // loop is still bounded.
+    let intentWithoutActionRetries = 0;
+    const MAX_INTENT_RETRIES = 3;
+
+    // Loop-detection: if the model re-emits the same skill call (or same
+    // truncated response) across iterations, we're wedged in a retry spiral
+    // — typically the model can't produce a working search_replace_file
+    // because the output got truncated. Track the last few response
+    // signatures and bail early rather than wasting the full 10 iterations.
+    const recentSignatures = [];
+    const sigFor = (txt, calls) => {
+        const head = (txt || '').slice(0, 400).replace(/\s+/g, ' ');
+        const callSig = calls.map(c => `${c.skillName}:${Object.keys(c.params || {}).sort().join(',')}`).sort().join('|');
+        return `${callSig}##${head}`;
+    };
+
     while (iteration < MAX_SKILL_ITERATIONS) {
         iteration++;
 
@@ -8490,27 +8575,39 @@ YOU MUST NOT:
                 continue;
             }
 
-            // FUTURE-INTENT WITHOUT ACTION: the model acknowledges what it
-            // needs to do but never calls the skill ("I'll now examine the
-            // file", "I will proceed to rewrite the script", "Let me fix
-            // that"). Without this check the loop exits and the user has to
-            // manually prompt "ok, do it" for every step of a multi-step
-            // task. Retry up to 2 times so the model chains skill calls
-            // within a single turn instead of between turns.
-            const userRequestedAction = /\b(fix|debug|rewrite|refactor|modify|update|change|tweak|adjust|improve|implement|build|add|remove|insert|rename|enable|disable|make.*(bigger|larger|smaller|better|playable|work)|go\s+through)\b/i.test(originalMessage);
-            const announcesFutureIntent = /\b(i('ll| will| am going to|'m going to)|let me|next,?\s*i('ll| will)|i can|i should|i need to|i'm about to|i'll now|i will now|now\s+i('ll| will))\s+(now\s+)?(examine|analyze|look|read|review|check|inspect|investigate|proceed|start|begin|go\s+through|rewrite|edit|modify|update|fix|add|implement|change|replace|write|create|generate|build|make)\b/i.test(response);
-            const announcesPlannedNextStep = /\b(next(\s+step)?|then|after that|once i|after (i|that)|going to|plan(ning)?\s+to|moving on|i'll move)\b[\s\S]{0,40}\b(rewrite|edit|modify|update|fix|implement|change|replace|write|create|add)/i.test(response);
-            const saidWillFix = userRequestedAction && (announcesFutureIntent || announcesPlannedNextStep);
+            // INTENT-OR-DIAGNOSIS WITHOUT ACTION: the user asked for a fix
+            // and the model responded with *either* (a) future-intent
+            // phrasing ("I'll now rewrite…") or (b) pure diagnosis ("the
+            // bug is X, the fix is Y") but never called a skill. Without
+            // this check the loop exits and the user has to manually
+            // prompt "ok, do it" for every step. We also look back in
+            // recent conversation for action intent so short follow-ups
+            // like "proceed" / "ok do it" still inherit the original fix
+            // request. An explicit clarifying question ("which file?"…)
+            // is left alone so the user can answer.
+            const actionIntentRegex = /\b(fix|debug|rewrite|refactor|modify|update|change|tweak|adjust|improve|implement|build|add|remove|insert|rename|enable|disable|make.*(bigger|larger|smaller|better|playable|work)|go\s+through|apply|write|create|edit)\b/i;
+            const userRequestedAction = actionIntentRegex.test(originalMessage);
+            const continuationPhrase = /^\s*(ok|okay|yes|yeah|sure|do it|go|go ahead|proceed|continue|keep going|please|run it)\b/i.test(originalMessage.trim());
+            // For continuation phrases inherit action intent from the last
+            // few user messages in chatHistory.
+            const inheritsAction = continuationPhrase && [...chatHistory].reverse()
+                .filter(m => m.role === 'user').slice(0, 3)
+                .some(m => actionIntentRegex.test(m.content || ''));
+            const responseAsksClarifyingQuestion = /\?\s*$/.test(response.trim()) ||
+                /\b(which\s+file|could you (clarify|specify|confirm)|please (clarify|confirm|specify)|can you tell me|where (should|is)|what (do you mean|would you like))\b/i.test(response);
+            const saidWillFix = (userRequestedAction || inheritsAction) && !responseAsksClarifyingQuestion;
 
-            if (saidWillFix && iteration <= 2) {
+            if (saidWillFix && intentWithoutActionRetries < MAX_INTENT_RETRIES) {
+                intentWithoutActionRetries++;
                 const lastMsg = chatHistory[chatHistory.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant') {
                     chatHistory.pop();
                 }
 
                 let correctionFeedback = '\n\n[CONTINUE — DO NOT STOP]\n';
-                correctionFeedback += 'You announced you would take an action but never called a skill. Do not narrate the plan — execute it.\n';
+                correctionFeedback += 'You identified what needs to change but never called a skill. Do not describe the fix — apply it.\n';
                 correctionFeedback += 'Call the next skill right now (search_replace_file for targeted edits, update_file for full rewrites, read_file with startLine/endLine if you need to re-examine a specific region first).\n';
+                correctionFeedback += 'Do NOT claim "I have applied" or "fixes are in place" unless you actually emit a [SKILL:...] call in this same response.\n';
                 correctionFeedback += 'If the task is multi-step, chain the skill calls in this same response — do not wait to be prompted again.\n';
 
                 addToHistory('system', 'Model announced intent without acting — asking it to continue...');
@@ -8536,6 +8633,21 @@ YOU MUST NOT:
             chatHistory.pop();
             // Clear the streamed output from screen
             displayChatHistory();
+        }
+
+        // Loop-detection: if the same response + same skill-call signature
+        // has appeared 2+ times already, the model is spiraling (typically
+        // because it can't close a search_replace_file call that got
+        // truncated mid-arg). Execute once more then bail, don't keep
+        // burning iterations.
+        const currentSig = sigFor(response, skillCalls);
+        const repeats = recentSignatures.filter(s => s === currentSig).length;
+        recentSignatures.push(currentSig);
+        if (recentSignatures.length > 5) recentSignatures.shift();
+        if (repeats >= 2) {
+            addToHistory('system', 'Detected repeated skill-call pattern — stopping to avoid a loop. The model may have truncated its output mid-argument; try a smaller edit or increase the model\'s max_tokens.');
+            displayChatHistory();
+            break;
         }
 
         // Execute the skills
