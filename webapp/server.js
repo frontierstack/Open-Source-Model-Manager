@@ -11411,27 +11411,50 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
-        // Save response to conversation if client disconnected (background completion)
-        // Skip if aborted — the cancel endpoint handles saving partial content
+        // Save the completed assistant response to disk on every successful
+        // stream, regardless of whether the client is still connected.
+        //
+        // The old guard (!clientConnected) trusted the client to POST its
+        // own save once it received [DONE]. In practice, if the user
+        // refreshed the tab or switched conversations in the ~100 ms
+        // window between [DONE] arriving and the fire-and-forget save POST
+        // landing, the save was aborted by the page unload and the whole
+        // response was lost. By saving server-side too we turn this into
+        // a belt-and-suspenders: disk is up-to-date before the client even
+        // sees [DONE], and the client's subsequent POST overwrites with
+        // the same array — idempotent, no duplicate assistant turn.
+        //
+        // Aborted streams still skip; the DELETE /streaming cancel
+        // endpoint handles partial-response persistence for those.
         const wasAborted = streamAbortController.signal.aborted;
-        if (!wasAborted && !clientConnected && streamingConversationId && fullResponse) {
+        if (!wasAborted && streamingConversationId && fullResponse) {
             try {
                 const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
-                const assistantMessage = {
-                    id: crypto.randomUUID(),
-                    role: 'assistant',
-                    content: fullResponse,
-                    reasoning: fullReasoning || undefined,
-                    timestamp: new Date().toISOString(),
-                    responseTime: Date.now() - streamStartTime,
-                    tokenCount: completionTokens,
-                    backgroundCompleted: true
-                };
-                conversationMsgs.push(assistantMessage);
-                await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
-                console.log(`[Chat Stream] Background response saved to conversation ${streamingConversationId}`);
+                // Only append if the last message isn't already this
+                // assistant turn (guards against a racing client-save
+                // having landed first with a slightly different id).
+                const last = conversationMsgs[conversationMsgs.length - 1];
+                const alreadyPresent = last && last.role === 'assistant' &&
+                    typeof last.content === 'string' &&
+                    last.content.length >= fullResponse.length - 2 &&
+                    last.content.slice(0, 200) === fullResponse.slice(0, 200);
+                if (!alreadyPresent) {
+                    const assistantMessage = {
+                        id: crypto.randomUUID(),
+                        role: 'assistant',
+                        content: fullResponse,
+                        reasoning: fullReasoning || undefined,
+                        timestamp: new Date().toISOString(),
+                        responseTime: Date.now() - streamStartTime,
+                        tokenCount: completionTokens,
+                        backgroundCompleted: !clientConnected
+                    };
+                    conversationMsgs.push(assistantMessage);
+                    await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
+                    console.log(`[Chat Stream] Response saved to ${streamingConversationId} (clientConnected=${clientConnected})`);
+                }
             } catch (saveErr) {
-                console.error(`[Chat Stream] Failed to save background response:`, saveErr);
+                console.error(`[Chat Stream] Failed to save response:`, saveErr);
             }
         }
 
