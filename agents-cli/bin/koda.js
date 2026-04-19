@@ -710,7 +710,9 @@ function summarizeSkillResult(skillName, params, result) {
             return `Copied to ${rel(data.destination || params.destination || params.dest)}`;
         case 'list_directory': {
             const entries = data.entries || data.files || data.items || [];
-            return `Listed ${entries.length} entries`;
+            const suffix = data.recursive ? ' (recursive)' : '';
+            const trunc = data.truncated ? ' (truncated)' : '';
+            return `Listed ${entries.length} entries${suffix}${trunc}`;
         }
         case 'create_directory':
             return `Created ${rel(data.dirPath || params.dirPath || params.directory)}`;
@@ -3481,6 +3483,7 @@ IMPORTANT FILE PLACEMENT RULES:
 [SKILL:delete_file(filePath="${userWorkingDirectory}/path/to/file")]
 [SKILL:delete_directory(dirPath="${userWorkingDirectory}/path/to/dir")]
 [SKILL:list_directory(dirPath="${userWorkingDirectory}")]
+[SKILL:list_directory(dirPath="${userWorkingDirectory}", recursive="true")]  # full tree incl. subdirectories; use when the user asks for "all files" or "everything"
 [SKILL:move_file(sourcePath="/path/to/file", destPath="/path/to/new/location")]
 [SKILL:copy_file(sourcePath="/path/to/file", destPath="/path/to/copy")]
 [SKILL:append_to_file(filePath="${userWorkingDirectory}/file.txt", content="appended content")]
@@ -3983,17 +3986,75 @@ async function executeFileOperationSkill(skillName, params) {
                     return { success: false, error: 'dirPath is required' };
                 }
 
-                const entries = await fs.readdir(dirPath, { withFileTypes: true });
-                const files = entries.map(entry => ({
-                    name: entry.name,
-                    isDirectory: entry.isDirectory(),
-                    isFile: entry.isFile()
-                }));
+                // Accept truthy string / bool for recursive — the skill call
+                // syntax sends params as strings, so "true"/"1"/"yes" all count.
+                const recursive = (() => {
+                    const v = params.recursive;
+                    if (v === true) return true;
+                    if (typeof v === 'string') return /^(true|1|yes|y)$/i.test(v.trim());
+                    return false;
+                })();
 
+                if (!recursive) {
+                    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+                    const files = entries.map(entry => ({
+                        name: entry.name,
+                        isDirectory: entry.isDirectory(),
+                        isFile: entry.isFile()
+                    }));
+                    return { success: true, dirPath, files, recursive: false };
+                }
+
+                // Recursive walk. Skip noisy dirs (node_modules, .git, venvs,
+                // build outputs) so the model isn't drowning in irrelevant
+                // paths. Cap the total entry count so we don't OOM on huge
+                // trees — if we hit the cap the model still sees a clear
+                // signal (`truncated: true`) and can narrow the scope.
+                const SKIP_DIRS = new Set([
+                    'node_modules', '.git', '.svn', '.hg', '.venv', 'venv',
+                    '__pycache__', '.next', '.nuxt', 'dist', 'build',
+                    'target', '.cache', '.pytest_cache', '.mypy_cache',
+                    '.tox', '.idea', '.vscode', 'coverage'
+                ]);
+                const MAX_ENTRIES = 500;
+                const walked = [];
+                let truncated = false;
+
+                async function walk(currentDir, relBase) {
+                    if (truncated) return;
+                    let entries;
+                    try {
+                        entries = await fs.readdir(currentDir, { withFileTypes: true });
+                    } catch {
+                        return;
+                    }
+                    for (const e of entries) {
+                        if (walked.length >= MAX_ENTRIES) { truncated = true; return; }
+                        const rel = relBase ? `${relBase}/${e.name}` : e.name;
+                        if (e.isDirectory() && SKIP_DIRS.has(e.name)) {
+                            walked.push({ name: rel, isDirectory: true, isFile: false, skipped: true });
+                            continue;
+                        }
+                        walked.push({
+                            name: rel,
+                            isDirectory: e.isDirectory(),
+                            isFile: e.isFile()
+                        });
+                        if (e.isDirectory()) {
+                            await walk(path.join(currentDir, e.name), rel);
+                            if (truncated) return;
+                        }
+                    }
+                }
+
+                await walk(dirPath, '');
                 return {
                     success: true,
-                    dirPath: dirPath,
-                    files: files
+                    dirPath,
+                    files: walked,
+                    recursive: true,
+                    truncated,
+                    count: walked.length
                 };
             }
 
@@ -6289,9 +6350,19 @@ function buildSkillResultsMessage(results) {
             } else if (skillName === 'list_directory') {
                 const dirPath = result.dirPath || result.data?.dirPath || 'directory';
                 const files = result.files || result.data?.files || [];
-                // Include actual file names so AI knows what's in the directory
-                const fileNames = files.map(f => f.isDirectory ? `${f.name}/` : f.name).join(', ');
-                message += `✓ Directory listed: ${dirPath}\nFiles: ${fileNames || '(empty)'}\n`;
+                const recursive = result.recursive || result.data?.recursive;
+                const truncated = result.truncated || result.data?.truncated;
+                // Include actual file names so AI knows what's in the directory.
+                // Recursive trees get newlines (not commas) so the model can
+                // reason about paths — and we cap the payload at ~4 KB to stay
+                // under the chunking threshold on big repos.
+                const rendered = files.map(f => f.isDirectory ? `${f.name}/` : f.name);
+                const joiner = recursive ? '\n' : ', ';
+                let body = rendered.join(joiner);
+                if (body.length > 4000) body = body.slice(0, 4000) + '\n... (truncated for prompt size)';
+                const scope = recursive ? ' (recursive)' : '';
+                message += `✓ Directory listed${scope}: ${dirPath}\nFiles (${files.length}):\n${body || '(empty)'}\n`;
+                if (truncated) message += `[tree walk stopped at the entry cap — ask the user to narrow scope if they need more]\n`;
             } else if (skillName === 'move_file') {
                 const newPath = result.newPath || result.data?.newPath || 'moved';
                 message += `✓ File moved to: ${newPath}\n`;
@@ -6498,11 +6569,20 @@ function buildUserVisibleSkillResults(results) {
         } else if (skillName === 'list_directory') {
             const dirPath = result.dirPath || result.data?.dirPath || 'directory';
             const files = result.files || result.data?.files || [];
-            output += `\n📁 Directory: ${dirPath} (${files.length} items)\n`;
+            const recursive = result.recursive || result.data?.recursive;
+            const truncated = result.truncated || result.data?.truncated;
+            const scope = recursive ? ' (recursive)' : '';
+            output += `\n📁 Directory: ${dirPath} (${files.length} items${scope})\n`;
             output += '─'.repeat(40) + '\n';
-            const fileList = files.slice(0, 30).map(f => f.isDirectory ? `${f.name}/` : f.name).join('\n');
+            // Recursive trees get a bigger default cut — a 2-item top-level
+            // listing shouldn't truncate to 30 when the tree has hundreds.
+            const maxShown = recursive ? 100 : 30;
+            const fileList = files.slice(0, maxShown)
+                .map(f => f.isDirectory ? `${f.name}/` : f.name)
+                .join('\n');
             output += fileList || '(empty)';
-            if (files.length > 30) output += `\n... and ${files.length - 30} more`;
+            if (files.length > maxShown) output += `\n... and ${files.length - maxShown} more`;
+            if (truncated) output += `\n(tree truncated at ${files.length} entries — narrow the scope to see more)`;
             output += '\n';
         } else if (skillName === 'git_diff') {
             const diff = result.diff || result.data?.diff || '';
