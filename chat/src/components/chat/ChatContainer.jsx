@@ -430,9 +430,24 @@ export default function ChatContainer({
                                         // Schedule next poll AFTER this one completes
                                         schedulePoll();
                                     } else {
-                                        // Streaming finished — fetch saved response from server
+                                        // Streaming finished — fetch saved response from server.
+                                        // Race: the server flips streaming→false *before*
+                                        // saveConversationMessages completes, so a poll that
+                                        // lands in that window gets the pre-save message list
+                                        // (no new assistant turn). The old "any assistant
+                                        // anywhere" check passed on stale conversations that
+                                        // already had an assistant from a prior turn — the
+                                        // freshly-streamed long response then got wiped when
+                                        // setMessages(stale list) ran. Only trust the server
+                                        // if its LAST message is a non-error assistant AND
+                                        // the total count is ≥ the local count (i.e. it
+                                        // actually contains our new turn).
                                         clearBackgroundPoll();
                                         let loaded = false;
+                                        const localMessages = useChatStore.getState().messages || [];
+                                        const storeContent = useChatStore.getState().streamingContent || '';
+                                        const storeReasoning = useChatStore.getState().streamingReasoning || '';
+                                        const hasLocalStreamContent = !!(storeContent && storeContent.trim());
                                         try {
                                             const msgResponse = await fetch(
                                                 `/api/conversations/${conversationId}`,
@@ -440,33 +455,44 @@ export default function ChatContainer({
                                             );
                                             if (msgResponse.ok) {
                                                 const msgData = await msgResponse.json();
-                                                if (msgData.messages?.some(m => m.role === 'assistant' && !m.isError)) {
-                                                    setMessages(msgData.messages);
+                                                const serverMsgs = msgData.messages || [];
+                                                const last = serverMsgs[serverMsgs.length - 1];
+                                                const serverHasNewAssistant =
+                                                    last && last.role === 'assistant' && !last.isError &&
+                                                    serverMsgs.length >= localMessages.length;
+                                                if (serverHasNewAssistant) {
+                                                    setMessages(serverMsgs);
+                                                    loaded = true;
+                                                } else if (!hasLocalStreamContent && serverMsgs.length > 0) {
+                                                    // No local streaming content to rescue *and*
+                                                    // server has something — accept it even if the
+                                                    // tail is a user turn. Avoids zeroing out a
+                                                    // valid-but-older conversation.
+                                                    setMessages(serverMsgs);
                                                     loaded = true;
                                                 }
                                             }
                                         } catch (loadErr) {
                                             console.error('Failed to load completed messages:', loadErr);
                                         }
-                                        if (!loaded) {
-                                            const storeContent = useChatStore.getState().streamingContent || '';
-                                            const storeReasoning = useChatStore.getState().streamingReasoning || '';
-                                            if (storeContent.trim()) {
-                                                const parsed = parseThinkTags(storeContent);
-                                                const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
-                                                const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
-                                                addMessage({
-                                                    id: crypto.randomUUID(),
-                                                    role: 'assistant',
-                                                    content: parsed.content || storeContent,
-                                                    reasoning: parsed.reasoning || storeReasoning || undefined,
-                                                    timestamp: new Date().toISOString(),
-                                                    responseTime,
-                                                    tokenCount: estimatedTokens,
-                                                    backgroundCompleted: true,
-                                                });
-                                                saveMessages(conversationId, useChatStore.getState().messages);
-                                            }
+                                        if (!loaded && hasLocalStreamContent) {
+                                            // The save hasn't landed yet (or failed). Rescue
+                                            // from the streaming content we captured live —
+                                            // this is the whole point of the fallback path.
+                                            const parsed = parseThinkTags(storeContent);
+                                            const responseTime = streamStartTime ? Date.now() - streamStartTime : undefined;
+                                            const estimatedTokens = Math.ceil((parsed.content || storeContent).length / 3);
+                                            addMessage({
+                                                id: crypto.randomUUID(),
+                                                role: 'assistant',
+                                                content: parsed.content || storeContent,
+                                                reasoning: parsed.reasoning || storeReasoning || undefined,
+                                                timestamp: new Date().toISOString(),
+                                                responseTime,
+                                                tokenCount: estimatedTokens,
+                                                backgroundCompleted: true,
+                                            });
+                                            saveMessages(conversationId, useChatStore.getState().messages);
                                         }
                                         clearStreaming();
                                         setIsLoading(false);
