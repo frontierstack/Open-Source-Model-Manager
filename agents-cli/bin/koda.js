@@ -6828,16 +6828,24 @@ function readProjectFiles(cwd) {
         keyFiles: []
     };
 
-    // Standard project-root markers.
+    // Standard project-root markers. Deliberately excludes koda.md —
+    // that's our *own* output from a prior /init, and treating it as a
+    // marker made /init analyze its own previous analysis (endless
+    // tautology: "this project is a documentation file containing an
+    // automated analysis report of a web-based prototype…").
     const keyFileNames = [
         'README.md', 'README', 'README.txt',
-        'AGENTS.md', 'CLAUDE.md', 'koda.md',
+        'AGENTS.md', 'CLAUDE.md',
         'package.json', 'requirements.txt', 'pyproject.toml',
         'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'build.gradle.kts',
         'Makefile', 'makefile',
         'docker-compose.yml', 'docker-compose.yaml', 'Dockerfile',
         '.gitignore', 'tsconfig.json'
     ];
+    // Files that /init must ignore entirely — both when deciding what
+    // to feed the AI *and* when tallying the file counts in koda.md,
+    // so a second run doesn't list koda.md as "1 file" of the project.
+    const IGNORED_FILES = new Set(['koda.md']);
     const MAX_KEY_FILE_CHARS = 5000;
     const MAX_SOURCE_FALLBACK = 5;         // files to pull in when no markers
     const MAX_SOURCE_CHARS = 4000;         // per source file
@@ -6853,7 +6861,9 @@ function readProjectFiles(cwd) {
         '.md', '.mdx'
     ]);
 
-    const allFiles = scanDirectory(cwd);
+    // Filter out koda.md etc. from every file-facing path so /init
+    // doesn't count, describe, or re-analyze its own prior output.
+    const allFiles = scanDirectory(cwd).filter(f => !IGNORED_FILES.has(f.name));
     projectInfo.files = allFiles;
 
     // Pass 1: named key files in the project root.
@@ -6871,27 +6881,28 @@ function readProjectFiles(cwd) {
         }
     }
 
-    // Pass 2: if the project has no standard markers, pull in up to a
-    // handful of source files so the AI analysis step has *something*
-    // concrete to describe. Largest files first — for most single-file
-    // projects the largest file is the one doing the work.
-    if (projectInfo.keyFiles.length === 0) {
-        const sourceFiles = allFiles
-            .filter(f => f.type === 'file' && SOURCE_EXTS.has(path.extname(f.name).toLowerCase()))
-            .sort((a, b) => (b.size || 0) - (a.size || 0))
-            .slice(0, MAX_SOURCE_FALLBACK);
+    // Pass 2: always pull in a handful of actual source files too, so
+    // the AI sees project *contents* — not just a one-line README that
+    // says "hello world". Previously this ran only when no markers
+    // existed, which meant a repo with just a README got analysed with
+    // zero source context and produced generic descriptions.
+    const sourceFiles = allFiles
+        .filter(f => f.type === 'file' && SOURCE_EXTS.has(path.extname(f.name).toLowerCase()))
+        .sort((a, b) => (b.size || 0) - (a.size || 0))
+        .slice(0, MAX_SOURCE_FALLBACK);
 
-        for (const f of sourceFiles) {
-            try {
-                const content = fsSync.readFileSync(f.path, 'utf8');
-                projectInfo.keyFiles.push({
-                    name: path.relative(cwd, f.path),
-                    path: f.path,
-                    content: content.substring(0, MAX_SOURCE_CHARS),
-                    isFallback: true
-                });
-            } catch { /* skip unreadable */ }
-        }
+    const alreadyLoaded = new Set(projectInfo.keyFiles.map(f => f.path));
+    for (const f of sourceFiles) {
+        if (alreadyLoaded.has(f.path)) continue;
+        try {
+            const content = fsSync.readFileSync(f.path, 'utf8');
+            projectInfo.keyFiles.push({
+                name: path.relative(cwd, f.path),
+                path: f.path,
+                content: content.substring(0, MAX_SOURCE_CHARS),
+                isSource: true
+            });
+        } catch { /* skip unreadable */ }
     }
 
     return projectInfo;
