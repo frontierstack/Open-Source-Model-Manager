@@ -15,26 +15,36 @@ import CodeBlock from './CodeBlock';
 
 // Markdown re-parses at most every INTERVAL ms. Low enough for responsive
 // formatting, high enough to not cause jank.
-const MARKDOWN_INTERVAL = 100;
+const MARKDOWN_INTERVAL = 120;
 
-function useDebounced(value, delay) {
-    const [debounced, setDebounced] = useState(value);
-    const timerRef = useRef(null);
+// Throttle-style hook: the returned value updates at most once per `delay`
+// ms, but *does* update during a continuous stream of changes. The old
+// useDebounced implementation cleared its timer on every effect (which
+// runs on every prop change), so during a steady 20+ tok/s stream the
+// timer never got to fire and the debounced value sat at the initial
+// empty string — the markdown layer never updated while streaming, then
+// snapped to fully-formatted content on stream-end, which showed up as
+// a visible flash / flicker on every response.
+function useThrottled(value, delay) {
+    const [throttled, setThrottled] = useState(value);
+    const lastFireRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
 
     useEffect(() => {
-        if (!timerRef.current) {
-            setDebounced(value);
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const elapsed = now - lastFireRef.current;
+        if (elapsed >= delay) {
+            setThrottled(value);
+            lastFireRef.current = now;
+            return;
         }
-        timerRef.current = setTimeout(() => {
-            setDebounced(value);
-            timerRef.current = null;
-        }, delay);
-        return () => {
-            if (timerRef.current) clearTimeout(timerRef.current);
-        };
+        const t = setTimeout(() => {
+            setThrottled(value);
+            lastFireRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        }, delay - elapsed);
+        return () => clearTimeout(t);
     }, [value, delay]);
 
-    return debounced;
+    return throttled;
 }
 
 // Shared markdown component maps — defined once outside the component
@@ -172,7 +182,7 @@ const remarkPlugins = [remarkGfm];
 export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
 
-    const debouncedContent = useDebounced(content, MARKDOWN_INTERVAL);
+    const debouncedContent = useThrottled(content, MARKDOWN_INTERVAL);
 
     // Memoize the ReactMarkdown output — only re-parses when debouncedContent
     // actually changes (~every 100ms). On all other frames the cached JSX tree

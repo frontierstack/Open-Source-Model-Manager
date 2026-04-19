@@ -7488,50 +7488,24 @@ function repairPdfUrls(text) {
 
 /**
  * Parse an XLSX/XLS workbook buffer into concatenated CSV text, one
- * "=== Sheet: <name> ===" header per sheet. Uses exceljs instead of
- * the unmaintained `xlsx` package (known prototype-pollution + ReDoS
- * advisories, no fix available on npm).
+ * "=== Sheet: <name> ===" header per sheet.
  *
- * Cells may be numbers, strings, dates, rich-text objects, formula
- * result wrappers, or hyperlink objects — collapse each to a plain
- * string and CSV-escape. Returns '' if the workbook has no sheets.
+ * Uses `@e965/xlsx` — a community-maintained fork of SheetJS that
+ * keeps the fast sync API (~5× faster than exceljs for read-only
+ * sheet→CSV on typical office files) but has the GHSA-4r6h-8v6p-xvw6
+ * (prototype pollution) and GHSA-5pgg-2g8v-p4x9 (ReDoS) patches the
+ * upstream `xlsx` on npm never shipped. npm audit reports zero
+ * advisories on this fork.
  */
-async function xlsxBufferToCsv(buffer) {
-    const ExcelJS = require('exceljs');
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
-
-    const csvEscape = (s) => {
-        if (s == null) return '';
-        const str = String(s);
-        return /[,"\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
-    };
-    const cellText = (v) => {
-        if (v == null) return '';
-        if (v instanceof Date) return v.toISOString();
-        if (typeof v === 'object') {
-            if (Array.isArray(v.richText)) return v.richText.map(t => t.text || '').join('');
-            if (v.result !== undefined) return cellText(v.result);
-            if (typeof v.text === 'string') return v.text;
-            if (typeof v.hyperlink === 'string') return v.text || v.hyperlink;
-            if (typeof v.formula === 'string') return v.result !== undefined ? cellText(v.result) : '';
-            return JSON.stringify(v);
-        }
-        return String(v);
-    };
-
-    const sheetChunks = [];
-    workbook.eachSheet((sheet) => {
-        const rows = [];
-        sheet.eachRow({ includeEmpty: false }, (row) => {
-            // row.values is 1-indexed; slice(1) drops the undefined at [0].
-            const cells = (row.values || []).slice(1).map(cellText);
-            rows.push(cells.map(csvEscape).join(','));
-        });
-        const csv = rows.join('\n').trim();
-        if (csv) sheetChunks.push(`=== Sheet: ${sheet.name} ===\n${csv}`);
-    });
-    return sheetChunks.join('\n\n');
+function xlsxBufferToCsv(buffer) {
+    const XLSX = require('@e965/xlsx');
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    const chunks = [];
+    for (const sheetName of workbook.SheetNames) {
+        const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]).trim();
+        if (csv) chunks.push(`=== Sheet: ${sheetName} ===\n${csv}`);
+    }
+    return chunks.join('\n\n');
 }
 
 /**
@@ -13145,43 +13119,20 @@ async function initializeDefaultSkillsOld() {
             return { success: true, format, text: textOnly, rawXml: content };
         }
 
-        // Excel/XLSX format — parsed via exceljs (xlsx was dropped due to
-        // unpatched prototype pollution and ReDoS advisories).
+        // Excel/XLSX format — parsed via @e965/xlsx (maintained SheetJS
+        // fork with the proto-pollution + ReDoS patches).
         if (['xlsx', 'xls', 'xlsm'].includes(format)) {
             try {
-                const ExcelJS = require('exceljs');
-                const workbook = new ExcelJS.Workbook();
-                await workbook.xlsx.readFile(filePath);
-                const csvEscape = (s) => {
-                    if (s == null) return '';
-                    const str = String(s);
-                    return /[,"\\n\\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
-                };
-                const cellText = (v) => {
-                    if (v == null) return '';
-                    if (v instanceof Date) return v.toISOString();
-                    if (typeof v === 'object') {
-                        if (Array.isArray(v.richText)) return v.richText.map(t => t.text || '').join('');
-                        if (v.result !== undefined) return cellText(v.result);
-                        if (typeof v.text === 'string') return v.text;
-                        if (typeof v.hyperlink === 'string') return v.text || v.hyperlink;
-                        return JSON.stringify(v);
-                    }
-                    return String(v);
-                };
+                const XLSX = require('@e965/xlsx');
+                const workbook = XLSX.readFile(filePath);
                 const sheets = {};
                 const allText = [];
-                workbook.eachSheet((sheet) => {
-                    const rows = [];
-                    sheet.eachRow({ includeEmpty: false }, (row) => {
-                        const cells = (row.values || []).slice(1).map(cellText);
-                        rows.push(cells.map(csvEscape).join(','));
-                    });
-                    const csv = rows.join('\\n');
-                    sheets[sheet.name] = csv;
-                    allText.push(\`=== Sheet: \${sheet.name} ===\\n\${csv}\`);
-                });
-                return { success: true, format, sheets, text: allText.join('\\n\\n'), sheetCount: Object.keys(sheets).length };
+                for (const sheetName of workbook.SheetNames) {
+                    const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+                    sheets[sheetName] = csv;
+                    allText.push(\`=== Sheet: \${sheetName} ===\\n\${csv}\`);
+                }
+                return { success: true, format, sheets, text: allText.join('\\n\\n'), sheetCount: workbook.SheetNames.length };
             } catch (e) {
                 throw new Error(\`Failed to parse Excel file: \${e.message}\`);
             }
