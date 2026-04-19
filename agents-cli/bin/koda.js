@@ -51,7 +51,6 @@ const chatHistory = [];
 const MAX_HISTORY = 50;
 
 // Mode tracking
-let currentMode = 'standalone'; // 'standalone', 'agent', or 'collab'
 let websearchMode = false; // Web search enhancement mode
 let lastWebModeError = false; // Track if last skill failure was due to web mode requirement
 let cachedSkills = []; // Cache last successful skills fetch for resilience
@@ -81,10 +80,6 @@ let workingFiles = new Map(); // Map of filePath -> { content, lastModified, siz
 const MAX_WORKING_FILES = 20; // Maximum files in working set
 let focusMode = false; // If true, only focused files are included in context
 let focusFiles = new Set(); // Set of file paths that are focused
-
-// Collaboration mode state
-let collabAgents = []; // Array of selected agent IDs for collaboration
-let collabContext = []; // Shared context between collaborating agents
 
 // Performance optimizations
 let skillPromptCache = null; // Cache for skill system prompt
@@ -790,6 +785,55 @@ function renderToolCall(entry) {
     log('  ' + colorize('●', bulletColor) + ' ' +
         colorize(entry.action, 'bright') + targetStr);
     log('    ' + colorize('⎿ ', 'dim') + entry.summary);
+}
+
+// Begin a live tool-call render. Writes the action header + an animated
+// "⎿ running" line that is rewritten in place when the skill finishes.
+// Caller gets back a handle whose finish(result) swaps in the real summary.
+// Deliberately touches only the one spinner line on completion so nothing
+// goes wrong if the header scrolled off-screen mid-run.
+function beginToolCall(skillName, params) {
+    const action = skillActionLabel(skillName);
+    const target = summarizeSkillTarget(skillName, params);
+    const targetStr = target ? colorize(`(${target})`, 'dim') : '';
+
+    // Clear any leftover animation artefact before we start writing.
+    process.stdout.write('\r\x1b[K');
+
+    // Fixed header line — stays cyan regardless of outcome; failures show
+    // in red inside the ⎿ summary (via summarizeSkillResult).
+    log('  ' + colorize('●', 'cyan') + ' ' +
+        colorize(action, 'bright') + targetStr);
+
+    const spinner = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+    let frame = 0;
+    const drawFrame = () => {
+        const f = spinner[frame++ % spinner.length];
+        process.stdout.write('\r\x1b[K' +
+            '    ' + colorize('⎿ ', 'dim') +
+            colorize(f, 'yellow') + colorize(' working…', 'dim'));
+    };
+    drawFrame();
+    const interval = setInterval(drawFrame, 80);
+
+    return {
+        skillName, params, action, target,
+        finish(result) {
+            clearInterval(interval);
+            const entry = {
+                skillName,
+                action,
+                target,
+                success: !!(result && result.success !== false),
+                summary: summarizeSkillResult(skillName, params, result)
+            };
+            // Overwrite the animated line in place with the final summary.
+            process.stdout.write('\r\x1b[K' +
+                '    ' + colorize('⎿ ', 'dim') + entry.summary + '\n');
+            chatHistory.push({ role: 'tool', content: entry });
+            if (chatHistory.length > MAX_HISTORY) chatHistory.shift();
+        }
+    };
 }
 
 // Push a tool-call entry to chatHistory AND render it immediately. The entry
@@ -1698,33 +1742,31 @@ function detectImports(content, filePath) {
 function displayChatHistory() {
     console.clear();
 
-    // Koda ASCII art banner
+    // Compact single-line banner — less visual noise than the old ASCII block
+    const termWidth = getTerminalWidth();
+    const barWidth = Math.min(termWidth, 120);
     log('');
-    log(colorize('  ██╗  ██╗ ██████╗ ██████╗  █████╗ ', 'cyan'));
-    log(colorize('  ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗', 'cyan'));
-    log(colorize('  █████╔╝ ██║   ██║██║  ██║███████║', 'cyan'));
-    log(colorize('  ██╔═██╗ ██║   ██║██║  ██║██╔══██║', 'cyan'));
-    log(colorize('  ██║  ██╗╚██████╔╝██████╔╝██║  ██║', 'cyan'));
-    log(colorize('  ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝', 'cyan'));
-    log(colorize('  Your AI project assistant', 'dim'));
+    log(' ' + colorize('◆', 'cyan') + colorize(' koda', 'bright') +
+        colorize('  ·  ', 'dim') +
+        colorize('a terminal agent for your projects', 'dim'));
+    log(' ' + colorize('─'.repeat(barWidth - 3), 'dim'));
     log('');
 
     // Display chat messages with improved formatting
     if (chatHistory.length === 0) {
-        const cwdLabel = userWorkingDirectory.length > 50
-            ? '…' + userWorkingDirectory.slice(-49)
+        const cwdLabel = userWorkingDirectory.length > 60
+            ? '…' + userWorkingDirectory.slice(-59)
             : userWorkingDirectory;
-        log('  ' + colorize('●', 'cyan') + '  ' + colorize('Ready.', 'bright') +
-            colorize(`  cwd ${cwdLabel}`, 'dim'));
-        log('  ' + colorize('⎿ ', 'dim') +
-            colorize('type a message, or ', 'dim') +
-            colorize('/help', 'cyan') +
-            colorize(' · ', 'dim') +
-            colorize('/web', 'cyan') +
-            colorize(' · ', 'dim') +
-            colorize('/mode', 'cyan') +
-            colorize(' · ', 'dim') +
-            colorize('/exit', 'yellow'));
+        log(' ' + colorize('●', 'cyan') + ' ' + colorize('Ready', 'bright') +
+            colorize('  ' + cwdLabel, 'dim'));
+        log(' ' + colorize('⎿', 'dim') + ' ' +
+            colorize('type a question or a file op — koda picks tools automatically', 'dim'));
+        log('');
+        log(' ' + colorize('tips', 'yellow') + colorize('  Tab', 'cyan') +
+            colorize(' cycles / commands   ', 'dim') +
+            colorize('/help', 'cyan') + colorize(' commands   ', 'dim') +
+            colorize('/web', 'cyan') + colorize(' toggle search   ', 'dim') +
+            colorize('/exit', 'yellow') + colorize(' quit', 'dim'));
         log('');
     } else {
         let lastWasSystem = false;
@@ -1829,57 +1871,63 @@ function displayStatusBar() {
     const leftParts = [];
     const rightParts = [];
 
-    // Mode indicator (left side)
-    const displayMode = currentMode === 'collab' ? 'agent collab' :
-                       currentMode === 'collab-select' ? 'agent collab (selecting)' : currentMode;
-    leftParts.push(colorize('●', 'cyan') + colorize(` ${displayMode}`, 'dim'));
+    // "koda" label acts as the left anchor — no mode concept anymore.
+    leftParts.push(colorize('◆', 'cyan') + colorize(' koda', 'bright'));
 
-    // Web search indicator (ASCII-safe)
+    // Web search indicator
     if (websearchMode) {
-        leftParts.push(colorize('[web]', 'green'));
+        leftParts.push(colorize('web', 'green'));
+    } else {
+        leftParts.push(colorize('web off', 'dim'));
     }
+
+    // Compact cwd label
+    const cwdLabel = userWorkingDirectory.length > 38
+        ? '…' + userWorkingDirectory.slice(-37)
+        : userWorkingDirectory;
+    leftParts.push(colorize(cwdLabel, 'dim'));
 
     // Context window (compact)
     if (contextWindowLimit > 0) {
         const contextPercent = Math.round((contextWindowUsed / contextWindowLimit) * 100);
         const contextColor = contextPercent > 80 ? 'red' : contextPercent > 60 ? 'yellow' : 'dim';
-        leftParts.push(colorize(`ctx ${contextPercent}%`, contextColor));
+        rightParts.push(colorize(`ctx ${contextPercent}%`, contextColor));
     }
 
-    // Tokens info (right side)
+    // Tokens/sec
     if (lastTokenUsage.total > 0 && lastTokensPerSecond > 0) {
         rightParts.push(colorize(`${lastTokensPerSecond.toFixed(1)} tok/s`, 'dim'));
     }
 
-    // API key usage (right side - clean percentage display)
+    // Session tokens
+    if (totalTokensUsed > 0) {
+        rightParts.push(colorize(`${totalTokensUsed.toLocaleString()} tok`, 'dim'));
+    }
+
+    // API key usage
     if (apiKeyUsage.rateLimitTokens) {
         const percentUsed = parseFloat(apiKeyUsage.tokenUsagePercentage || 0);
         const percentLeft = 100 - percentUsed;
         const usageColor = percentLeft < 20 ? 'red' : percentLeft < 40 ? 'yellow' : 'dim';
-        rightParts.push(colorize(`${percentLeft.toFixed(0)}% remaining`, usageColor));
+        rightParts.push(colorize(`${percentLeft.toFixed(0)}% budget`, usageColor));
     }
 
-    // Session tokens
-    if (totalTokensUsed > 0) {
-        rightParts.push(colorize(`${totalTokensUsed.toLocaleString()} tokens`, 'dim'));
-    }
+    const sep = colorize(' · ', 'dim');
+    const left = leftParts.join(sep);
+    const right = rightParts.join(sep);
 
-    // Build status line
-    const left = leftParts.join(colorize(' · ', 'dim'));
-    const right = rightParts.join(colorize(' · ', 'dim'));
-
-    // Calculate visible length (without ANSI codes) for proper alignment
     const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*m/g, '');
     const leftLen = stripAnsi(left).length;
     const rightLen = stripAnsi(right).length;
-    const padding = Math.max(1, termWidth - leftLen - rightLen - 4);
+    const barWidth = Math.min(termWidth, 120);
+    const padding = Math.max(1, barWidth - leftLen - rightLen - 2);
 
-    // Print compact status bar
-    log(colorize('─'.repeat(Math.min(termWidth - 2, 100)), 'dim'));
+    // Dim rule, then the status line itself
+    log(colorize('─'.repeat(barWidth - 2), 'dim'));
     if (rightParts.length > 0) {
-        log(left + ' '.repeat(padding) + right);
+        log(' ' + left + ' '.repeat(padding) + right);
     } else {
-        log(left);
+        log(' ' + left);
     }
     console.log('');
 }
@@ -3184,7 +3232,7 @@ function classifyQuery(message, websearchEnabled = false) {
 // model performs much better when the prompt fits comfortably in a few
 // hundred tokens. The guardrails at the bottom are the minimum needed to
 // stop the specific bugs observed in testing.
-function buildLeanSystemPrompt(queryType, mode = 'standalone', websearchEnabled = false) {
+function buildLeanSystemPrompt(queryType, websearchEnabled = false) {
     const base =
 `You are Koda, a concise AI assistant running in a terminal.
 
@@ -3208,7 +3256,7 @@ Formatting rules (output is rendered as markdown in a terminal):
 }
 
 // Build system prompt with skill instructions - SMART ROUTING VERSION
-function buildSkillSystemPrompt(skills, mode = 'standalone', websearchEnabled = false, userMessage = '') {
+function buildSkillSystemPrompt(skills, websearchEnabled = false, userMessage = '') {
     if (!skills || skills.length === 0) {
         return '';
     }
@@ -6003,9 +6051,10 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             // If 'yes', continue with execution below
         }
 
-        // Start user-friendly skill animation (compact, not verbose)
-        const skillAction = formatSkillAction(call.skillName);
-        startAnimation(skillAction, 'dots');
+        // Begin a live tool-call render so the user sees what koda is
+        // doing in real time (action header + animated ⎿ spinner, which
+        // gets overwritten with the real summary once the skill returns).
+        const toolHandle = beginToolCall(call.skillName, call.params);
 
         let result;
 
@@ -6067,8 +6116,10 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             result = { success: false, error: `Unknown skill: ${call.skillName}. All skills must execute client-side.` };
         }
 
-        // Stop the skill animation
-        stopAnimation(true);
+        // Finalize the live tool-call entry (stops the spinner and rewrites
+        // the ⎿ line with the real summary). This also pushes the entry
+        // onto chatHistory so redraws replay it.
+        toolHandle.finish(result);
 
         if (result.success) {
             results.push({
@@ -6087,16 +6138,12 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             } else if (call.skillName === 'update_file' && (result.data?.filePath || result.filePath)) {
                 addToWorkingSet(result.data?.filePath || result.filePath);
             }
-
-            // Record the tool-call trail (persistent, Claude Code-style)
-            recordToolCall(call.skillName, call.params, result);
         } else {
             results.push({
                 skill: call.skillName,
                 success: false,
                 error: result.error
             });
-            recordToolCall(call.skillName, call.params, result);
         }
     }
 
@@ -6760,8 +6807,7 @@ async function handleHelp() {
     addToHistory('system', '  /project <name>    Create a project directory structure');
     addToHistory('system', '  /cwd               Show current working directory');
     addToHistory('system', '');
-    addToHistory('system', colorize('Mode & Search:', 'yellow'));
-    addToHistory('system', '  /mode <mode>       Switch mode (standalone, agent, agent collab)');
+    addToHistory('system', colorize('Search:', 'yellow'));
     addToHistory('system', '  /web               Toggle web search on/off ' + (websearchMode ? colorize('(ON)', 'green') : colorize('(off)', 'dim')));
     addToHistory('system', '');
     addToHistory('system', colorize('Session Management:', 'yellow'));
@@ -7602,448 +7648,12 @@ function handleClearSession() {
     lastTokenUsage = { prompt: 0, completion: 0, total: 0 };
     totalTokensUsed = 0;
     contextWindowUsed = 0;
-    addToHistory('system', `Session context cleared for ${currentMode} mode`);
+    addToHistory('system', 'Session context cleared');
     addToHistory('system', 'Conversation will start fresh (chat history still visible)');
     addToHistory('system', 'Note: API key daily usage is tracked server-side and not reset');
     displayChatHistory();
 }
 
-async function handleMode(api, args) {
-    if (!args || args.length === 0) {
-        const displayMode = currentMode === 'collab' ? 'agent collab' : currentMode;
-        const modeStr = websearchMode ? `${displayMode},websearch` : displayMode;
-        addToHistory('system', `Current mode: ${modeStr}`);
-        addToHistory('system', 'Usage: /mode <standalone|agent|agent collab>[,websearch]');
-        addToHistory('system', 'Examples: /mode standalone,websearch | /mode agent,websearch');
-        displayChatHistory();
-        return;
-    }
-
-    // Handle "agent collab" as two words
-    let modeInput = args.join(' ').toLowerCase();
-
-    // Parse mode and flags (e.g., "standalone,websearch")
-    const modeParts = modeInput.split(',').map(p => p.trim());
-    let newMode = modeParts[0];
-    let newWebsearchMode = false;
-
-    // Check for websearch flag in any position
-    if (modeParts.includes('websearch')) {
-        newWebsearchMode = true;
-        // Remove websearch from mode parts
-        modeParts.splice(modeParts.indexOf('websearch'), 1);
-        newMode = modeParts.join(' '); // Re-join in case of "agent collab"
-    }
-
-    // Normalize "agent collab" to "collab" internally
-    if (newMode === 'agent collab') {
-        newMode = 'collab';
-    }
-
-    if (newMode !== 'standalone' && newMode !== 'agent' && newMode !== 'collab') {
-        addToHistory('system', 'Invalid mode. Use: /mode <standalone|agent|agent collab>[,websearch]');
-        addToHistory('system', 'Examples: /mode standalone,websearch | /mode agent | /mode agent collab,websearch');
-        displayChatHistory();
-        return;
-    }
-
-    // If switching to collab mode, fetch available agents
-    if (newMode === 'collab' && api) {
-        const result = await api.getAgents();
-        if (!result.success || result.data.length === 0) {
-            addToHistory('system', 'No agents available. Create agents first.');
-            displayChatHistory();
-            return;
-        }
-
-        addToHistory('system', '━━━ Available Agents ━━━');
-        result.data.forEach((agent, idx) => {
-            addToHistory('system', `${idx + 1}. ${agent.name} - ${agent.description || 'No description'}`);
-        });
-        addToHistory('system', '');
-        addToHistory('system', 'Select agents by number (e.g., "1,2,3") to collaborate:');
-        displayChatHistory();
-
-        // Store agents for selection
-        collabAgents = result.data;
-        currentMode = 'collab-select';
-        websearchMode = newWebsearchMode;
-        return;
-    }
-
-    currentMode = newMode;
-    websearchMode = newWebsearchMode;
-    const displayMode = currentMode === 'collab' ? 'agent collab' : currentMode;
-    const modeStr = websearchMode ? `${displayMode},websearch` : displayMode;
-    addToHistory('system', `Switched to ${modeStr} mode`);
-    if (currentMode === 'standalone') {
-        addToHistory('system', 'Standalone mode - General AI chat with file operation skills');
-    } else if (currentMode === 'agent') {
-        addToHistory('system', 'Agent mode - Task-aware with autonomous skill execution');
-    } else if (currentMode === 'collab') {
-        addToHistory('system', 'Agent Collaboration mode - Multiple agents with autonomous skill execution');
-    }
-    if (websearchMode) {
-        addToHistory('system', colorize('Web search enabled - queries will include web search results', 'green'));
-    }
-    displayChatHistory();
-}
-
-async function handleAgentMode(api, rl) {
-    log('\nAgent Mode\n', 'cyan');
-    logInfo('Entering autonomous agent mode...');
-    logDim('Agents can now perform actions based on enabled skills.');
-    logDim('Type your request and the agent will execute it.\n');
-    logDim('Type /exit to leave agent mode\n');
-
-    // Agent mode sub-loop
-    const agentPrompt = colorize('agent> ', 'magenta');
-
-    return new Promise((resolve) => {
-        const handleAgentInput = async (line) => {
-            const input = line.trim();
-
-            if (!input) {
-                rl.question(agentPrompt, handleAgentInput);
-                return;
-            }
-
-            if (input === '/exit' || input === '/quit') {
-                log('Exiting agent mode...\n', 'cyan');
-                resolve();
-                return;
-            }
-
-            // Send to agent for execution
-            logInfo('Agent processing request...\n');
-
-            try {
-                const result = await api.chat(input);
-                if (result.success) {
-                    log(result.data.response + '\n');
-                } else {
-                    logError(result.error + '\n');
-                }
-            } catch (error) {
-                logError(error.message + '\n');
-            }
-
-            rl.question(agentPrompt, handleAgentInput);
-        };
-
-        rl.question(agentPrompt, handleAgentInput);
-    });
-}
-
-async function handleStatus(api) {
-    const result = await api.getAgents();
-    if (result.success) {
-        addToHistory('system', `✓ Connected | Agents: ${result.data.length}`);
-    } else {
-        addToHistory('system', `✗ Not connected: ${result.error}`);
-    }
-    displayChatHistory();
-}
-
-async function handleAgents(api, args) {
-    if (!args || args.length === 0) {
-        const result = await api.getAgents();
-        if (!result.success) {
-            addToHistory('system', `Error: ${result.error}`);
-            displayChatHistory();
-            return;
-        }
-
-        addToHistory('system', '━━━ Agents ━━━');
-        if (result.data.length === 0) {
-            addToHistory('system', 'No agents found. Use /create-agent to create one.');
-        } else {
-            result.data.forEach(agent => {
-                addToHistory('system', `${agent.name} (ID: ${agent.id})`);
-                addToHistory('system', `  Model: ${agent.modelName || 'Not assigned'} | Skills: ${agent.skills?.length || 0}`);
-                if (agent.description) addToHistory('system', `  ${agent.description}`);
-            });
-        }
-    } else {
-        const result = await api.getAgent(args[0]);
-        if (!result.success) {
-            addToHistory('system', `Error: ${result.error}`);
-            displayChatHistory();
-            return;
-        }
-
-        const agent = result.data;
-        addToHistory('system', `━━━ Agent: ${agent.name} ━━━`);
-        addToHistory('system', `ID: ${agent.id}`);
-        if (agent.description) addToHistory('system', `Description: ${agent.description}`);
-        addToHistory('system', `Model: ${agent.modelName || 'Not assigned'}`);
-        addToHistory('system', `Skills: ${agent.skills?.length || 0}`);
-        addToHistory('system', `Created: ${new Date(agent.createdAt).toLocaleDateString()}`);
-    }
-    displayChatHistory();
-}
-
-async function handleTasks(api, args) {
-    const agentId = args && args[0] !== 'create' ? args[0] : null;
-    const result = await api.getTasks(agentId);
-
-    if (!result.success) {
-        addToHistory('system', `Error: ${result.error}`);
-        displayChatHistory();
-        return;
-    }
-
-    addToHistory('system', '━━━ Tasks ━━━');
-    if (result.data.length === 0) {
-        addToHistory('system', 'No tasks found.');
-    } else {
-        result.data.forEach(task => {
-            const statusEmoji = task.status === 'completed' ? '✓' :
-                              task.status === 'failed' ? '✗' :
-                              task.status === 'in_progress' ? '⟳' : '○';
-            addToHistory('system', `${statusEmoji} [${task.status.toUpperCase()}] ${task.description}`);
-            addToHistory('system', `  Priority: ${task.priority} | ${new Date(task.createdAt).toLocaleDateString()}`);
-        });
-    }
-    displayChatHistory();
-}
-
-// Handle collaboration mode chat with multiple agents and skill execution
-async function handleCollabChat(api, message, selectedAgents) {
-    // Add user message to history
-    addToHistory('user', message);
-
-    // Add to shared collaboration context
-    collabContext.push({ role: 'user', content: message });
-
-    // Show "thinking" indicator
-    displayChatHistory();
-
-    // If websearch mode is enabled, perform search with content fetching
-    // Skip search for simple file save requests (use existing conversation context instead)
-    let webSearchContext = '';
-    const skipSearch = isFileSaveRequest(message);
-    if (websearchMode && !skipSearch) {
-        try {
-            // Show animated web search indicator
-            startAnimation('Searching the web', 'dots');
-
-            // Search with content fetching enabled (8 results, fetch content from top 5)
-            const searchResponse = await api.webSearch(message, 8, true, 5);
-
-            // Stop animation
-            stopAnimation(true);
-
-            if (!searchResponse.success) {
-                throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
-            }
-
-            if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
-                const searchResults = searchResponse.data.results;
-                const contentCount = searchResponse.data.contentFetchedCount || 0;
-
-                // Build search context for agents with actual content
-                webSearchContext = '\n\n=== WEB SEARCH RESULTS ===\n';
-                webSearchContext += `Query: "${message}"`;
-                if (searchResponse.data.enhancedQuery) {
-                    webSearchContext += ` (enhanced: "${searchResponse.data.enhancedQuery}")`;
-                }
-                webSearchContext += `\nFound ${searchResults.length} results (${contentCount} with content):\n\n`;
-
-                searchResults.forEach((result, idx) => {
-                    webSearchContext += `━━━ SOURCE [${idx + 1}] ━━━\n`;
-                    webSearchContext += `Title: ${result.title}\n`;
-                    webSearchContext += `URL: ${result.url}\n`;
-
-                    if (result.content && result.contentFetched) {
-                        webSearchContext += `\nCONTENT:\n${result.content}\n`;
-                    } else if (result.snippet) {
-                        webSearchContext += `\nSnippet: ${result.snippet}\n`;
-                    }
-                    webSearchContext += '\n';
-                });
-                webSearchContext += '=== END OF SEARCH RESULTS ===\n';
-                webSearchContext += `IMPORTANT: Use the actual page content above to answer questions. Cite sources by number.\n`;
-
-                // Show success flash
-                showCompletionFlash(`Found ${searchResults.length} results (${contentCount} with content)`, true);
-                addToHistory('system', `Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}`);
-                displayChatHistory();
-            } else {
-                const noResultsMsg = searchResponse.data && searchResponse.data.results
-                    ? 'No search results found'
-                    : 'Search returned empty response';
-                showCompletionFlash(noResultsMsg, false);
-                addToHistory('system', `Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}`);
-                displayChatHistory();
-            }
-        } catch (error) {
-            stopAnimation(true);
-
-            // Handle improved error responses from backend
-            let errorMsg = 'Web search failed';
-            if (error.response?.data?.error) {
-                errorMsg = error.response.data.error;
-            } else if (error.message) {
-                errorMsg = error.message;
-            }
-
-            addToHistory('system', `${colorize(errorMsg, 'red')} - Agents collaborating: ${selectedAgents.map(a => a.name).join(', ')}...`);
-
-            // Show retry suggestion if error is retryable
-            if (error.response?.data?.retryable) {
-                addToHistory('system', colorize('Search may work if retried in a few seconds', 'yellow'));
-            }
-
-            displayChatHistory();
-        }
-    }
-
-    // Fetch tasks and skills for context awareness (with cache fallback)
-    const tasksResult = await api.getTasks();
-    const skillsResult = await api.getSkills();
-    let skills;
-    if (skillsResult.success && skillsResult.data) {
-        skills = skillsResult.data;
-        cachedSkills = skills;
-    } else {
-        skills = cachedSkills;
-    }
-    const skillPrompt = buildSkillSystemPrompt(skills, 'collab', websearchMode, message);
-
-    let contextInfo = webSearchContext;
-
-    if (tasksResult.success && tasksResult.data.length > 0) {
-        const pendingTasks = tasksResult.data.filter(t => t.status === 'pending' || t.status === 'in_progress');
-        if (pendingTasks.length > 0) {
-            contextInfo += `\n\n[Available Tasks: ${pendingTasks.length} tasks - `;
-            contextInfo += pendingTasks.slice(0, 3).map(t => t.description).join(', ');
-            if (pendingTasks.length > 3) contextInfo += '...';
-            contextInfo += ']';
-        }
-    }
-
-    // Build context from shared history
-    const sharedContextMessage = collabContext.map(msg =>
-        `${msg.role === 'user' ? 'User' : msg.agent || 'Assistant'}: ${msg.content}`
-    ).join('\n\n');
-
-    // Coordinate agents - each agent contributes to the solution with skill execution
-    for (const agent of selectedAgents) {
-        addToHistory('system', `━━━ ${agent.name} ━━━`);
-        displayChatHistory();
-
-        // Get agent-specific skills (filter by agent's assigned skills if any)
-        let agentSkillPrompt = skillPrompt;
-        if (agent.skills && agent.skills.length > 0) {
-            const agentSkills = skills.filter(s => agent.skills.includes(s.id));
-            if (agentSkills.length > 0) {
-                agentSkillPrompt = buildSkillSystemPrompt(agentSkills, 'collab', websearchMode, message);
-            }
-        }
-
-        const basePrompt = `[You are ${agent.name}: ${agent.description}]${contextInfo}${agentSkillPrompt}\n\nTask: ${message}\n\nShared Context:\n${sharedContextMessage}\n\nProvide your contribution to solving this task. Execute skills as needed:`;
-
-        // Skill execution loop for this agent
-        let iteration = 0;
-        let currentPrompt = basePrompt;
-        let finalResponse = '';
-        let allSkillResults = [];
-
-        while (iteration < MAX_SKILL_ITERATIONS) {
-            iteration++;
-
-            // Start animated thinking indicator
-            if (iteration === 1) {
-                startAnimation(`${agent.name} thinking`, 'dots');
-            }
-
-            // Use the agent's assigned model
-            const result = await api.chat(currentPrompt, agent.modelName);
-
-            // Stop animation after response
-            stopAnimation(true);
-
-            if (!result.success) {
-                addToHistory('system', `Error from ${agent.name}: ${result.error}`);
-                break;
-            }
-
-            // Update token tracking
-            if (result.data.tokens) {
-                lastTokenUsage = {
-                    prompt: result.data.tokens.prompt_tokens || 0,
-                    completion: result.data.tokens.completion_tokens || 0,
-                    total: result.data.tokens.total_tokens || 0
-                };
-                totalTokensUsed += lastTokenUsage.total;
-            }
-
-            const response = result.data.response;
-            finalResponse = response;
-
-            // Check for skill calls in the response
-            const skillCalls = parseSkillCalls(response);
-
-            if (skillCalls.length === 0) {
-                // No skill calls, agent is done
-                break;
-            }
-
-            // Display what agent said before executing skills
-            if (!isOnlySkillCalls(response)) {
-                addToHistory('assistant', response);
-                displayChatHistory();
-            }
-
-            // Execute the skills with agent ID
-            const skillResults = await executeSkillCalls(api, skillCalls, agent.id);
-            allSkillResults.push(...skillResults);
-
-            // Build feedback message for the agent
-            const feedbackMessage = buildSkillResultsMessage(skillResults);
-
-            // Build user-visible skill results summary
-            const userVisibleResults = buildUserVisibleSkillResults(skillResults);
-            if (userVisibleResults) {
-                // Add skill results to chat history so user can see them
-                addToHistory('system', userVisibleResults);
-                // Store skill results in collab context so follow-up queries have context
-                collabContext.push({ role: 'system', content: userVisibleResults });
-            }
-
-            // Continue the conversation with skill results
-            currentPrompt = basePrompt + '\n\nYour previous response: ' + response + feedbackMessage;
-
-            // Show animated processing indicator for next iteration
-            startAnimation(`${agent.name} processing`, 'dots');
-        }
-
-        if (iteration >= MAX_SKILL_ITERATIONS) {
-            addToHistory('system', `Warning: ${agent.name} reached maximum iterations`);
-        }
-
-        // Add agent's final response to history and context
-        if (finalResponse && !isOnlySkillCalls(finalResponse)) {
-            addToHistory('assistant', finalResponse);
-        } else if (allSkillResults.length > 0) {
-            // If only skill calls, add a summary
-            const successCount = allSkillResults.filter(r => r.success).length;
-            addToHistory('assistant', `Executed ${allSkillResults.length} skills (${successCount} successful)`);
-        }
-
-        collabContext.push({ role: 'assistant', agent: agent.name, content: finalResponse });
-        displayChatHistory();
-    }
-
-    // Keep collab context manageable
-    if (collabContext.length > 30) {
-        collabContext.splice(0, collabContext.length - 30);
-    }
-
-    // Update API key usage stats after collaboration
-    await updateApiKeyUsage(api);
-}
 
 // Handle natural language chat with session awareness and skill execution (with streaming)
 async function handleChat(api, message) {
@@ -8077,14 +7687,13 @@ async function handleChat(api, message) {
     const queryType = classifyQuery(message, websearchMode);
     const useFullSkillCatalog =
         queryType === 'skill' ||
-        websearchMode ||            // web results need to be sourced + cited
-        currentMode === 'agent';    // agent mode orchestrates skills
+        websearchMode;              // web results need to be sourced + cited
 
     let systemPrefix = '';
     if (useFullSkillCatalog) {
-        systemPrefix = buildSkillSystemPrompt(skills, currentMode, websearchMode, message) + '\n\n';
+        systemPrefix = buildSkillSystemPrompt(skills, websearchMode, message) + '\n\n';
     } else {
-        systemPrefix = buildLeanSystemPrompt(queryType, currentMode, websearchMode) + '\n\n';
+        systemPrefix = buildLeanSystemPrompt(queryType, websearchMode) + '\n\n';
     }
 
     // Build context-aware message for the API
@@ -8182,20 +7791,6 @@ YOU MUST NOT:
         }
     }
 
-    // In agent mode, add task awareness
-    if (currentMode === 'agent') {
-        const tasksResult = await api.getTasks();
-
-        if (tasksResult.success && tasksResult.data.length > 0) {
-            const pendingTasks = tasksResult.data.filter(t => t.status === 'pending' || t.status === 'in_progress');
-            if (pendingTasks.length > 0) {
-                systemPrefix += `[You have ${pendingTasks.length} pending tasks: `;
-                systemPrefix += pendingTasks.slice(0, 3).map(t => t.description).join(', ');
-                if (pendingTasks.length > 3) systemPrefix += '...';
-                systemPrefix += ']\n\n';
-            }
-        }
-    }
 
     // Build the SYSTEM message content: system prefix + working files. Web
     // search results and agent task state were already appended into
@@ -8666,11 +8261,11 @@ async function startShell() {
     } else {
         // Fetch API key usage stats on startup
         await updateApiKeyUsage(api);
-        addToHistory('system', `Connected! Mode: ${currentMode}`);
+        addToHistory('system', 'Connected.');
         if (apiKeyUsage.name) {
             addToHistory('system', `API Key: ${apiKeyUsage.name}`);
         }
-        addToHistory('system', 'Type a message to chat or use /help for commands.');
+        addToHistory('system', 'Type a message to chat or /help for commands.');
     }
 
     // Auth state for inline authentication
@@ -8684,10 +8279,18 @@ async function startShell() {
     const commandDefs = [
         { cmd: '/auth', desc: 'authenticate with API' },
         { cmd: '/web', desc: 'toggle web search' },
-        { cmd: '/mode', desc: 'change mode' },
         { cmd: '/init', desc: 'analyze project' },
         { cmd: '/project', desc: 'create project' },
         { cmd: '/cwd', desc: 'show directory' },
+        { cmd: '/files', desc: 'show working files' },
+        { cmd: '/add-file', desc: 'add file to context' },
+        { cmd: '/remove-file', desc: 'remove file from context' },
+        { cmd: '/focus', desc: 'focus on specific files' },
+        { cmd: '/clear-focus', desc: 'clear file focus' },
+        { cmd: '/quality', desc: 'analyze code quality' },
+        { cmd: '/refactor', desc: 'refactor code' },
+        { cmd: '/search', desc: 'web search query' },
+        { cmd: '/docs', desc: 'show docs' },
         { cmd: '/help', desc: 'show commands' },
         { cmd: '/clear', desc: 'clear history' },
         { cmd: '/clearsession', desc: 'clear session' },
@@ -8695,7 +8298,6 @@ async function startShell() {
         { cmd: '/exit', desc: 'exit koda' }
     ];
     const availableCommands = commandDefs.map(c => c.cmd);
-    const modeOptions = ['standalone', 'agent', 'agent collab'];
 
     function completer(line) {
         return [[], line];
@@ -8740,57 +8342,37 @@ async function startShell() {
         }
     }
 
-    // Get best command suggestion for current input
+    // Get best command suggestion for current input. Returns the "rest" of
+    // the first matching command so the ghost-completion renderer can draw
+    // it in grey after the cursor.
     function getSuggestion(line) {
-        if (!line.startsWith('/')) return null;
+        if (!line || !line.startsWith('/')) return null;
 
         const trimmed = line.trim();
-
-        // For just "/", show first command
         if (trimmed === '/') {
-            return availableCommands[0].substring(1); // Return without the "/"
+            return availableCommands[0].substring(1);
         }
 
-        // For "/mode " or "/mode", suggest mode options
-        if (trimmed === '/mode') {
-            // Check original line to see if there's a trailing space
-            if (line.endsWith(' ')) {
-                return 'standalone';  // User typed "/mode ", suggest "standalone"
-            }
-            return ' standalone';  // User typed "/mode", suggest " standalone"
+        if (trimmed.length <= 1) return null;
+
+        const matches = availableCommands.filter(cmd => cmd.startsWith(trimmed));
+        if (matches.length === 0) return null;
+        if (matches.length === 1) {
+            return matches[0] !== trimmed
+                ? matches[0].substring(trimmed.length)
+                : null;
         }
 
-        // For partial mode options
-        if (trimmed.startsWith('/mode ')) {
-            const modeInput = trimmed.substring(6);
-            const match = modeOptions.find(m => m.startsWith(modeInput) && m !== modeInput);
-            if (match) return match.substring(modeInput.length);
-            return null;
+        // Multiple matches: return common prefix beyond what's typed
+        const first = matches[0];
+        let commonLen = trimmed.length;
+        for (let i = trimmed.length; i < first.length; i++) {
+            if (matches.every(m => m[i] === first[i])) commonLen++;
+            else break;
         }
-
-        // For partial commands
-        if (trimmed.length > 1) {
-            const matches = availableCommands.filter(cmd => cmd.startsWith(trimmed));
-            if (matches.length === 1 && matches[0] !== trimmed) {
-                return matches[0].substring(trimmed.length);
-            }
-            if (matches.length > 1) {
-                // Find common prefix
-                const first = matches[0];
-                let commonLen = trimmed.length;
-                for (let i = trimmed.length; i < first.length; i++) {
-                    if (matches.every(m => m[i] === first[i])) {
-                        commonLen++;
-                    } else {
-                        break;
-                    }
-                }
-                if (commonLen > trimmed.length) {
-                    return first.substring(trimmed.length, commonLen);
-                }
-            }
-        }
-        return null;
+        return commonLen > trimmed.length
+            ? first.substring(trimmed.length, commonLen)
+            : null;
     }
 
     // Custom TAB handler - complete the suggestion or cycle options
@@ -8825,25 +8407,6 @@ async function startShell() {
             rl.cursor = rl.line.length;
             rl._refreshLine();
             lastTabLine = rl.line;
-            return;
-        }
-
-        // Handle "/mode " - cycle through mode options
-        if (trimmed.startsWith('/mode ')) {
-            const modeInput = trimmed.substring(6);
-            const matches = modeOptions.filter(m => m.startsWith(modeInput));
-
-            if (matches.length > 0) {
-                if (lastTabLine !== currentLine) {
-                    tabCycleIndex = -1;
-                    tabCycleOptions = matches;
-                }
-                tabCycleIndex = (tabCycleIndex + 1) % tabCycleOptions.length;
-                rl.line = `/mode ${tabCycleOptions[tabCycleIndex]}`;
-                rl.cursor = rl.line.length;
-                rl._refreshLine();
-                lastTabLine = rl.line;
-            }
             return;
         }
 
@@ -8884,22 +8447,32 @@ async function startShell() {
             tabCycleOptions = [];
         }
 
-        // Clear existing suggestion before processing input
-        clearSuggestion();
+        // Just delegate — the _refreshLine hook below will re-render the
+        // ghost suggestion after readline redraws the prompt line. Doing it
+        // there instead of here is more reliable because readline's own
+        // `clearScreenDown` inside _refreshLine would otherwise wipe any
+        // suggestion we wrote up front.
+        suggestionVisible = false;
+        currentSuggestion = '';
+        return originalTtyWrite(s, key);
+    };
 
-        // Call original handler
-        const result = originalTtyWrite(s, key);
-
-        // After input is processed, check if we should show a suggestion
-        const currentLine = rl.line || '';
-        if (currentLine.startsWith('/') && !key?.name?.match(/^(return|enter|escape|backspace)$/)) {
-            const suggestion = getSuggestion(currentLine);
-            if (suggestion) {
-                showSuggestion(suggestion);
-            }
-        }
-
-        return result;
+    // Always redraw the inline suggestion after readline's own line refresh.
+    // This is the key to the ghost-completion working reliably — readline
+    // calls _refreshLine on every keystroke, so we piggy-back on it.
+    const originalRefreshLine = rl._refreshLine.bind(rl);
+    rl._refreshLine = function() {
+        originalRefreshLine();
+        const line = rl.line || '';
+        if (!line.startsWith('/')) return;
+        const suggestion = getSuggestion(line);
+        if (!suggestion) return;
+        // Render ghost text in gray, then move the cursor back so the
+        // user's next keystroke overwrites the suggestion naturally.
+        currentSuggestion = suggestion;
+        suggestionVisible = true;
+        process.stdout.write(colors.gray + suggestion + colors.reset);
+        process.stdout.write('\x1b[' + suggestion.length + 'D');
     };
 
 
@@ -9016,10 +8589,6 @@ async function startShell() {
                         await handleCwd();
                         break;
 
-                    case '/mode':
-                        await handleMode(api, args);
-                        break;
-
                     case '/web':
                     case '/websearch':
                     case '/ws':
@@ -9046,8 +8615,6 @@ async function startShell() {
 
                     case '/clearsession':
                         handleClearSession();
-                        collabAgents = [];
-                        collabContext = [];
                         break;
 
                     case '/files':
@@ -9111,27 +8678,7 @@ async function startShell() {
                 if (!api) {
                     addToHistory('system', 'Not authenticated. Run /auth first to chat with AI.');
                     displayChatHistory();
-                } else if (currentMode === 'collab-select') {
-                    // Handle agent selection for collaboration
-                    const indices = input.split(',').map(s => parseInt(s.trim()) - 1);
-                    const selectedAgents = indices.filter(i => i >= 0 && i < collabAgents.length)
-                                                   .map(i => collabAgents[i]);
-
-                    if (selectedAgents.length === 0) {
-                        addToHistory('system', 'No valid agents selected. Try again or use /mode to exit.');
-                        displayChatHistory();
-                    } else {
-                        collabAgents = selectedAgents;
-                        currentMode = 'collab';
-                        addToHistory('system', `✓ Collaboration mode active with: ${selectedAgents.map(a => a.name).join(', ')}`);
-                        addToHistory('system', 'Agents will work together on your tasks.');
-                        displayChatHistory();
-                    }
-                } else if (currentMode === 'collab' && collabAgents.length > 0) {
-                    // Collaboration mode chat
-                    await handleCollabChat(api, input, collabAgents);
                 } else {
-                    // Regular standalone chat
                     await handleChat(api, input);
                 }
             }
