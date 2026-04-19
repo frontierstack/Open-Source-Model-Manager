@@ -3770,6 +3770,8 @@ RIGHT:
   [SKILL:read_file(filePath="${userWorkingDirectory}/snake.html", startLine="40", endLine="80")]
   [SKILL:search_replace_file(filePath="${userWorkingDirectory}/snake.html", search="width=\\"400\\" height=\\"400\\"", replace="width=\\"600\\" height=\\"600\\"")]
 
+search_replace_file matches LITERAL text — do NOT escape regex metacharacters. Parens, braces, brackets, dots, asterisks, etc. go in as-is. The snippet must match byte-for-byte (whitespace, indentation, quote style included). If the replacement fails with "No matches", re-read the region with read_file to see the exact characters.
+
 === SKILL SYNTAX ===
 - Complete each skill on ONE line: [SKILL:name(param="value")]
 - String params need quotes: param="value"
@@ -5677,14 +5679,53 @@ async function executeFileExtraSkill(skillName, params) {
                 const filePath = params.filePath;
                 const search = params.search;
                 const replace = params.replace;
+                // Opt-in regex mode — accepts a few aliases because the model
+                // sometimes emits "regex", "useRegex", "isRegex". Anything
+                // truthy (true / "true" / "1" / "yes") turns it on.
+                const regexParam = params.regex ?? params.useRegex ?? params.isRegex ?? false;
+                const useRegex = regexParam === true || /^(true|1|yes)$/i.test(String(regexParam));
                 if (!filePath || search === undefined) return { success: false, error: 'filePath and search parameters are required' };
 
                 const content = await fs.readFile(filePath, 'utf8');
-                const regex = new RegExp(search, 'g');
-                const newContent = content.replace(regex, replace || '');
-                const count = (content.match(regex) || []).length;
+                let newContent;
+                let count;
+                if (useRegex) {
+                    let regex;
+                    try {
+                        regex = new RegExp(search, 'g');
+                    } catch (e) {
+                        return { success: false, error: `Invalid regex in search param: ${e.message}. If you meant to match literal text (including characters like ( ) { } . [ ] * + ? ), omit regex=true so the skill does plain-string matching.` };
+                    }
+                    newContent = content.replace(regex, replace || '');
+                    count = (content.match(regex) || []).length;
+                } else {
+                    // Literal substring matching — default, matches how
+                    // Claude Code / Gemini CLI handle edits so the model
+                    // doesn't have to escape regex metacharacters in code.
+                    count = 0;
+                    let idx = 0;
+                    const out = [];
+                    while (true) {
+                        const hit = content.indexOf(search, idx);
+                        if (hit === -1) { out.push(content.substring(idx)); break; }
+                        out.push(content.substring(idx, hit));
+                        out.push(replace || '');
+                        idx = hit + search.length;
+                        count++;
+                    }
+                    newContent = out.join('');
+                }
+
+                if (count === 0) {
+                    // Return failure so the skill-result feedback actually
+                    // tells the model the search didn't match — otherwise
+                    // it sees "Done" and carries on claiming success.
+                    const preview = String(search).replace(/\n/g, '\\n').slice(0, 80);
+                    return { success: false, error: `No matches for search="${preview}${String(search).length > 80 ? '…' : ''}" in ${filePath}. Re-read the file with read_file to confirm the exact snippet (whitespace, indentation, and quote style must match).` };
+                }
+
                 await fs.writeFile(filePath, newContent);
-                return { success: true, filePath, replacements: count };
+                return { success: true, filePath, replacements: count, message: `Replaced ${count} occurrence${count === 1 ? '' : 's'}` };
             }
 
             case 'diff_files': {
@@ -8476,11 +8517,29 @@ YOU MUST NOT:
             const malformedCalls = detectMalformedSkillCalls(response);
 
             if (malformedCalls.length > 0) {
+                // Was the truncated call specifically a full-file rewrite?
+                // If so, the retry is almost never going to succeed with
+                // the same call shape — the fix is to push the model at
+                // search_replace_file hard on the first retry.
+                const truncatedUpdateFile = malformedCalls.some(c =>
+                    c.type === 'incomplete_bracket' &&
+                    (c.skillName === 'update_file' || c.skillName === 'write_file'));
+
                 // Cap the retry loop — without this a small model that
                 // keeps producing truncated calls will burn every
-                // iteration re-failing the same way.
+                // iteration re-failing the same way. When the cap trips,
+                // also scrub the model's misleading "I have updated …"
+                // narration from the transcript so the user isn't left
+                // looking at a completion summary for work that never ran.
                 if (syntaxErrorRetries >= MAX_SYNTAX_RETRIES) {
-                    addToHistory('system', `Skill syntax errors persisted after ${MAX_SYNTAX_RETRIES} retries — stopping. The model's output is likely getting truncated mid-argument. Try breaking the change into smaller edits, or raise the model's max_tokens.`);
+                    const lastMsg = chatHistory[chatHistory.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant') {
+                        chatHistory.pop();
+                    }
+                    addToHistory('system',
+                        'FAILED — the file was NOT modified.\n' +
+                        '  Cause: the model emitted a skill call whose argument was truncated mid-string (usually update_file with the entire new file content exceeding max_tokens).\n' +
+                        '  Fix:   (a) ask for a smaller, targeted edit so the model can use search_replace_file, or (b) raise the model\'s max_tokens and reload.');
                     displayChatHistory();
                     break;
                 }
@@ -8499,20 +8558,24 @@ YOU MUST NOT:
                 }
 
                 // Build error feedback for the AI
-                let errorFeedback = '\n\n[SKILL SYNTAX ERROR]\n';
-                errorFeedback += 'Your skill call(s) were malformed. Correct format:\n';
-                errorFeedback += '[SKILL:skill_name(param1="value1", param2="value2")]\n\n';
+                let errorFeedback = '\n\n[SKILL SYNTAX ERROR — NOTHING WAS APPLIED]\n';
+                errorFeedback += 'Your previous skill call was truncated mid-argument. The file was NOT modified. Do NOT claim "I have updated" or "changes implemented" — nothing happened yet.\n\n';
+                if (truncatedUpdateFile) {
+                    errorFeedback += 'Your update_file call was cut off because its content is too long for a single response. Do NOT retry update_file — use multiple search_replace_file calls instead, one per change:\n';
+                    errorFeedback += '  [SKILL:search_replace_file(filePath="/path/to/file", search="<small exact snippet>", replace="<replacement>")]\n';
+                    errorFeedback += 'Emit several of these in this response, each small enough to fit.\n\n';
+                } else {
+                    errorFeedback += 'Correct format:\n  [SKILL:skill_name(param1="value1", param2="value2")]\n  or: call:skill_name(param1="value1", param2="value2")\n\n';
+                }
                 errorFeedback += 'Issues detected:\n';
                 for (const issue of malformedCalls) {
                     if (issue.type === 'incomplete_bracket') {
-                        errorFeedback += `- Skill "${issue.skillName}" is missing closing ")]\"\n`;
-                    } else if (issue.type === 'missing_close_bracket') {
-                        errorFeedback += '- Skill call started but not completed\n';
+                        errorFeedback += `- Skill "${issue.skillName}" was not completed (missing closing ")").\n`;
                     } else if (issue.type === 'malformed_params') {
-                        errorFeedback += `- Parameters must use key="value" format\n`;
+                        errorFeedback += `- "${issue.skillName}" parameters must use key="value" format\n`;
                     }
                 }
-                errorFeedback += '\nPlease retry with correct syntax. Make sure to close all brackets and quotes. If your edit is large, split it into multiple smaller search_replace_file calls rather than one update_file that rewrites the whole file.\n';
+                errorFeedback += '\nRetry now. If your edit is large, prefer multiple small search_replace_file calls over one update_file.\n';
 
                 // Show error to user
                 addToHistory('system', `Skill syntax error detected - asking AI to retry (${syntaxErrorRetries}/${MAX_SYNTAX_RETRIES})...`);
