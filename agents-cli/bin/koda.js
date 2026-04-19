@@ -5717,11 +5717,44 @@ async function executeFileExtraSkill(skillName, params) {
                 }
 
                 if (count === 0) {
-                    // Return failure so the skill-result feedback actually
-                    // tells the model the search didn't match — otherwise
-                    // it sees "Done" and carries on claiming success.
-                    const preview = String(search).replace(/\n/g, '\\n').slice(0, 80);
-                    return { success: false, error: `No matches for search="${preview}${String(search).length > 80 ? '…' : ''}" in ${filePath}. Re-read the file with read_file to confirm the exact snippet (whitespace, indentation, and quote style must match).` };
+                    // Try to give the model a useful hint: find the closest
+                    // lines in the file that share a distinctive token from
+                    // the failed search. This tells the model "you looked
+                    // for X but the file has Y on line N" instead of a
+                    // generic "no match", which usually lets it fix the
+                    // snippet on the next attempt instead of guessing again.
+                    const firstSearchLine = String(search).split('\n')[0].trim();
+                    const hintTokens = firstSearchLine.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || [];
+                    const hintsByLine = [];
+                    if (hintTokens.length > 0 && !useRegex) {
+                        const fileLines = content.split('\n');
+                        // Score each file line by how many of the search's
+                        // distinctive identifiers appear in it. Return the
+                        // top 3 non-trivial matches.
+                        const scored = fileLines.map((line, i) => {
+                            let score = 0;
+                            for (const tok of hintTokens) {
+                                if (line.includes(tok)) score++;
+                            }
+                            return { line, lineNum: i + 1, score };
+                        }).filter(r => r.score >= Math.max(1, Math.ceil(hintTokens.length * 0.4)))
+                          .sort((a, b) => b.score - a.score || a.lineNum - b.lineNum)
+                          .slice(0, 3);
+                        for (const r of scored) {
+                            const trimmed = r.line.trim();
+                            hintsByLine.push(`  line ${r.lineNum}: ${trimmed.length > 120 ? trimmed.slice(0, 117) + '…' : trimmed}`);
+                        }
+                    }
+
+                    const preview = String(search).replace(/\n/g, '\\n').slice(0, 100);
+                    let err = `No matches for search="${preview}${String(search).length > 100 ? '…' : ''}" in ${filePath}.\n`;
+                    if (hintsByLine.length > 0) {
+                        err += `Closest matches in the file (by shared identifiers):\n${hintsByLine.join('\n')}\n`;
+                        err += `Read those line ranges with read_file(filePath, startLine=N, endLine=M) and use the EXACT text shown there (including whitespace and quotes) as your next search value.`;
+                    } else {
+                        err += `The file does not contain that snippet. Re-read the file with read_file(filePath, startLine=1, endLine=<total>) to see the actual contents before trying again — do not guess.`;
+                    }
+                    return { success: false, error: err };
                 }
 
                 await fs.writeFile(filePath, newContent);
