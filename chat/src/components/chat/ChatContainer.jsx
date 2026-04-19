@@ -858,6 +858,32 @@ export default function ChatContainer({
                 const header = `The user has uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. Read and consider ALL files below:\n\n`;
                 fullContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
             }
+        } else {
+            // No new attachments on this turn — but the user may still be
+            // referring to a file uploaded earlier in the conversation
+            // ("the csv", "the attachment", "list indicators from the file",
+            // "from it"). In long conversations the old upload can get
+            // evicted from context by memory compression or token-budget
+            // truncation, which is why the model starts claiming it can't
+            // see the file. Re-inject the most recent prior attachment
+            // content directly into *this* turn when the wording looks like
+            // a file reference.
+            const refersToFile = /\b(csv|file|attachment|upload(ed)?|document|spreadsheet|pdf|doc|image|screenshot|the data|from (it|that|this))\b/i.test(content);
+            if (refersToFile) {
+                const priorMessages = useChatStore.getState().messages || [];
+                // Walk back to find the most recent user message whose
+                // apiContent carries one of our "=== FILE N:" blocks.
+                for (let i = priorMessages.length - 1; i >= 0; i--) {
+                    const pm = priorMessages[i];
+                    if (pm.role !== 'user' || !pm.apiContent) continue;
+                    if (!pm.apiContent.includes('=== FILE ')) continue;
+                    const priorFileSection = pm.apiContent.split(/\n\n---\n\nUser message:/)[0];
+                    fullContent =
+                        `[The user is referring to a file uploaded earlier in this conversation. Re-including it so you have the content:]\n\n` +
+                        priorFileSection + `\n\n---\n\nUser message: ${content}`;
+                    break;
+                }
+            }
         }
         // Collect tool-call metadata across this turn so we can attach it to
         // the final assistant message. The chat UI renders each entry as a
