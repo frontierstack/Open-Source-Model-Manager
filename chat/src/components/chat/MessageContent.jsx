@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
@@ -6,46 +6,13 @@ import CodeBlock from './CodeBlock';
 /**
  * MessageContent - Renders markdown content with Tailwind styling
  *
- * During streaming: two-layer render —
- *   1. Memoized ReactMarkdown re-renders only when debounced content changes
- *      (~10fps markdown formatting for tables/bold/code)
- *   2. Plain text "tail" updates every frame (60fps character flow)
- * After streaming: single full ReactMarkdown render.
+ * Streaming phase renders the accumulating text as a single plain-text
+ * <div> (whitespace-pre-wrap) — grows monotonically, no block/inline
+ * layout shifts per token. Final markdown (syntax-highlighted code,
+ * tables, headings, etc.) is rendered once, after stream-end, via the
+ * atomic swap in commitStreamingMessage — so there's no visible flash
+ * when the stream finishes either.
  */
-
-// Markdown re-parses at most every INTERVAL ms. Low enough for responsive
-// formatting, high enough to not cause jank.
-const MARKDOWN_INTERVAL = 120;
-
-// Throttle-style hook: the returned value updates at most once per `delay`
-// ms, but *does* update during a continuous stream of changes. The old
-// useDebounced implementation cleared its timer on every effect (which
-// runs on every prop change), so during a steady 20+ tok/s stream the
-// timer never got to fire and the debounced value sat at the initial
-// empty string — the markdown layer never updated while streaming, then
-// snapped to fully-formatted content on stream-end, which showed up as
-// a visible flash / flicker on every response.
-function useThrottled(value, delay) {
-    const [throttled, setThrottled] = useState(value);
-    const lastFireRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
-
-    useEffect(() => {
-        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        const elapsed = now - lastFireRef.current;
-        if (elapsed >= delay) {
-            setThrottled(value);
-            lastFireRef.current = now;
-            return;
-        }
-        const t = setTimeout(() => {
-            setThrottled(value);
-            lastFireRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        }, delay - elapsed);
-        return () => clearTimeout(t);
-    }, [value, delay]);
-
-    return throttled;
-}
 
 // Shared markdown component maps — defined once outside the component
 // to keep stable references (prevents ReactMarkdown from re-mounting internals).
@@ -150,76 +117,39 @@ const markdownComponents = {
     },
 };
 
-const streamingMarkdownComponents = {
-    ...markdownComponents,
-    code({ node, inline, className, children, ...props }) {
-        const match = /language-(\w+)/.exec(className || '');
-        const code = String(children).replace(/\n$/, '');
-
-        if (!inline && (match || code.includes('\n'))) {
-            return (
-                <CodeBlock
-                    code={code}
-                    language={match ? match[1] : 'text'}
-                    isStreaming={true}
-                />
-            );
-        }
-
-        return (
-            <code
-                className="px-1.5 py-0.5 mx-0.5 bg-white/10 rounded text-accent-400 font-mono text-[0.85em]"
-                {...props}
-            >
-                {children}
-            </code>
-        );
-    },
-};
-
 const remarkPlugins = [remarkGfm];
 
 export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
 
-    const debouncedContent = useThrottled(content, MARKDOWN_INTERVAL);
-
-    // Memoize the ReactMarkdown output — only re-parses when debouncedContent
-    // actually changes (~every 100ms). On all other frames the cached JSX tree
-    // is reused, so the only per-frame work is the cheap tail text node update.
-    const markdownRendered = useMemo(() => {
-        const processed = (isStreaming ? debouncedContent : content).replace(/<br\s*\/?>/gi, '  \n');
-        return (
-            <ReactMarkdown
-                remarkPlugins={remarkPlugins}
-                components={isStreaming ? streamingMarkdownComponents : markdownComponents}
-            >
-                {processed}
-            </ReactMarkdown>
-        );
-    }, [isStreaming ? debouncedContent : content, isStreaming]);
-
     if (isStreaming) {
-        // Tail: characters that arrived since the last debounced snapshot.
-        // This text updates every frame (60fps) — just a text node, sub-ms.
-        const tail = content.length > debouncedContent.length
-            ? content.slice(debouncedContent.length)
-            : '';
+        // During streaming we render plain text in a single <pre>-style
+        // block. The previous two-layer setup (throttled markdown + tail
+        // span sibling) was smooth in principle but visibly jittered every
+        // 120 ms when a throttle tick moved tokens from the tail <span>
+        // into the parsed markdown <p>: the paragraph grew, the span
+        // shrank to empty, and the line-break between them collapsed —
+        // a small vertical jump every tick. A single plain-text block
+        // grows monotonically from one line into many without any layout
+        // shift until the atomic stream→final swap happens at stream-end
+        // (handled in commitStreamingMessage).
         return (
             <div className="markdown-content">
-                {markdownRendered}
-                {tail && (
-                    <span className="whitespace-pre-wrap leading-relaxed break-words">
-                        {tail}
-                    </span>
-                )}
+                <div className="whitespace-pre-wrap leading-relaxed break-words">
+                    {content}
+                </div>
             </div>
         );
     }
 
+    // Finalised message: full markdown with syntax-highlighted code blocks
+    // and all the trimmings. Only runs once per completed response.
+    const processed = content.replace(/<br\s*\/?>/gi, '  \n');
     return (
         <div className="markdown-content">
-            {markdownRendered}
+            <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+                {processed}
+            </ReactMarkdown>
         </div>
     );
 });
