@@ -23,11 +23,17 @@ function useSlideTransition(isEmpty) {
     return slideDown;
 }
 
+// Reasoning tag names emitted by various thinking models
+// (Qwen/DeepSeek use <think>; some llama.cpp templates and fine-tunes emit
+// <thinking>, <reasoning>, or <reasoning_engine>)
+const REASONING_TAG_NAMES = ['think', 'thinking', 'reasoning', 'reasoning_engine'];
+const REASONING_TAG_ALT = REASONING_TAG_NAMES.join('|');
+
 /**
- * Parse <think> tags from content and separate thinking from response
- * Handles both complete and partial (streaming) content
+ * Parse reasoning tags from content and separate thinking from response.
+ * Handles both complete and partial (streaming) content.
  *
- * If the entire response is wrapped in <think> tags with no content outside,
+ * If the entire response is wrapped in reasoning tags with no content outside,
  * the thinking content is returned as the main content (not as reasoning).
  */
 function parseThinkTags(content) {
@@ -37,34 +43,43 @@ function parseThinkTags(content) {
     let cleanContent = content;
     let hasCompletedThinkBlock = false;
 
-    // Find all complete <think>...</think> blocks
-    const completeThinkRegex = /<think>([\s\S]*?)<\/think>/gi;
+    // Find all complete <tag>...</tag> blocks with matching open/close names
+    const completeRegex = new RegExp(`<(${REASONING_TAG_ALT})>([\\s\\S]*?)<\\/\\1>`, 'gi');
     let match;
-    while ((match = completeThinkRegex.exec(content)) !== null) {
-        reasoning += match[1];
+    while ((match = completeRegex.exec(content)) !== null) {
+        reasoning += match[2];
         cleanContent = cleanContent.replace(match[0], '');
         hasCompletedThinkBlock = true;
     }
 
-    // Handle unclosed <think> tag (content is still streaming)
-    const lastOpenIdx = cleanContent.lastIndexOf('<think>');
-    const lastCloseIdx = cleanContent.lastIndexOf('</think>');
-    const hasUnclosedThink = lastOpenIdx > lastCloseIdx;
+    // Handle unclosed opening tag (content is still streaming).
+    // After removing completed pairs, any remaining opening tag must be unclosed.
+    const openRegex = new RegExp(`<(${REASONING_TAG_ALT})>`, 'gi');
+    let lastOpen = null;
+    let m;
+    while ((m = openRegex.exec(cleanContent)) !== null) {
+        lastOpen = { tag: m[1], index: m.index, fullLength: m[0].length };
+    }
 
-    if (hasUnclosedThink) {
-        // There's an unclosed <think> tag - everything after it is reasoning
-        const partialReasoning = cleanContent.substring(lastOpenIdx + 7);
-        reasoning += partialReasoning;
-        cleanContent = cleanContent.substring(0, lastOpenIdx);
+    let hasUnclosedThink = false;
+    if (lastOpen) {
+        const lowerClean = cleanContent.toLowerCase();
+        const lastCloseIdx = lowerClean.lastIndexOf(`</${lastOpen.tag.toLowerCase()}>`);
+        if (lastOpen.index > lastCloseIdx) {
+            hasUnclosedThink = true;
+            const partialReasoning = cleanContent.substring(lastOpen.index + lastOpen.fullLength);
+            reasoning += partialReasoning;
+            cleanContent = cleanContent.substring(0, lastOpen.index);
+        }
     }
 
     // Clean up extra whitespace
     cleanContent = cleanContent.replace(/^\s+/, '').replace(/\s+$/, '');
     reasoning = reasoning.replace(/^\s+/, '').replace(/\s+$/, '');
 
-    // If content is empty but we have reasoning from COMPLETED think blocks,
-    // the model likely wrapped its entire response in <think> tags.
-    // Only apply this when think tags are closed (not during streaming).
+    // If content is empty but we have reasoning from COMPLETED blocks,
+    // the model likely wrapped its entire response in reasoning tags.
+    // Only apply this when tags are closed (not during streaming).
     if (!cleanContent && reasoning && hasCompletedThinkBlock && !hasUnclosedThink) {
         return { content: reasoning, reasoning: '' };
     }

@@ -8466,9 +8466,10 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
 
     const processSide = (text, role) => {
         if (!text || typeof text !== 'string') return;
-        // Strip <think>...</think> reasoning blocks — they're introspection,
-        // not facts worth remembering across turns.
-        const clean = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        // Strip reasoning blocks — they're introspection, not facts worth
+        // remembering across turns. Covers <think>, <thinking>, <reasoning>,
+        // and <reasoning_engine> variants emitted by different models.
+        const clean = text.replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '').trim();
         if (!clean) return;
         // Skip pure-code payloads entirely — splitting code into "sentences"
         // produces garbage and the useful facts about code live in the prose
