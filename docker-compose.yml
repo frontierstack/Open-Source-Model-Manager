@@ -46,6 +46,11 @@ services:
       # Set by build.sh automatically when SSL inspection is detected,
       # or set manually: NODE_TLS_REJECT_UNAUTHORIZED=0 ./start.sh
       - NODE_TLS_REJECT_UNAUTHORIZED=${NODE_TLS_REJECT_UNAUTHORIZED:-1}
+      # NVML initialization requires these even when deploy.resources is set,
+      # otherwise nvidia-smi inside the container fails with
+      # "Failed to initialize NVML: Unknown Error" and GPU monitoring breaks.
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       # Additional proxy settings (uncomment if needed):
       # - SSL_CERT_FILE=${SSL_CERT_FILE:-}
       # - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
