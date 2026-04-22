@@ -1580,6 +1580,7 @@ async function syncModelInstances() {
                     repeatLastN: parseInt(getEnvValue('LLAMA_REPEAT_LAST_N') || '64'),
                     presencePenalty: parseFloat(getEnvValue('LLAMA_PRESENCE_PENALTY') || '0.0'),
                     frequencyPenalty: parseFloat(getEnvValue('LLAMA_FREQUENCY_PENALTY') || '0.0'),
+                    ctxCheckpoints: parseInt(getEnvValue('LLAMA_CTX_CHECKPOINTS') || '2'),
                     // Reconstruct disableThinking from the llama.cpp --reasoning
                     // env var. Without this, the UI always shows the toggle as
                     // OFF for containers recovered on startup, even when the
@@ -1610,8 +1611,76 @@ async function syncModelInstances() {
         // CPU/GPU/RAM samples even when no model is loaded. nvidia-smi at a
         // 3s cadence is effectively free.
         startSystemMonitoring();
+        startDockerEventListener();
     } catch (error) {
         console.error('Error syncing model instances:', error);
+    }
+}
+
+// Listen to Docker's event stream and react immediately when a tracked model
+// container dies (OOM, crash, stop). Without this the only detector is the
+// per-instance health-check polling loop, which runs at 30 s intervals once
+// the model is healthy — so the UI can show a dead container as "running"
+// for up to 30 s and chat requests in that window hit EAI_AGAIN on a
+// now-unresolvable hostname. A subscribed event stream fires within ms.
+let dockerEventStream = null;
+async function startDockerEventListener() {
+    if (dockerEventStream) return;
+    try {
+        dockerEventStream = await docker.getEvents({
+            filters: { type: ['container'], event: ['die', 'oom', 'kill'] }
+        });
+        dockerEventStream.on('data', (chunk) => {
+            let evt;
+            try { evt = JSON.parse(chunk.toString()); } catch { return; }
+            const name = evt?.Actor?.Attributes?.name;
+            if (!name) return;
+            // Find a tracked instance by container name or id.
+            let matchedModel = null;
+            for (const [modelName, inst] of modelInstances.entries()) {
+                if (inst.containerName === name || inst.containerId === evt.id) {
+                    matchedModel = modelName;
+                    break;
+                }
+            }
+            if (!matchedModel) return;
+            const instance = modelInstances.get(matchedModel);
+            const action = evt.Action; // 'die' | 'oom' | 'kill'
+            const exitCode = evt?.Actor?.Attributes?.exitCode;
+            // Keep the entry in the map so the UI can show that it crashed
+            // (instead of silently vanishing); mark status and broadcast.
+            // The existing health-check loop will remove/clean up as needed.
+            instance.status = action === 'oom' ? 'oom_killed' : 'stopped';
+            instance.lastExitCode = exitCode;
+            modelInstances.set(matchedModel, instance);
+            broadcast({
+                type: 'status',
+                modelName: matchedModel,
+                status: instance.status,
+                port: instance.port,
+                error: action === 'oom'
+                    ? 'Container was killed by the OOM killer — reduce context size or ctx-checkpoints and reload.'
+                    : `Container exited (code ${exitCode ?? '?'}) — reload the model to retry.`
+            });
+            broadcast({
+                type: 'log',
+                message: `[${matchedModel}] Container ${action}${exitCode !== undefined ? ` (exit ${exitCode})` : ''}`,
+                level: 'error'
+            });
+        });
+        dockerEventStream.on('error', (err) => {
+            console.error('[DockerEvents] stream error:', err.message);
+            dockerEventStream = null;
+            setTimeout(startDockerEventListener, 5000);
+        });
+        dockerEventStream.on('close', () => {
+            dockerEventStream = null;
+            setTimeout(startDockerEventListener, 5000);
+        });
+        console.log('[DockerEvents] subscribed to container die/oom/kill events');
+    } catch (err) {
+        console.error('[DockerEvents] failed to subscribe:', err.message);
+        dockerEventStream = null;
     }
 }
 
@@ -3236,7 +3305,12 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             `LLAMA_REPEAT_PENALTY=${config.repeatPenalty}`,
             `LLAMA_REPEAT_LAST_N=${config.repeatLastN}`,
             `LLAMA_PRESENCE_PENALTY=${config.presencePenalty}`,
-            `LLAMA_FREQUENCY_PENALTY=${config.frequencyPenalty}`
+            `LLAMA_FREQUENCY_PENALTY=${config.frequencyPenalty}`,
+            // SWA/context-checkpoint storage cap. Unset (or high) values let
+            // llama.cpp accumulate >1 GiB/checkpoint in host RAM on large
+            // contexts, which OOM-kills the container mid-request. Default 2
+            // keeps some prefix-reuse benefit without unbounded growth.
+            `LLAMA_CTX_CHECKPOINTS=${config.ctxCheckpoints != null ? config.ctxCheckpoints : 2}`
         ];
 
         // Only add threads if explicitly set (non-zero)
@@ -10839,6 +10913,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         res.setTimeout(0);
         if (req.socket) req.socket.setTimeout(0);
 
+        // SSE keepalive: emit a comment line every 25s for as long as the
+        // response is open. Slow reasoning models can spend several minutes
+        // on first-token latency, during which the server sends no data.
+        // Clients with their own data-activity timeouts (Koda CLI's 5-min
+        // ACTIVITY_TIMEOUT, browsers/proxies/LBs that drop idle SSE
+        // connections) would otherwise kill the socket while the server is
+        // legitimately working. SSE comment lines start with ':' and are
+        // ignored by EventSource parsers, but they still count as bytes on
+        // the wire, resetting any inactivity timer.
+        const heartbeatInterval = setInterval(() => {
+            try {
+                if (!res.writableEnded) res.write(': heartbeat\n\n');
+            } catch (e) { /* socket closing */ }
+        }, 25000);
+        const stopHeartbeat = () => {
+            if (heartbeatInterval) clearInterval(heartbeatInterval);
+        };
+        res.on('close', stopHeartbeat);
+        res.on('finish', stopHeartbeat);
+
         // =====================================================================
         // MAP-REDUCE PROCESSING PATH
         // =====================================================================
@@ -11403,7 +11497,24 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             } else {
                 console.error('Stream error:', streamError);
                 if (clientConnected && !res.writableEnded) {
-                    const errorEvent = { error: streamError.message, done: true };
+                    // Translate DNS failures for the model hostname into an
+                    // actionable message. axios/dockerode raises EAI_AGAIN or
+                    // ENOTFOUND when the container is gone from the Docker
+                    // network — usually because it crashed or was OOM-killed
+                    // between requests. The raw getaddrinfo error is confusing
+                    // in the chat UI; tell the user what actually happened.
+                    const rawCode = streamError.code || streamError.cause?.code;
+                    const isDnsFailure = rawCode === 'EAI_AGAIN' || rawCode === 'ENOTFOUND';
+                    const isRefused = rawCode === 'ECONNREFUSED' || rawCode === 'ECONNRESET';
+                    let friendly = streamError.message;
+                    if (isDnsFailure || isRefused) {
+                        const inst = targetInstance;
+                        const status = inst?.status;
+                        friendly = status === 'oom_killed'
+                            ? `Model container was killed by the OOM killer. Reload the model with a smaller context size (current: ${inst?.config?.contextSize ?? 'unknown'}) and try again.`
+                            : `Model container is not reachable (${rawCode}). It likely crashed or was stopped — reload it from the Running Instances panel and retry.`;
+                    }
+                    const errorEvent = { error: friendly, done: true };
                     try {
                         res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
                     } catch (writeErr) { /* client disconnected */ }

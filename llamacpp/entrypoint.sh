@@ -22,6 +22,11 @@
 # - LLAMA_REPEAT_LAST_N: Last N tokens for repetition penalty (default: 64)
 # - LLAMA_PRESENCE_PENALTY: Presence penalty (default: 0.0)
 # - LLAMA_FREQUENCY_PENALTY: Frequency penalty (default: 0.0)
+# - LLAMA_CTX_CHECKPOINTS: Max SWA/context checkpoints stored per slot
+#   (default: 2). llama.cpp's built-in default is 8 which, with a large
+#   --ctx-size and SWA models like Gemma, can accumulate multi-GB of KV
+#   state in host RAM per slot and OOM-kill the container. A small cap
+#   preserves some prefix-reuse benefit without unbounded growth.
 
 set -e
 
@@ -43,6 +48,7 @@ REPEAT_PENALTY=${LLAMA_REPEAT_PENALTY:-1.1}
 REPEAT_LAST_N=${LLAMA_REPEAT_LAST_N:-64}
 PRESENCE_PENALTY=${LLAMA_PRESENCE_PENALTY:-0.0}
 FREQUENCY_PENALTY=${LLAMA_FREQUENCY_PENALTY:-0.0}
+CTX_CHECKPOINTS=${LLAMA_CTX_CHECKPOINTS:-2}
 
 echo ">>> Starting llama.cpp server"
 echo "    Model: $MODEL_PATH"
@@ -61,6 +67,7 @@ echo "    Repeat Penalty: $REPEAT_PENALTY"
 echo "    Repeat Last N: $REPEAT_LAST_N"
 echo "    Presence Penalty: $PRESENCE_PENALTY"
 echo "    Frequency Penalty: $FREQUENCY_PENALTY"
+echo "    Context Checkpoints: $CTX_CHECKPOINTS"
 
 # Build command arguments
 CMD_ARGS=(
@@ -78,6 +85,7 @@ CMD_ARGS=(
     --repeat-last-n "$REPEAT_LAST_N"
     --presence-penalty "$PRESENCE_PENALTY"
     --frequency-penalty "$FREQUENCY_PENALTY"
+    --ctx-checkpoints "$CTX_CHECKPOINTS"
 )
 
 # Add threads if specified
