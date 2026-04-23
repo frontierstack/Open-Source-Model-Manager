@@ -109,6 +109,21 @@ registerTool({
 // Catalog builder — called per-request to produce the outgoing `tools` array
 // ---------------------------------------------------------------------------
 
+// The static toolRegistry holds tools that live inside this module (the
+// hand-coded load_skill, plus web_search / fetch_url registered from
+// server.js at boot). `dynamicToolProvider` lets callers surface an
+// additional set of tools computed per-request (e.g. the enabled skills
+// for the current user). Keeps the registry small and stable while
+// letting the catalog grow organically.
+let dynamicToolProvider = null;
+function setDynamicToolProvider(fn) { dynamicToolProvider = fn || null; }
+
+// `fallbackDispatch` handles tool names not present in toolRegistry.
+// Used to route calls that came from the dynamic provider back to the
+// appropriate handler (the legacy skill executor, etc.).
+let fallbackDispatch = null;
+function setFallbackDispatch(fn) { fallbackDispatch = fn || null; }
+
 async function buildToolCatalog(ctx) {
     const out = [];
     for (const def of toolRegistry.values()) {
@@ -116,6 +131,14 @@ async function buildToolCatalog(ctx) {
             out.push(await def.build(ctx));
         } catch (e) {
             console.warn(`[chatTools] build failed for ${def.name}:`, e.message);
+        }
+    }
+    if (dynamicToolProvider) {
+        try {
+            const extra = await dynamicToolProvider(ctx);
+            if (Array.isArray(extra)) out.push(...extra);
+        } catch (e) {
+            console.warn('[chatTools] dynamic provider failed:', e.message);
         }
     }
     return out;
@@ -173,18 +196,9 @@ function finalizeToolCalls(acc) {
 // ---------------------------------------------------------------------------
 
 async function executeToolCall(call, ctx) {
-    const def = toolRegistry.get(call.function.name);
-    if (!def) {
-        return {
-            tool_call_id: call.id,
-            role: 'tool',
-            name: call.function.name,
-            content: JSON.stringify({
-                error: `Unknown tool "${call.function.name}".`,
-                available: [...toolRegistry.keys()],
-            }),
-        };
-    }
+    const toolName = call.function.name;
+    // Parse args once up-front — same error path whether we dispatch to
+    // a registered tool or the dynamic fallback.
     let args = {};
     try {
         args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
@@ -192,27 +206,47 @@ async function executeToolCall(call, ctx) {
         return {
             tool_call_id: call.id,
             role: 'tool',
-            name: call.function.name,
+            name: toolName,
             content: JSON.stringify({
                 error: `Invalid JSON in tool arguments: ${e.message}`,
                 received: call.function.arguments,
             }),
         };
     }
+
+    const def = toolRegistry.get(toolName);
+    const dispatch = def
+        ? (a, c) => def.execute(a, c)
+        : (fallbackDispatch
+            ? (a, c) => fallbackDispatch(toolName, a, c)
+            : null);
+
+    if (!dispatch) {
+        return {
+            tool_call_id: call.id,
+            role: 'tool',
+            name: toolName,
+            content: JSON.stringify({
+                error: `Unknown tool "${toolName}".`,
+                available: [...toolRegistry.keys()],
+            }),
+        };
+    }
+
     try {
-        const result = await def.execute(args, ctx);
+        const result = await dispatch(args, ctx);
         const serialized = typeof result === 'string' ? result : JSON.stringify(result);
         return {
             tool_call_id: call.id,
             role: 'tool',
-            name: call.function.name,
+            name: toolName,
             content: serialized,
         };
     } catch (e) {
         return {
             tool_call_id: call.id,
             role: 'tool',
-            name: call.function.name,
+            name: toolName,
             content: JSON.stringify({ error: e.message || String(e) }),
         };
     }
@@ -230,6 +264,8 @@ module.exports = {
     accumulateToolCallDelta,
     finalizeToolCalls,
     executeToolCall,
+    setDynamicToolProvider,
+    setFallbackDispatch,
     toolRegistry,
     MAX_TOOL_ITERATIONS,
 };

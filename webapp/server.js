@@ -4497,16 +4497,17 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
     }
 });
 
-// Native tool catalog — returns the currently registered tool names.
-// Lightweight introspection for the integration test suite and for
-// debugging when the chat stream doesn't seem to see a tool the
-// operator expected.
-app.get('/api/system/tools-catalog', requireAuth, (req, res) => {
+// Native tool catalog — returns the full list of tools the chat model
+// sees: static registry plus dynamic per-user skill surface.
+app.get('/api/system/tools-catalog', requireAuth, async (req, res) => {
     try {
         const t = require('./services/chatTools');
+        const full = await t.buildToolCatalog({ userId: req.userId });
+        const names = full.map(f => f.function?.name).filter(Boolean);
         res.json({
-            count: t.toolRegistry.size,
-            tools: [...t.toolRegistry.keys()],
+            count: names.length,
+            staticCount: t.toolRegistry.size,
+            tools: names,
         });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -14656,7 +14657,119 @@ app.use((req, res) => {
         },
     });
 
-    console.log(`[chatTools] registered ${tools.toolRegistry.size} native tools:`, [...tools.toolRegistry.keys()].join(', '));
+    // --------------------------------------------------------------
+    // Expose every enabled skill as a native tool call.
+    // --------------------------------------------------------------
+    //
+    // The model sees these as first-class OpenAI tools alongside
+    // load_skill / web_search / fetch_url, so prompts like "decode this
+    // base64" / "list the directory" / "do a dns lookup on X" resolve
+    // to a direct tool call instead of a text answer.
+    //
+    // Built per-request via setDynamicToolProvider so we always pull
+    // the current (user-scoped) skill set, including anything the user
+    // just added. Dispatch goes through executePythonSkill which already
+    // applies the sandbox / workspace / network-allowlist policy on the
+    // skill record.
+
+    // OpenAI tool names accept only [a-zA-Z0-9_-]{1,64}. Skills follow
+    // that convention already (snake_case), but sanitize defensively.
+    function safeToolName(name) {
+        return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+    }
+
+    // Skills store their parameter list as a flat map
+    //   { paramName: 'string' | 'number' | 'boolean' | 'array' | 'object' }
+    // Convert to a JSON Schema object that OpenAI tool-calling understands.
+    // Every listed param is treated as required — skill implementations
+    // generally throw on missing arguments, so this matches their
+    // runtime contract. Unknown type hints fall back to "string".
+    function paramsToJsonSchema(params) {
+        const properties = {};
+        const required = [];
+        if (params && typeof params === 'object') {
+            for (const [k, v] of Object.entries(params)) {
+                const hint = String(v || '').toLowerCase();
+                let type = 'string';
+                if (hint === 'number' || hint === 'integer' || hint === 'float') type = 'number';
+                else if (hint === 'boolean' || hint === 'bool') type = 'boolean';
+                else if (hint === 'array' || hint === 'list') type = 'array';
+                else if (hint === 'object' || hint === 'dict' || hint === 'map') type = 'object';
+                properties[k] = type === 'array'
+                    ? { type: 'array', items: { type: 'string' } }
+                    : { type };
+                required.push(k);
+            }
+        }
+        return {
+            type: 'object',
+            properties,
+            ...(required.length ? { required } : {}),
+            additionalProperties: false,
+        };
+    }
+
+    tools.setDynamicToolProvider(async (ctx) => {
+        try {
+            const all = await loadSkills();
+            const scoped = filterByUserId(all, ctx?.userId);
+            const out = [];
+            // Tool names must be unique — load_skill / web_search /
+            // fetch_url are already in the static registry. Dedupe.
+            const taken = new Set(tools.toolRegistry.keys());
+            for (const s of scoped) {
+                if (!s || s.enabled === false || !s.name) continue;
+                const name = safeToolName(s.name);
+                if (!name || taken.has(name)) continue;
+                taken.add(name);
+                out.push({
+                    type: 'function',
+                    function: {
+                        name,
+                        description: (s.description || `${s.name} skill`).slice(0, 1024),
+                        parameters: paramsToJsonSchema(s.parameters),
+                    },
+                });
+            }
+            return out;
+        } catch (e) {
+            console.warn('[chatTools] dynamic skill provider failed:', e.message);
+            return [];
+        }
+    });
+
+    tools.setFallbackDispatch(async (toolName, args, ctx) => {
+        // Called when the model invokes a tool name that isn't in the
+        // static registry — expected to be a skill from the dynamic
+        // catalog. Dispatch via executePythonSkill so the sandbox /
+        // workspace / network-allowlist policy on the skill record is
+        // respected, same as if it were called through /api/skills/:name/execute.
+        const all = await loadSkills();
+        const scoped = filterByUserId(all, ctx?.userId);
+        const safe = toolName;
+        const skill = scoped.find(s => safeToolName(s.name) === safe);
+        if (!skill) {
+            return { success: false, error: `Unknown skill: ${toolName}` };
+        }
+        if (skill.enabled === false) {
+            return { success: false, error: `Skill "${toolName}" is disabled` };
+        }
+        try {
+            let result;
+            if (skill.code && skill.code.trim() && !skill.code.startsWith('Uses ') && !skill.code.startsWith('Runs ')) {
+                result = await executePythonSkill(skill, args);
+            } else {
+                result = await executeLegacySkill(skill.name, args);
+            }
+            return result;
+        } catch (e) {
+            return { success: false, error: e.message || String(e) };
+        }
+    });
+
+    console.log(`[chatTools] registered ${tools.toolRegistry.size} static native tools:`,
+        [...tools.toolRegistry.keys()].join(', '),
+        '+ dynamic skill catalog');
 })();
 
 // ============================================================================

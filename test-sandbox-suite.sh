@@ -187,6 +187,14 @@ echo "$tools_dump" | grep -q "web_search"
 assert "Tool catalog includes web_search" $?
 echo "$tools_dump" | grep -q "fetch_url"
 assert "Tool catalog includes fetch_url" $?
+echo "$tools_dump" | grep -q "base64_decode"
+assert "Tool catalog includes base64_decode (dynamic skill surface)" $?
+echo "$tools_dump" | grep -q "dns_lookup"
+assert "Tool catalog includes dns_lookup (dynamic skill surface)" $?
+# Count should be well above the 3 static tools once skills are surfaced
+catalog_count=$(echo "$tools_dump" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("count",0))' 2>/dev/null)
+[ "${catalog_count:-0}" -ge 30 ]
+assert "Tool catalog surfaces >= 30 skills (count=$catalog_count)" $?
 
 # -----------------------------------------------------------------------
 hr "Workspace-migrated defaults"
