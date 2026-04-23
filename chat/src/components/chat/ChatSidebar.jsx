@@ -724,13 +724,13 @@ export default function ChatSidebar({
                             }}>{folder.name}</span>
                             <span style={{ ...count, paddingRight: 22 }}>{items.length}</span>
                         </button>
-                        {/* Menu trigger — hover-revealed */}
+                        {/* Menu trigger — always visible so Delete is discoverable */}
                         <div
                             className="folder-menu-trigger"
                             style={{
                                 position: 'absolute',
                                 right: 4, top: '50%', transform: 'translateY(-50%)',
-                                opacity: menuOpen ? 1 : 0,
+                                opacity: menuOpen ? 1 : 0.55,
                                 transition: 'opacity .1s',
                             }}
                             ref={menuOpen ? folderMenuRef : null}

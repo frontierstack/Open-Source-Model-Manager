@@ -4600,50 +4600,56 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     max-width: 80% !important;
 }
 
-/* Timeline - Vertical timeline with connected messages */
+/* Timeline - Vertical timeline with connected messages.
+   The line (::before) and dot (::after) are both centered on
+   --timeline-x so they're guaranteed to share the same vertical
+   axis regardless of rounding.
+
+   --msg-gap comes from the design bridge (28px). The line extends
+   half that gap above and below the message so adjacent messages'
+   lines meet edge-to-edge with no visible gap. */
 .chat-style-timeline .flex.flex-col.items-end,
 .chat-style-timeline .flex.flex-col.items-start {
     align-items: flex-start !important;
     padding-left: 2.25rem !important;
     position: relative !important;
+    --timeline-x: 0.85rem;
+    --timeline-dot-size: 10px;
+    --timeline-line-width: 2px;
 }
 
-/* Timeline line - extends into the space-y-1 gap above and below so the line
-   appears continuous across adjacent messages. */
 .chat-style-timeline .flex.flex-col.items-end::before,
 .chat-style-timeline .flex.flex-col.items-start::before {
     content: '' !important;
     position: absolute !important;
-    left: 0.45rem !important;
-    top: -0.25rem !important;
-    bottom: -0.25rem !important;
-    width: 2px !important;
-    background: rgba(var(--primary-rgb, 99, 102, 241), 0.18) !important;
+    /* Center the line on --timeline-x */
+    left: calc(var(--timeline-x) - (var(--timeline-line-width) / 2)) !important;
+    top: calc(-1 * var(--msg-gap, 28px) / 2) !important;
+    bottom: calc(-1 * var(--msg-gap, 28px) / 2) !important;
+    width: var(--timeline-line-width) !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), 0.22) !important;
     z-index: 0 !important;
 }
 
-/* Gentle fade-in at the very top of the timeline */
+/* Fade the line at the very top/bottom of the list */
 .chat-style-timeline > div:first-child::before {
-    -webkit-mask-image: linear-gradient(to bottom, transparent, black 1rem) !important;
-    mask-image: linear-gradient(to bottom, transparent, black 1rem) !important;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 1.25rem) !important;
+    mask-image: linear-gradient(to bottom, transparent, black 1.25rem) !important;
 }
-
-/* Gentle fade-out at the very bottom of the timeline */
 .chat-style-timeline > div:last-child::before {
-    -webkit-mask-image: linear-gradient(to top, transparent, black 1rem) !important;
-    mask-image: linear-gradient(to top, transparent, black 1rem) !important;
+    -webkit-mask-image: linear-gradient(to top, transparent, black 1.25rem) !important;
+    mask-image: linear-gradient(to top, transparent, black 1.25rem) !important;
 }
 
-/* Timeline dots - aligned to roughly the vertical center of the first line
-   of content (timestamp/header row). Dot is 10px so visual center lands at +5px. */
+/* Timeline dot — same --timeline-x as the line so it sits dead-center. */
 .chat-style-timeline .flex.flex-col.items-end::after,
 .chat-style-timeline .flex.flex-col.items-start::after {
     content: '' !important;
     position: absolute !important;
-    left: calc(0.45rem - 4px) !important;
-    top: 0.85rem !important;
-    width: 10px !important;
-    height: 10px !important;
+    left: calc(var(--timeline-x) - (var(--timeline-dot-size) / 2)) !important;
+    top: 0.5rem !important;
+    width: var(--timeline-dot-size) !important;
+    height: var(--timeline-dot-size) !important;
     border-radius: 50% !important;
     z-index: 1 !important;
     box-sizing: border-box !important;
@@ -4651,12 +4657,12 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
 
 .chat-style-timeline .flex.flex-col.items-end::after {
     background: var(--accent-primary, #6366f1) !important;
-    box-shadow: 0 0 0 3px rgba(var(--primary-rgb, 99, 102, 241), 0.18), 0 0 8px rgba(var(--primary-rgb, 99, 102, 241), 0.45) !important;
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb, 99, 102, 241), 0.18) !important;
 }
 
 .chat-style-timeline .flex.flex-col.items-start::after {
-    background: transparent !important;
-    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.55) !important;
+    background: var(--bg-primary) !important;
+    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.6) !important;
 }
 
 .chat-style-timeline .message-user,
