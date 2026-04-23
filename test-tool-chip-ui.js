@@ -117,7 +117,18 @@ async function testUiRendersChips() {
                   { type: 'native_tool_call', label: 'web_search',
                     query: 'query: what is Rust programming language',
                     durationMs: 1240, status: 'success',
-                    preview: '{"count":3}' },
+                    preview: '{"count":3}',
+                    sources: [
+                        { url: 'https://www.rust-lang.org',
+                          title: 'Rust Programming Language',
+                          snippet: 'A language empowering everyone to build reliable software.' },
+                        { url: 'https://en.wikipedia.org/wiki/Rust_(programming_language)',
+                          title: 'Rust - Wikipedia',
+                          snippet: 'Rust is a multi-paradigm, general-purpose programming language...' },
+                        { url: 'https://doc.rust-lang.org/book/',
+                          title: 'The Rust Programming Language Book',
+                          snippet: 'The ultimate introduction to Rust.' },
+                    ] },
                   { type: 'native_tool_call', label: 'load_skill',
                     query: 'name: summarize-url',
                     durationMs: 85, status: 'success',
@@ -153,13 +164,27 @@ async function testUiRendersChips() {
         await page.locator('text=chip test').first().click();
         await page.waitForTimeout(1500);
 
+        // Expand the web_search chip — SearchSources renders inside the
+        // expanded body (hasDetail gates the expand).
+        await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const chipBtn = buttons.find(b => /web_search/.test(b.textContent || ''));
+            if (chipBtn) chipBtn.click();
+        });
+        await page.waitForTimeout(400);
+
         const findings = await page.evaluate(() => {
             const bodyText = document.body.innerText;
+            const links = Array.from(document.querySelectorAll('a[href]'))
+                .map(a => a.getAttribute('href'))
+                .filter(h => /^https?:/.test(h));
             return {
                 has_web_search: /web_search/.test(bodyText),
                 has_load_skill: /load_skill/.test(bodyText),
                 has_timing: /1\.2s|85ms/.test(bodyText),
                 has_assistant_text: /Rust is a systems/.test(bodyText),
+                has_3_sources_badge: /3 sources/.test(bodyText),
+                source_links: links.filter(u => u.includes('rust-lang.org') || u.includes('wikipedia.org')),
             };
         });
         return findings;
@@ -190,6 +215,9 @@ async function testUiRendersChips() {
     ok('load_skill chip visible', b.has_load_skill);
     ok('timing ("1.2s" / "85ms") visible', b.has_timing);
     ok('assistant message text visible', b.has_assistant_text);
+    ok('"3 sources" badge visible on web_search chip', b.has_3_sources_badge);
+    ok('source links rendered (rust-lang.org / wikipedia.org)',
+        b.source_links.length >= 2);
 
     console.log(`\n  [1m${pass} passed, ${fail} failed[0m\n`);
     process.exit(fail ? 1 : 0);

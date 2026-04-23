@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Globe, Link as LinkIcon, Wrench, AlertCircle, ChevronDown, Check, Loader2 } from 'lucide-react';
+import SearchSources from './SearchSources';
 
 /**
  * ToolCallBlock — expandable block showing an assistant tool invocation.
@@ -33,6 +34,10 @@ export default function ToolCallBlock({ tool }) {
         status = 'success',
         error,
         preview,
+        sources,   // array of { url, title, snippet } when the tool
+                   // returned link references (web_search / fetch_url)
+        results,   // old-style client-side web_search / url_fetch payload;
+                   // used by SearchSources directly
     } = tool;
 
     const isRunning = status === 'partial';
@@ -51,9 +56,15 @@ export default function ToolCallBlock({ tool }) {
     if (type === 'native_tool_call' && query) {
         captionParts.push(query.length > 80 ? query.slice(0, 80) + '…' : query);
     }
+    // Surface a "N sources" badge when we have link references — matches
+    // the old toggle-driven web-search UX.
+    const sourceList = Array.isArray(sources) ? sources : Array.isArray(results) ? results : null;
+    const sourceCount = sourceList ? sourceList.length : null;
     if (typeof resultCount === 'number') {
         const noun = type === 'web_search' ? 'result' : type === 'url_fetch' ? 'page' : 'result';
         captionParts.push(`${resultCount} ${noun}${resultCount === 1 ? '' : 's'}`);
+    } else if (sourceCount && (type === 'native_tool_call' || type === 'web_search' || type === 'url_fetch')) {
+        captionParts.push(`${sourceCount} source${sourceCount === 1 ? '' : 's'}`);
     }
     if (isRunning) {
         captionParts.push('running…');
@@ -62,7 +73,8 @@ export default function ToolCallBlock({ tool }) {
         captionParts.push(seconds >= 1 ? `${seconds.toFixed(1)}s` : `${Math.round(durationMs)}ms`);
     }
     const caption = captionParts.join(' · ');
-    const hasDetail = (status !== 'success' && error) || (preview && !isRunning);
+    const hasSources = Array.isArray(sourceList) && sourceList.length > 0;
+    const hasDetail = (status !== 'success' && error) || (preview && !isRunning) || hasSources;
 
     const statusColor =
         isRunning ? 'var(--accent)'
@@ -141,7 +153,10 @@ export default function ToolCallBlock({ tool }) {
                             <span style={{ fontSize: 12, lineHeight: 1.5 }}>{error}</span>
                         </div>
                     )}
-                    {preview && !error && (
+                    {hasSources && (
+                        <SearchSources sources={sourceList} />
+                    )}
+                    {preview && !error && !hasSources && (
                         <pre style={{
                             margin: 0, fontFamily: 'var(--font-mono)', fontSize: 11.5,
                             color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',

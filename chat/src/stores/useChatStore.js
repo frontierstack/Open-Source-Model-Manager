@@ -450,6 +450,10 @@ export const useChatStore = create(
                     ...existing,
                     status: tc.error ? 'failed' : 'success',
                     preview: tc.preview,
+                    // Full parsed tool result — lets the UI render search
+                    // sources / URL snippets / anything structured without
+                    // re-parsing the truncated preview.
+                    result: tc.result,
                     error: tc.error,
                     durationMs: Date.now() - existing.startedAt,
                 };

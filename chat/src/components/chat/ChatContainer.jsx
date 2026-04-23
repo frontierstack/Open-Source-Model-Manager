@@ -101,6 +101,34 @@ function extractUrls(text, maxUrls = 3) {
 }
 
 /**
+ * Pull link references out of a native tool's structured result so the
+ * UI can render them as clickable source cards (SearchSources).
+ *
+ * Recognizes the shapes the built-in tools return:
+ *   web_search: { results: [{ title, url, snippet }, ...] }
+ *   fetch_url:  { url, title, content }   (single page)
+ *
+ * Returns null when the tool doesn't expose URL-shaped data. Unknown
+ * tools return null — no surprises.
+ */
+function extractSources(toolName, result) {
+    if (!result || typeof result !== 'object') return null;
+    if (toolName === 'web_search' && Array.isArray(result.results)) {
+        return result.results
+            .filter(r => r && typeof r.url === 'string' && /^https?:\/\//.test(r.url))
+            .map(r => ({ url: r.url, title: r.title || '', snippet: r.snippet || '' }));
+    }
+    if (toolName === 'fetch_url' && typeof result.url === 'string' && /^https?:\/\//.test(result.url)) {
+        return [{
+            url: result.url,
+            title: result.title || '',
+            snippet: typeof result.content === 'string' ? result.content.slice(0, 220) : '',
+        }];
+    }
+    return null;
+}
+
+/**
  * ChatContainer - Main chat interface container with Tailwind styling
  */
 export default function ChatContainer({
@@ -1528,15 +1556,24 @@ export default function ChatContainer({
                                 continue;
                             }
                             if (parsed.type === 'tool_result') {
-                                // Try to surface a JSON error field if present.
+                                // Prefer the structured `result` field (full
+                                // parsed tool output, included by the server
+                                // when small enough). Fall back to parsing the
+                                // truncated preview for an error field.
                                 let error = null;
-                                try {
-                                    const obj = JSON.parse(parsed.preview || '{}');
-                                    if (obj && obj.error) error = String(obj.error);
-                                } catch (_) { /* non-JSON preview — leave as-is */ }
+                                const result = parsed.result ?? null;
+                                if (result && typeof result === 'object' && result.error) {
+                                    error = String(result.error);
+                                } else if (!result) {
+                                    try {
+                                        const obj = JSON.parse(parsed.preview || '{}');
+                                        if (obj && obj.error) error = String(obj.error);
+                                    } catch (_) { /* non-JSON preview */ }
+                                }
                                 finishStreamingToolCall({
                                     tool_call_id: parsed.tool_call_id,
                                     preview: parsed.preview,
+                                    result,
                                     error,
                                 });
                                 continue;
@@ -1792,6 +1829,12 @@ export default function ChatContainer({
                         argPreview = String(tc.arguments).slice(0, 80);
                     }
                 }
+                // Pull link references from the structured result when the
+                // tool was a search / URL fetch — promotes them to the
+                // top-level `sources` field so SearchSources can render
+                // clickable cards below the chip, matching the old
+                // client-side web-search UX.
+                const sources = extractSources(tc.name, tc.result);
                 toolCalls.push({
                     type: 'native_tool_call',
                     label: tc.name || 'tool',
@@ -1802,6 +1845,7 @@ export default function ChatContainer({
                         : 'failed',
                     error: tc.error,
                     preview: tc.preview,
+                    sources: sources && sources.length ? sources : undefined,
                 });
             }
 

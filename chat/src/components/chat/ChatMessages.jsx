@@ -28,6 +28,19 @@ function StreamingMessage() {
                     .join(', ');
             } catch (_) { argPreview = String(tc.arguments).slice(0, 80); }
         }
+        // Surface link references for web_search / fetch_url live too.
+        let sources = null;
+        const r = tc.result;
+        if (r && typeof r === 'object') {
+            if (tc.name === 'web_search' && Array.isArray(r.results)) {
+                sources = r.results
+                    .filter(x => x && typeof x.url === 'string' && /^https?:\/\//.test(x.url))
+                    .map(x => ({ url: x.url, title: x.title || '', snippet: x.snippet || '' }));
+            } else if (tc.name === 'fetch_url' && typeof r.url === 'string' && /^https?:\/\//.test(r.url)) {
+                sources = [{ url: r.url, title: r.title || '',
+                             snippet: typeof r.content === 'string' ? r.content.slice(0, 220) : '' }];
+            }
+        }
         return {
             type: 'native_tool_call',
             label: tc.name,
@@ -38,6 +51,7 @@ function StreamingMessage() {
                 : 'failed',
             error: tc.error,
             preview: tc.preview,
+            sources: sources && sources.length ? sources : undefined,
         };
     });
 

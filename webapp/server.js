@@ -11927,11 +11927,30 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         if (clientConnected) {
                             try {
                                 const preview = String(resultMsg.content || '').slice(0, 240);
+                                // Parse the tool's JSON result once so the client
+                                // can render structured data (search sources,
+                                // URL snippets) — not just a truncated preview.
+                                // Safely no-op if the tool returned a non-JSON
+                                // string (rare; load_skill returns JSON, web_search
+                                // and fetch_url return JSON, etc.).
+                                let parsedResult = null;
+                                if (resultMsg.content && typeof resultMsg.content === 'string') {
+                                    try { parsedResult = JSON.parse(resultMsg.content); } catch { /* non-JSON */ }
+                                }
+                                // Guard: don't ship a huge result down the SSE
+                                // stream. 32 KB is generous for search results
+                                // (5 hits × a few KB each) but much smaller than
+                                // typical skill bodies.
+                                const RESULT_SIZE_CAP = 32 * 1024;
+                                const resultPayload = parsedResult && Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP
+                                    ? parsedResult
+                                    : undefined;
                                 res.write(`data: ${JSON.stringify({
                                     type: 'tool_result',
                                     tool_call_id: call.id,
                                     name: call.function.name,
                                     preview,
+                                    ...(resultPayload !== undefined ? { result: resultPayload } : {}),
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
                         }
