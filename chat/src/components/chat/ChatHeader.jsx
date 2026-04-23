@@ -3,34 +3,25 @@ import {
     ChevronDown,
     Settings,
     LogOut,
-    Circle,
-    Check,
-    Menu
+    PanelLeft,
+    Eye,
 } from 'lucide-react';
 
-/**
- * ChatHeader - Compact header with model selector and user controls
- */
 export default function ChatHeader({
-    models,
-    selectedModel,
-    onModelChange,
     onSettingsClick,
     user,
     onLogout,
-    onMobileMenuClick,
+    sidebarCollapsed,
+    onOpenSidebar,
+    breadcrumb,
+    artifactsOpen,
+    onToggleArtifacts,
 }) {
-    const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
     const [userDropdownOpen, setUserDropdownOpen] = useState(false);
-    const modelDropdownRef = useRef(null);
     const userDropdownRef = useRef(null);
 
-    // Close dropdowns when clicking outside
     useEffect(() => {
         const handleClickOutside = (event) => {
-            if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target)) {
-                setModelDropdownOpen(false);
-            }
             if (userDropdownRef.current && !userDropdownRef.current.contains(event.target)) {
                 setUserDropdownOpen(false);
             }
@@ -39,195 +30,170 @@ export default function ChatHeader({
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const modelsArray = Array.isArray(models) ? models : [];
-    const runningModels = modelsArray.filter(m => m.status === 'running');
-    const selectedModelData = modelsArray.find(m => m.name === selectedModel);
-
-    // Get user's display name or first initial
     const displayName = user?.username || user?.name || 'User';
     const userInitial = displayName.charAt(0).toUpperCase();
 
-    // Format backend display name
-    const formatBackend = (backend) => {
-        if (!backend) return null;
-        if (backend === 'vllm') return 'vLLM';
-        if (backend === 'llamacpp') return 'llama.cpp';
-        return backend;
+    // Shared styles using the design palette bridge
+    const topBtn = {
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '5px 9px', borderRadius: 6,
+        color: 'var(--ink-3)', fontSize: 12,
+        background: 'transparent', border: 0, cursor: 'pointer',
+        transition: 'background .1s, color .1s',
     };
-
-    // Get status color and animation based on model status
-    const getStatusStyles = (status) => {
-        switch (status) {
-            case 'running':
-                return {
-                    color: 'fill-green-400 text-green-400',
-                    animation: 'animate-pulse-glow',
-                    label: 'Running'
-                };
-            case 'loading':
-            case 'starting':
-                return {
-                    color: 'fill-amber-400 text-amber-400',
-                    animation: 'animate-pulse',
-                    label: status === 'loading' ? 'Loading' : 'Starting'
-                };
-            case 'unhealthy':
-            case 'error':
-                return {
-                    color: 'fill-red-400 text-red-400',
-                    animation: '',
-                    label: 'Error'
-                };
-            default:
-                return {
-                    color: 'fill-dark-500 text-dark-500',
-                    animation: '',
-                    label: 'Not loaded'
-                };
-        }
+    const topBtnActive = {
+        ...topBtn,
+        background: 'var(--accent-soft)',
+        color: 'var(--accent)',
     };
-
-    const selectedModelStatus = getStatusStyles(selectedModelData?.status);
+    const modelChip = {
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '5px 10px', borderRadius: 8,
+        background: 'var(--surface)',
+        border: '1px solid var(--rule)',
+        color: 'var(--ink-2)', fontSize: 12, fontWeight: 500,
+        cursor: 'pointer',
+        transition: 'border-color .1s, background .1s',
+    };
+    const dropdown = {
+        position: 'absolute', top: 'calc(100% + 4px)',
+        minWidth: 240,
+        background: 'var(--surface)',
+        border: '1px solid var(--rule)',
+        borderRadius: 10,
+        boxShadow: '0 10px 30px -10px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.15)',
+        padding: 6,
+        zIndex: 50,
+    };
+    const popItem = {
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+        padding: '7px 10px', borderRadius: 6,
+        textAlign: 'left',
+        background: 'transparent', border: 0, cursor: 'pointer',
+        color: 'var(--ink)',
+        transition: 'background .08s',
+    };
 
     return (
-        <header className="flex items-center justify-between px-2.5 py-1 border-b border-white/[0.04] bg-dark-900/90 backdrop-blur-xl sticky top-0 z-30">
-            {/* Left side - Mobile menu + Model selector */}
-            <div className="flex items-center gap-1">
-                {/* Mobile Menu Button */}
-                {onMobileMenuClick && (
+        <header
+            style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 16px',
+                borderBottom: '1px solid var(--rule)',
+                background: 'var(--bg)',
+                flexShrink: 0,
+                position: 'sticky',
+                top: 0,
+                zIndex: 30,
+            }}
+        >
+            {/* Left: sidebar toggle + breadcrumb */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                {/* Show-sidebar button when collapsed */}
+                {sidebarCollapsed && onOpenSidebar && (
                     <button
-                        onClick={onMobileMenuClick}
-                        className="p-1.5 rounded-md text-dark-400 hover:text-dark-200 hover:bg-white/5 transition-all md:hidden"
-                        title="Menu"
+                        onClick={onOpenSidebar}
+                        style={{ ...topBtn, padding: '6px 7px' }}
+                        title="Show sidebar"
                     >
-                        <Menu className="w-4 h-4" />
+                        <PanelLeft style={{ width: 15, height: 15 }} strokeWidth={1.75} />
                     </button>
                 )}
-                {/* Model Dropdown */}
-                <div className="relative" ref={modelDropdownRef}>
-                    <button
-                        onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-dark-800/40 border border-white/[0.06] hover:border-white/[0.12] hover:bg-dark-800/60 active:scale-[0.98] transition-all duration-150"
-                    >
-                        <Circle
-                            className={`w-1.5 h-1.5 flex-shrink-0 ${selectedModelStatus.color} ${selectedModelStatus.animation}`}
-                            title={selectedModelStatus.label}
-                        />
-                        <span className="text-[11px] font-medium text-dark-100 max-w-[180px] truncate">
-                            {selectedModel || 'Select Model'}
-                        </span>
-                        {selectedModelData?.backend && (
-                            <span
-                                className="text-[8px] font-semibold px-1 py-px rounded uppercase leading-none"
-                                style={{
-                                    backgroundColor: 'rgba(var(--primary-rgb), 0.12)',
-                                    color: 'var(--accent-primary)'
-                                }}
-                            >
-                                {formatBackend(selectedModelData.backend)}
-                            </span>
-                        )}
-                        <ChevronDown className={`w-3 h-3 text-dark-500 transition-transform duration-150 ${modelDropdownOpen ? 'rotate-180' : ''}`} />
-                    </button>
 
-                    {/* Dropdown menu */}
-                    {modelDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-0.5 w-52 py-0.5 bg-dark-900/95 backdrop-blur-xl border border-white/[0.08] rounded-md shadow-xl z-50">
-                            {runningModels.length === 0 ? (
-                                <div className="px-3 py-2.5 text-center">
-                                    <p className="text-[11px] text-dark-400">No models running</p>
-                                    <p className="text-[10px] text-dark-500 mt-0.5">Load a model from the main app</p>
-                                </div>
-                            ) : (
-                                <div className="max-h-48 overflow-y-auto">
-                                    {runningModels.map(model => {
-                                        const modelStatus = getStatusStyles(model.status);
-                                        return (
-                                            <button
-                                                key={model.name}
-                                                onClick={() => {
-                                                    onModelChange(model.name);
-                                                    setModelDropdownOpen(false);
-                                                }}
-                                                className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-white/5 transition-all"
-                                                style={selectedModel === model.name ? { backgroundColor: 'rgba(var(--primary-rgb), 0.08)' } : {}}
-                                            >
-                                                <div className="flex items-center gap-1.5 min-w-0">
-                                                    <Circle
-                                                        className={`w-1.5 h-1.5 flex-shrink-0 ${modelStatus.color} ${modelStatus.animation}`}
-                                                        title={modelStatus.label}
-                                                    />
-                                                    <span className={`text-[11px] truncate ${selectedModel === model.name ? 'font-medium text-dark-100' : 'text-dark-300'}`}>
-                                                        {model.name}
-                                                    </span>
-                                                    {model.status && model.status !== 'running' && (
-                                                        <span className={`text-[8px] px-1 py-px rounded ${
-                                                            model.status === 'loading' || model.status === 'starting'
-                                                                ? 'bg-amber-500/20 text-amber-400'
-                                                                : model.status === 'unhealthy'
-                                                                    ? 'bg-red-500/20 text-red-400'
-                                                                    : 'bg-dark-700 text-dark-400'
-                                                        }`}>
-                                                            {modelStatus.label}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                {selectedModel === model.name && (
-                                                    <Check className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} />
-                                                )}
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </div>
-
-
+                {/* Breadcrumb */}
+                {breadcrumb && breadcrumb.length > 0 && (
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        fontSize: 12.5, color: 'var(--ink)',
+                        maxWidth: 360,
+                    }}>
+                        {breadcrumb.map((item, i) => (
+                            <React.Fragment key={i}>
+                                <span style={{
+                                    color: i === breadcrumb.length - 1 ? 'var(--ink)' : 'var(--ink-3)',
+                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                    maxWidth: 160,
+                                }}>
+                                    {item}
+                                </span>
+                                {i < breadcrumb.length - 1 && <span style={{ color: 'var(--ink-4)' }}>/</span>}
+                            </React.Fragment>
+                        ))}
+                    </div>
+                )}
 
             </div>
 
-            {/* Right side - Actions */}
-            <div className="flex items-center gap-0.5">
-                {/* Settings */}
+            {/* Right: artifacts toggle + settings + user */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                {onToggleArtifacts && (
+                    <button
+                        onClick={onToggleArtifacts}
+                        style={artifactsOpen ? topBtnActive : topBtn}
+                        onMouseEnter={(e) => { if (!artifactsOpen) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                        onMouseLeave={(e) => { if (!artifactsOpen) e.currentTarget.style.background = 'transparent'; }}
+                        title="Toggle artifacts panel"
+                    >
+                        <Eye style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                        <span>Artifacts</span>
+                    </button>
+                )}
+
                 <button
                     onClick={onSettingsClick}
-                    className="p-1.5 rounded-md text-dark-400 hover:text-dark-200 hover:bg-white/[0.06] active:scale-95 transition-all duration-150"
+                    style={{ ...topBtn, padding: '6px 7px' }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
+                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                     title="Settings"
                 >
-                    <Settings className="w-4 h-4" strokeWidth={1.8} />
+                    <Settings style={{ width: 15, height: 15 }} strokeWidth={1.75} />
                 </button>
 
-                {/* User Menu */}
-                <div className="relative" ref={userDropdownRef}>
+                <div style={{ position: 'relative' }} ref={userDropdownRef}>
                     <button
                         onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-                        className="flex items-center gap-1 pl-1 pr-0.5 py-0.5 rounded-md hover:bg-white/[0.06] active:scale-95 transition-all duration-150"
+                        style={{ ...topBtn, padding: '3px 3px 3px 6px' }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                     >
                         <div
-                            className="w-6 h-6 rounded flex items-center justify-center"
-                            style={{ background: 'linear-gradient(135deg, var(--accent-hover), var(--accent-secondary))' }}
+                            style={{
+                                width: 24, height: 24, borderRadius: 6,
+                                background: 'var(--accent)', color: 'var(--accent-ink)',
+                                display: 'grid', placeItems: 'center',
+                                fontSize: 11, fontWeight: 600,
+                            }}
                         >
-                            <span className="text-[10px] font-bold text-white">{userInitial}</span>
+                            {userInitial}
                         </div>
-                        <ChevronDown className={`w-3 h-3 text-dark-500 transition-transform ${userDropdownOpen ? 'rotate-180' : ''}`} />
+                        <ChevronDown
+                            style={{
+                                width: 12, height: 12, color: 'var(--ink-4)',
+                                transform: userDropdownOpen ? 'rotate(180deg)' : 'none',
+                                transition: 'transform .15s',
+                            }}
+                            strokeWidth={2}
+                        />
                     </button>
 
                     {userDropdownOpen && (
-                        <div className="absolute top-full right-0 mt-0.5 w-36 py-0.5 bg-dark-900/95 backdrop-blur-xl border border-white/[0.08] rounded-md shadow-xl z-50">
-                            <div className="px-2.5 py-1.5 border-b border-white/5">
-                                <p className="text-[11px] font-medium text-dark-200 truncate">{displayName}</p>
+                        <div style={{ ...dropdown, right: 0, minWidth: 160 }}>
+                            <div style={{
+                                padding: '8px 10px',
+                                borderBottom: '1px solid var(--rule-2)',
+                            }}>
+                                <p style={{ fontSize: 11.5, fontWeight: 500, color: 'var(--ink-2)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {displayName}
+                                </p>
                             </div>
                             <button
-                                onClick={() => {
-                                    setUserDropdownOpen(false);
-                                    onLogout();
-                                }}
-                                className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-red-400 hover:bg-red-500/10 transition-colors"
+                                onClick={() => { setUserDropdownOpen(false); onLogout(); }}
+                                style={{ ...popItem, color: 'var(--danger)', fontSize: 11.5 }}
+                                onMouseEnter={(e) => e.currentTarget.style.background = 'color-mix(in oklab, var(--danger) 12%, transparent)'}
+                                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                             >
-                                <LogOut className="w-3 h-3" />
-                                Sign Out
+                                <LogOut style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                                Sign out
                             </button>
                         </div>
                     )}

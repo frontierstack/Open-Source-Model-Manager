@@ -34,6 +34,149 @@
 }
 
 /* ============================================
+   Design Palette Bridge
+   Exposes the research-UI design tokens (--ink, --accent, --rule,
+   --bubble-*) so new components read from one system regardless of
+   which existing theme class is applied.
+
+   Declared on `body` (same level as theme-X classes) so all vars
+   resolve in the same cascade — avoids multi-level var() lookup
+   flakiness in some browsers.
+   ============================================ */
+body {
+    /* Text scale (bridge to existing theme --text-* tokens) */
+    --ink:   var(--text-primary);
+    --ink-2: var(--text-secondary);
+    --ink-3: var(--text-tertiary);
+    --ink-4: var(--text-muted);
+
+    /* Background + surface */
+    --bg:      var(--bg-primary);
+    --bg-2:    var(--bg-secondary);
+    --surface: var(--bg-elevated, var(--bg-secondary));
+
+    /* Rules */
+    --rule:   var(--border-primary);
+    --rule-2: var(--border-secondary);
+
+    /* Accent */
+    --accent:      var(--accent-primary);
+    --accent-soft: var(--accent-muted);
+    --accent-ink:  #ffffff;
+
+    /* ---- Message bubbles — FLAT by default (match test HTML) ----
+       AI messages render as clean prose. The border uses
+       --message-border-opacity so the slider in Settings actually
+       controls border visibility even in flat mode (slider at 0 =
+       invisible, slider at 100 = solid --ink border). */
+    --bubble-ai-bg:     transparent;
+    --bubble-ai-ink:    var(--ink);
+    --bubble-border:    1px solid color-mix(in oklab, var(--ink) calc(var(--message-border-opacity, 0) * 100%), transparent);
+    --bubble-radius:    0;
+    --bubble-pad-y:     0;
+    --bubble-pad-x:     0;
+    --bubble-shadow:    none;
+
+    /* User bubble uses the theme's muted --user-msg-from so messages
+       feel distinct from the bright accent used by buttons/chips,
+       reducing the "background too strong" problem. */
+    --bubble-user-bg:   var(--user-msg-from);
+    --bubble-user-ink:  var(--user-msg-text);
+
+    /* Status */
+    --ok:      var(--success);
+    --danger:  var(--error);
+    --warning: #f59e0b;
+
+    /* Spacing — design uses 28px between messages (was 18px, too tight) */
+    --msg-gap:   28px;
+    --density-y: 18px;
+    --density-x: 22px;
+
+    /* Radius tokens from the design */
+    --radius-sm: 6px;
+    --radius:    10px;
+    --radius-lg: 14px;
+
+    /* Fonts — sans inherits from the body font-family-* class so the
+       font picker still applies. Mono uses a curated stack. Serif
+       variants are available via data-font overrides below. */
+    --font-sans:  inherit;
+    --font-serif: 'Fraunces', 'Lora', Georgia, serif;
+    --font-mono:  ui-monospace, 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace;
+}
+
+/* Per-theme contrast overrides for accent-ink */
+.theme-light   { --accent-ink: #ffffff; }
+.theme-matrix  { --accent-ink: #050a05; }
+
+/* ---- Anti-haze guard ----
+   Kill any inherited filter / backdrop-filter on the page chrome and
+   force an opaque body background. Some themes (Solarized, Andromeda,
+   Kanagawa, etc.) used semi-transparent rgba surface values that
+   leaked through the chat layout as a page-wide haze. */
+html, body, #root {
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+body {
+    background-color: var(--bg-primary) !important;
+}
+
+/* ---- Bubble density variants ----
+   Users can switch via body[data-bubble="..."] for different message
+   styling without losing the theme/accent. */
+body[data-bubble="bubbles"] {
+    --bubble-ai-bg:   var(--bg-2);
+    --bubble-border:  1px solid color-mix(in oklab, var(--ink) calc(var(--message-border-opacity, 0.15) * 100%), transparent);
+    --bubble-radius:  14px;
+    --bubble-pad-y:   14px;
+    --bubble-pad-x:   18px;
+    --bubble-shadow:  none;
+}
+body[data-bubble="cards"] {
+    --bubble-ai-bg:   var(--surface);
+    --bubble-border:  1px solid color-mix(in oklab, var(--ink) calc(var(--message-border-opacity, 0.15) * 100%), transparent);
+    --bubble-radius:  14px;
+    --bubble-pad-y:   18px;
+    --bubble-pad-x:   22px;
+    --bubble-shadow:  0 1px 0 rgba(0,0,0,0.02), 0 8px 20px -12px rgba(0,0,0,0.08);
+}
+.theme-dark body[data-bubble="cards"],
+.theme-midnight body[data-bubble="cards"],
+.theme-ocean body[data-bubble="cards"],
+.theme-sunset body[data-bubble="cards"],
+.theme-matrix body[data-bubble="cards"],
+.theme-solarized body[data-bubble="cards"],
+.theme-kanagawa body[data-bubble="cards"],
+.theme-palenight body[data-bubble="cards"] {
+    --bubble-shadow: 0 1px 0 rgba(0,0,0,0.2), 0 8px 24px -10px rgba(0,0,0,0.5);
+}
+
+/* ---- Density variants ---- */
+body[data-density="compact"] {
+    --density-y: 10px;
+    --density-x: 16px;
+    --msg-gap:   18px;
+}
+
+/* ---- Accent variants (override theme's accent) ----
+   Match the test HTML's OKLCH accent palette. */
+body[data-accent="violet"]  { --accent: oklch(0.55 0.13 290); --accent-ink: oklch(0.98 0.01 290); --accent-soft: oklch(0.95 0.04 290); }
+body[data-accent="amber"]   { --accent: oklch(0.7  0.13 70);  --accent-ink: oklch(0.2  0.02 70);  --accent-soft: oklch(0.94 0.04 70);  }
+body[data-accent="emerald"] { --accent: oklch(0.6  0.13 160); --accent-ink: oklch(0.98 0.01 160); --accent-soft: oklch(0.94 0.04 160); }
+body[data-accent="slate"]   { --accent: oklch(0.48 0.04 260); --accent-ink: oklch(0.98 0.005 260); --accent-soft: oklch(0.93 0.015 260); }
+body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklch(0.98 0.01 15);  --accent-soft: oklch(0.95 0.04 15);  }
+
+/* Dark-theme variants of accent-soft need more saturation to be visible */
+.theme-dark body[data-accent="violet"], .theme-midnight body[data-accent="violet"] { --accent-soft: oklch(0.32 0.05 290); }
+.theme-dark body[data-accent="amber"]                                               { --accent-soft: oklch(0.32 0.05 70);  }
+.theme-dark body[data-accent="emerald"]                                             { --accent-soft: oklch(0.3  0.05 160); }
+.theme-dark body[data-accent="slate"]                                               { --accent-soft: oklch(0.32 0.02 260); }
+.theme-dark body[data-accent="rose"]                                                { --accent-soft: oklch(0.32 0.06 15);  }
+
+/* ============================================
    Theme: Dark (Default)
    Clean dark theme with blue accents
    ============================================ */
@@ -359,10 +502,10 @@
    ============================================ */
 .theme-solarized {
     --primary-rgb: 38, 139, 210;
-    --bg-primary: #002b36;
-    --bg-secondary: #073642;
-    --bg-tertiary: #094756;
-    --bg-elevated: #003847;
+    --bg-primary: #00141a;
+    --bg-secondary: #021c23;
+    --bg-tertiary: #04242d;
+    --bg-elevated: #001a20;
     --bg-hover: rgba(147, 161, 161, 0.08);
     --bg-active: rgba(147, 161, 161, 0.12);
 
@@ -423,10 +566,10 @@
    ============================================ */
 .theme-kanagawa {
     --primary-rgb: 126, 156, 216;
-    --bg-primary: #1f1f28;
-    --bg-secondary: #2a2a37;
-    --bg-tertiary: #363646;
-    --bg-elevated: #24242e;
+    --bg-primary: #0d0e12;
+    --bg-secondary: #12131a;
+    --bg-tertiary: #181a23;
+    --bg-elevated: #101118;
     --bg-hover: rgba(126, 156, 216, 0.06);
     --bg-active: rgba(126, 156, 216, 0.10);
 
@@ -486,10 +629,10 @@
    ============================================ */
 .theme-palenight {
     --primary-rgb: 199, 146, 234;
-    --bg-primary: #292d3e;
-    --bg-secondary: #2c3043;
-    --bg-tertiary: #32374d;
-    --bg-elevated: #2b2f40;
+    --bg-primary: #141624;
+    --bg-secondary: #181a29;
+    --bg-tertiary: #1d1f2f;
+    --bg-elevated: #161828;
     --bg-hover: rgba(199, 146, 234, 0.06);
     --bg-active: rgba(199, 146, 234, 0.10);
 
@@ -544,11 +687,135 @@
 }
 
 /* ============================================
+   Theme: Research
+   The design-reference palette — warm cream light mode with violet
+   accent using OKLCH. Editorial feel, serif-friendly, flat bubbles.
+   ============================================ */
+.theme-research {
+    --primary-rgb: 138, 92, 245;
+
+    --bg-primary:   oklch(0.985 0.004 85);
+    --bg-secondary: oklch(0.965 0.005 85);
+    --bg-tertiary:  oklch(0.945 0.006 85);
+    --bg-elevated:  oklch(1    0     0);
+    --bg-hover:     oklch(0.93 0.01 85 / 0.6);
+    --bg-active:    oklch(0.90 0.015 85 / 0.7);
+
+    --surface-primary:   oklch(1 0 0);
+    --surface-secondary: oklch(0.985 0.004 85);
+    --surface-glass:     oklch(1 0 0 / 0.95);
+
+    --text-primary:   oklch(0.22 0.008 60);
+    --text-secondary: oklch(0.40 0.008 60);
+    --text-tertiary:  oklch(0.55 0.008 60);
+    --text-muted:     oklch(0.72 0.006 60);
+
+    --border-primary:   oklch(0.82 0.006 75);
+    --border-secondary: oklch(0.88 0.008 75);
+    --border-hover:     oklch(0.75 0.008 75);
+    --border-focus:     oklch(0.50 0.20 290);
+
+    --accent-primary:   oklch(0.50 0.22 290);
+    --accent-secondary: oklch(0.44 0.24 290);
+    --accent-hover:     oklch(0.56 0.22 290);
+    --accent-muted:     oklch(0.94 0.06 290);
+
+    --user-msg-from: oklch(0.50 0.22 290);
+    --user-msg-to:   oklch(0.44 0.24 290);
+    --user-msg-hover-from: oklch(0.53 0.22 290);
+    --user-msg-hover-to:   oklch(0.47 0.24 290);
+    --user-msg-text: oklch(0.98 0.01 290);
+
+    --assistant-bg:     transparent;
+    --assistant-border: transparent;
+    --assistant-text:   oklch(0.22 0.008 60);
+
+    --scrollbar-track:       transparent;
+    --scrollbar-thumb:       oklch(0.78 0.008 75);
+    --scrollbar-thumb-hover: oklch(0.68 0.01 75);
+
+    --code-bg:        oklch(0.96 0.005 85);
+    --code-header-bg: oklch(0.965 0.005 85);
+    --code-border:    oklch(0.88 0.008 75);
+
+    --input-bg:            oklch(1 0 0);
+    --input-border:        oklch(0.82 0.006 75);
+    --input-focus-border:  oklch(0.55 0.13 290);
+    --input-focus-ring:    oklch(0.55 0.13 290 / 0.15);
+
+    --shadow-accent:       oklch(0.55 0.13 290 / 0.22);
+    --shadow-accent-hover: oklch(0.55 0.13 290 / 0.32);
+
+    --success: oklch(0.62 0.13 155);
+    --warning: oklch(0.7  0.15 65);
+    --error:   oklch(0.58 0.17 25);
+    --info:    oklch(0.55 0.13 290);
+}
+
+/* Research theme — dark variant. Same design language, dark ground. */
+.theme-research-dark {
+    --primary-rgb: 158, 124, 252;
+
+    --bg-primary:   oklch(0.17 0.008 60);
+    --bg-secondary: oklch(0.21 0.008 60);
+    --bg-tertiary:  oklch(0.25 0.008 60);
+    --bg-elevated:  oklch(0.215 0.008 60);
+    --bg-hover:     oklch(0.27 0.009 60 / 0.6);
+    --bg-active:    oklch(0.30 0.01 60 / 0.7);
+
+    --surface-primary:   oklch(0.215 0.008 60);
+    --surface-secondary: oklch(0.25 0.008 60);
+    --surface-glass:     oklch(0.19 0.008 60 / 0.95);
+
+    --text-primary:   oklch(0.985 0.003 85);
+    --text-secondary: oklch(0.92  0.004 85);
+    --text-tertiary:  oklch(0.78  0.005 85);
+    --text-muted:     oklch(0.62  0.006 85);
+
+    --border-primary:   oklch(0.34 0.008 60);
+    --border-secondary: oklch(0.40 0.008 60);
+    --border-hover:     oklch(0.44 0.008 60);
+    --border-focus:     oklch(0.72 0.20 290);
+
+    --accent-primary:   oklch(0.72 0.20 290);
+    --accent-secondary: oklch(0.64 0.22 290);
+    --accent-hover:     oklch(0.78 0.19 290);
+    --accent-muted:     oklch(0.34 0.09 290);
+
+    --user-msg-from: oklch(0.72 0.20 290);
+    --user-msg-to:   oklch(0.64 0.22 290);
+    --user-msg-hover-from: oklch(0.75 0.19 290);
+    --user-msg-hover-to:   oklch(0.68 0.21 290);
+    --user-msg-text: oklch(0.12 0.02 290);
+
+    --assistant-bg:     transparent;
+    --assistant-border: transparent;
+    --assistant-text:   oklch(0.985 0.003 85);
+
+    --scrollbar-thumb:       oklch(0.38 0.008 60);
+    --scrollbar-thumb-hover: oklch(0.48 0.008 60);
+
+    --code-bg:        oklch(0.13 0.008 60);
+    --code-header-bg: oklch(0.215 0.008 60);
+    --code-border:    oklch(0.34 0.008 60);
+
+    --input-bg:            oklch(0.215 0.008 60);
+    --input-border:        oklch(0.34 0.008 60);
+    --input-focus-border:  oklch(0.70 0.14 290);
+    --input-focus-ring:    oklch(0.70 0.14 290 / 0.15);
+
+    --success: oklch(0.70 0.13 155);
+    --warning: oklch(0.75 0.14 65);
+    --error:   oklch(0.68 0.16 25);
+    --info:    oklch(0.70 0.14 290);
+}
+
+/* ============================================
    Theme: Light
    Clean white theme with pure black text, no purple
    ============================================ */
 .theme-light {
-    --primary-rgb: 82, 82, 91;
+    --primary-rgb: 99, 102, 241;
 
     /* Clean, warm white backgrounds with subtle depth */
     --bg-primary: #fafafa;
@@ -572,20 +839,21 @@
     --border-primary: #e5e5e5;
     --border-secondary: #f0f0f0;
     --border-hover: #d4d4d4;
-    --border-focus: #52525b;
+    --border-focus: #6366f1;
 
-    /* Neutral accent colors - no blue */
-    --accent-primary: #52525b;
-    --accent-secondary: #3f3f46;
-    --accent-hover: #71717a;
-    --accent-muted: rgba(82, 82, 91, 0.08);
+    /* Indigo accent — vivid but not loud on white, matches the
+       research-UI aesthetic. */
+    --accent-primary: #6366f1;
+    --accent-secondary: #4f46e5;
+    --accent-hover: #818cf8;
+    --accent-muted: rgba(99, 102, 241, 0.10);
 
-    /* User messages - visible blue-gray tint that stands out from white bg */
-    --user-msg-from: #d5dce8;
-    --user-msg-to: #c8d2e2;
-    --user-msg-hover-from: #cad3e2;
-    --user-msg-hover-to: #bec9dc;
-    --user-msg-text: #1a1a2e;
+    /* User messages — soft indigo tint, clearly accented but not loud */
+    --user-msg-from: #e0e2ff;
+    --user-msg-to: #d3d5fc;
+    --user-msg-hover-from: #d5d8ff;
+    --user-msg-hover-to: #c8cbfb;
+    --user-msg-text: #1e1e42;
 
     /* Assistant message styling - visible distinction from page background */
     --assistant-bg: #f0f1f4;
@@ -1191,10 +1459,10 @@
    ============================================ */
 .theme-andromeda {
     --primary-rgb: 238, 93, 67;
-    --bg-primary: #23262e;
-    --bg-secondary: #292c34;
-    --bg-tertiary: #2f323c;
-    --bg-elevated: #262930;
+    --bg-primary: #0e1016;
+    --bg-secondary: #12151c;
+    --bg-tertiary: #171b23;
+    --bg-elevated: #10131a;
     --bg-hover: rgba(238, 93, 67, 0.07);
     --bg-active: rgba(238, 93, 67, 0.12);
 
@@ -1317,10 +1585,10 @@
    ============================================ */
 .theme-slate {
     --primary-rgb: 100, 116, 139;
-    --bg-primary: #0f172a;
-    --bg-secondary: #1e293b;
-    --bg-tertiary: #334155;
-    --bg-elevated: #172033;
+    --bg-primary: #090b11;
+    --bg-secondary: #0e1118;
+    --bg-tertiary: #141823;
+    --bg-elevated: #0b0e16;
     --bg-hover: rgba(100, 116, 139, 0.08);
     --bg-active: rgba(100, 116, 139, 0.12);
 
@@ -1572,10 +1840,10 @@
    ============================================ */
 .theme-crimson {
     --primary-rgb: 220, 38, 38;
-    --bg-primary: #1a0808;
-    --bg-secondary: #230e0e;
-    --bg-tertiary: #2d1414;
-    --bg-elevated: #1e0b0b;
+    --bg-primary: #0d0404;
+    --bg-secondary: #120707;
+    --bg-tertiary: #1a0b0b;
+    --bg-elevated: #100505;
     --bg-hover: rgba(220, 38, 38, 0.08);
     --bg-active: rgba(220, 38, 38, 0.12);
 
@@ -2088,15 +2356,12 @@
     .message-assistant {
         max-width: 90%;
         min-width: 0;
-        background: var(--assistant-bg);
-        border: 1px solid var(--assistant-border);
-        border-radius: var(--radius-md);
-        border-bottom-left-radius: 2px;
-        color: var(--assistant-text, var(--text-primary));
-    }
-
-    .message-assistant:hover {
-        border-color: var(--border-hover);
+        /* Use the bridge bubble vars so theme-specific rgba assistant-bg
+           values don't bleed through as a "haze" on themes like
+           Solarized/Andromeda/Kanagawa. Chat-style rules (bubbles/cards)
+           still override with their own !important backgrounds. */
+        background: var(--bubble-ai-bg, transparent);
+        color: var(--ink, var(--assistant-text, var(--text-primary)));
     }
 
     /* System/error message */
@@ -2226,17 +2491,17 @@
         color: var(--text-muted);
     }
 
-    /* Light theme send button override — accent-primary is gray, use blue */
+    /* Light theme send button — use theme accent, not a hardcoded blue */
     .theme-light .send-btn-active {
-        background-color: #3b82f6 !important;
+        background-color: var(--accent-primary) !important;
         color: #ffffff !important;
     }
     .theme-light .send-btn-active:hover {
-        background-color: #2563eb !important;
+        background-color: var(--accent-hover) !important;
     }
     .theme-light .send-btn-disabled {
-        background-color: #e5e5e5 !important;
-        color: #a3a3a3 !important;
+        background-color: var(--bg-hover) !important;
+        color: var(--text-muted) !important;
     }
 
     .btn-secondary:disabled {
@@ -3234,7 +3499,6 @@
     background: rgba(255, 255, 255, 0.055) !important;
     color: var(--text-primary) !important;
     border-radius: 1.1rem 1.1rem 1.1rem 0.25rem !important;
-    backdrop-filter: blur(2px);
 }
 
 .chat-style-bubbles .space-y-1 > * + * {
@@ -3262,17 +3526,17 @@
 }
 
 .chat-style-slack .message-user {
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), 0.22) !important;
-    border-left: 3px solid var(--accent-primary, #6366f1) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.22)) !important;
+    border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 2 + 0.15)) !important;
     border-radius: 0 0.5rem 0.5rem 0 !important;
-    background: rgba(var(--primary-rgb, 99, 102, 241), 0.09) !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 0.5)) !important;
 }
 
 .chat-style-slack .message-assistant {
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), 0.35) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
+    border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 2 + 0.1)) !important;
     border-radius: 0 0.5rem 0.5rem 0 !important;
-    background: rgba(255, 255, 255, 0.03) !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.3)) !important;
 }
 
 .chat-style-slack .space-y-1 > * + * {
@@ -3286,8 +3550,8 @@
    primary text color for consistency. */
 .chat-style-minimal .message-user {
     max-width: 80% !important;
-    background: rgba(var(--primary-rgb, 99, 102, 241), 0.10) !important;
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), 0.28) !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.5)) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.28)) !important;
     border-radius: 0.55rem !important;
     color: var(--text-primary) !important;
     padding: 0.55rem 0.85rem !important;
@@ -3295,8 +3559,8 @@
 
 .chat-style-minimal .message-assistant {
     max-width: 90% !important;
-    background: rgba(255, 255, 255, 0.035) !important;
-    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.2)) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
     border-radius: 0.55rem !important;
     padding: 0.75rem 0.95rem !important;
     color: var(--text-primary) !important;

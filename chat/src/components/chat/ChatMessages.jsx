@@ -45,6 +45,8 @@ const ChatMessages = React.memo(function ChatMessages({
     isLoading,
     chatStyle = 'default',
     messageBorderStrength = 10,
+    header,
+    onOpenArtifacts,
 }) {
     const messagesEndRef = useRef(null);
     const containerRef = useRef(null);
@@ -97,10 +99,18 @@ const ChatMessages = React.memo(function ChatMessages({
         <div
             ref={containerRef}
             onScroll={handleScroll}
-            className={`flex-1 overflow-y-auto px-3 py-2 ${chatStyleClass}`}
+            className={`flex-1 overflow-y-auto ${chatStyleClass}`}
             style={{ '--message-border-opacity': (messageBorderStrength || 10) / 100 }}
         >
-            <div className="max-w-4xl mx-auto min-w-0 space-y-1">
+            {/* Design-spec column: max-width 780, padding 28/28/8 */}
+            <div style={{
+                maxWidth: 780,
+                width: '100%',
+                margin: '0 auto',
+                padding: '28px 28px 8px',
+                minWidth: 0,
+            }}>
+            {header}
             {messages.map((message, index) => (
                 <ChatMessage
                     key={message.id || `msg-${index}-${message.timestamp || index}`}
@@ -119,6 +129,7 @@ const ChatMessages = React.memo(function ChatMessages({
                     searchResults={message.searchResults}
                     onContinue={onContinue}
                     isLoading={isLoading}
+                    onOpenArtifacts={onOpenArtifacts}
                 />
             ))}
 

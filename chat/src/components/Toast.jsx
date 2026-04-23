@@ -29,10 +29,16 @@ const toastConfig = {
     },
     info: {
         icon: Info,
-        bgClass: 'bg-blue-500/10',
-        borderClass: 'border-blue-500/30',
-        iconClass: 'text-blue-400',
-        progressClass: 'bg-blue-500',
+        bgClass: '',
+        borderClass: '',
+        iconClass: '',
+        progressClass: '',
+        containerStyle: {
+            background: 'color-mix(in oklab, var(--accent) 10%, transparent)',
+            borderColor: 'color-mix(in oklab, var(--accent) 30%, transparent)',
+        },
+        iconStyle: { color: 'var(--accent)' },
+        progressStyle: { background: 'var(--accent)' },
     },
 };
 
@@ -91,11 +97,12 @@ function ToastItem({ toast, onDismiss }) {
                 ${config.borderClass}
                 ${isExiting ? 'animate-toast-exit' : 'animate-toast-enter'}
             `}
+            style={config.containerStyle}
             role="alert"
             aria-live="polite"
         >
             {/* Icon */}
-            <div className={`flex-shrink-0 mt-0.5 ${config.iconClass}`}>
+            <div className={`flex-shrink-0 mt-0.5 ${config.iconClass}`} style={config.iconStyle}>
                 <Icon className="w-5 h-5" />
             </div>
 
@@ -119,7 +126,7 @@ function ToastItem({ toast, onDismiss }) {
             <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/10">
                 <div
                     className={`h-full transition-none ${config.progressClass}`}
-                    style={{ width: `${progress}%`, opacity: 0.6 }}
+                    style={{ width: `${progress}%`, opacity: 0.6, ...(config.progressStyle || {}) }}
                 />
             </div>
         </div>

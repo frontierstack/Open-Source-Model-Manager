@@ -15,12 +15,10 @@ import {
     Check,
     Globe,
     Link2,
-    MessageCircle
+    Sparkles,
+    Circle,
 } from 'lucide-react';
 
-/**
- * Format file size to human readable string
- */
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -29,9 +27,6 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-/**
- * Get file type category from extension
- */
 function getFileCategory(filename) {
     const ext = '.' + filename.split('.').pop().toLowerCase();
     const codeExts = ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.php', '.swift', '.kt', '.scala', '.sh', '.bash', '.zsh', '.ps1', '.sql'];
@@ -46,9 +41,6 @@ function getFileCategory(filename) {
     return 'file';
 }
 
-/**
- * ChatInput - Floating message input with drag-and-drop file attachments
- */
 export default function ChatInput({
     onSend,
     onStop,
@@ -68,48 +60,39 @@ export default function ChatInput({
     onUrlFetchToggle,
     messages = [],
     maxContextTokens = 4096,
+    models = [],
+    selectedModel,
+    onModelChange,
 }) {
     const [message, setMessage] = useState('');
     const [isDragOver, setIsDragOver] = useState(false);
     const [isWindowDrag, setIsWindowDrag] = useState(false);
     const [uploadingFiles, setUploadingFiles] = useState([]);
     const [promptDropdownOpen, setPromptDropdownOpen] = useState(false);
+    const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
     const fileInputRef = useRef(null);
     const textareaRef = useRef(null);
     const dragCounterRef = useRef(0);
     const promptDropdownRef = useRef(null);
+    const modelDropdownRef = useRef(null);
 
-    // Estimate context usage (rough approximation: ~4 chars per token)
     const contextStats = useMemo(() => {
         let totalChars = 0;
-
-        // Count message content
         messages.forEach(msg => {
             totalChars += (msg.content || '').length;
             if (msg.reasoning) totalChars += msg.reasoning.length;
         });
-
-        // Add current message being typed
         totalChars += message.length;
-
-        // Add attachment content
         attachments.forEach(att => {
             totalChars += (att.content || '').length;
         });
-
-        // Add system prompt if selected
         const selectedPrompt = systemPrompts.find(p => p.id === selectedSystemPromptId);
         if (selectedPrompt?.content) {
             totalChars += selectedPrompt.content.length;
         }
-
-        // Rough token estimate (4 chars per token is a common approximation)
         const estimatedTokens = Math.ceil(totalChars / 4);
-
-        // Check if context is unlimited (0, undefined, or null means no limit)
         const isUnlimited = !maxContextTokens || maxContextTokens === 0;
         const usagePercent = isUnlimited ? 0 : Math.min(100, (estimatedTokens / maxContextTokens) * 100);
-
         return {
             estimatedTokens,
             maxTokens: maxContextTokens,
@@ -119,10 +102,6 @@ export default function ChatInput({
         };
     }, [messages, message, attachments, systemPrompts, selectedSystemPromptId, maxContextTokens]);
 
-    // All file types are now allowed - no restrictions
-    const allowAllFileTypes = true;
-
-    // Window-level drag detection for full-screen drop zone
     useEffect(() => {
         const handleWindowDragEnter = (e) => {
             e.preventDefault();
@@ -131,7 +110,6 @@ export default function ChatInput({
                 setIsWindowDrag(true);
             }
         };
-
         const handleWindowDragLeave = (e) => {
             e.preventDefault();
             dragCounterRef.current--;
@@ -140,23 +118,17 @@ export default function ChatInput({
                 setIsDragOver(false);
             }
         };
-
-        const handleWindowDragOver = (e) => {
-            e.preventDefault();
-        };
-
+        const handleWindowDragOver = (e) => { e.preventDefault(); };
         const handleWindowDrop = (e) => {
             e.preventDefault();
             dragCounterRef.current = 0;
             setIsWindowDrag(false);
             setIsDragOver(false);
         };
-
         window.addEventListener('dragenter', handleWindowDragEnter);
         window.addEventListener('dragleave', handleWindowDragLeave);
         window.addEventListener('dragover', handleWindowDragOver);
         window.addEventListener('drop', handleWindowDrop);
-
         return () => {
             window.removeEventListener('dragenter', handleWindowDragEnter);
             window.removeEventListener('dragleave', handleWindowDragLeave);
@@ -165,29 +137,37 @@ export default function ChatInput({
         };
     }, []);
 
-    // Auto-resize textarea on mount and when message changes
     useEffect(() => {
         if (textareaRef.current) {
             textareaRef.current.style.height = 'auto';
-            textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+            textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 220) + 'px';
         }
     }, [message]);
 
-    // Close prompt dropdown when clicking outside
     useEffect(() => {
         const handleClickOutside = (e) => {
             if (promptDropdownRef.current && !promptDropdownRef.current.contains(e.target)) {
                 setPromptDropdownOpen(false);
             }
+            if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target)) {
+                setModelDropdownOpen(false);
+            }
         };
-
-        if (promptDropdownOpen) {
+        if (promptDropdownOpen || modelDropdownOpen) {
             document.addEventListener('mousedown', handleClickOutside);
             return () => document.removeEventListener('mousedown', handleClickOutside);
         }
-    }, [promptDropdownOpen]);
+    }, [promptDropdownOpen, modelDropdownOpen]);
 
-    // Get selected prompt name for display
+    const runningModels = Array.isArray(models) ? models.filter(m => m.status === 'running') : [];
+    const selectedModelData = Array.isArray(models) ? models.find(m => m.name === selectedModel) : null;
+    const getModelStatusColor = (status) => {
+        if (status === 'running') return 'var(--ok)';
+        if (status === 'loading' || status === 'starting') return 'var(--warning, #f59e0b)';
+        if (status === 'unhealthy' || status === 'error') return 'var(--danger)';
+        return 'var(--ink-4)';
+    };
+
     const selectedPrompt = systemPrompts.find(p => p.id === selectedSystemPromptId);
 
     const handleSend = useCallback(() => {
@@ -209,12 +189,9 @@ export default function ChatInput({
 
     const handleFileSelect = useCallback(async (files) => {
         const fileArray = Array.from(files);
-        // All file types are now allowed - no filtering
         const validFiles = fileArray;
-
         if (validFiles.length === 0) return;
 
-        // Add files to uploading state
         const uploadingIds = validFiles.map(file => ({
             id: crypto.randomUUID(),
             filename: file.name,
@@ -222,7 +199,6 @@ export default function ChatInput({
         }));
         setUploadingFiles(prev => [...prev, ...uploadingIds]);
 
-        // Helper: read file as base64 (promisified FileReader)
         const readAsBase64 = (file) => new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = (e) => resolve(e.target.result.split(',')[1]);
@@ -230,7 +206,6 @@ export default function ChatInput({
             reader.readAsDataURL(file);
         });
 
-        // Helper: upload a single file with one retry on 401/5xx
         const uploadFile = async (base64, file) => {
             const doFetch = () => fetch('/api/chat/upload', {
                 method: 'POST',
@@ -242,29 +217,21 @@ export default function ChatInput({
                     mimeType: file.type,
                 }),
             });
-
             let response = await doFetch();
-
-            // Retry once on 401 (session race) or 5xx (transient server error)
             if (response.status === 401 || response.status >= 500) {
                 await new Promise(r => setTimeout(r, 500));
                 response = await doFetch();
             }
-
             return response;
         };
 
-        // Process files sequentially to avoid session race conditions
-        // and ensure reliable ordering for bulk uploads
         let failedFiles = [];
         for (let i = 0; i < validFiles.length; i++) {
             const file = validFiles[i];
             const uploadId = uploadingIds[i].id;
-
             try {
                 const base64 = await readAsBase64(file);
                 const response = await uploadFile(base64, file);
-
                 if (response.ok) {
                     const data = await response.json();
                     onAddAttachment({
@@ -294,7 +261,6 @@ export default function ChatInput({
             }
         }
 
-        // Report failures to the user via onUploadError callback
         if (failedFiles.length > 0 && onUploadError) {
             const msg = failedFiles.length === 1
                 ? `Failed to upload: ${failedFiles[0]}`
@@ -303,10 +269,8 @@ export default function ChatInput({
         }
     }, [onAddAttachment, onUploadError]);
 
-    // Convert large pasted text or clipboard images into file attachments
-    const PASTE_AS_FILE_THRESHOLD = 500; // characters
+    const PASTE_AS_FILE_THRESHOLD = 500;
     const handlePaste = useCallback(async (e) => {
-        // Handle image/file paste from clipboard (e.g. screenshots, copied images)
         if (e.clipboardData?.files?.length > 0) {
             const files = Array.from(e.clipboardData.files);
             const imageFiles = files.filter(f => f.type.startsWith('image/'));
@@ -316,41 +280,26 @@ export default function ChatInput({
                 return;
             }
         }
-
-        // Large text paste → convert to file attachment
         const pastedText = e.clipboardData?.getData('text/plain');
         if (!pastedText || pastedText.length < PASTE_AS_FILE_THRESHOLD) return;
-
         e.preventDefault();
-
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const filename = `pasted-text-${timestamp}.txt`;
         const base64 = btoa(unescape(encodeURIComponent(pastedText)));
-
-        // Show uploading indicator
         const uploadId = crypto.randomUUID();
         setUploadingFiles(prev => [...prev, { id: uploadId, filename, size: pastedText.length }]);
-
         try {
             const doFetch = () => fetch('/api/chat/upload', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({
-                    filename,
-                    content: base64,
-                    mimeType: 'text/plain',
-                }),
+                body: JSON.stringify({ filename, content: base64, mimeType: 'text/plain' }),
             });
-
             let response = await doFetch();
-
-            // Retry once on 401/5xx
             if (response.status === 401 || response.status >= 500) {
                 await new Promise(r => setTimeout(r, 500));
                 response = await doFetch();
             }
-
             if (response.ok) {
                 const data = await response.json();
                 onAddAttachment({
@@ -382,7 +331,6 @@ export default function ChatInput({
         setIsDragOver(false);
         setIsWindowDrag(false);
         dragCounterRef.current = 0;
-
         if (e.dataTransfer?.files?.length > 0) {
             handleFileSelect(e.dataTransfer.files);
         }
@@ -402,48 +350,111 @@ export default function ChatInput({
 
     const getFileIcon = (filename, type) => {
         const category = type || getFileCategory(filename);
-        const iconClass = "w-4 h-4";
-
+        const iconClass = "w-[13px] h-[13px]";
         switch (category) {
-            case 'image':
-                return <Image className={iconClass} />;
+            case 'image': return <Image className={iconClass} />;
             case 'code':
-            case 'data':
-                return <FileCode className={iconClass} />;
+            case 'data': return <FileCode className={iconClass} />;
             case 'document':
-            case 'pdf':
-                return <FileText className={iconClass} />;
-            default:
-                return <File className={iconClass} />;
-        }
-    };
-
-    const getFileTypeColor = (filename, type) => {
-        const category = type || getFileCategory(filename);
-        switch (category) {
-            case 'image':
-                return 'bg-purple-500/15 border-purple-500/30 text-purple-300';
-            case 'code':
-                return 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300';
-            case 'data':
-                return 'bg-amber-500/15 border-amber-500/30 text-amber-300';
-            case 'document':
-            case 'pdf':
-                return 'bg-blue-500/15 border-blue-500/30 text-blue-300';
-            default:
-                return 'bg-gray-500/15 border-gray-500/30 text-gray-300';
+            case 'pdf': return <FileText className={iconClass} />;
+            default: return <File className={iconClass} />;
         }
     };
 
     const hasContent = message.trim() || attachments.length > 0;
     const canSend = hasContent && !isStreaming && !disabled;
 
+    // Style objects — use CSS variables so they respect the active theme
+    const iconChip = {
+        width: 30, height: 30, borderRadius: 8,
+        display: 'grid', placeItems: 'center',
+        color: 'var(--ink-3)',
+        transition: 'background .1s, color .1s',
+        cursor: 'pointer',
+        border: 0,
+        background: 'transparent',
+    };
+    const iconChipActive = (activeColor) => ({
+        ...iconChip,
+        color: activeColor,
+        background: 'var(--accent-soft)',
+    });
+    const chip = {
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '6px 10px', borderRadius: 8,
+        color: 'var(--ink-2)', fontSize: 12.5, fontWeight: 500,
+        transition: 'background .1s',
+        cursor: 'pointer',
+        border: 0,
+        background: 'transparent',
+    };
+    const chipActive = {
+        ...chip,
+        color: 'var(--accent)',
+        background: 'var(--accent-soft)',
+    };
+    const sendBtn = {
+        width: 32, height: 32, borderRadius: 8,
+        background: 'var(--accent)',
+        color: 'var(--accent-ink)',
+        display: 'grid', placeItems: 'center',
+        transition: 'transform .1s, opacity .1s',
+        border: 0,
+    };
+    const stopBtn = {
+        width: 32, height: 32, borderRadius: 8,
+        background: 'var(--danger)',
+        color: '#fff',
+        display: 'grid', placeItems: 'center',
+        border: 0,
+        cursor: 'pointer',
+    };
+    const kbdStyle = {
+        border: '1px solid var(--rule)', borderRadius: 3,
+        padding: '0 4px',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 9.5,
+        color: 'var(--ink-3)',
+    };
+    const popover = {
+        position: 'absolute',
+        bottom: 'calc(100% + 6px)',
+        left: 0,
+        minWidth: 280,
+        maxWidth: 360,
+        background: 'var(--surface)',
+        border: '1px solid var(--rule)',
+        borderRadius: 10,
+        boxShadow: '0 10px 30px -10px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.15)',
+        padding: 6,
+        zIndex: 20,
+    };
+    const popHeader = {
+        fontSize: 10.5, letterSpacing: '.06em', textTransform: 'uppercase',
+        color: 'var(--ink-3)', fontWeight: 600,
+        padding: '6px 10px 4px',
+    };
+    const popItem = {
+        display: 'block', width: '100%', textAlign: 'left',
+        padding: '8px 10px', borderRadius: 6,
+        transition: 'background .08s',
+        cursor: 'pointer',
+        border: 0,
+        background: 'transparent',
+        color: 'var(--ink)',
+    };
+    const popItemActive = {
+        ...popItem,
+        background: 'var(--accent-soft)',
+    };
+
     return (
         <>
-            {/* Full-screen drop zone overlay */}
+            {/* Full-screen drop zone overlay — unchanged behavior, themed via variables */}
             {isWindowDrag && (
                 <div
-                    className="fixed inset-0 z-50 bg-dark-950/90 backdrop-blur-sm flex items-center justify-center transition-all duration-300 animate-fade-in"
+                    className="fixed inset-0 z-50 backdrop-blur-sm flex items-center justify-center transition-all duration-300 animate-fade-in"
+                    style={{ background: 'color-mix(in oklab, var(--bg) 85%, transparent)' }}
                     onDrop={handleDrop}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
@@ -451,398 +462,428 @@ export default function ChatInput({
                     aria-label="File drop zone"
                 >
                     <div
-                        className={`
-                            flex flex-col items-center justify-center p-12 rounded-3xl border-2 border-dashed
-                            transition-all duration-300 transform
-                            ${isDragOver
-                                ? 'border-primary-400 bg-primary-500/10 scale-105'
-                                : 'border-primary-500/50 bg-dark-900/50 scale-100'
-                            }
-                        `}
+                        className="flex flex-col items-center justify-center p-12 rounded-3xl border-2 border-dashed transition-all duration-300 transform"
+                        style={{
+                            borderColor: isDragOver ? 'var(--accent)' : 'var(--rule-2)',
+                            background: isDragOver ? 'var(--accent-soft)' : 'var(--bg-2)',
+                            transform: isDragOver ? 'scale(1.05)' : 'scale(1)',
+                        }}
                     >
-                        <div className={`
-                            w-20 h-20 rounded-2xl bg-primary-500/20 flex items-center justify-center mb-6
-                            transition-transform duration-300
-                            ${isDragOver ? 'scale-110 animate-bounce' : 'scale-100'}
-                        `}>
-                            <Upload className="w-10 h-10 text-primary-400" />
+                        <div
+                            className="w-20 h-20 rounded-2xl flex items-center justify-center mb-6 transition-transform duration-300"
+                            style={{
+                                background: 'var(--accent-soft)',
+                                color: 'var(--accent)',
+                                transform: isDragOver ? 'scale(1.1)' : 'scale(1)',
+                            }}
+                        >
+                            <Upload className="w-10 h-10" />
                         </div>
-                        <h3 className="text-xl font-semibold text-white mb-2">
+                        <h3 className="text-xl font-semibold mb-2" style={{ color: 'var(--ink)' }}>
                             Drop files to upload
                         </h3>
-                        <p className="text-dark-400 text-sm text-center max-w-xs">
-                            Supported: Images, PDFs, code files, and text documents
+                        <p className="text-sm text-center max-w-xs" style={{ color: 'var(--ink-3)' }}>
+                            Images, PDFs, code, data, and text documents all work.
                         </p>
                     </div>
                 </div>
             )}
 
-            {/* Floating input container. Always max-w-2xl mx-auto across
-                 every chat layout. Do not add per-theme widths here. */}
-            <div className="px-3 pt-1.5 pb-2.5 bg-gradient-to-t from-dark-950 via-dark-950/95 to-transparent">
-                <div className="max-w-2xl mx-auto">
-                    {/* Attachment preview cards */}
-                    {(attachments.length > 0 || uploadingFiles.length > 0) && (
-                        <div className="mb-1.5">
-                            <div className="flex items-center justify-between mb-0.5">
-                                <span className="text-[10px] text-dark-500 font-medium">
-                                    {attachments.length} file{attachments.length !== 1 ? 's' : ''}
-                                    {attachments.length > 0 && (
-                                        <span className="ml-1 text-dark-600">
-                                            ({(attachments.reduce((sum, a) => sum + (a.charCount || 0), 0) / 1000).toFixed(1)}k chars)
-                                        </span>
-                                    )}
-                                </span>
-                                {attachments.length > 1 && onClearAllAttachments && (
-                                    <button
-                                        onClick={onClearAllAttachments}
-                                        className="text-[10px] text-red-400/80 hover:text-red-300 transition-colors"
-                                    >
-                                        Clear all
-                                    </button>
-                                )}
-                            </div>
-                            <div className="flex flex-wrap gap-1" role="list">
-                                {/* Uploading files */}
-                                {uploadingFiles.map((file) => (
-                                    <div
-                                        key={file.id}
-                                        className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-dark-800/60 border border-dark-700/50 animate-pulse"
-                                        role="listitem"
-                                    >
-                                        <FileIcon className="w-3 h-3 text-dark-400 animate-spin" />
-                                        <span className="text-dark-300 truncate max-w-[100px] text-[11px]">
-                                            {file.filename}
-                                        </span>
-                                    </div>
-                                ))}
-
-                                {/* Attached files */}
-                                {attachments.map((att, index) => (
-                                    <div
-                                        key={att.id || index}
-                                        className={`group flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] ${att.requiresChunking ? 'border-blue-500/50 bg-blue-500/10' : getFileTypeColor(att.filename, att.type)}`}
-                                        role="listitem"
-                                        title={att.requiresChunking
-                                            ? `📄 Large file: ~${att.estimatedTokens?.toLocaleString()} tokens (${att.totalChunks} chunks). Will be processed automatically.`
-                                            : (att.charCount ? `${att.charCount.toLocaleString()} characters (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)${att.saved ? ` (${att.saved} saved)` : ''}` : att.filename)}
-                                    >
-                                        {att.requiresChunking && <span className="text-blue-400">📄</span>}
-                                        {getFileIcon(att.filename, att.type)}
-                                        <span className="truncate max-w-[100px]">{att.filename}</span>
-                                        <button
-                                            onClick={() => onRemoveAttachment(index)}
-                                            className="p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-white/10 transition-opacity"
-                                            aria-label={`Remove ${att.filename}`}
-                                        >
-                                            <X className="w-3 h-3" />
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Main input bar */}
-                    <div
-                        className={`
-                            relative flex items-end gap-0.5 p-1 pl-1.5 rounded-lg
-                            bg-dark-800/70 backdrop-blur-xl
-                            border transition-all duration-200 shadow-md shadow-dark-950/20
-                            ${isDragOver
-                                ? 'border-primary-500/50 ring-1 ring-primary-500/10 bg-primary-500/5'
-                                : 'border-dark-700/40 hover:border-dark-600/40 focus-within:border-primary-500/30'
-                            }
-                        `}
-                        onDrop={handleDrop}
-                        onDragOver={handleDragOver}
-                        onDragLeave={handleDragLeave}
-                    >
-                        {/* Attach button */}
-                        <input
-                            ref={fileInputRef}
-                            type="file"
-                            multiple
-                            className="hidden"
-                            onChange={(e) => {
-                                handleFileSelect(e.target.files);
-                                e.target.value = ''; // Reset to allow re-selecting same file
-                            }}
-                            aria-hidden="true"
-                        />
-                        <button
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={disabled || isStreaming}
-                            className="chat-tool-btn flex-shrink-0 p-1.5 rounded-md
-                                       disabled:opacity-30 disabled:cursor-not-allowed
-                                       transition-all duration-150"
-                            aria-label="Attach files"
-                            title="Attach files"
-                        >
-                            <Paperclip className="w-[15px] h-[15px]" strokeWidth={1.75} />
-                        </button>
-
-                        {/* Web search toggle */}
-                        <button
-                            onClick={onWebSearchToggle}
-                            disabled={disabled || isStreaming}
-                            className={`flex-shrink-0 p-1.5 rounded-md transition-all duration-150
-                                       disabled:opacity-30 disabled:cursor-not-allowed
-                                       ${webSearchEnabled
-                                           ? 'text-blue-400 bg-blue-500/12'
-                                           : 'chat-tool-btn'
-                                       }`}
-                            aria-label={webSearchEnabled ? 'Disable web search' : 'Enable web search'}
-                            title={webSearchEnabled ? 'Web search on' : 'Web search off'}
-                        >
-                            <Globe className="w-[15px] h-[15px]" strokeWidth={1.75} />
-                        </button>
-
-                        {/* URL fetch toggle */}
-                        <button
-                            onClick={onUrlFetchToggle}
-                            disabled={disabled || isStreaming}
-                            className={`flex-shrink-0 p-1.5 rounded-md transition-all duration-150
-                                       disabled:opacity-30 disabled:cursor-not-allowed
-                                       ${urlFetchEnabled
-                                           ? 'text-emerald-400 bg-emerald-500/12'
-                                           : 'chat-tool-btn'
-                                       }`}
-                            aria-label={urlFetchEnabled ? 'Disable URL fetch' : 'Enable URL fetch'}
-                            title={urlFetchEnabled ? 'URL fetch on' : 'URL fetch off'}
-                        >
-                            <Link2 className="w-[15px] h-[15px]" strokeWidth={1.75} />
-                        </button>
-
-                        {/* System prompt selector */}
-                        {systemPrompts.length > 0 && (
-                            <div className="relative flex-shrink-0" ref={promptDropdownRef}>
-                                <button
-                                    onClick={() => setPromptDropdownOpen(!promptDropdownOpen)}
-                                    disabled={disabled || isStreaming}
-                                    className={`
-                                        flex items-center gap-0.5 px-1.5 py-1 rounded-md
-                                        text-[10px] font-medium
-                                        transition-all duration-150
-                                        disabled:opacity-30 disabled:cursor-not-allowed
-                                        ${selectedPrompt
-                                            ? 'bg-primary-500/12 text-primary-300'
-                                            : 'chat-tool-btn'
-                                        }
-                                    `}
-                                    aria-label="Select system prompt"
-                                    title={selectedPrompt ? selectedPrompt.name : 'System prompt'}
-                                >
-                                    <ScrollText className="w-3 h-3" strokeWidth={1.75} />
-                                    <span className="max-w-[60px] truncate hidden sm:inline">
-                                        {selectedPrompt ? selectedPrompt.name : 'Prompt'}
+            {/* Composer wrapper — centered at 720px with generous padding
+                (matches the design's `padding: 10px 28px 16px` and keeps
+                the input compact per the chat-input-compact memory). */}
+            <div className="mx-auto w-full" style={{ maxWidth: 720, padding: '10px 28px 16px' }}>
+                {/* Attachment chips above the box */}
+                {(attachments.length > 0 || uploadingFiles.length > 0) && (
+                    <div style={{ marginBottom: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <span style={{ fontSize: 10.5, color: 'var(--ink-4)', fontWeight: 500 }}>
+                                {attachments.length} file{attachments.length !== 1 ? 's' : ''}
+                                {attachments.length > 0 && (
+                                    <span style={{ marginLeft: 4, color: 'var(--ink-4)' }}>
+                                        ({(attachments.reduce((sum, a) => sum + (a.charCount || 0), 0) / 1000).toFixed(1)}k chars)
                                     </span>
-                                    <ChevronDown className={`w-2.5 h-2.5 transition-transform duration-150 ${promptDropdownOpen ? 'rotate-180' : ''}`} />
-                                </button>
-
-                                {/* Dropdown menu */}
-                                {promptDropdownOpen && (
-                                    <div className="absolute bottom-full left-0 mb-2 w-56 py-1.5
-                                                    bg-dark-800/95 backdrop-blur-xl rounded-xl
-                                                    border border-dark-700/60 shadow-xl shadow-dark-950/50
-                                                    animate-slide-up z-50">
-                                        <div className="px-3 py-2 border-b border-dark-700/50">
-                                            <p className="text-[10px] font-semibold text-dark-400 uppercase tracking-wider">
-                                                System Prompt
-                                            </p>
-                                        </div>
-                                        <div className="max-h-48 overflow-y-auto py-1">
-                                            {/* None option */}
-                                            <button
-                                                onClick={() => {
-                                                    onSystemPromptSelect?.(null);
-                                                    setPromptDropdownOpen(false);
-                                                }}
-                                                className={`
-                                                    w-full flex items-center gap-2.5 px-3 py-2 text-left
-                                                    transition-all duration-150
-                                                    ${!selectedSystemPromptId
-                                                        ? 'bg-primary-500/10 text-primary-300'
-                                                        : 'text-dark-300 hover:bg-dark-700/50 hover:text-dark-100'
-                                                    }
-                                                `}
-                                            >
-                                                <div className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0
-                                                    ${!selectedSystemPromptId
-                                                        ? 'border-primary-400 bg-primary-500/20'
-                                                        : 'border-dark-500'
-                                                    }`}>
-                                                    {!selectedSystemPromptId && <Check className="w-2.5 h-2.5 text-primary-400" />}
-                                                </div>
-                                                <span className="text-xs font-medium">None</span>
-                                            </button>
-
-                                            {/* System prompts */}
-                                            {systemPrompts.map((prompt) => (
-                                                <button
-                                                    key={prompt.id}
-                                                    onClick={() => {
-                                                        onSystemPromptSelect?.(prompt.id);
-                                                        setPromptDropdownOpen(false);
-                                                    }}
-                                                    className={`
-                                                        w-full flex items-center gap-2.5 px-3 py-2 text-left
-                                                        transition-all duration-150
-                                                        ${selectedSystemPromptId === prompt.id
-                                                            ? 'bg-primary-500/10 text-primary-300'
-                                                            : 'text-dark-300 hover:bg-dark-700/50 hover:text-dark-100'
-                                                        }
-                                                    `}
-                                                >
-                                                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0
-                                                        ${selectedSystemPromptId === prompt.id
-                                                            ? 'border-primary-400 bg-primary-500/20'
-                                                            : 'border-dark-500'
-                                                        }`}>
-                                                        {selectedSystemPromptId === prompt.id && <Check className="w-2.5 h-2.5 text-primary-400" />}
-                                                    </div>
-                                                    <div className="flex-1 min-w-0">
-                                                        <p className="text-xs font-medium truncate">{prompt.name}</p>
-                                                        {prompt.content && (
-                                                            <p className="text-[10px] text-dark-500 truncate mt-0.5">
-                                                                {prompt.content.slice(0, 50)}{prompt.content.length > 50 ? '...' : ''}
-                                                            </p>
-                                                        )}
-                                                    </div>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
                                 )}
-                            </div>
-                        )}
+                            </span>
+                            {attachments.length > 1 && onClearAllAttachments && (
+                                <button
+                                    onClick={onClearAllAttachments}
+                                    style={{ fontSize: 10.5, color: 'var(--danger)', opacity: 0.8, background: 'transparent', border: 0, cursor: 'pointer' }}
+                                    onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
+                                    onMouseLeave={(e) => e.currentTarget.style.opacity = 0.8}
+                                >
+                                    Clear all
+                                </button>
+                            )}
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }} role="list">
+                            {uploadingFiles.map((file) => (
+                                <div
+                                    key={file.id}
+                                    className="animate-pulse"
+                                    style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                                        padding: '4px 8px', borderRadius: 6,
+                                        background: 'var(--bg-2)', border: '1px solid var(--rule)',
+                                        fontSize: 11, color: 'var(--ink-3)',
+                                    }}
+                                    role="listitem"
+                                >
+                                    <FileIcon className="w-3 h-3 animate-spin" />
+                                    <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {file.filename}
+                                    </span>
+                                </div>
+                            ))}
+                            {attachments.map((att, index) => (
+                                <div
+                                    key={att.id || index}
+                                    style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                                        padding: '4px 8px', borderRadius: 6,
+                                        background: att.requiresChunking ? 'var(--accent-soft)' : 'var(--bg-2)',
+                                        border: `1px solid ${att.requiresChunking ? 'var(--accent)' : 'var(--rule)'}`,
+                                        fontSize: 11, color: 'var(--ink-2)',
+                                    }}
+                                    role="listitem"
+                                    title={att.requiresChunking
+                                        ? `Large file: ~${att.estimatedTokens?.toLocaleString()} tokens (${att.totalChunks} chunks). Processed automatically.`
+                                        : (att.charCount ? `${att.charCount.toLocaleString()} chars (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)` : att.filename)}
+                                >
+                                    {getFileIcon(att.filename, att.type)}
+                                    <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {att.filename}
+                                    </span>
+                                    <button
+                                        onClick={() => onRemoveAttachment(index)}
+                                        style={{ padding: 2, borderRadius: 3, opacity: 0.6, background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer' }}
+                                        onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
+                                        onMouseLeave={(e) => e.currentTarget.style.opacity = 0.6}
+                                        aria-label={`Remove ${att.filename}`}
+                                    >
+                                        <X className="w-3 h-3" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
-                        {/* Text input */}
-                        <textarea
-                            ref={textareaRef}
-                            value={message}
-                            onChange={(e) => setMessage(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            onPaste={handlePaste}
-                            placeholder={isDragOver ? 'Drop files...' : 'Message...'}
-                            disabled={disabled}
-                            rows={1}
-                            className="flex-1 bg-transparent text-dark-100 placeholder:text-dark-600
-                                       resize-y focus:outline-none py-1.5 px-1.5 text-sm
-                                       max-h-[400px] min-h-[32px] leading-relaxed"
-                            style={{ height: 'auto' }}
-                            aria-label="Message input"
-                        />
+                {/* Main composer box */}
+                <div
+                    style={{
+                        position: 'relative',
+                        border: `1px solid ${isDragOver ? 'var(--accent)' : 'var(--rule-2)'}`,
+                        borderRadius: 14,
+                        background: 'var(--surface)',
+                        padding: '4px 4px 4px',
+                        boxShadow: '0 1px 0 rgba(0,0,0,.02), 0 10px 30px -20px rgba(0,0,0,.25)',
+                        transition: 'border-color .12s',
+                    }}
+                    onDrop={handleDrop}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                >
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => {
+                            handleFileSelect(e.target.files);
+                            e.target.value = '';
+                        }}
+                        aria-hidden="true"
+                    />
 
-                        {/* Send/Stop button */}
-                        <div className="flex-shrink-0 mb-px">
+                    {/* Textarea */}
+                    <textarea
+                        ref={textareaRef}
+                        value={message}
+                        onChange={(e) => setMessage(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        onPaste={handlePaste}
+                        placeholder={isDragOver ? 'Drop files…' : 'Ask anything, attach a file, or paste a paper…'}
+                        disabled={disabled}
+                        rows={1}
+                        style={{
+                            width: '100%',
+                            minHeight: 44,
+                            maxHeight: 220,
+                            border: 0,
+                            outline: 0,
+                            resize: 'none',
+                            padding: '12px 14px 6px',
+                            background: 'transparent',
+                            fontSize: 14.5,
+                            lineHeight: 1.55,
+                            color: 'var(--ink)',
+                            fontFamily: 'inherit',
+                        }}
+                        aria-label="Message input"
+                    />
+
+                    {/* Bottom control row */}
+                    <div style={{ display: 'flex', alignItems: 'center', padding: '6px 6px 6px 8px' }}>
+                        {/* Left controls */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0 }}>
+                            <button
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={disabled || isStreaming}
+                                style={{ ...iconChip, opacity: (disabled || isStreaming) ? 0.3 : 1 }}
+                                aria-label="Attach files"
+                                title="Attach files"
+                                onMouseEnter={(e) => { if (!disabled && !isStreaming) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                            >
+                                <Paperclip className="w-[15px] h-[15px]" strokeWidth={1.75} />
+                            </button>
+
+                            <button
+                                onClick={onWebSearchToggle}
+                                disabled={disabled || isStreaming}
+                                style={{ ...(webSearchEnabled ? iconChipActive('var(--accent)') : iconChip), opacity: (disabled || isStreaming) ? 0.3 : 1 }}
+                                aria-label={webSearchEnabled ? 'Disable web search' : 'Enable web search'}
+                                title={webSearchEnabled ? 'Web search on' : 'Web search off'}
+                            >
+                                <Globe className="w-[15px] h-[15px]" strokeWidth={1.75} />
+                            </button>
+
+                            <button
+                                onClick={onUrlFetchToggle}
+                                disabled={disabled || isStreaming}
+                                style={{ ...(urlFetchEnabled ? iconChipActive('var(--accent)') : iconChip), opacity: (disabled || isStreaming) ? 0.3 : 1 }}
+                                aria-label={urlFetchEnabled ? 'Disable URL fetch' : 'Enable URL fetch'}
+                                title={urlFetchEnabled ? 'URL fetch on' : 'URL fetch off'}
+                            >
+                                <Link2 className="w-[15px] h-[15px]" strokeWidth={1.75} />
+                            </button>
+
+                            {/* Persona (system prompt) chip */}
+                            {systemPrompts.length > 0 && (
+                                <div style={{ position: 'relative' }} ref={promptDropdownRef}>
+                                    <button
+                                        onClick={() => setPromptDropdownOpen(!promptDropdownOpen)}
+                                        disabled={disabled || isStreaming}
+                                        style={{ ...(selectedPrompt ? chipActive : chip), opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 180 }}
+                                        aria-label="Choose persona"
+                                        title={selectedPrompt ? `Persona: ${selectedPrompt.name}` : 'Choose persona'}
+                                    >
+                                        <Sparkles className="w-[13px] h-[13px]" strokeWidth={1.75} />
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {selectedPrompt ? selectedPrompt.name : 'Persona'}
+                                        </span>
+                                        <ChevronDown className={`w-[11px] h-[11px] transition-transform duration-150 ${promptDropdownOpen ? 'rotate-180' : ''}`} strokeWidth={1.75} />
+                                    </button>
+                                    {promptDropdownOpen && (
+                                        <div style={popover} className="animate-slide-up">
+                                            <div style={popHeader}>Persona</div>
+                                            <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                                                <button
+                                                    onClick={() => { onSystemPromptSelect?.(null); setPromptDropdownOpen(false); }}
+                                                    style={!selectedSystemPromptId ? popItemActive : popItem}
+                                                    onMouseEnter={(e) => { if (selectedSystemPromptId) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                                                    onMouseLeave={(e) => { if (selectedSystemPromptId) e.currentTarget.style.background = 'transparent'; }}
+                                                >
+                                                    <div style={{ fontSize: 12.5, fontWeight: 500 }}>Default</div>
+                                                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>No persona instructions.</div>
+                                                </button>
+                                                {systemPrompts.map((prompt) => (
+                                                    <button
+                                                        key={prompt.id}
+                                                        onClick={() => { onSystemPromptSelect?.(prompt.id); setPromptDropdownOpen(false); }}
+                                                        style={selectedSystemPromptId === prompt.id ? popItemActive : popItem}
+                                                        onMouseEnter={(e) => { if (selectedSystemPromptId !== prompt.id) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                                                        onMouseLeave={(e) => { if (selectedSystemPromptId !== prompt.id) e.currentTarget.style.background = 'transparent'; }}
+                                                    >
+                                                        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{prompt.name}</div>
+                                                        {prompt.content && (
+                                                            <div style={{ fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                                {prompt.content.slice(0, 60)}{prompt.content.length > 60 ? '…' : ''}
+                                                            </div>
+                                                        )}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Right controls */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {/* Model chip */}
+                            {onModelChange && (
+                                <div style={{ position: 'relative' }} ref={modelDropdownRef}>
+                                    <button
+                                        onClick={() => { setModelDropdownOpen(o => !o); setPromptDropdownOpen(false); }}
+                                        disabled={disabled || isStreaming}
+                                        style={{ ...chip, opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 220 }}
+                                        aria-label="Choose model"
+                                        title={selectedModel ? `Model: ${selectedModel}` : 'Select model'}
+                                    >
+                                        <Circle
+                                            style={{
+                                                width: 6, height: 6,
+                                                fill: getModelStatusColor(selectedModelData?.status),
+                                                color: getModelStatusColor(selectedModelData?.status),
+                                            }}
+                                        />
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {selectedModel || 'Select model'}
+                                        </span>
+                                        <ChevronDown
+                                            className={`w-[11px] h-[11px] transition-transform duration-150 ${modelDropdownOpen ? 'rotate-180' : ''}`}
+                                            strokeWidth={1.75}
+                                        />
+                                    </button>
+                                    {modelDropdownOpen && (
+                                        <div style={{ ...popover, left: 'auto', right: 0 }} className="animate-slide-up">
+                                            <div style={popHeader}>Model</div>
+                                            <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                                                {runningModels.length === 0 ? (
+                                                    <div style={{ padding: '10px 12px', textAlign: 'center' }}>
+                                                        <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>No models running</div>
+                                                        <div style={{ fontSize: 10.5, color: 'var(--ink-4)', marginTop: 2 }}>Load a model from the main app</div>
+                                                    </div>
+                                                ) : runningModels.map(m => (
+                                                    <button
+                                                        key={m.name}
+                                                        onClick={() => { onModelChange(m.name); setModelDropdownOpen(false); }}
+                                                        style={selectedModel === m.name ? popItemActive : popItem}
+                                                        onMouseEnter={(e) => { if (selectedModel !== m.name) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                                                        onMouseLeave={(e) => { if (selectedModel !== m.name) e.currentTarget.style.background = 'transparent'; }}
+                                                    >
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                            <Circle
+                                                                style={{
+                                                                    width: 6, height: 6,
+                                                                    fill: getModelStatusColor(m.status),
+                                                                    color: getModelStatusColor(m.status),
+                                                                    flexShrink: 0,
+                                                                }}
+                                                            />
+                                                            <span style={{ fontSize: 12.5, fontWeight: 500 }}>{m.name}</span>
+                                                            {m.backend && (
+                                                                <span style={{
+                                                                    fontSize: 9, padding: '1px 5px', borderRadius: 3,
+                                                                    background: 'var(--accent-soft)', color: 'var(--accent)',
+                                                                    fontWeight: 600, letterSpacing: '.03em', textTransform: 'uppercase',
+                                                                }}>
+                                                                    {m.backend === 'vllm' ? 'vLLM' : m.backend === 'llamacpp' ? 'llama.cpp' : m.backend}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        {m.contextSize && (
+                                                            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                                                                {Math.round(m.contextSize / 1000)}k context
+                                                            </div>
+                                                        )}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
                             {isStreaming ? (
                                 <button
                                     onClick={onStop}
-                                    className="w-7 h-7 rounded-md
-                                               bg-red-500/15 text-red-400
-                                               hover:bg-red-500/25
-                                               active:scale-95
-                                               flex items-center justify-center
-                                               transition-all duration-150"
+                                    style={stopBtn}
+                                    onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
                                     aria-label="Stop"
                                     title="Stop"
                                 >
-                                    <Square className="w-2.5 h-2.5 fill-current" />
+                                    <Square className="w-3 h-3 fill-current" />
                                 </button>
                             ) : (
                                 <button
                                     onClick={handleSend}
                                     disabled={!canSend}
-                                    className={`
-                                        send-btn w-7 h-7 rounded-md
-                                        flex items-center justify-center
-                                        transition-all duration-150
-                                        ${canSend
-                                            ? 'send-btn-active active:scale-95'
-                                            : 'send-btn-disabled cursor-not-allowed'
-                                        }
-                                    `}
+                                    style={{
+                                        ...sendBtn,
+                                        opacity: canSend ? 1 : 0.4,
+                                        cursor: canSend ? 'pointer' : 'default',
+                                    }}
+                                    onMouseEnter={(e) => { if (canSend) e.currentTarget.style.transform = 'scale(1.05)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
                                     aria-label="Send"
                                     title="Send"
                                 >
-                                    <Send className="w-3.5 h-3.5" />
+                                    <Send className="w-[15px] h-[15px]" strokeWidth={2} />
                                 </button>
                             )}
                         </div>
-
-                        {/* Inline drag indicator */}
-                        {isDragOver && (
-                            <div
-                                className="absolute inset-0 flex items-center justify-center
-                                           bg-dark-900/90 rounded-2xl backdrop-blur-sm
-                                           pointer-events-none animate-fade-in"
-                                aria-hidden="true"
-                            >
-                                <div className="flex items-center gap-3 text-primary-400">
-                                    <Upload className="w-5 h-5 animate-bounce" />
-                                    <span className="font-medium">Drop to attach</span>
-                                </div>
-                            </div>
-                        )}
                     </div>
 
-                    {/* Context window status */}
-                    <div className="flex items-center justify-between mt-1 px-0.5">
-                        <span className="text-[10px] text-dark-600">
-                            {contextStats.messageCount} msgs
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                            <div className="w-16 h-1 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--border-primary)' }}>
-                                <div
-                                    className={`h-full rounded-full transition-all duration-300 ${
-                                        contextStats.usagePercent > 90
-                                            ? 'bg-red-500'
-                                            : contextStats.usagePercent > 70
-                                            ? 'bg-amber-500'
-                                            : 'bg-emerald-500/80'
-                                    }`}
-                                    style={{ width: `${contextStats.usagePercent}%` }}
-                                />
+                    {/* Inline drag indicator */}
+                    {isDragOver && (
+                        <div
+                            style={{
+                                position: 'absolute', inset: 0,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                background: 'color-mix(in oklab, var(--surface) 90%, transparent)',
+                                borderRadius: 14, backdropFilter: 'blur(4px)',
+                                pointerEvents: 'none',
+                            }}
+                            className="animate-fade-in"
+                            aria-hidden="true"
+                        >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--accent)' }}>
+                                <Upload className="w-5 h-5 animate-bounce" />
+                                <span style={{ fontWeight: 500 }}>Drop to attach</span>
                             </div>
-                            <span className={`text-[10px] ${
-                                contextStats.isUnlimited
-                                    ? 'text-dark-600'
-                                    : contextStats.usagePercent > 90
-                                    ? 'text-red-400'
-                                    : contextStats.usagePercent > 70
-                                    ? 'text-amber-400'
-                                    : 'text-dark-600'
-                            }`}>
-                                ~{(contextStats.estimatedTokens / 1000).toFixed(1)}k / {contextStats.isUnlimited ? '∞' : `${(contextStats.maxTokens / 1000).toFixed(0)}k`}
-                            </span>
                         </div>
-                    </div>
+                    )}
+                </div>
+
+                {/* Context usage row */}
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '6px 8px 0',
+                    fontSize: 10.5, color: 'var(--ink-4)',
+                }}>
+                    <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <span>{contextStats.messageCount} msgs</span>
+                        <span>·</span>
+                        <div style={{ width: 56, height: 4, borderRadius: 2, background: 'var(--rule)', overflow: 'hidden' }}>
+                            <div
+                                style={{
+                                    height: '100%',
+                                    width: `${contextStats.usagePercent}%`,
+                                    background: contextStats.usagePercent > 90
+                                        ? 'var(--danger)'
+                                        : contextStats.usagePercent > 70
+                                            ? 'var(--warning, #f59e0b)'
+                                            : 'var(--ok)',
+                                    transition: 'width .3s',
+                                }}
+                            />
+                        </div>
+                        <span style={{
+                            fontFamily: 'var(--font-mono)',
+                            color: contextStats.isUnlimited ? 'var(--ink-4)'
+                                : contextStats.usagePercent > 90 ? 'var(--danger)'
+                                : contextStats.usagePercent > 70 ? 'var(--warning, #f59e0b)'
+                                : 'var(--ink-4)',
+                        }}>
+                            ~{(contextStats.estimatedTokens / 1000).toFixed(1)}k / {contextStats.isUnlimited ? '∞' : `${(contextStats.maxTokens / 1000).toFixed(0)}k`}
+                        </span>
+                    </span>
                 </div>
             </div>
 
-            {/* CSS animations */}
             <style>{`
-                @keyframes fade-in {
-                    from { opacity: 0; }
-                    to { opacity: 1; }
-                }
+                @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
                 @keyframes slide-up {
-                    from {
-                        opacity: 0;
-                        transform: translateY(8px);
-                    }
-                    to {
-                        opacity: 1;
-                        transform: translateY(0);
-                    }
+                    from { opacity: 0; transform: translateY(8px); }
+                    to { opacity: 1; transform: translateY(0); }
                 }
-                .animate-fade-in {
-                    animation: fade-in 0.2s ease-out;
-                }
-                .animate-slide-up {
-                    animation: slide-up 0.2s ease-out;
-                }
+                .animate-fade-in { animation: fade-in 0.2s ease-out; }
+                .animate-slide-up { animation: slide-up 0.2s ease-out; }
             `}</style>
         </>
     );

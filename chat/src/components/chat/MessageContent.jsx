@@ -55,7 +55,7 @@ const markdownComponents = {
     },
     a({ href, children }) {
         return (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary-400 hover:underline break-all">
+            <a href={href} target="_blank" rel="noopener noreferrer" className="hover:underline break-all" style={{ color: 'var(--accent)' }}>
                 {children}
             </a>
         );
@@ -71,7 +71,7 @@ const markdownComponents = {
     },
     blockquote({ children }) {
         return (
-            <blockquote className="border-l-3 border-primary-500/50 pl-4 py-1 my-4 text-dark-400 italic">
+            <blockquote className="border-l-3 pl-4 py-1 my-4 text-dark-400 italic" style={{ borderColor: 'color-mix(in oklab, var(--accent) 50%, transparent)' }}>
                 {children}
             </blockquote>
         );

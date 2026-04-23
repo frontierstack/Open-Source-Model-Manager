@@ -6,7 +6,9 @@ const STORAGE_KEYS = {
     THEME: 'chat-theme',
     SYSTEM_PROMPTS: 'chat-system-prompts',
     SETTINGS: 'chat-settings',
-    ACTIVE_CONVERSATION: 'chat-active-conversation-id'
+    ACTIVE_CONVERSATION: 'chat-active-conversation-id',
+    FOLDERS: 'chat-folders',
+    CONVERSATION_FOLDER_MAP: 'chat-conversation-folder-map'
 };
 
 // Load persisted data from localStorage
@@ -128,6 +130,11 @@ export const useChatStore = create(
 
         // System Prompts (persisted to localStorage)
         systemPrompts: loadFromStorage(STORAGE_KEYS.SYSTEM_PROMPTS, []),
+
+        // Folders — client-side only, { id, name, order, createdAt }[]
+        folders: loadFromStorage(STORAGE_KEYS.FOLDERS, []),
+        // Map of { [conversationId]: folderId } — conversations not in map are unassigned
+        conversationFolderMap: loadFromStorage(STORAGE_KEYS.CONVERSATION_FOLDER_MAP, {}),
 
         // User Info
         user: null,
@@ -254,11 +261,100 @@ export const useChatStore = create(
         deleteConversation: (id) => {
             const current = get().activeConversationId;
             if (current === id) saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null);
-            set(state => ({
-                conversations: state.conversations.filter(c => c.id !== id),
-                activeConversationId: state.activeConversationId === id ? null : state.activeConversationId,
-                messages: state.activeConversationId === id ? [] : state.messages
-            }));
+            set(state => {
+                // Remove from folder map
+                const newMap = { ...state.conversationFolderMap };
+                if (newMap[id]) {
+                    delete newMap[id];
+                    saveToStorage(STORAGE_KEYS.CONVERSATION_FOLDER_MAP, newMap);
+                }
+                return {
+                    conversations: state.conversations.filter(c => c.id !== id),
+                    activeConversationId: state.activeConversationId === id ? null : state.activeConversationId,
+                    messages: state.activeConversationId === id ? [] : state.messages,
+                    conversationFolderMap: newMap,
+                };
+            });
+        },
+
+        // ==================== Folder Actions ====================
+
+        createFolder: (name) => {
+            const trimmed = (name || '').trim();
+            if (!trimmed) return null;
+            const folder = {
+                id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                name: trimmed,
+                order: get().folders.length,
+                createdAt: new Date().toISOString(),
+            };
+            set(state => {
+                const newFolders = [...state.folders, folder];
+                saveToStorage(STORAGE_KEYS.FOLDERS, newFolders);
+                return { folders: newFolders };
+            });
+            return folder;
+        },
+
+        renameFolder: (id, name) => {
+            const trimmed = (name || '').trim();
+            if (!trimmed) return;
+            set(state => {
+                const newFolders = state.folders.map(f =>
+                    f.id === id ? { ...f, name: trimmed } : f
+                );
+                saveToStorage(STORAGE_KEYS.FOLDERS, newFolders);
+                return { folders: newFolders };
+            });
+        },
+
+        deleteFolder: (id) => {
+            set(state => {
+                const newFolders = state.folders.filter(f => f.id !== id);
+                // Strip any assignments to this folder (conversations become unassigned)
+                const newMap = { ...state.conversationFolderMap };
+                let mapDirty = false;
+                for (const [convId, folderId] of Object.entries(newMap)) {
+                    if (folderId === id) {
+                        delete newMap[convId];
+                        mapDirty = true;
+                    }
+                }
+                saveToStorage(STORAGE_KEYS.FOLDERS, newFolders);
+                if (mapDirty) saveToStorage(STORAGE_KEYS.CONVERSATION_FOLDER_MAP, newMap);
+                return { folders: newFolders, conversationFolderMap: newMap };
+            });
+        },
+
+        setConversationFolder: (conversationId, folderId) => {
+            set(state => {
+                const newMap = { ...state.conversationFolderMap };
+                if (folderId == null) {
+                    delete newMap[conversationId];
+                } else {
+                    newMap[conversationId] = folderId;
+                }
+                saveToStorage(STORAGE_KEYS.CONVERSATION_FOLDER_MAP, newMap);
+                return { conversationFolderMap: newMap };
+            });
+        },
+
+        reorderFolders: (ids) => {
+            set(state => {
+                const byId = new Map(state.folders.map(f => [f.id, f]));
+                const next = [];
+                ids.forEach((id, idx) => {
+                    const f = byId.get(id);
+                    if (f) {
+                        next.push({ ...f, order: idx });
+                        byId.delete(id);
+                    }
+                });
+                // Append any folders not in the supplied ids list (safety)
+                byId.forEach(f => next.push({ ...f, order: next.length }));
+                saveToStorage(STORAGE_KEYS.FOLDERS, next);
+                return { folders: next };
+            });
         },
 
         // Start a fresh chat (clears active conversation without deleting it)

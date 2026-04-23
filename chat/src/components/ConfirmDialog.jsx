@@ -33,10 +33,13 @@ function ConfirmDialogModal({ config, onConfirm, onCancel }) {
         },
         info: {
             icon: AlertTriangle,
-            iconBg: 'bg-blue-500/20',
-            iconColor: 'text-blue-400',
-            confirmBg: 'bg-blue-500 hover:bg-blue-600',
-            confirmRing: 'focus:ring-blue-500/30',
+            iconBg: '',
+            iconColor: '',
+            confirmBg: '',
+            confirmRing: '',
+            iconBgStyle: { background: 'color-mix(in oklab, var(--accent) 20%, transparent)' },
+            iconColorStyle: { color: 'var(--accent)' },
+            confirmStyle: { background: 'var(--accent)', color: 'var(--accent-ink)' },
         },
     };
 
@@ -59,8 +62,8 @@ function ConfirmDialogModal({ config, onConfirm, onCancel }) {
                 >
                     {/* Header */}
                     <div className="flex items-start gap-4 p-6 pb-4">
-                        <div className={`p-3 rounded-xl ${styles.iconBg}`}>
-                            <Icon className={`w-6 h-6 ${styles.iconColor}`} />
+                        <div className={`p-3 rounded-xl ${styles.iconBg}`} style={styles.iconBgStyle}>
+                            <Icon className={`w-6 h-6 ${styles.iconColor}`} style={styles.iconColorStyle} />
                         </div>
                         <div className="flex-1 min-w-0">
                             <h3 className="text-lg font-semibold text-[var(--text-primary)]">
@@ -89,6 +92,7 @@ function ConfirmDialogModal({ config, onConfirm, onCancel }) {
                         <button
                             onClick={onConfirm}
                             className={`px-4 py-2.5 text-sm font-medium text-white rounded-xl transition-colors focus:outline-none focus:ring-2 ${styles.confirmBg} ${styles.confirmRing}`}
+                            style={styles.confirmStyle}
                         >
                             {confirmText}
                         </button>

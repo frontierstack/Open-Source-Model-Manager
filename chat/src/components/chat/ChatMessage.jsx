@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle, Minimize2, Maximize2 } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle, Sparkles, User, RefreshCw, Eye, Code as CodeIcon } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import StatusIndicator from './StatusIndicator';
@@ -8,9 +8,6 @@ import SearchSources from './SearchSources';
 import ProcessingLogFeed from './ProcessingLogFeed';
 import { useChatStore } from '../../stores/useChatStore';
 
-/**
- * ChatMessage - Individual chat message bubble (Tailwind)
- */
 export default React.memo(function ChatMessage({
     id,
     role,
@@ -29,21 +26,18 @@ export default React.memo(function ChatMessage({
     isPartial,
     onContinue,
     isLoading,
-    // New: tool calls captured client-side (web search, url fetch, etc.)
-    // and the full web search results array for SearchSources rendering.
     toolCalls,
     searchResults,
-    // Rolling-credits-style processing log, rendered while isStreaming is
-    // true in place of the single mute spinner.
     processingLog,
+    modelName,
+    onOpenArtifacts,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
+    const [hovered, setHovered] = useState(false);
     const reasoningRef = useRef(null);
 
-    // Collapse state lives in the Zustand store (not local useState) so it
-    // survives React remounts and rapid re-renders during streaming.
-    // The streaming message has no `id`, so we use '__streaming__'.
+    // Collapse state lives in the Zustand store so it survives remounts during streaming.
     const collapseKey = id || (isStreaming ? '__streaming__' : null);
     const bodyCollapsed = useChatStore(state => collapseKey ? !!state.collapsedMessageIds[collapseKey] : false);
     const toggleMessageCollapsed = useChatStore(state => state.toggleMessageCollapsed);
@@ -53,7 +47,6 @@ export default React.memo(function ChatMessage({
     const displayContent = isStreaming ? streamingContent : content;
     const displayReasoning = isStreaming ? streamingReasoning : reasoning;
 
-    // Prevent auto-scroll when expanding thinking - scroll to reasoning section instead
     const handleToggleReasoning = (e) => {
         e.stopPropagation();
         setReasoningExpanded(!reasoningExpanded);
@@ -69,17 +62,108 @@ export default React.memo(function ChatMessage({
         }
     };
 
+    const timeStr = timestamp
+        ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : '';
+
+    // Shared inline styles that use the design palette bridge.
+    const aiBadge = {
+        width: 18, height: 18, borderRadius: '50%',
+        background: 'var(--ink)', color: 'var(--bg)',
+        display: 'grid', placeItems: 'center',
+        flexShrink: 0,
+    };
+    const userBadge = {
+        ...aiBadge,
+        background: 'var(--accent)', color: 'var(--accent-ink)',
+    };
+    const metaRow = {
+        display: 'flex', alignItems: 'center', gap: 8,
+        fontSize: 11.5, color: 'var(--ink-3)',
+        marginBottom: 6,
+    };
+    const metaName = { color: 'var(--ink-2)', fontWeight: 500 };
+    const metaTime = { color: 'var(--ink-4)' };
+    const aiBubble = {
+        background: 'var(--bubble-ai-bg)',
+        color: 'var(--ink)',
+        border: 'var(--bubble-border)',
+        borderRadius: 'var(--bubble-radius)',
+        padding: 'var(--bubble-pad-y) var(--bubble-pad-x)',
+        boxShadow: 'var(--bubble-shadow)',
+        fontSize: 14.5,
+        lineHeight: 1.62,
+        alignSelf: 'stretch',
+        maxWidth: '100%',
+    };
+    // User bubble stays as a proper bubble even in flat-bubble mode
+    // so right-aligned user text reads as a message, not a highlight.
+    const userBubble = {
+        background: 'var(--bubble-user-bg)',
+        color: 'var(--bubble-user-ink)',
+        borderRadius: 14,
+        padding: '10px 16px',
+        fontSize: 14.5,
+        lineHeight: 1.6,
+        maxWidth: '78%',
+        alignSelf: 'flex-end',
+    };
+    const collapseBtn = {
+        marginLeft: 'auto',
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '2px 7px', borderRadius: 4,
+        color: 'var(--ink-3)', fontSize: 10.5,
+        transition: 'opacity .12s, background .1s',
+        background: 'transparent', border: 0, cursor: 'pointer',
+        opacity: hovered || bodyCollapsed ? 1 : 0.35,
+    };
+    const actionsRow = {
+        display: 'flex', alignItems: 'center', gap: 2,
+        marginTop: 4,
+        transition: 'opacity .12s',
+        opacity: hovered ? 1 : 0,
+    };
+    const actionBtn = {
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '4px 8px', borderRadius: 5,
+        color: 'var(--ink-3)', fontSize: 11,
+        background: 'transparent', border: 0, cursor: 'pointer',
+        transition: 'background .1s, color .1s',
+    };
+    const actionBtnActive = {
+        ...actionBtn,
+        color: 'var(--ok)',
+        background: 'color-mix(in oklab, var(--ok) 15%, transparent)',
+    };
+    const tokenCountStyle = {
+        fontSize: 10.5, color: 'var(--ink-4)',
+        fontFamily: 'var(--font-mono)',
+    };
+
     return (
-        <div className={`flex flex-col min-w-0 ${isUser ? 'items-end' : 'items-start'} max-w-full ${isStreaming ? '' : 'animate-fade-in'}`}>
-            {/* File attachments for user messages */}
+        <div
+            style={{
+                gap: 6,
+                width: '100%',
+                marginBottom: 'var(--msg-gap)',
+            }}
+            className={`flex flex-col min-w-0 ${isUser ? 'items-end' : 'items-start'} ${isStreaming ? '' : 'animate-fade-in'}`}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+        >
+            {/* File attachments above user messages */}
             {isUser && attachments && attachments.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-1 max-w-[85%] justify-end">
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 2, maxWidth: '85%' }}>
                     {attachments.map((att, i) => (
                         <div
                             key={i}
-                            className="px-2 py-0.5 rounded-md bg-primary-500/15 border border-primary-500/20"
+                            style={{
+                                padding: '2px 8px', borderRadius: 6,
+                                background: 'var(--accent-soft)',
+                                border: '1px solid var(--accent)',
+                            }}
                         >
-                            <span className="text-[11px] text-primary-300">
+                            <span style={{ fontSize: 11, color: 'var(--accent)' }}>
                                 {att.filename || att.name}
                             </span>
                         </div>
@@ -87,228 +171,276 @@ export default React.memo(function ChatMessage({
                 </div>
             )}
 
-            {/* Message bubble — skip entirely for a user message with no
-                text (happens after paste-as-file converts the pasted text
-                to an attachment; the attachment chip renders above, so an
-                empty bubble here just shows as a blank green bar). */}
-            {isUser && !displayContent ? null : (
-            <div
-                className={`group relative min-w-[60px] ${
-                    isUser
-                        ? 'message-user px-3.5 py-2.5'
-                        : 'message-assistant px-4 py-3'
-                }`}
-            >
-                {/* Thinking/Reasoning section */}
-                {displayReasoning && (
-                    <div className="mb-2" ref={reasoningRef}>
-                        <button
-                            onClick={handleToggleReasoning}
-                            className="flex items-center gap-1 text-dark-500 hover:text-dark-300 transition-colors"
-                        >
-                            <span className="text-[11px] font-medium">Thinking</span>
-                            <span className="text-[10px] text-dark-600">({displayReasoning.length})</span>
-                            {reasoningExpanded ? (
-                                <ChevronUp className="w-3 h-3" />
-                            ) : (
-                                <ChevronDown className="w-3 h-3" />
-                            )}
-                        </button>
-                        {reasoningExpanded && (
-                            <div className="mt-1.5 p-2.5 rounded-md bg-white/[0.03] border border-white/[0.06] max-h-64 overflow-y-auto">
-                                <p className="text-sm text-dark-400 italic whitespace-pre-wrap leading-relaxed">
-                                    {displayReasoning}
-                                </p>
-                            </div>
-                        )}
+            {/* Meta row: badge + name + time + collapse toggle */}
+            <div style={{
+                ...metaRow,
+                alignSelf: isUser ? 'flex-end' : 'flex-start',
+                flexDirection: isUser ? 'row-reverse' : 'row',
+            }}>
+                {isUser ? (
+                    <div style={userBadge}>
+                        <User style={{ width: 10, height: 10 }} strokeWidth={2} />
                     </div>
-                )}
-
-                {/* Collapse/expand toggle for the assistant message body.
-                    Shown on any assistant message that has content (including
-                    while streaming) so the user can collapse/expand at will. */}
-                {!isUser && displayContent && (
-                    <div className="flex items-center justify-end mb-1 -mt-0.5">
-                        <button
-                            onClick={() => collapseKey && toggleMessageCollapsed(collapseKey)}
-                            className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] text-dark-500 hover:text-dark-200 hover:bg-white/[0.05] transition-colors"
-                            title={bodyCollapsed ? 'Expand response' : 'Collapse response'}
-                        >
-                            {bodyCollapsed ? (
-                                <>
-                                    <Maximize2 className="w-3 h-3" />
-                                    <span>Expand</span>
-                                </>
-                            ) : (
-                                <>
-                                    <Minimize2 className="w-3 h-3" />
-                                    <span>Collapse</span>
-                                </>
-                            )}
-                        </button>
-                    </div>
-                )}
-
-                {/* Content */}
-                {isStreaming && !displayContent ? (
-                    // While streaming and no tokens have arrived yet, show
-                    // the rolling-credits processing log in place of a mute
-                    // spinner. Falls back to the legacy status indicator if
-                    // no log entries exist yet (very brief window at turn
-                    // start).
-                    <div className="flex flex-col gap-1 min-w-[220px]">
-                        {Array.isArray(processingLog) && processingLog.length > 0 ? (
-                            <ProcessingLogFeed log={processingLog} />
-                        ) : processingStatus ? (
-                            <StatusIndicator status={processingStatus} message={processingMessage} />
-                        ) : (
-                            <ThinkingIndicator />
-                        )}
-                    </div>
-                ) : bodyCollapsed ? (
-                    // Collapsed: show a compact preview instead of the full
-                    // markdown body so the message doesn't become an empty
-                    // rectangle. Derives a one-line title from the first
-                    // non-empty, non-markdown line of the response, and a
-                    // character count. Clicking anywhere re-expands.
-                    (() => {
-                        // Strip fenced code blocks, headers, bullet markers,
-                        // bold/italic, and inline code so the preview reads
-                        // like plain prose rather than markdown source.
-                        const cleaned = (displayContent || '')
-                            .replace(/```[\s\S]*?```/g, '[code]')
-                            .replace(/`([^`]+)`/g, '$1')
-                            .replace(/\*\*([^*]+)\*\*/g, '$1')
-                            .replace(/\*([^*]+)\*/g, '$1')
-                            .replace(/^#{1,6}\s+/gm, '')
-                            .replace(/^[-*+]\s+/gm, '')
-                            .replace(/^\d+\.\s+/gm, '');
-                        const firstLine = (cleaned.split('\n').find(l => l.trim().length > 0) || '').trim();
-                        const MAX = 90;
-                        const preview = firstLine.length > MAX
-                            ? firstLine.slice(0, MAX).replace(/\s+\S*$/, '') + '…'
-                            : firstLine;
-                        const chars = (displayContent || '').length;
-                        return (
-                            <button
-                                onClick={() => collapseKey && setMessageCollapsed(collapseKey, false)}
-                                className="w-full text-left group transition-colors"
-                            >
-                                <div className="flex items-start gap-2 text-[12.5px]">
-                                    <Maximize2 className="w-3 h-3 mt-0.5 flex-shrink-0 text-dark-500 group-hover:text-primary-400 transition-colors" />
-                                    <div className="flex-1 min-w-0">
-                                        <div className="text-dark-200 group-hover:text-white truncate transition-colors">
-                                            {preview || 'Collapsed response'}
-                                        </div>
-                                        <div className="text-[10.5px] text-dark-500 mt-0.5 group-hover:text-dark-400 transition-colors">
-                                            {chars.toLocaleString()} character{chars === 1 ? '' : 's'} · click to expand
-                                        </div>
-                                    </div>
-                                </div>
-                            </button>
-                        );
-                    })()
                 ) : (
-                    <MessageContent content={displayContent} isStreaming={isStreaming} />
-                )}
-
-                {/* Web search source chips + tool-call blocks. Rendered
-                    BELOW the response body so the hover preview on a source
-                    chip has room above it to render without being clipped
-                    by the viewport edge. Order: source chips first (they're
-                    the primary provenance), then any additional tool calls
-                    (url fetch, skills, etc) as compact status pills below. */}
-                {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(searchResults) && searchResults.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-white/[0.04]">
-                        <SearchSources sources={searchResults} />
+                    <div style={aiBadge}>
+                        <Sparkles style={{ width: 10, height: 10 }} strokeWidth={2} />
                     </div>
                 )}
-
-                {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (
-                    <div className="flex flex-wrap items-center mt-2 pt-2 border-t border-white/[0.04]">
-                        {toolCalls.map((tc, idx) => (
-                            <ToolCallBlock key={idx} tool={tc} />
-                        ))}
-                    </div>
-                )}
-
-                {/* Partial/interrupted response indicator */}
-                {!isUser && !isStreaming && (needsContinuation || isPartial) && (
-                    <div className="flex items-center gap-1.5 mt-1.5 px-2 py-1 rounded-md bg-amber-500/8 border border-amber-500/15">
-                        <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
-                        <span className="text-[11px] text-amber-300/80">
-                            Response cut off
+                <span style={metaName}>{isUser ? 'You' : (modelName || 'Assistant')}</span>
+                {timeStr && <span style={metaTime}>{timeStr}</span>}
+                {!isUser && displayContent && !isStreaming && collapseKey && (
+                    <button
+                        onClick={() => toggleMessageCollapsed(collapseKey)}
+                        style={collapseBtn}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-2)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                        title={bodyCollapsed ? 'Expand response' : 'Collapse response'}
+                    >
+                        <span style={{ display: 'inline-flex', transform: bodyCollapsed ? 'none' : 'rotate(180deg)', transition: 'transform .15s' }}>
+                            <ChevronDown style={{ width: 11, height: 11 }} strokeWidth={2} />
                         </span>
-                    </div>
+                        <span>{bodyCollapsed ? 'Expand' : 'Collapse'}</span>
+                    </button>
                 )}
+            </div>
 
-                {/* Actions (copy button + continue button) - always visible for assistant messages */}
-                {!isUser && displayContent && !isStreaming && (
-                    <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-white/[0.04]">
-                        <div className="flex items-center gap-1.5">
-                            {/* Continue button for partial responses */}
-                            {(needsContinuation || isPartial) && onContinue && (
-                                <button
-                                    onClick={() => onContinue(id, content)}
-                                    disabled={isLoading}
-                                    className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                                        isLoading
-                                            ? 'text-dark-500 bg-dark-800 cursor-not-allowed'
-                                            : 'text-primary-300 bg-primary-500/15 hover:bg-primary-500/25 border border-primary-500/20'
-                                    }`}
-                                    title="Continue generating"
-                                >
-                                    <PlayCircle className={`w-3 h-3 ${isLoading ? 'animate-pulse' : ''}`} />
-                                    <span>{isLoading ? 'Continuing...' : 'Continue'}</span>
-                                </button>
+            {/* Skip bubble entirely for user message with no content (paste-as-file case) */}
+            {isUser && !displayContent ? null : (
+                <div style={isUser ? userBubble : aiBubble} className={isUser ? 'message-user' : 'message-assistant'}>
+                    {/* Reasoning / thinking dropdown */}
+                    {displayReasoning && (
+                        <div ref={reasoningRef} style={{ marginBottom: 8 }}>
+                            <button
+                                onClick={handleToggleReasoning}
+                                style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                                    color: 'var(--ink-4)',
+                                    fontSize: 11.5, fontWeight: 500,
+                                    background: 'transparent', border: 0, cursor: 'pointer',
+                                    padding: 0,
+                                }}
+                            >
+                                <span>Thinking</span>
+                                <span style={{ color: 'var(--ink-4)', fontSize: 10.5 }}>({displayReasoning.length})</span>
+                                {reasoningExpanded
+                                    ? <ChevronUp style={{ width: 12, height: 12 }} strokeWidth={2} />
+                                    : <ChevronDown style={{ width: 12, height: 12 }} strokeWidth={2} />
+                                }
+                            </button>
+                            {reasoningExpanded && (
+                                <div style={{
+                                    marginTop: 6,
+                                    padding: '10px 12px',
+                                    borderRadius: 6,
+                                    background: 'var(--bg-2)',
+                                    border: '1px solid var(--rule-2)',
+                                    maxHeight: 260,
+                                    overflowY: 'auto',
+                                }}>
+                                    <p style={{
+                                        fontSize: 13, color: 'var(--ink-3)',
+                                        fontStyle: 'italic',
+                                        whiteSpace: 'pre-wrap',
+                                        lineHeight: 1.55,
+                                        margin: 0,
+                                    }}>
+                                        {displayReasoning}
+                                    </p>
+                                </div>
                             )}
                         </div>
-                        <button
-                            onClick={handleCopy}
-                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] transition-colors ${
-                                copied
-                                    ? 'text-green-400 bg-green-500/10'
-                                    : 'text-dark-500 hover:text-dark-300 hover:bg-white/[0.04]'
-                            }`}
-                            title={copied ? 'Copied!' : 'Copy response'}
-                        >
-                            {copied ? (
-                                <>
-                                    <Check className="w-3 h-3" />
-                                    <span>Copied</span>
-                                </>
+                    )}
+
+                    {/* Body content */}
+                    {isStreaming && !displayContent ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
+                            {Array.isArray(processingLog) && processingLog.length > 0 ? (
+                                <ProcessingLogFeed log={processingLog} />
+                            ) : processingStatus ? (
+                                <StatusIndicator status={processingStatus} message={processingMessage} />
                             ) : (
-                                <>
-                                    <Copy className="w-3 h-3" />
-                                    <span>Copy</span>
-                                </>
+                                <ThinkingIndicator />
                             )}
-                        </button>
-                    </div>
-                )}
-            </div>
+                        </div>
+                    ) : bodyCollapsed ? (
+                        (() => {
+                            const cleaned = (displayContent || '')
+                                .replace(/```[\s\S]*?```/g, '[code]')
+                                .replace(/`([^`]+)`/g, '$1')
+                                .replace(/\*\*([^*]+)\*\*/g, '$1')
+                                .replace(/\*([^*]+)\*/g, '$1')
+                                .replace(/^#{1,6}\s+/gm, '')
+                                .replace(/^[-*+]\s+/gm, '')
+                                .replace(/^\d+\.\s+/gm, '');
+                            const firstLine = (cleaned.split('\n').find(l => l.trim().length > 0) || '').trim();
+                            const MAX = 90;
+                            const preview = firstLine.length > MAX
+                                ? firstLine.slice(0, MAX).replace(/\s+\S*$/, '') + '…'
+                                : firstLine;
+                            const chars = (displayContent || '').length;
+                            return (
+                                <button
+                                    onClick={() => collapseKey && setMessageCollapsed(collapseKey, false)}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                                        padding: '9px 12px',
+                                        border: '1px dashed var(--rule-2)', borderRadius: 8,
+                                        background: 'transparent', textAlign: 'left', cursor: 'pointer',
+                                        transition: 'background .1s',
+                                    }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-2)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                                >
+                                    <span style={{ flex: 1, textAlign: 'left', color: 'var(--ink-3)', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {preview || 'Collapsed response'}
+                                    </span>
+                                    <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>
+                                        {chars.toLocaleString()} chars · click to expand
+                                    </span>
+                                </button>
+                            );
+                        })()
+                    ) : (
+                        <MessageContent content={displayContent} isStreaming={isStreaming} />
+                    )}
+
+                    {/* Inline artifact chip — shown when the assistant response
+                        contains one or more fenced code blocks. Click opens the
+                        right-rail Artifacts panel. */}
+                    {!isUser && !isStreaming && !bodyCollapsed && displayContent && onOpenArtifacts && (() => {
+                        const matches = (displayContent || '').match(/```[\w-]*\s*(?:\[[^\]]+\])?\n[\s\S]*?```/g);
+                        const count = matches ? matches.length : 0;
+                        if (count === 0) return null;
+                        const firstMatch = matches[0];
+                        const langMatch = firstMatch.match(/^```(\w+)/);
+                        const lang = langMatch ? langMatch[1] : 'code';
+                        return (
+                            <button
+                                onClick={onOpenArtifacts}
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                                    padding: '10px 12px',
+                                    marginTop: 10,
+                                    background: 'var(--bg-2)',
+                                    border: '1px solid var(--rule)',
+                                    borderRadius: 8,
+                                    textAlign: 'left', cursor: 'pointer',
+                                    color: 'var(--ink)',
+                                    transition: 'border-color .12s, background .12s',
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--accent)';
+                                    e.currentTarget.style.background = 'var(--accent-soft)';
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--rule)';
+                                    e.currentTarget.style.background = 'var(--bg-2)';
+                                }}
+                            >
+                                <div style={{
+                                    width: 28, height: 28, borderRadius: 6,
+                                    background: 'var(--accent-soft)', color: 'var(--accent)',
+                                    display: 'grid', placeItems: 'center', flexShrink: 0,
+                                }}>
+                                    <CodeIcon style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                                    <div style={{ fontWeight: 500, fontSize: 13 }}>
+                                        {count} code artifact{count === 1 ? '' : 's'}
+                                    </div>
+                                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                        {lang}{count > 1 ? ` + ${count - 1} more` : ''} · Open in panel
+                                    </div>
+                                </div>
+                                <Eye style={{ width: 13, height: 13, color: 'var(--ink-3)' }} strokeWidth={1.75} />
+                            </button>
+                        );
+                    })()}
+
+                    {/* Search source chips */}
+                    {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(searchResults) && searchResults.length > 0 && (
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                            <SearchSources sources={searchResults} />
+                        </div>
+                    )}
+
+                    {/* Tool calls */}
+                    {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                            {toolCalls.map((tc, idx) => (
+                                <ToolCallBlock key={idx} tool={tc} />
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Partial / interrupted indicator */}
+                    {!isUser && !isStreaming && (needsContinuation || isPartial) && (
+                        <div style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                            marginTop: 8,
+                            padding: '4px 10px',
+                            borderRadius: 6,
+                            background: 'color-mix(in oklab, var(--warning, #f59e0b) 12%, transparent)',
+                            border: '1px solid color-mix(in oklab, var(--warning, #f59e0b) 30%, transparent)',
+                        }}>
+                            <AlertCircle style={{ width: 12, height: 12, color: 'var(--warning, #f59e0b)', flexShrink: 0 }} />
+                            <span style={{ fontSize: 11, color: 'var(--warning, #f59e0b)' }}>
+                                Response cut off
+                            </span>
+                        </div>
+                    )}
+                </div>
             )}
 
-            {/* Timestamp and stats */}
-            <div className="flex items-center gap-2 mt-0.5 px-1">
-                {timestamp && (
-                    <span className="text-[10px] text-dark-600">
-                        {new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {/* Hover-revealed action row (assistant messages) */}
+            {!isUser && displayContent && !isStreaming && (
+                <div style={{ ...actionsRow, alignSelf: 'stretch' }}>
+                    <button
+                        onClick={handleCopy}
+                        style={copied ? actionBtnActive : actionBtn}
+                        onMouseEnter={(e) => { if (!copied) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                        onMouseLeave={(e) => { if (!copied) e.currentTarget.style.background = 'transparent'; }}
+                        title={copied ? 'Copied!' : 'Copy response'}
+                    >
+                        {copied ? <Check style={{ width: 13, height: 13 }} strokeWidth={2} /> : <Copy style={{ width: 13, height: 13 }} strokeWidth={1.75} />}
+                        <span>{copied ? 'Copied' : 'Copy'}</span>
+                    </button>
+
+                    {(needsContinuation || isPartial) && onContinue && (
+                        <button
+                            onClick={() => onContinue(id, content)}
+                            disabled={isLoading}
+                            style={{
+                                ...actionBtn,
+                                color: isLoading ? 'var(--ink-4)' : 'var(--accent)',
+                                background: isLoading ? 'transparent' : 'var(--accent-soft)',
+                                cursor: isLoading ? 'not-allowed' : 'pointer',
+                            }}
+                            title="Continue generating"
+                        >
+                            <PlayCircle style={{ width: 13, height: 13 }} strokeWidth={1.75} className={isLoading ? 'animate-pulse' : ''} />
+                            <span>{isLoading ? 'Continuing…' : 'Continue'}</span>
+                        </button>
+                    )}
+
+                    <div style={{ flex: 1 }} />
+
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                        {responseTime && (
+                            <span style={{ ...tokenCountStyle, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                <Clock style={{ width: 10, height: 10 }} strokeWidth={1.75} />
+                                {responseTime < 1000 ? `${responseTime}ms` : `${(responseTime / 1000).toFixed(1)}s`}
+                            </span>
+                        )}
+                        {tokenCount && (
+                            <span style={{ ...tokenCountStyle, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                <Zap style={{ width: 10, height: 10 }} strokeWidth={1.75} />
+                                {tokenCount.toLocaleString?.() || tokenCount}
+                            </span>
+                        )}
                     </span>
-                )}
-                {!isUser && responseTime && (
-                    <span className="flex items-center gap-0.5 text-[10px] text-dark-600">
-                        <Clock className="w-2.5 h-2.5" />
-                        {responseTime < 1000 ? `${responseTime}ms` : `${(responseTime / 1000).toFixed(1)}s`}
-                    </span>
-                )}
-                {!isUser && tokenCount && (
-                    <span className="flex items-center gap-0.5 text-[10px] text-dark-600">
-                        <Zap className="w-2.5 h-2.5" />
-                        {tokenCount}
-                    </span>
-                )}
-            </div>
+                </div>
+            )}
         </div>
     );
 });

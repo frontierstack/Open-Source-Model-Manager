@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useChatStore } from '../../stores/useChatStore';
 import ChatHeader from './ChatHeader';
 import ChatSidebar from './ChatSidebar';
 import ChatMessages from './ChatMessages';
 import ChatInput from './ChatInput';
 import ChatSettings from './ChatSettings';
+import ArtifactsPanel, { extractArtifacts } from './ArtifactsPanel';
+import ConvoHeader from './ConvoHeader';
 
 // Track empty→messages transition for slide-down animation
 function useSlideTransition(isEmpty) {
@@ -112,6 +114,9 @@ export default function ChatContainer({
     const [isLoading, setIsLoading] = useState(false);
     const [runningInstances, setRunningInstances] = useState([]);
     const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [artifactsOpen, setArtifactsOpen] = useState(false);
+    const [activeArtifactId, setActiveArtifactId] = useState(null);
     const abortControllerRef = useRef(null);
     const switchingConversationRef = useRef(false); // Track if abort was due to conversation switch
     const streamingConversationRef = useRef(null); // Track which conversation is being streamed to
@@ -164,8 +169,37 @@ export default function ChatContainer({
         setSystemPrompts,
     } = useChatStore();
 
-    // Use system prompts from store, falling back to initial props
-    const systemPrompts = storeSystemPrompts?.length > 0 ? storeSystemPrompts : initialSystemPrompts;
+    // Built-in persona presets. Rendered in the composer persona chip
+    // alongside user-defined system prompts. Selecting a persona just
+    // sets it as the active system prompt.
+    const PERSONA_PRESETS = [
+        {
+            id: 'preset:researcher',
+            name: 'Research partner',
+            hint: 'Thorough, cites sources, questions assumptions.',
+            content: "You are an expert research partner. Cite sources where possible. Question assumptions in the user's question. Prefer concise, structured answers with clearly marked uncertainty. Flag any claim you're not confident about.",
+            preset: true,
+        },
+        {
+            id: 'preset:editor',
+            name: 'Line editor',
+            hint: 'Tightens prose, preserves voice.',
+            content: "You are a line editor. Tighten the user's prose while preserving their voice. Cut filler, passive constructions, and vague qualifiers. Return the edited text plus a short note on what you changed and why.",
+            preset: true,
+        },
+        {
+            id: 'preset:reviewer',
+            name: 'Code reviewer',
+            hint: 'Blunt, focuses on correctness + perf.',
+            content: "You are a blunt, experienced code reviewer. Focus on correctness, edge cases, performance, and concurrency bugs. Skip style nits unless they mask a real issue. Point out what's wrong and why, then suggest the minimal fix.",
+            preset: true,
+        },
+    ];
+
+    // Use system prompts from store, falling back to initial props.
+    // Personas are prepended so they appear at the top of the picker.
+    const userSystemPrompts = storeSystemPrompts?.length > 0 ? storeSystemPrompts : initialSystemPrompts;
+    const systemPrompts = [...PERSONA_PRESETS, ...(Array.isArray(userSystemPrompts) ? userSystemPrompts : [])];
 
     // Slide-down animation when transitioning from empty to messages
     const chatIsEmpty = messages.length === 0 && !isStreaming;
@@ -2261,8 +2295,15 @@ export default function ChatContainer({
         }
     }, [combinedModels, settings.model]);
 
+    // Detect artifacts (code blocks) from assistant messages.
+    const artifacts = useMemo(() => extractArtifacts(messages), [messages]);
+    const activeConversation = conversations.find(c => c.id === activeConversationId);
+    const breadcrumb = activeConversation
+        ? ['Chat', activeConversation.title || 'Untitled']
+        : ['Chat'];
+
     return (
-        <div className="flex h-full overflow-hidden">
+        <div className="flex h-full overflow-hidden" style={{ background: 'var(--bg)' }}>
             {/* Sidebar */}
             <ChatSidebar
                 conversations={conversations}
@@ -2274,19 +2315,22 @@ export default function ChatContainer({
                 onToggleFavorite={handleToggleFavorite}
                 isMobileOpen={mobileSidebarOpen}
                 onMobileClose={() => setMobileSidebarOpen(false)}
+                collapsed={sidebarCollapsed}
+                onToggleCollapsed={() => setSidebarCollapsed(c => !c)}
             />
 
             {/* Main chat area */}
-            <div className="flex-1 flex flex-col overflow-hidden bg-dark-950">
+            <div className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg)', minWidth: 0 }}>
                 {/* Header */}
                 <ChatHeader
-                    models={combinedModels}
-                    selectedModel={settings.model}
-                    onModelChange={handleModelChange}
                     onSettingsClick={() => setSettingsOpen(true)}
                     user={user}
                     onLogout={onLogout}
-                    onMobileMenuClick={() => setMobileSidebarOpen(true)}
+                    sidebarCollapsed={sidebarCollapsed}
+                    onOpenSidebar={() => setSidebarCollapsed(false)}
+                    breadcrumb={breadcrumb}
+                    artifactsOpen={artifactsOpen}
+                    onToggleArtifacts={artifacts.length > 0 ? () => setArtifactsOpen(o => !o) : null}
                 />
 
                 {/* Content area - centered when empty, normal when messages */}
@@ -2312,6 +2356,9 @@ export default function ChatContainer({
                                 onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
                                 messages={messages}
                                 maxContextTokens={selectedModelContextSize}
+                                models={combinedModels}
+                                selectedModel={settings.model}
+                                onModelChange={handleModelChange}
                             />
                         </div>
                     </div>
@@ -2326,6 +2373,20 @@ export default function ChatContainer({
                                 isLoading={isLoading}
                                 chatStyle={settings.chatStyle}
                                 messageBorderStrength={settings.messageBorderStrength}
+                                onOpenArtifacts={artifacts.length > 0 ? () => setArtifactsOpen(true) : null}
+                                header={activeConversation ? (
+                                    <ConvoHeader
+                                        title={activeConversation.title}
+                                        createdAt={activeConversation.createdAt}
+                                        messageCount={messages.length}
+                                        estimatedTokens={Math.ceil(
+                                            messages.reduce((sum, m) => sum + (m.content?.length || 0) + (m.reasoning?.length || 0), 0) / 4
+                                        )}
+                                        maxContextTokens={selectedModelContextSize || 0}
+                                        favorite={activeConversation.favorite}
+                                        onToggleFavorite={() => handleToggleFavorite(activeConversation.id)}
+                                    />
+                                ) : null}
                             />
                         </div>
 
@@ -2350,11 +2411,23 @@ export default function ChatContainer({
                                 onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
                                 messages={messages}
                                 maxContextTokens={selectedModelContextSize}
+                                models={combinedModels}
+                                selectedModel={settings.model}
+                                onModelChange={handleModelChange}
                             />
                         </div>
                     </>
                 )}
             </div>
+
+            {/* Artifacts side panel */}
+            <ArtifactsPanel
+                open={artifactsOpen && artifacts.length > 0}
+                artifacts={artifacts}
+                activeId={activeArtifactId}
+                onSelect={setActiveArtifactId}
+                onClose={() => setArtifactsOpen(false)}
+            />
 
             {/* Settings drawer */}
             <ChatSettings

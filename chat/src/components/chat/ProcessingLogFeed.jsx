@@ -46,9 +46,9 @@ const ICON_MAP = {
 const MAX_VISIBLE = 5;
 
 function statusColor(status) {
-    if (status === 'done') return 'text-emerald-400/70';
-    if (status === 'failed') return 'text-red-400/80';
-    return 'text-primary-300';
+    if (status === 'done') return { className: 'text-emerald-400/70' };
+    if (status === 'failed') return { className: 'text-red-400/80' };
+    return { className: '', style: { color: 'var(--accent)' } };
 }
 
 function statusRowColor(status) {
@@ -103,7 +103,10 @@ export default React.memo(function ProcessingLogFeed({ log }) {
                         className={`flex items-center gap-2 transition-all duration-300 animate-fade-in-up ${textColor}`}
                         style={{ opacity }}
                     >
-                        <span className={`flex-shrink-0 flex items-center justify-center w-4 h-4 ${iconColor}`}>
+                        <span
+                            className={`flex-shrink-0 flex items-center justify-center w-4 h-4 ${iconColor.className || ''}`}
+                            style={iconColor.style}
+                        >
                             {isActive ? (
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             ) : entry.status === 'done' ? (

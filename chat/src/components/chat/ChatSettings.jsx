@@ -1147,8 +1147,8 @@ export default function ChatSettings({
                                 </div>
                             </div>
 
-                            {/* Message Border Strength - only show for layouts that use borders */}
-                            {['slack', 'minimal'].includes(chatStyle) && (
+                            {/* Message Border Strength - applies to all chat layouts */}
+                            {true && (
                                 <>
                                     <div className="border-t border-white/5" />
                                     <div>
