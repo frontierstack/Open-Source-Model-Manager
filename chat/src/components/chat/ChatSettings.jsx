@@ -791,6 +791,31 @@ export default function ChatSettings({
                                     <span>Diverse</span>
                                 </div>
                             </div>
+
+                            {/* Live code preview — default OFF; opt in per session. */}
+                            <div className="pt-2 mt-2 border-t border-white/5">
+                                <label className="flex items-start justify-between gap-3 cursor-pointer">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                            Live code preview
+                                        </div>
+                                        <div className="text-[10px] text-dark-500 mt-0.5 leading-relaxed">
+                                            Adds a Run button to Python and HTML code blocks the assistant writes. Python executes in the gVisor sandbox; HTML renders in an isolated iframe. Off by default — when off, no Run button and no preview is rendered.
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={!!settings?.codePreviewEnabled}
+                                        onClick={() => onUpdateSettings({ codePreviewEnabled: !settings?.codePreviewEnabled })}
+                                        className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors mt-0.5 ${settings?.codePreviewEnabled ? 'bg-primary-500' : 'bg-dark-700'}`}
+                                    >
+                                        <span
+                                            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${settings?.codePreviewEnabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`}
+                                        />
+                                    </button>
+                                </label>
+                            </div>
                         </>
                     )}
 

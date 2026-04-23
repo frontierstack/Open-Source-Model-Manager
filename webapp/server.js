@@ -4320,6 +4320,83 @@ app.delete('/api/system-prompts/:modelName', requireAuth, async (req, res) => {
 // ============================================================================
 
 // Get system resource information
+// One-shot code execution in the sandbox — powers the chat "Run code"
+// button on code blocks. Accepts { language, code }, runs in the
+// existing sandbox (workspace=false, network=none) and returns
+// stdout/stderr/artifacts. Only 'python' is supported for execution;
+// 'html' and friends are rendered client-side in an iframe and do not
+// hit this endpoint.
+app.post('/api/sandbox/run-code', requireAuth, async (req, res) => {
+    const { language, code, timeoutMs = 15_000 } = req.body || {};
+    if (!code || typeof code !== 'string') {
+        return res.status(400).json({ error: 'code (string) is required' });
+    }
+    const lang = String(language || '').toLowerCase();
+    if (lang !== 'python' && lang !== 'py' && lang !== 'python3') {
+        return res.status(400).json({
+            error: `language "${language}" is not runnable server-side. HTML / CSS / JS render client-side in an iframe.`,
+        });
+    }
+    try {
+        const sandbox = require('./services/sandboxRunner');
+        // Wrap arbitrary user code in the standard skill harness so it
+        // can be top-level code (no execute() required). stdout is
+        // captured as-is; the harness prints a final JSON envelope with
+        // stdout/stderr collected from within the user code.
+        const harness = `
+def execute(params):
+    import sys, io, traceback
+    _stdout = io.StringIO(); _stderr = io.StringIO()
+    _orig_out, _orig_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _stdout, _stderr
+    try:
+${code.split('\n').map(l => '        ' + l).join('\n')}
+    except Exception as _e:
+        _stderr.write(traceback.format_exc(limit=10))
+    finally:
+        sys.stdout, sys.stderr = _orig_out, _orig_err
+    return {
+        "stdout": _stdout.getvalue(),
+        "stderr": _stderr.getvalue(),
+    }
+`;
+        const run = await sandbox.runPythonSkill({
+            code: harness,
+            params: {},
+            network: 'none',
+            workspace: false,
+            timeoutMs: Math.min(60_000, Math.max(1000, parseInt(timeoutMs, 10))),
+            memory: '256m',
+            cpus: '0.5',
+            toolName: 'chat-code-preview',
+            userId: req.userId || null,
+        });
+        try {
+            if (run.timedOut) return res.json({ success: false, error: 'Code timed out', timedOut: true });
+            if (run.result && typeof run.result === 'object') {
+                return res.json({
+                    success: true,
+                    language: 'python',
+                    stdout: run.result.stdout || '',
+                    stderr: run.result.stderr || '',
+                    durationMs: run.durationMs,
+                    sandboxed: run.sandboxed,
+                });
+            }
+            return res.json({
+                success: false,
+                error: run.parseError || run.stderr?.slice(0, 2000) || 'no result',
+                stdout: run.stdout?.slice(0, 2000) || '',
+            });
+        } finally {
+            sandbox.cleanupRun(run.runId).catch(() => {});
+        }
+    } catch (e) {
+        console.error('run-code failed:', e);
+        res.status(500).json({ error: e.message || String(e) });
+    }
+});
+
 // Tool-run artifact download. Files produced by a sandboxed tool are
 // staged under /models/.modelserver/sandbox/<runId>/artifacts/. A
 // successful tool call returns `_artifacts: [{ name, size, runId }]` so

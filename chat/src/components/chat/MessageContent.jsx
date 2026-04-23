@@ -2,6 +2,7 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
+import CodePreviewBlock from './CodePreviewBlock';
 
 /**
  * MessageContent - Renders markdown content with Tailwind styling
@@ -22,8 +23,11 @@ const markdownComponents = {
         const code = String(children).replace(/\n$/, '');
 
         if (!inline && (match || code.includes('\n'))) {
+            // CodePreviewBlock gates on the codePreviewEnabled setting
+            // internally — when off, it falls through to a plain
+            // CodeBlock with zero Run-related rendering.
             return (
-                <CodeBlock
+                <CodePreviewBlock
                     code={code}
                     language={match ? match[1] : 'text'}
                     isStreaming={false}

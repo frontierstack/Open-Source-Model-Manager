@@ -246,6 +246,31 @@ else
 fi
 
 # -----------------------------------------------------------------------
+hr "Live code preview endpoint (/api/sandbox/run-code)"
+rc=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"language":"python","code":"import sys\nprint(\"ok\", sys.version.split()[0])"}')
+echo "$rc" | grep -q '"success":true'
+assert "run-code executes python in sandbox" $? "$rc"
+echo "$rc" | grep -q '"sandboxed":true'
+assert "run-code reports sandboxed=true (gVisor engaged)" $?
+echo "$rc" | grep -q '"stdout":"ok 3\.12'
+assert "run-code stdout uses sandbox Python (3.12), not host's 3.11" $? "$rc"
+
+# Language reject
+bad=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" -d '{"language":"bash","code":"echo hi"}')
+echo "$bad" | grep -q "not runnable server-side"
+assert "run-code refuses non-Python languages server-side" $?
+
+# Network is blocked (no allowlist on this path)
+netblock=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"language":"python","code":"import socket\ntry:\n    s=socket.socket()\n    s.settimeout(2)\n    s.connect((\"example.com\",80))\n    print(\"REACHED\")\nexcept Exception as e:\n    print(\"blocked:\", type(e).__name__)"}')
+echo "$netblock" | grep -q "blocked:"
+assert "run-code has no network access (network=none)" $? "$netblock"
+
+# -----------------------------------------------------------------------
 hr "Egress proxy — rejection counters increment on bad request"
 before=$(curl -sk "${BASE}/api/system/egress-proxy" "${AUTH[@]}" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["rejectedNoToken"])')

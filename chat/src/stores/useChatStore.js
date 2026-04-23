@@ -158,7 +158,12 @@ export const useChatStore = create(
             ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
             // Always start with web search and URL fetch off
             webSearchEnabled: false,
-            urlFetchEnabled: false
+            urlFetchEnabled: false,
+            // Live code previewer — default OFF so arbitrary code blocks
+            // from the model never execute without the user opting in
+            // per-session. When off, no Run button is rendered and no
+            // iframe preview is created.
+            codePreviewEnabled: false,
         },
 
         // ==================== Theme Actions ====================
