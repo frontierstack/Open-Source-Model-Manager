@@ -51,6 +51,11 @@ function ensureBaseDir() {
     if (!fsSync.existsSync(SANDBOX_DIR_IN_CONTAINER)) {
         fsSync.mkdirSync(SANDBOX_DIR_IN_CONTAINER, { recursive: true, mode: 0o755 });
     }
+    // Workspaces dir created lazily in ensureWorkspace — same parent though.
+    const wsBase = '/models/.modelserver/workspaces';
+    if (!fsSync.existsSync(wsBase)) {
+        fsSync.mkdirSync(wsBase, { recursive: true, mode: 0o755 });
+    }
 }
 ensureBaseDir();
 
@@ -91,6 +96,12 @@ async function runscAvailable() {
  * @param {object} opts.params        — Arguments passed as JSON to execute().
  * @param {'none'|'allowlist'|'open'} [opts.network]  — default 'none'
  * @param {string[]} [opts.allowlist] — hosts/patterns for network=allowlist
+ * @param {boolean}  [opts.workspace] — mount the user's per-user workspace
+ *                                     directory read-write at /workspace, and
+ *                                     normalize any path-shaped params (see
+ *                                     PATH_ARG_NAMES) to paths under it.
+ *                                     Enables file-op skills without giving
+ *                                     them access to the host filesystem.
  * @param {number}   [opts.timeoutMs]
  * @param {string}   [opts.memory]    — Docker memory limit (e.g. "256m")
  * @param {string}   [opts.cpus]      — Docker cpu limit (e.g. "0.5")
@@ -108,6 +119,7 @@ async function runPythonSkill(opts) {
         code, params = {},
         network = 'none',
         allowlist = [],
+        workspace = false,
         timeoutMs = DEFAULT_TIMEOUT_MS,
         memory = DEFAULT_MEMORY,
         cpus = DEFAULT_CPUS,
@@ -131,7 +143,43 @@ async function runPythonSkill(opts) {
     await fs.mkdir(scratchIn, { recursive: true, mode: 0o755 });
     await fs.mkdir(artifactsIn, { recursive: true });
     await fs.chmod(artifactsIn, 0o777);
-    await fs.writeFile(path.join(scratchIn, 'params.json'), JSON.stringify(params));
+
+    // If the tool requests workspace access, stage a per-user workspace dir
+    // that will get mounted read-write at /workspace inside the sandbox, and
+    // rewrite any path-shaped params to land under it. Workspace paths are
+    // bind-mounted — they persist across runs (unlike /artifacts, which is
+    // per-run).
+    //
+    // Path validation failures are returned as a structured result (same as
+    // a skill's own runtime error), NOT thrown — so the caller sees
+    // `{ success: false, error: "path escapes workspace: ..." }` instead of
+    // a generic "Skill execution failed".
+    let workspaceInfo = null;
+    let resolvedParams = params;
+    if (workspace) {
+        workspaceInfo = await ensureWorkspace(userId);
+        try {
+            resolvedParams = normalizePathArgs(params, workspaceInfo.containerMount);
+        } catch (pathErr) {
+            await cleanupRun(runId).catch(() => {});
+            return {
+                runId,
+                scratchDir: scratchIn,
+                artifactsDir: artifactsIn,
+                stdout: '',
+                stderr: '',
+                exitCode: 0,
+                timedOut: false,
+                durationMs: 0,
+                result: { success: false, error: pathErr.message || String(pathErr) },
+                parseError: null,
+                artifacts: [],
+                network,
+                sandboxed: await runscAvailable(),
+            };
+        }
+    }
+    await fs.writeFile(path.join(scratchIn, 'params.json'), JSON.stringify(resolvedParams));
 
     // A small harness wraps the user's code so we control stdout framing.
     // `execute(params)` is the convention the existing skill catalog already
@@ -202,6 +250,10 @@ except Exception as _e:
         throw new Error(`sandboxRunner: unknown network tier "${network}"`);
     }
 
+    if (workspaceInfo) {
+        env.push(`USER_WORKSPACE=${workspaceInfo.containerMount}`);
+    }
+
     const memoryBytes = parseMemory(memory);
     const nanoCpus = Math.round(parseFloat(cpus) * 1e9);
 
@@ -229,6 +281,7 @@ except Exception as _e:
                 Binds: [
                     `${scratchHost}:/work:ro`,
                     `${artifactsHost}:/artifacts:rw`,
+                    ...(workspaceInfo ? [`${workspaceInfo.hostMount}:/workspace:rw`] : []),
                 ],
                 Tmpfs: { '/tmp': 'rw,size=64m,mode=1777' },
             },
@@ -317,6 +370,89 @@ except Exception as _e:
 }
 
 // ---------------------------------------------------------------------------
+// Workspace helpers
+// ---------------------------------------------------------------------------
+
+// Per-user workspace root inside the webapp container. The sibling host path
+// is derived from hostModelsPath (set once at boot via setHostBase).
+const WORKSPACE_DIR_IN_CONTAINER = '/models/.modelserver/workspaces';
+const CONTAINER_MOUNT = '/workspace';
+
+// Param names treated as paths — rewritten to land under /workspace and
+// rejected if they attempt traversal out of it. Covers the naming used by
+// the default skill catalog (filePath, dirPath, sourcePath, destPath, path,
+// directory). Skill authors who want a path arg under a custom name can
+// call normalizePathArgs themselves in skill.py.
+const PATH_ARG_NAMES = [
+    'filePath', 'dirPath', 'sourcePath', 'destPath',
+    'path', 'directory', 'src', 'dest', 'target',
+    'from', 'to', 'output', 'input',
+];
+
+/** Create (if needed) + chmod the per-user workspace. Returns both the
+ *  in-container path and the host path needed for the bind mount. */
+async function ensureWorkspace(userId) {
+    if (!sandboxHostBase) {
+        throw new Error('sandboxRunner: hostBase not set — workspace unavailable');
+    }
+    const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const userDirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, owner);
+    // Host workspace base lives next to the sandbox base.
+    const workspaceHostBase = path.posix.join(
+        path.posix.dirname(sandboxHostBase),
+        'workspaces',
+    );
+    const userDirHost = path.posix.join(workspaceHostBase, owner);
+
+    await fs.mkdir(userDirIn, { recursive: true });
+    // umask may strip bits; be explicit.
+    await fs.chmod(userDirIn, 0o777);
+    return {
+        containerMount: CONTAINER_MOUNT,   // what the skill sees
+        hostMount: userDirHost,             // what Docker binds
+        localInContainer: userDirIn,        // where webapp reads/writes
+    };
+}
+
+/** Resolve `input` against `/workspace` inside the sandbox. Any traversal
+ *  that escapes the workspace root raises an Error. Absolute paths outside
+ *  /workspace are rerouted to their basename under /workspace. */
+function resolveInWorkspace(input, mount = CONTAINER_MOUNT) {
+    if (typeof input !== 'string' || !input) return input;
+    // Strip leading workspace prefix if the caller already normalized.
+    let trimmed = input;
+    if (trimmed.startsWith(mount + '/')) trimmed = trimmed.slice(mount.length + 1);
+    else if (trimmed === mount) trimmed = '';
+    // Reject absolute paths pointing outside the workspace.
+    if (trimmed.startsWith('/')) {
+        // Give the caller's basename a home under /workspace rather than
+        // silently losing the directory structure they typed.
+        trimmed = path.posix.basename(trimmed);
+    }
+    // Normalize and reject traversal.
+    const joined = path.posix.normalize(path.posix.join(mount, trimmed));
+    if (!joined.startsWith(mount + '/') && joined !== mount) {
+        throw new Error(`path escapes workspace: ${input}`);
+    }
+    return joined;
+}
+
+/** Produce a shallow-copy of params where any key in PATH_ARG_NAMES is
+ *  rewritten to its workspace-safe form. Non-string values pass through
+ *  unchanged. Throws if any rewrite fails (propagated to the skill as
+ *  a failure). */
+function normalizePathArgs(params, mount = CONTAINER_MOUNT) {
+    if (!params || typeof params !== 'object') return params;
+    const out = { ...params };
+    for (const k of PATH_ARG_NAMES) {
+        if (typeof out[k] === 'string') {
+            out[k] = resolveInWorkspace(out[k], mount);
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
 
@@ -342,6 +478,10 @@ module.exports = {
     runPythonSkill,
     cleanupRun,
     setHostBase,
+    ensureWorkspace,
+    resolveInWorkspace,
+    normalizePathArgs,
+    PATH_ARG_NAMES,
     SANDBOX_IMAGE,
     DEFAULT_TIMEOUT_MS,
 };

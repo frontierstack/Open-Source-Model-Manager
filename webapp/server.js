@@ -6137,10 +6137,12 @@ async function executePythonSkill(skill, params) {
                 params,
                 network,
                 allowlist,
+                workspace: !!skill.workspace,
                 timeoutMs: skill.timeoutMs || 30_000,
                 memory: skill.memory || '512m',
                 cpus: skill.cpus || '1.0',
                 toolName: skill.name,
+                userId: skill.userId || null,
             });
             if (run.timedOut) {
                 // Runs with no artifacts are cleaned up immediately; nothing
@@ -12774,13 +12776,81 @@ app.post('/api/system/reset', requireAdmin, async (req, res) => {
 // INITIALIZATION - Create default API keys
 // ============================================================================
 
+// Known default skills that touch the filesystem — these get opted into the
+// workspace sandbox automatically. Non-exhaustive; skills not on this list
+// keep their current behavior (in-process for built-ins, per-policy for
+// user-created). Centralized here so it's easy to extend.
+const WORKSPACE_SANDBOX_DEFAULTS = new Set([
+    // file ops
+    'create_file', 'update_file', 'read_file', 'delete_file',
+    'create_directory', 'delete_directory', 'list_directory',
+    'move_file', 'copy_file', 'append_to_file',
+    'tail_file', 'head_file', 'search_files', 'search_replace_file',
+    'diff_files',
+    // archives
+    'create_archive', 'extract_archive',
+    // pdf / docs generation + reading
+    'create_pdf', 'html_to_pdf', 'markdown_to_html',
+    'read_pdf', 'pdf_page_count', 'pdf_to_images',
+]);
+
+// NETWORK-requiring default skills. These get sandboxed with an allowlist
+// so the model can still use them. Each entry declares the egress hostnames
+// the skill actually needs — everything else is blocked by the egress proxy.
+const NETWORK_SANDBOX_DEFAULTS = {
+    download_file:   { allowlist: ['*'], note: 'arbitrary URL download; tighten if policy allows' },
+    fetch_url:       { allowlist: ['*'], note: 'user-supplied URLs' },
+    http_request:    { allowlist: ['*'], note: 'user-supplied URLs' },
+    web_search:      { allowlist: ['duckduckgo.com', 'html.duckduckgo.com', 'www.bing.com'] },
+    playwright_fetch: { allowlist: ['*'], note: 'user-supplied URLs; browser renders' },
+    dns_lookup:      { allowlist: [] }, // doesn't use HTTP proxy; noop
+};
+
+/** Walk existing skills and opt-in known defaults to sandbox + workspace /
+ *  allowlisted-network. Idempotent — safe to run at every boot. Never
+ *  clobbers a skill that already has sandbox/workspace explicitly set. */
+async function migrateDefaultSkillsToSandbox() {
+    try {
+        const skills = await loadSkills();
+        let dirty = 0;
+        for (const s of skills) {
+            if (!s || !s.name) continue;
+            // User-created skills (have a userId) are left alone — their
+            // default is already sandbox=true per executePythonSkill's policy.
+            if (s.userId) continue;
+            let changed = false;
+
+            if (WORKSPACE_SANDBOX_DEFAULTS.has(s.name)) {
+                if (s.sandbox !== true)   { s.sandbox = true;   changed = true; }
+                if (s.workspace !== true) { s.workspace = true; changed = true; }
+                if (!s.network) { s.network = 'none'; changed = true; }
+            } else if (NETWORK_SANDBOX_DEFAULTS[s.name]) {
+                const spec = NETWORK_SANDBOX_DEFAULTS[s.name];
+                if (s.sandbox !== true) { s.sandbox = true; changed = true; }
+                if (!s.network)   { s.network = 'allowlist'; changed = true; }
+                if (!s.allowlist) { s.allowlist = spec.allowlist; changed = true; }
+            }
+            if (changed) dirty++;
+        }
+        if (dirty) {
+            await saveSkills(skills);
+            console.log(`[skill-migration] flagged ${dirty} default skill(s) for sandbox/workspace`);
+        }
+    } catch (e) {
+        console.error('[skill-migration] failed (non-fatal):', e.message);
+    }
+}
+
 async function initializeDefaultSkills() {
     try {
         await ensureDataDir();
         const skills = await loadSkills();
 
-        // Only initialize if no skills exist
+        // Existing install — opt in known defaults to sandbox/workspace.
+        // Harmless no-op when already migrated. Runs BEFORE the early-return
+        // so it also picks up any older installs that already have skills.
         if (skills.length > 0) {
+            await migrateDefaultSkillsToSandbox();
             return;
         }
 
@@ -12791,13 +12861,28 @@ async function initializeDefaultSkills() {
         const defaultSkillsJson = await fs.readFile(defaultSkillsPath, 'utf8');
         const defaultSkillsTemplate = JSON.parse(defaultSkillsJson);
 
-        // Add IDs and timestamps
-        const defaultSkills = defaultSkillsTemplate.map(skill => ({
-            id: crypto.randomBytes(16).toString('hex'),
-            ...skill,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-        }));
+        // Add IDs, timestamps, AND sandbox/workspace flags for known
+        // file-op / network-requiring default skills. Same logic as the
+        // migration, applied up-front on first install.
+        const defaultSkills = defaultSkillsTemplate.map(skill => {
+            const out = {
+                id: crypto.randomBytes(16).toString('hex'),
+                ...skill,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            };
+            if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                out.sandbox = true;
+                out.workspace = true;
+                out.network = out.network || 'none';
+            } else if (NETWORK_SANDBOX_DEFAULTS[out.name]) {
+                const spec = NETWORK_SANDBOX_DEFAULTS[out.name];
+                out.sandbox = true;
+                out.network = out.network || 'allowlist';
+                out.allowlist = out.allowlist || spec.allowlist;
+            }
+            return out;
+        });
 
         // Save skills
         await saveSkills(defaultSkills);
