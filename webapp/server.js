@@ -4354,6 +4354,22 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
     }
 });
 
+// Native tool catalog — returns the currently registered tool names.
+// Lightweight introspection for the integration test suite and for
+// debugging when the chat stream doesn't seem to see a tool the
+// operator expected.
+app.get('/api/system/tools-catalog', requireAuth, (req, res) => {
+    try {
+        const t = require('./services/chatTools');
+        res.json({
+            count: t.toolRegistry.size,
+            tools: [...t.toolRegistry.keys()],
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Egress-proxy stats — admin-only observability for the sandbox network
 // allowlist. Returns grant counts, rejection reasons, and listening state.
 app.get('/api/system/egress-proxy', requireAuth, (req, res) => {

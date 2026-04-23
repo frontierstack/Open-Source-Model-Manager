@@ -161,6 +161,104 @@ st=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE}/api/tool-artifacts/badRunI
 assert "Artifact endpoint rejects bad runId (got $st)" $?
 
 # -----------------------------------------------------------------------
+hr "Markdown Skills — library inventory"
+md_list=$(curl -sk "${BASE}/api/markdown-skills" "${AUTH[@]}")
+md_count=$(echo "$md_list" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)
+[ -n "$md_count" ] && [ "$md_count" -ge 15 ]
+assert "Markdown skill library populated (count=$md_count)" $?
+echo "$md_list" | grep -q '"github-repo-research"'
+assert "Library contains github-repo-research skill" $?
+echo "$md_list" | grep -q '"troubleshoot-docker"'
+assert "Library contains troubleshoot-docker skill" $?
+# Verify one skill loads fully (including body)
+one=$(curl -sk "${BASE}/api/markdown-skills/debug-python-error" "${AUTH[@]}")
+echo "$one" | grep -q "Steps"
+assert "Skill body retrievable (debug-python-error)" $?
+
+# -----------------------------------------------------------------------
+hr "Native tool catalog"
+# Queries the webapp's in-process registry via the admin endpoint — the
+# chatTools singleton reflects all IIFE registrations from server.js
+# (load_skill, web_search, fetch_url) rather than just the baseline.
+tools_dump=$(curl -sk "${BASE}/api/system/tools-catalog" "${AUTH[@]}")
+echo "$tools_dump" | grep -q "load_skill"
+assert "Tool catalog includes load_skill" $?
+echo "$tools_dump" | grep -q "web_search"
+assert "Tool catalog includes web_search" $?
+echo "$tools_dump" | grep -q "fetch_url"
+assert "Tool catalog includes fetch_url" $?
+
+# -----------------------------------------------------------------------
+hr "Workspace-migrated defaults"
+# Seed a file the workspace skills can see
+docker exec modelserver-webapp-1 sh -c 'mkdir -p /models/.modelserver/workspaces/global; chmod 0777 /models/.modelserver/workspaces/global; echo "probe content" > /models/.modelserver/workspaces/global/probe.txt' >/dev/null
+
+# list_directory — relative path, runs in sandbox + workspace
+ld=$(curl -sk -X POST "${BASE}/api/tools/list_directory/execute" "${AUTH[@]}" \
+    -H "Content-Type: application/json" -d '{"dirPath": "."}')
+echo "$ld" | grep -q "probe.txt"
+assert "list_directory sees probe.txt in workspace" $? "$ld"
+
+# read_file — normalized path
+rf=$(curl -sk -X POST "${BASE}/api/tools/read_file/execute" "${AUTH[@]}" \
+    -H "Content-Type: application/json" -d '{"filePath": "probe.txt"}')
+echo "$rf" | grep -q "probe content"
+assert "read_file returns workspace content" $? "$rf"
+
+# traversal blocked with structured error
+tr=$(curl -sk -X POST "${BASE}/api/tools/read_file/execute" "${AUTH[@]}" \
+    -H "Content-Type: application/json" -d '{"filePath": "../../etc/passwd"}')
+echo "$tr" | grep -q "escapes workspace"
+assert "Traversal rejected with structured error" $? "$tr"
+
+# absolute path coerced to basename — content different (no demo outside workspace)
+abs=$(curl -sk -X POST "${BASE}/api/tools/read_file/execute" "${AUTH[@]}" \
+    -H "Content-Type: application/json" -d '{"filePath": "/etc/passwd"}')
+# Should either 404 (no /workspace/passwd) or return passwd if one happens to exist.
+# What matters is that it is NOT reading the host's /etc/passwd.
+echo "$abs" | grep -qE "(success.{0,4}false|\"filePath\":\"/workspace/)"
+assert "Absolute path coerced under /workspace (not host's /etc/passwd)" $? "$abs"
+
+# -----------------------------------------------------------------------
+hr "Chat stream end-to-end — native tool call"
+# Only runs if a model instance is available; else skip with a note.
+model=$(curl -sk "${BASE}/api/llamacpp/instances" "${AUTH[@]}" 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    arr = json.load(sys.stdin)
+    if isinstance(arr, list) and arr:
+        print(arr[0].get("name") or arr[0].get("model") or "")
+except Exception: pass
+')
+if [ -n "$model" ]; then
+    # Ask the model a question that should trigger load_skill; with native
+    # tool calling registered, we expect at least one tool_executing event
+    # and one tool_result in the SSE stream.
+    stream=$(timeout 60 curl -sk -N -X POST "${BASE}/api/chat/stream" "${AUTH[@]}" \
+        -H "Content-Type: application/json" \
+        -d "{\"message\":\"I need to research a GitHub repo — load the skill that explains how.\",\"model\":\"$model\",\"maxTokens\":200}" 2>/dev/null)
+    echo "$stream" | grep -q '"type":"tool_executing"'
+    assert "Model issued a tool call during chat (load_skill or similar)" $?
+    echo "$stream" | grep -q '"type":"tool_result"'
+    assert "Server returned tool_result back to the stream" $?
+else
+    echo "  - (no model instance loaded — skipping chat e2e)"
+fi
+
+# -----------------------------------------------------------------------
+hr "Egress proxy — rejection counters increment on bad request"
+before=$(curl -sk "${BASE}/api/system/egress-proxy" "${AUTH[@]}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["rejectedNoToken"])')
+docker exec modelserver-webapp-1 sh -c 'curl -sS --proxy http://localhost:3180 http://example.com/ >/dev/null 2>&1' || true
+after=$(curl -sk "${BASE}/api/system/egress-proxy" "${AUTH[@]}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["rejectedNoToken"])')
+[ "$after" -gt "$before" ]
+assert "rejectedNoToken counter increments on unauthenticated proxy hit ($before → $after)" $?
+
+# Cleanup workspace probe
+docker exec modelserver-webapp-1 rm -f /models/.modelserver/workspaces/global/probe.txt >/dev/null
+
+# -----------------------------------------------------------------------
 hr "Regression — existing endpoints still respond"
 for ep in /api/auth/me /api/models /api/skills /api/apps /api/conversations /api/agents; do
     st=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE}${ep}" "${AUTH[@]}")
