@@ -134,8 +134,12 @@ export const useChatStore = create(
         // Theme (persisted to localStorage)
         theme: loadFromStorage(STORAGE_KEYS.THEME, 'dark'),
 
-        // System Prompts (persisted to localStorage)
-        systemPrompts: loadFromStorage(STORAGE_KEYS.SYSTEM_PROMPTS, []),
+        // System Prompts — server is source of truth. Previously persisted
+        // to localStorage, which caused deleted prompts to linger on the UI
+        // after a reload (store hydrated stale data before the network GET
+        // populated the fresh list). Always start empty; the app's
+        // loadSystemPrompts() on boot populates via /api/system-prompts.
+        systemPrompts: [],
 
         // Folders — client-side only, { id, name, order, createdAt }[]
         folders: loadFromStorage(STORAGE_KEYS.FOLDERS, []),
@@ -178,28 +182,20 @@ export const useChatStore = create(
 
         // ==================== System Prompt Actions ====================
 
-        setSystemPrompts: (systemPrompts) => {
-            saveToStorage(STORAGE_KEYS.SYSTEM_PROMPTS, systemPrompts);
-            set({ systemPrompts });
-        },
+        setSystemPrompts: (systemPrompts) => set({ systemPrompts }),
 
-        addSystemPrompt: (prompt) => set(state => {
-            const newPrompts = [...state.systemPrompts, prompt];
-            saveToStorage(STORAGE_KEYS.SYSTEM_PROMPTS, newPrompts);
-            return { systemPrompts: newPrompts };
-        }),
+        addSystemPrompt: (prompt) => set(state => ({
+            systemPrompts: [...state.systemPrompts, prompt],
+        })),
 
-        updateSystemPrompt: (id, updates) => set(state => {
-            const newPrompts = state.systemPrompts.map(p =>
+        updateSystemPrompt: (id, updates) => set(state => ({
+            systemPrompts: state.systemPrompts.map(p =>
                 p.id === id ? { ...p, ...updates } : p
-            );
-            saveToStorage(STORAGE_KEYS.SYSTEM_PROMPTS, newPrompts);
-            return { systemPrompts: newPrompts };
-        }),
+            ),
+        })),
 
         deleteSystemPrompt: (id) => set(state => {
             const newPrompts = state.systemPrompts.filter(p => p.id !== id);
-            saveToStorage(STORAGE_KEYS.SYSTEM_PROMPTS, newPrompts);
             // Clear selection if deleted prompt was selected
             const newSettings = state.settings.selectedSystemPromptId === id
                 ? { ...state.settings, selectedSystemPromptId: null }
