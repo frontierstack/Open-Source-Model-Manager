@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Globe, ExternalLink, Loader2 } from 'lucide-react';
 
 /**
@@ -69,17 +70,55 @@ function truncate(text, max) {
 
 /**
  * SourceChip - Individual favicon chip with hover preview
+ *
+ * The preview popup is rendered via a React portal to document.body and
+ * positioned with `position: fixed` coordinates computed from the chip's
+ * getBoundingClientRect(). This prevents the surrounding chat message
+ * bubble, ToolCallBlock body, or the scrollable chat container from
+ * clipping the popup — the previous `absolute bottom-full` layout got
+ * chopped off at the top of the bubble when a chip was near the top
+ * of a message.
  */
 function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, setPreviewStatus }) {
     const hoverTimerRef = useRef(null);
+    const chipRef = useRef(null);
+    const [popupPos, setPopupPos] = useState(null);
 
     const hostname = getHostname(source?.url);
     const isValidUrl = !!hostname;
     const isHovered = hoveredIdx === index;
 
+    const computePopupPos = () => {
+        const el = chipRef.current;
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        // Popup is 320px wide (w-80), variable height ~240-280px.
+        // Decide above vs below based on available space; fall back to
+        // clamping left so the popup stays on-screen horizontally.
+        const POPUP_W = 320;
+        const POPUP_H = 280;
+        const margin = 8;
+        const viewportW = window.innerWidth;
+        const viewportH = window.innerHeight;
+        let left = rect.left;
+        if (left + POPUP_W > viewportW - margin) left = viewportW - POPUP_W - margin;
+        if (left < margin) left = margin;
+        // Prefer above (matches old behavior); flip below when there isn't room.
+        const spaceAbove = rect.top;
+        const spaceBelow = viewportH - rect.bottom;
+        let top;
+        if (spaceAbove >= POPUP_H + margin || spaceAbove >= spaceBelow) {
+            top = Math.max(margin, rect.top - POPUP_H - margin);
+        } else {
+            top = Math.min(rect.bottom + margin, viewportH - POPUP_H - margin);
+        }
+        return { left, top };
+    };
+
     const handleMouseEnter = () => {
         if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
         hoverTimerRef.current = setTimeout(() => {
+            setPopupPos(computePopupPos());
             setHoveredIdx(index);
         }, 200);
     };
@@ -91,6 +130,19 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
         }
         setHoveredIdx((current) => (current === index ? null : current));
     };
+
+    // Re-compute popup position on scroll / resize while it's visible —
+    // otherwise scrolling leaves a stale anchor point.
+    useEffect(() => {
+        if (!isHovered) return;
+        const onMove = () => setPopupPos(computePopupPos());
+        window.addEventListener('scroll', onMove, true);
+        window.addEventListener('resize', onMove);
+        return () => {
+            window.removeEventListener('scroll', onMove, true);
+            window.removeEventListener('resize', onMove);
+        };
+    }, [isHovered]);
 
     useEffect(() => {
         return () => {
@@ -126,8 +178,62 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
         </>
     );
 
+    const popupContent = (
+        <div
+            className="fixed w-80 p-3 rounded-lg bg-dark-900 border border-white/10 shadow-2xl pointer-events-none"
+            style={{
+                left: popupPos?.left ?? 0,
+                top: popupPos?.top ?? 0,
+                zIndex: 9999,
+            }}
+        >
+            {isValidUrl && previewStatus !== 'error' && (
+                <div className="relative w-full h-36 mb-2 rounded-md overflow-hidden bg-white/[0.03] ring-1 ring-white/10">
+                    {previewStatus === 'loading' && (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                            <Loader2 className="w-5 h-5 text-dark-300 animate-spin" />
+                        </div>
+                    )}
+                    {/*
+                        WordPress mshots is a free, no-auth public
+                        link-preview service. First request for an
+                        uncached URL returns a placeholder then
+                        generates the real screenshot in the
+                        background, so subsequent hovers get the
+                        real thing.
+                    */}
+                    <img
+                        src={`https://s.wordpress.com/mshots/v1/${encodeURIComponent(source.url)}?w=640&h=400`}
+                        alt=""
+                        className={`w-full h-full object-cover transition-opacity duration-200 ${
+                            previewStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
+                        }`}
+                        onLoad={() => setPreviewStatus('loaded')}
+                        onError={() => setPreviewStatus('error')}
+                    />
+                </div>
+            )}
+            {source?.title && (
+                <div className="text-[12px] font-semibold text-white leading-snug mb-1 line-clamp-2">
+                    {source.title}
+                </div>
+            )}
+            <div className="text-[10.5px] text-dark-400 mb-1.5">{displayHost}</div>
+            {previewText && (
+                <div className="text-[11.5px] text-dark-200 leading-relaxed line-clamp-4 mb-2">
+                    {previewText}
+                </div>
+            )}
+            <div className="flex items-center gap-1 text-[10.5px] text-dark-400 pt-1.5 border-t border-white/[0.06]">
+                <span>Click to open</span>
+                <ExternalLink className="w-2.5 h-2.5" />
+            </div>
+        </div>
+    );
+
     return (
         <div
+            ref={chipRef}
             className="relative"
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
@@ -147,53 +253,9 @@ function SourceChip({ source, index, hoveredIdx, setHoveredIdx, previewStatus, s
                 </span>
             )}
 
-            {isHovered && (source?.title || previewText) && (
-                <div className="absolute bottom-full mb-2 left-0 z-50 w-80 p-3 rounded-lg bg-dark-900 border border-white/10 shadow-xl pointer-events-none">
-                    {isValidUrl && previewStatus !== 'error' && (
-                        <div className="relative w-full h-36 mb-2 rounded-md overflow-hidden bg-white/[0.03] ring-1 ring-white/10">
-                            {previewStatus === 'loading' && (
-                                <div className="absolute inset-0 flex items-center justify-center">
-                                    <Loader2 className="w-5 h-5 text-dark-300 animate-spin" />
-                                </div>
-                            )}
-                            {/*
-                                WordPress mshots is a free, no-auth public
-                                link-preview service. First request for an
-                                uncached URL returns a placeholder then
-                                generates the real screenshot in the
-                                background, so subsequent hovers get the
-                                real thing. image.thum.io (our earlier
-                                choice) was hanging indefinitely for many
-                                domains, which is why we switched.
-                            */}
-                            <img
-                                src={`https://s.wordpress.com/mshots/v1/${encodeURIComponent(source.url)}?w=640&h=400`}
-                                alt=""
-                                className={`w-full h-full object-cover transition-opacity duration-200 ${
-                                    previewStatus === 'loaded' ? 'opacity-100' : 'opacity-0'
-                                }`}
-                                onLoad={() => setPreviewStatus('loaded')}
-                                onError={() => setPreviewStatus('error')}
-                            />
-                        </div>
-                    )}
-                    {source?.title && (
-                        <div className="text-[12px] font-semibold text-white leading-snug mb-1 line-clamp-2">
-                            {source.title}
-                        </div>
-                    )}
-                    <div className="text-[10.5px] text-dark-400 mb-1.5">{displayHost}</div>
-                    {previewText && (
-                        <div className="text-[11.5px] text-dark-200 leading-relaxed line-clamp-4 mb-2">
-                            {previewText}
-                        </div>
-                    )}
-                    <div className="flex items-center gap-1 text-[10.5px] text-dark-400 pt-1.5 border-t border-white/[0.06]">
-                        <span>Click to open</span>
-                        <ExternalLink className="w-2.5 h-2.5" />
-                    </div>
-                </div>
-            )}
+            {isHovered && popupPos && (source?.title || previewText) &&
+                typeof document !== 'undefined' &&
+                createPortal(popupContent, document.body)}
         </div>
     );
 }

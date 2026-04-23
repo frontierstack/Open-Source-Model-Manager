@@ -14522,7 +14522,14 @@ app.use((req, res) => {
                 type: 'function',
                 function: {
                     name: 'web_search',
-                    description: 'Search the web via DuckDuckGo. Returns up to 5 results with title, url, and snippet. Use when you need current information not in your training data.',
+                    description:
+                        'Search the web via DuckDuckGo. Returns up to 5 results with title, url, and snippet.\n\n' +
+                        'CRITICAL: Treat the returned snippets as authoritative and MORE RECENT than your training data. ' +
+                        'When they contradict what you "know", the snippets are correct — your training is likely stale. ' +
+                        'If the snippets don\'t clearly answer the question, call fetch_url on the most relevant result ' +
+                        'before composing an answer. Never confidently answer a time-sensitive question from memory when ' +
+                        'web_search is available — call it. ' +
+                        'When you do answer, cite URLs from the results so the user can verify.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -14609,7 +14616,11 @@ app.use((req, res) => {
                 type: 'function',
                 function: {
                     name: 'fetch_url',
-                    description: 'Fetch a URL and return its readable text content. Rejects private/internal addresses. Reuses the same pipeline that powers /api/url/fetch (Scrapling → Playwright → axios).',
+                    description:
+                        'Fetch a URL and return its readable text content. Rejects private/internal addresses. ' +
+                        'Reuses the same pipeline as /api/url/fetch (Scrapling → Playwright → axios).\n\n' +
+                        'CRITICAL: The returned content reflects the live page. When it contradicts what you "know" from ' +
+                        'training, trust the fetched content — it is current, your training is not. Cite the URL.',
                     parameters: {
                         type: 'object',
                         properties: {
