@@ -11635,37 +11635,41 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
         // --- Auto-invoke base64_decode on input ---------------------------
         // Models inconsistently pick base64_decode out of a 70+ tool catalog
-        // even with hand-tuned trigger-phrase descriptions — they guess the
-        // decoded value inline instead. Detect base64 in the latest user
-        // message server-side, run the skill deterministically, and inject
-        // a completed tool_call + tool-result pair into the message list so
-        // the model's first turn responds against decoded content.
+        // and often guess the decoded value inline. Detect base64 in the
+        // latest user message server-side, run the skill, and prepend the
+        // decoded values to the user message as a clearly-marked server
+        // note so the model answers against ground truth.
         //
-        // Skipped silently when:
-        //   - base64_decode isn't in the catalog (user disabled it)
-        //   - no base64-looking substrings in the message, or none decode
-        //     to mostly-printable UTF-8 (strict detector, not regex-only)
+        // Earlier attempts injected a synthetic assistant+tool_calls+tool
+        // triplet into the message list. That serialized in the chat
+        // template as tool-call markers, which some models (gemma4,
+        // gpt-oss-style templates on llama.cpp) then echoed as visible
+        // content — users saw garbled `<|tool_call|>…<|channel|>…` strings
+        // instead of answers. Plain-text injection avoids the template
+        // tokenization path entirely. The UI still gets tool_executing +
+        // tool_result SSE events for transparency; they're purely
+        // frontend-visible and never touch the model's prompt.
+        //
+        // Skipped silently when base64_decode isn't in the catalog (user
+        // disabled it) or no base64 in the message decodes to
+        // mostly-printable UTF-8.
         const base64Detector = require('./services/base64Detector');
         const b64PreflightEncoded = new Set();
-        if (toolCatalog.some(t => t?.function?.name === 'base64_decode')) {
+        const b64CatalogExposed = toolCatalog.some(t => t?.function?.name === 'base64_decode');
+        if (b64CatalogExposed) {
             try {
                 let userText = '';
+                let userMsgIdx = -1;
                 for (let i = chatMessages.length - 1; i >= 0; i--) {
                     if (chatMessages[i].role === 'user') {
                         userText = base64Detector.extractTextFromContent(chatMessages[i].content);
+                        userMsgIdx = i;
                         break;
                     }
                 }
-                const found = base64Detector.findBase64InText(userText);
+                const found = userMsgIdx >= 0 ? base64Detector.findBase64InText(userText) : [];
                 if (found.length > 0) {
-                    const call = {
-                        id: `call_auto_b64_in_${Date.now()}`,
-                        type: 'function',
-                        function: {
-                            name: 'base64_decode',
-                            arguments: JSON.stringify({ text: userText }),
-                        },
-                    };
+                    const callId = `call_auto_b64_in_${Date.now()}`;
                     const result = {
                         success: true,
                         mode: found.length === 1 ? 'single' : 'scan',
@@ -11673,35 +11677,68 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         results: found,
                         note: `Auto-decoded ${found.length} base64 string(s) detected in user message`,
                     };
+                    // UI-only events. Compact arguments (just the count)
+                    // so a multi-KB user paste doesn't ship to the frontend
+                    // twice.
                     if (clientConnected) {
                         try {
                             res.write(`data: ${JSON.stringify({
                                 type: 'tool_executing',
-                                tool_call_id: call.id,
+                                tool_call_id: callId,
                                 name: 'base64_decode',
-                                arguments: call.function.arguments,
+                                arguments: JSON.stringify({ candidates: found.length }),
                             })}\n\n`);
                             res.write(`data: ${JSON.stringify({
                                 type: 'tool_result',
-                                tool_call_id: call.id,
+                                tool_call_id: callId,
                                 name: 'base64_decode',
                                 preview: JSON.stringify(result).slice(0, 240),
                                 result,
                             })}\n\n`);
                         } catch (_) { clientConnected = false; }
                     }
-                    chatMessages.push({
-                        role: 'assistant',
-                        content: null,
-                        tool_calls: [call],
-                    });
-                    chatMessages.push({
-                        role: 'tool',
-                        tool_call_id: call.id,
-                        name: 'base64_decode',
-                        content: JSON.stringify(result),
-                    });
+                    // Build a compact decoded-values note. Truncate
+                    // individual decoded strings so one huge payload can't
+                    // blow the context; the full decoded text is available
+                    // in the UI panel via the tool_result event.
+                    const MAX_NOTE_DECODED_CHARS = 4000;
+                    const bullets = [];
+                    let remaining = MAX_NOTE_DECODED_CHARS;
+                    for (const f of found) {
+                        const encShort = f.encoded.length > 60
+                            ? f.encoded.slice(0, 60) + '…'
+                            : f.encoded;
+                        const perBullet = Math.max(120, Math.min(f.decoded.length, remaining));
+                        const decShort = f.decoded.length > perBullet
+                            ? f.decoded.slice(0, perBullet) + '…[truncated]'
+                            : f.decoded;
+                        bullets.push(`- "${encShort}" → ${JSON.stringify(decShort)}`);
+                        remaining -= decShort.length;
+                        if (remaining <= 0) break;
+                    }
+                    const note = [
+                        '[SERVER NOTE: The server auto-decoded base64 strings found in this message. Use these decoded values directly; do not attempt to decode them yourself.]',
+                        ...bullets,
+                        '',
+                    ].join('\n');
+                    // Prepend the note to the user message's text content.
+                    // Handles both plain-string and vision-array formats.
+                    const msg = chatMessages[userMsgIdx];
+                    if (typeof msg.content === 'string') {
+                        msg.content = `${note}\n${msg.content}`;
+                    } else if (Array.isArray(msg.content)) {
+                        const textIdx = msg.content.findIndex(p => p?.type === 'text');
+                        if (textIdx >= 0) {
+                            msg.content[textIdx].text = `${note}\n${msg.content[textIdx].text || ''}`;
+                        } else {
+                            msg.content.unshift({ type: 'text', text: note });
+                        }
+                    }
                     for (const f of found) b64PreflightEncoded.add(f.encoded);
+                    // Drop base64_decode from the catalog for this turn —
+                    // the work is done, and exposing the tool invites the
+                    // model to "re-call" it and leak template tokens.
+                    toolCatalog = toolCatalog.filter(t => t?.function?.name !== 'base64_decode');
                     logChatActivity(`Auto-invoked base64_decode on input (${found.length} candidate(s))`);
                 }
             } catch (e) {
@@ -12102,7 +12139,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // decoded values. The response text itself is left as the
             // model wrote it — the tool_result sits alongside as a
             // trustworthy ground-truth panel.
-            if (fullResponse && toolCatalog.some(t => t?.function?.name === 'base64_decode')) {
+            if (fullResponse && b64CatalogExposed) {
                 try {
                     const found = base64Detector
                         .findBase64InText(fullResponse)
