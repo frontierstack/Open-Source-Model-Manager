@@ -1205,9 +1205,6 @@ body.font-size-large .markdown-content,
 .h-8{
   height: 2rem;
 }
-.h-80{
-  height: 20rem;
-}
 .h-\[11px\]{
   height: 11px;
 }
@@ -1216,6 +1213,9 @@ body.font-size-large .markdown-content,
 }
 .h-\[15px\]{
   height: 15px;
+}
+.h-\[26rem\]{
+  height: 26rem;
 }
 .h-\[350px\]{
   height: 350px;
@@ -1554,6 +1554,11 @@ body.font-size-large .markdown-content,
 }
 .gap-4{
   gap: 1rem;
+}
+.space-y-1 > :not([hidden]) ~ :not([hidden]){
+  --tw-space-y-reverse: 0;
+  margin-top: calc(0.25rem * calc(1 - var(--tw-space-y-reverse)));
+  margin-bottom: calc(0.25rem * var(--tw-space-y-reverse));
 }
 .space-y-1\.5 > :not([hidden]) ~ :not([hidden]){
   --tw-space-y-reverse: 0;
