@@ -4327,7 +4327,11 @@ app.delete('/api/system-prompts/:modelName', requireAuth, async (req, res) => {
 // 'html' and friends are rendered client-side in an iframe and do not
 // hit this endpoint.
 app.post('/api/sandbox/run-code', requireAuth, async (req, res) => {
-    const { language, code, timeoutMs = 15_000 } = req.body || {};
+    // 30s default — the scientific image has a real cold-start
+    // (numpy + pandas + matplotlib imports take 2-4s on their own
+    // before the user snippet runs). Snippets that need longer
+    // can pass timeoutMs explicitly up to 120s.
+    const { language, code, timeoutMs = 30_000 } = req.body || {};
     if (!code || typeof code !== 'string') {
         return res.status(400).json({ error: 'code (string) is required' });
     }
@@ -4365,7 +4369,7 @@ ${code.split('\n').map(l => '        ' + l).join('\n')}
             params: {},
             network: 'none',
             workspace: false,
-            timeoutMs: Math.min(60_000, Math.max(1000, parseInt(timeoutMs, 10))),
+            timeoutMs: Math.min(120_000, Math.max(1000, parseInt(timeoutMs, 10))),
             memory: '256m',
             cpus: '0.5',
             toolName: 'chat-code-preview',
@@ -4377,7 +4381,13 @@ ${code.split('\n').map(l => '        ' + l).join('\n')}
         // was produced so idle preview runs don't leave disk residue.
         if (run.timedOut) {
             sandbox.cleanupRun(run.runId).catch(() => {});
-            return res.json({ success: false, error: 'Code timed out', timedOut: true });
+            const effectiveMs = Math.min(120_000, Math.max(1000, parseInt(timeoutMs, 10)));
+            return res.json({
+                success: false,
+                timedOut: true,
+                error: `Code timed out after ${Math.round(effectiveMs / 1000)}s. Common causes: infinite loop (e.g. while True, pygame game loop), waiting for input() (no stdin in sandbox), or network call on a snippet that tried to reach the internet (no network by default). Send timeoutMs in the request body to extend, up to 120000.`,
+                stdout: run.stdout?.slice(0, 4000) || '',
+            });
         }
         if (!run.artifacts.length) {
             sandbox.cleanupRun(run.runId).catch(() => {});

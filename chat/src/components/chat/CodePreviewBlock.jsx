@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Play, Square, Loader2, AlertCircle } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { useChatStore } from '../../stores/useChatStore';
@@ -44,18 +44,32 @@ export default function CodePreviewBlock({ code, language = 'text', isStreaming 
 function PythonRunBlock({ code, language }) {
     const [state, setState] = useState('idle'); // idle | running | done | error
     const [output, setOutput] = useState(null);
+    const [elapsedMs, setElapsedMs] = useState(0);
     const abortRef = useRef(null);
+    const startRef = useRef(0);
+
+    // Tick a live elapsed counter while running — distinguishes a slow
+    // import (progress visible) from a hang (stuck on one number).
+    useEffect(() => {
+        if (state !== 'running') return;
+        const id = setInterval(() => {
+            setElapsedMs(Date.now() - startRef.current);
+        }, 250);
+        return () => clearInterval(id);
+    }, [state]);
 
     const run = async () => {
         setState('running');
         setOutput(null);
+        setElapsedMs(0);
+        startRef.current = Date.now();
         abortRef.current = new AbortController();
         try {
             const res = await fetch('/api/sandbox/run-code', {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ language: 'python', code }),
+                body: JSON.stringify({ language: 'python', code, timeoutMs: 60_000 }),
                 signal: abortRef.current.signal,
             });
             const data = await res.json();
@@ -106,7 +120,11 @@ function PythonRunBlock({ code, language }) {
             <CodeBlock code={code} language={language} isStreaming={false} />
             {state === 'running' && (
                 <div className="mt-1.5 px-3 py-2 rounded-md bg-dark-800/60 border border-white/5 text-[11px] text-dark-300 inline-flex items-center gap-2">
-                    <Loader2 className="w-3 h-3 animate-spin" /> executing in sandbox…
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>executing in sandbox…</span>
+                    <span className="ml-auto font-mono text-dark-400">
+                        {(elapsedMs / 1000).toFixed(1)}s
+                    </span>
                 </div>
             )}
             {output && (state === 'done' || state === 'error') && (
