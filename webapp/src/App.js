@@ -935,6 +935,28 @@ const App = () => {
         }
     };
 
+    // Flip a markdown skill's enabled flag via PUT. Disabled skills
+    // vanish from the chat model's load_skill catalog, mirroring the
+    // Tools on/off toggle behavior.
+    const handleToggleMdSkill = async (skill, nextEnabled) => {
+        try {
+            const res = await fetch(`/api/markdown-skills/${skill.id}`, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: nextEnabled }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            showSnackbar(nextEnabled ? 'Skill enabled' : 'Skill disabled', 'success');
+            fetchMdSkills();
+        } catch (e) {
+            showSnackbar(`Failed to update skill: ${e.message}`, 'error');
+        }
+    };
+
     const fetchTasks = () => {
         fetch('/api/tasks', { credentials: 'include' })
             .then(res => res.json())
@@ -10924,17 +10946,30 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                 </Alert>
                                                             ) : (
                                                                 <Grid container spacing={2}>
-                                                                    {mdSkills.map(skill => (
+                                                                    {mdSkills.map(skill => {
+                                                                        const isEnabled = skill.enabled !== false;
+                                                                        return (
                                                                         <Grid item xs={12} md={6} key={skill.id}>
-                                                                            <Card variant="outlined">
+                                                                            <Card variant="outlined" sx={{ opacity: isEnabled ? 1 : 0.62 }}>
                                                                                 <CardContent>
                                                                                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 1, gap: 1 }}>
                                                                                         <Box sx={{ flex: 1, minWidth: 0 }}>
                                                                                             <Typography variant="h6" sx={{ fontSize: '1rem' }}>{skill.name}</Typography>
-                                                                                            {skill.owner == null && (
-                                                                                                <Chip label="global" size="small" sx={{ height: 18, fontSize: '0.65rem', mt: 0.5 }} />
-                                                                                            )}
+                                                                                            <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5, flexWrap: 'wrap' }}>
+                                                                                                {skill.owner == null && (
+                                                                                                    <Chip label="global" size="small" sx={{ height: 18, fontSize: '0.65rem' }} />
+                                                                                                )}
+                                                                                                {!isEnabled && (
+                                                                                                    <Chip label="disabled" size="small" color="warning" sx={{ height: 18, fontSize: '0.65rem' }} />
+                                                                                                )}
+                                                                                            </Box>
                                                                                         </Box>
+                                                                                        <Switch
+                                                                                            checked={isEnabled}
+                                                                                            onChange={(e) => handleToggleMdSkill(skill, e.target.checked)}
+                                                                                            size="small"
+                                                                                            inputProps={{ 'aria-label': isEnabled ? 'Disable skill' : 'Enable skill' }}
+                                                                                        />
                                                                                     </Box>
                                                                                     <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                                                                                         {skill.description || 'No description'}
@@ -10954,7 +10989,8 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                                 </CardActions>
                                                                             </Card>
                                                                         </Grid>
-                                                                    ))}
+                                                                        );
+                                                                    })}
                                                                 </Grid>
                                                             )}
                                                         </Box>

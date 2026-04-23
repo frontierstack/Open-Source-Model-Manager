@@ -5892,9 +5892,9 @@ app.get('/api/markdown-skills/:id', requireAuth, async (req, res) => {
 
 app.post('/api/markdown-skills', requireAuth, async (req, res) => {
     try {
-        const { name, description, triggers, body } = req.body || {};
+        const { name, description, triggers, body, enabled } = req.body || {};
         const result = await markdownSkills.createSkill(req.userId, {
-            name, description, triggers, body,
+            name, description, triggers, body, enabled,
         });
         res.status(201).json(result);
     } catch (e) {
@@ -5906,9 +5906,9 @@ app.post('/api/markdown-skills', requireAuth, async (req, res) => {
 
 app.put('/api/markdown-skills/:id', requireAuth, async (req, res) => {
     try {
-        const { name, description, triggers, body } = req.body || {};
+        const { name, description, triggers, body, enabled } = req.body || {};
         const result = await markdownSkills.updateSkill(req.userId, req.params.id, {
-            name, description, triggers, body,
+            name, description, triggers, body, enabled,
         });
         res.json(result);
     } catch (e) {

@@ -343,8 +343,17 @@ function AppContent() {
         loadGoogleFont(fontFamily);
     }, [theme, settings?.fontSize, settings?.fontFamily]);
 
-    // Check authentication status on mount
+    // Check authentication status on mount.
+    //
+    // Also sweep any orphan localStorage keys that used to cache
+    // server-owned data. Current sweep: `chat-system-prompts` —
+    // the store stopped reading it but users who loaded the app
+    // with the old bundle still have a stale blob sitting there,
+    // which is what made "deleted prompts keep coming back" look
+    // like it wasn't fixed. Safe to remove on every boot; server
+    // is the source of truth and loadSystemPrompts() repopulates.
     useEffect(() => {
+        try { localStorage.removeItem('chat-system-prompts'); } catch (_) {}
         checkAuth();
     }, []);
 

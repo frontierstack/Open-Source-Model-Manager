@@ -72,17 +72,28 @@ function parseFrontmatter(text) {
 }
 
 function serializeFrontmatter(meta, body) {
-    const keys = ['name', 'description', 'triggers'];
+    const keys = ['name', 'description', 'triggers', 'enabled'];
     const out = [FRONTMATTER_FENCE];
     for (const k of keys) {
-        if (meta[k] != null && meta[k] !== '') {
-            // Simple scalar rendering; escape only the line-break case.
-            const v = String(meta[k]).replace(/\r?\n/g, ' ').slice(0, MAX_FIELD_LEN);
-            out.push(`${k}: ${v}`);
-        }
+        if (meta[k] == null || meta[k] === '') continue;
+        // `enabled` is a boolean; render as "true"/"false" so the
+        // parser below reads it correctly.
+        const raw = k === 'enabled'
+            ? (meta[k] === false || meta[k] === 'false' ? 'false' : 'true')
+            : String(meta[k]).replace(/\r?\n/g, ' ').slice(0, MAX_FIELD_LEN);
+        out.push(`${k}: ${raw}`);
     }
     out.push(FRONTMATTER_FENCE, '', body || '');
     return out.join('\n');
+}
+
+// Coerce a raw frontmatter value into a boolean for the `enabled` field.
+// Unset / missing → true (skills are enabled by default, so existing
+// files without an `enabled` line keep their current behaviour).
+function parseEnabled(raw) {
+    if (raw == null || raw === '') return true;
+    const s = String(raw).trim().toLowerCase();
+    return !(s === 'false' || s === '0' || s === 'no' || s === 'off');
 }
 
 // --- Slug / id helpers -----------------------------------------------------
@@ -144,6 +155,7 @@ async function listSkills(userId) {
                     name: meta.name || slug,
                     description: meta.description || '',
                     triggers: meta.triggers || '',
+                    enabled: parseEnabled(meta.enabled),
                     bodyPreview: body.slice(0, 240),
                     bodyBytes: Buffer.byteLength(body, 'utf8'),
                 });
@@ -184,6 +196,7 @@ async function getSkill(userId, id) {
                 name: meta.name || slug,
                 description: meta.description || '',
                 triggers: meta.triggers || '',
+                enabled: parseEnabled(meta.enabled),
                 body,
             };
         } catch (e) {
@@ -197,7 +210,7 @@ async function getSkill(userId, id) {
  * Create a new skill. Returns { id } on success, throws on validation or
  * collision.
  */
-async function createSkill(userId, { name, description, triggers, body }) {
+async function createSkill(userId, { name, description, triggers, body, enabled }) {
     if (!name || typeof name !== 'string' || !name.trim()) {
         throw new Error('name is required');
     }
@@ -215,7 +228,12 @@ async function createSkill(userId, { name, description, triggers, body }) {
         throw new Error(`Body exceeds ${MAX_BODY_BYTES} byte limit`);
     }
     const text = serializeFrontmatter(
-        { name: name.trim(), description, triggers },
+        {
+            name: name.trim(),
+            description,
+            triggers,
+            enabled: enabled === false ? false : true,  // default true
+        },
         body || '',
     );
     await fs.writeFile(p, text, 'utf8');
@@ -226,7 +244,7 @@ async function createSkill(userId, { name, description, triggers, body }) {
  * Update an existing skill. Only the owner (or a null-owner admin edit on a
  * global skill) may modify. Rejects cross-owner writes.
  */
-async function updateSkill(userId, id, { name, description, triggers, body }) {
+async function updateSkill(userId, id, { name, description, triggers, body, enabled }) {
     const existing = await getSkill(userId, id);
     if (!existing) throw new Error('not_found');
     if (existing.owner && existing.owner !== String(userId)) {
@@ -242,6 +260,7 @@ async function updateSkill(userId, id, { name, description, triggers, body }) {
             name: name != null ? String(name).trim() : existing.name,
             description: description != null ? description : existing.description,
             triggers: triggers != null ? triggers : existing.triggers,
+            enabled: enabled != null ? (enabled !== false) : existing.enabled !== false,
         },
         body != null ? body : existing.body,
     );

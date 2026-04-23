@@ -47,7 +47,11 @@ function registerTool(def) {
 registerTool({
     name: 'load_skill',
     async build(ctx) {
-        const skills = await markdownSkills.listSkills(ctx.userId);
+        const allSkills = await markdownSkills.listSkills(ctx.userId);
+        // Only expose enabled skills to the model. Disabled skills
+        // vanish from this catalog entirely — the model can't load
+        // them, same contract as the Tools toggle.
+        const skills = allSkills.filter(s => s.enabled !== false);
         // Surface the catalog inside the tool description so the model can
         // choose `name` correctly without a parallel system-prompt section.
         const catalog = skills.length
@@ -93,7 +97,12 @@ registerTool({
             const all = await markdownSkills.listSkills(ctx.userId);
             return {
                 error: `No skill with id "${id}".`,
-                available: all.map(s => s.id),
+                available: all.filter(s => s.enabled !== false).map(s => s.id),
+            };
+        }
+        if (skill.enabled === false) {
+            return {
+                error: `Skill "${id}" is disabled. The operator turned it off in Settings; pick another skill or proceed without one.`,
             };
         }
         return {
