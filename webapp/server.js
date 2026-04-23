@@ -4296,14 +4296,37 @@ app.delete('/api/system-prompts/:modelName', requireAuth, async (req, res) => {
     try {
         const prompts = await loadSystemPrompts();
 
+        let existed = false;
         if (req.userId) {
             // User-scoped deletion
-            if (prompts[req.userId]) {
-                delete prompts[req.userId][modelName];
+            const bucket = prompts[req.userId];
+            if (bucket && Object.prototype.hasOwnProperty.call(bucket, modelName)) {
+                delete bucket[modelName];
+                existed = true;
             }
         } else {
-            // No userId: backward compatibility
-            delete prompts[modelName];
+            // No userId (API-key auth without user scope). The stored
+            // shape is { <userId>: { <name>: "..." }, ... } — "legacy
+            // flat" storage no longer exists in practice. Sweep all
+            // user buckets so the delete actually lands.
+            for (const bucket of Object.values(prompts)) {
+                if (bucket && typeof bucket === 'object' &&
+                    Object.prototype.hasOwnProperty.call(bucket, modelName)) {
+                    delete bucket[modelName];
+                    existed = true;
+                }
+            }
+        }
+
+        if (!existed) {
+            // Loud failure — previously the endpoint always returned
+            // 200 "deleted" even when nothing was removed, which made
+            // the Settings UI look like it had deleted a prompt that
+            // was still there on refresh.
+            return res.status(404).json({
+                error: 'System prompt not found',
+                modelName,
+            });
         }
 
         await saveSystemPrompts(prompts);

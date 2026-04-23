@@ -197,6 +197,53 @@ catalog_count=$(echo "$tools_dump" | python3 -c 'import json,sys; print(json.loa
 assert "Tool catalog surfaces >= 30 skills (count=$catalog_count)" $?
 
 # -----------------------------------------------------------------------
+hr "Skill enable/disable toggle"
+# Flip base64_decode enabled=false on disk and verify the catalog hides it
+# AND direct execute refuses. Flip back to enabled=true afterwards.
+toggle_skill() {
+    docker exec modelserver-webapp-1 node -e "
+const fs=require('fs');
+const p='/models/.modelserver/skills.json';
+const s=JSON.parse(fs.readFileSync(p,'utf8'));
+const t=s.find(x=>x.name==='base64_decode');
+if(!t){console.error('not found'); process.exit(1);}
+t.enabled=$1;
+fs.writeFileSync(p, JSON.stringify(s, null, 2));
+" >/dev/null
+    docker restart modelserver-webapp-1 >/dev/null
+    sleep 4
+}
+catalog_has() {
+    curl -sk "${BASE}/api/system/tools-catalog" "${AUTH[@]}" \
+      | python3 -c "import json,sys; print('yes' if '$1' in json.load(sys.stdin).get('tools',[]) else 'no')" 2>/dev/null
+}
+execute_b64() {
+    curl -sk -X POST "${BASE}/api/tools/base64_decode/execute" "${AUTH[@]}" \
+      -H "Content-Type: application/json" -d '{"encodedData":"SGVsbG8="}'
+}
+
+# Enabled baseline
+toggle_skill true
+[ "$(catalog_has base64_decode)" = "yes" ]
+assert "enabled skill: present in catalog" $?
+enabled_exec=$(execute_b64)
+echo "$enabled_exec" | grep -q '"decoded":"Hello"'
+assert "enabled skill: direct execute succeeds" $?
+
+# Disabled — should be hidden + refused
+toggle_skill false
+[ "$(catalog_has base64_decode)" = "no" ]
+assert "disabled skill: hidden from catalog" $?
+disabled_exec=$(execute_b64)
+echo "$disabled_exec" | grep -q '"enabled":false'
+assert "disabled skill: direct execute refused" $?
+
+# Restore
+toggle_skill true
+[ "$(catalog_has base64_decode)" = "yes" ]
+assert "restore: skill re-enabled and visible" $?
+
+# -----------------------------------------------------------------------
 hr "Workspace-migrated defaults"
 # Seed a file the workspace skills can see
 docker exec modelserver-webapp-1 sh -c 'mkdir -p /models/.modelserver/workspaces/global; chmod 0777 /models/.modelserver/workspaces/global; echo "probe content" > /models/.modelserver/workspaces/global/probe.txt' >/dev/null
