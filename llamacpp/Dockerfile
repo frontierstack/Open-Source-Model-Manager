@@ -2,7 +2,7 @@
 # Supports older GPUs (Maxwell 5.2+) through to modern GPUs (9.0)
 
 # Stage 1: Build llama.cpp with CUDA support for wide GPU compatibility
-FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
 
 # Build arguments for corporate proxy/SSL environments
 # Pass these at build time: docker build --build-arg HTTP_PROXY=http://proxy:port ...
@@ -35,14 +35,15 @@ WORKDIR /build
 RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
 
 # Build with CUDA support for multiple architectures
-# 52 = Maxwell (Quadro M4000, GTX 900 series)
-# 60 = Pascal (GTX 1000 series, Quadro P series)
-# 70 = Volta (V100)
-# 75 = Turing (RTX 2000 series, Quadro RTX)
-# 80 = Ampere (RTX 3000 series, A100)
-# 86 = Ampere (RTX 3000 series laptop)
-# 89 = Ada Lovelace (RTX 4000 series)
-# 90 = Hopper (H100)
+# 52  = Maxwell (Quadro M4000, GTX 900 series)
+# 60  = Pascal (GTX 1000 series, Quadro P series)
+# 70  = Volta (V100)
+# 75  = Turing (RTX 2000 series, Quadro RTX)
+# 80  = Ampere (RTX 3000 series, A100)
+# 86  = Ampere (RTX 3000 series laptop)
+# 89  = Ada Lovelace (RTX 4000 series)
+# 90  = Hopper (H100)
+# 120 = Blackwell (RTX 50 series, B100/B200)
 WORKDIR /build/llama.cpp
 
 # Link against CUDA driver stubs during build (actual driver provided at runtime)
@@ -53,7 +54,7 @@ ENV LDFLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--allow-shlib-undefined"
 
 RUN cmake -B build \
     -DGGML_CUDA=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="52;60;70;75;80;86;89;90" \
+    -DCMAKE_CUDA_ARCHITECTURES="52;60;70;75;80;86;89;90;120" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_CURL=OFF \
     -DBUILD_SHARED_LIBS=OFF \
@@ -61,7 +62,7 @@ RUN cmake -B build \
     && cmake --build build --config Release -j$(nproc) --target llama-server
 
 # Stage 2: Runtime image (smaller footprint)
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
