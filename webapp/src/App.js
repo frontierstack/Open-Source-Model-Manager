@@ -5866,6 +5866,158 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
 .then(res => res.json())
 .then(data => console.log('App restarted:', data))
 .catch(err => console.error(err));`
+            },
+            '/api/model-configs': {
+                curl: `# Bearer Token Authentication
+curl -k -X GET ${baseUrl}/api/model-configs \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/model-configs \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/model-configs',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/model-configs',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+configs = response.json()  # { modelName: { contextSize, temperature, ... }, ... }
+for name, cfg in configs.items():
+    print(name, cfg)`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/model-configs" -Method Get -Headers $headers
+$response | ConvertTo-Json`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/model-configs', {
+  method: 'GET',
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(configs => console.log(configs))
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/model-configs', {
+  method: 'GET',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  }
+})
+.then(res => res.json())
+.then(configs => console.log(configs))
+.catch(err => console.error(err));`
+            },
+            '/api/cli/install': {
+                curl: `# Public endpoint — no authentication required.
+# Pipe directly to bash to install the Koda CLI:
+curl -sk ${baseUrl}/api/cli/install | bash
+
+# Or save the install script first and inspect it:
+curl -sk ${baseUrl}/api/cli/install -o install-koda.sh
+cat install-koda.sh
+bash install-koda.sh`,
+                python: `import requests, subprocess
+
+# Public endpoint — no auth headers needed.
+response = requests.get('${baseUrl}/api/cli/install', verify=False)
+script = response.text
+print(script[:200], '...')
+
+# To actually install (equivalent to \`curl ... | bash\`):
+# subprocess.run(['bash', '-c', script], check=True)`,
+                powershell: `# This endpoint serves a bash script. Use /api/cli/install.ps1 on Windows.
+$script = Invoke-RestMethod -Uri "${baseUrl}/api/cli/install"
+Write-Output $script.Substring(0, 200)`,
+                javascript: `// Public endpoint — no auth.
+fetch('${baseUrl}/api/cli/install')
+  .then(res => res.text())
+  .then(script => console.log(script.slice(0, 200), '...'))
+  .catch(err => console.error(err));`
+            },
+            '/api/cli/install.ps1': {
+                curl: `# Public endpoint — no authentication required.
+# Fetch the PowerShell installer (for piping on Windows with iex):
+curl -sk ${baseUrl}/api/cli/install.ps1 -o install-koda.ps1
+powershell -File install-koda.ps1`,
+                python: `import requests
+
+# Public endpoint — no auth headers needed.
+response = requests.get('${baseUrl}/api/cli/install.ps1', verify=False)
+with open('install-koda.ps1', 'w') as f:
+    f.write(response.text)
+print('Saved install-koda.ps1')`,
+                powershell: `# One-liner install:
+irm -SkipCertificateCheck ${baseUrl}/api/cli/install.ps1 | iex
+
+# Or save first and inspect:
+Invoke-RestMethod -Uri "${baseUrl}/api/cli/install.ps1" -OutFile install-koda.ps1
+Get-Content install-koda.ps1 | Select-Object -First 20`,
+                javascript: `// Public endpoint — no auth.
+fetch('${baseUrl}/api/cli/install.ps1')
+  .then(res => res.text())
+  .then(script => console.log(script.slice(0, 200), '...'))
+  .catch(err => console.error(err));`
+            },
+            '/api/cli/files/koda.js': {
+                curl: `# Public endpoint — downloads the Koda CLI source.
+# Used internally by the installer; you can also grab it directly:
+curl -sk ${baseUrl}/api/cli/files/koda.js -o koda.js`,
+                python: `import requests
+
+# Public endpoint — no auth.
+response = requests.get('${baseUrl}/api/cli/files/koda.js', verify=False)
+with open('koda.js', 'wb') as f:
+    f.write(response.content)
+print(f'Downloaded koda.js ({len(response.content)} bytes)')`,
+                powershell: `# Public endpoint — no auth.
+Invoke-RestMethod -Uri "${baseUrl}/api/cli/files/koda.js" -OutFile "koda.js"
+Write-Output "Downloaded koda.js"`,
+                javascript: `// Public endpoint — no auth.
+fetch('${baseUrl}/api/cli/files/koda.js')
+  .then(res => res.text())
+  .then(src => console.log('Koda CLI source length:', src.length))
+  .catch(err => console.error(err));`
+            },
+            '/api/cli/files/package.json': {
+                curl: `# Public endpoint — downloads the Koda CLI manifest.
+curl -sk ${baseUrl}/api/cli/files/package.json -o package.json`,
+                python: `import requests
+
+# Public endpoint — no auth.
+response = requests.get('${baseUrl}/api/cli/files/package.json', verify=False)
+manifest = response.json()
+print(manifest.get('name'), manifest.get('version'))`,
+                powershell: `# Public endpoint — no auth.
+$manifest = Invoke-RestMethod -Uri "${baseUrl}/api/cli/files/package.json"
+Write-Output "$($manifest.name) v$($manifest.version)"`,
+                javascript: `// Public endpoint — no auth.
+fetch('${baseUrl}/api/cli/files/package.json')
+  .then(res => res.json())
+  .then(pkg => console.log(\`\${pkg.name} v\${pkg.version}\`))
+  .catch(err => console.error(err));`
             }
         };
 
@@ -9384,6 +9536,7 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             <MenuItem value="/api/models/pull">POST /api/models/pull - Download Model</MenuItem>
                                                             <MenuItem value="/api/models/:name/load">POST /api/models/:name/load - Load Model</MenuItem>
                                                             <MenuItem value="/api/models/:name">DELETE /api/models/:name - Delete Model</MenuItem>
+                                                            <MenuItem value="/api/model-configs">GET /api/model-configs - List All Model Configs</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName">GET /api/model-configs/:name - Get Model Config</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName/update">PUT /api/model-configs/:name - Update Model Config</MenuItem>
                                                             <MenuItem value="/api/huggingface/search">GET /api/huggingface/search - Search HuggingFace</MenuItem>
@@ -9479,6 +9632,11 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                             <MenuItem value="/api/api-keys/:id/delete">DELETE /api/api-keys/:id - Delete API Key</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/clear-usage">POST /api/api-keys/:id/clear-usage - Clear Usage Stats</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/stats">GET /api/api-keys/:id/stats - Get Key Stats</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── CLI (Koda) ───</MenuItem>
+                                                            <MenuItem value="/api/cli/install">GET /api/cli/install - Install Koda CLI (bash)</MenuItem>
+                                                            <MenuItem value="/api/cli/install.ps1">GET /api/cli/install.ps1 - Install Koda CLI (PowerShell)</MenuItem>
+                                                            <MenuItem value="/api/cli/files/koda.js">GET /api/cli/files/koda.js - Download Koda CLI Source</MenuItem>
+                                                            <MenuItem value="/api/cli/files/package.json">GET /api/cli/files/package.json - Download Koda CLI Manifest</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Documentation ───</MenuItem>
                                                             <MenuItem value="/api/docs">GET /api/docs - Get API Documentation</MenuItem>
                                                         </Select>
@@ -9841,6 +9999,7 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/pull</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Download from HuggingFace</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start model instance</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Delete model</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List all model configs</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/model-configs/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get/update model config</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Search GGUF models</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/files/:repo</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List repo files</TableCell></TableRow>
@@ -9933,6 +10092,20 @@ fetch(\`${baseUrl}/api/apps/\${appName}/restart\`, {
                                                     </TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible chat</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible text</TableCell></TableRow>
+
+                                                    {/* CLI / Public (no auth) */}
+                                                    <TableRow>
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(148, 163, 184, 0.12)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="public" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(148,163,184,0.35)' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Koda CLI Distribution (no auth)</Typography>
+                                                            </Box>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/install</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Bash install script</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/install.ps1</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>PowerShell install script</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/files/koda.js</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Koda CLI source bundle</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/files/package.json</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Koda CLI manifest</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
