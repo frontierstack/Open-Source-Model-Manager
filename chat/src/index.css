@@ -3535,14 +3535,14 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
 }
 
 .chat-style-slack .message-user {
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.22)) !important;
+    border: 0 !important;
     border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 2 + 0.15)) !important;
     border-radius: 0 0.5rem 0.5rem 0 !important;
     background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 0.5)) !important;
 }
 
 .chat-style-slack .message-assistant {
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
+    border: 0 !important;
     border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 2 + 0.1)) !important;
     border-radius: 0 0.5rem 0.5rem 0 !important;
     background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.3)) !important;

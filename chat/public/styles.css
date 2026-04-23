@@ -1550,14 +1550,6 @@ body.font-size-large .markdown-content,
   margin-top: calc(1.25rem * calc(1 - var(--tw-space-y-reverse)));
   margin-bottom: calc(1.25rem * var(--tw-space-y-reverse));
 }
-.divide-y > :not([hidden]) ~ :not([hidden]){
-  --tw-divide-y-reverse: 0;
-  border-top-width: calc(1px * calc(1 - var(--tw-divide-y-reverse)));
-  border-bottom-width: calc(1px * var(--tw-divide-y-reverse));
-}
-.divide-white\/5 > :not([hidden]) ~ :not([hidden]){
-  border-color: rgb(255 255 255 / 0.05);
-}
 .overflow-hidden{
   overflow: hidden;
 }
@@ -1714,9 +1706,6 @@ body.font-size-large .markdown-content,
 }
 .bg-dark-800\/60{
   background-color: rgb(39 39 42 / 0.6);
-}
-.bg-dark-800\/70{
-  background-color: rgb(39 39 42 / 0.7);
 }
 .bg-dark-800\/80{
   background-color: rgb(39 39 42 / 0.8);
@@ -4743,14 +4732,14 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
 }
 
 .chat-style-slack .message-user {
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.22)) !important;
+    border: 0 !important;
     border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 2 + 0.15)) !important;
     border-radius: 0 0.5rem 0.5rem 0 !important;
     background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 0.5)) !important;
 }
 
 .chat-style-slack .message-assistant {
-    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
+    border: 0 !important;
     border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 2 + 0.1)) !important;
     border-radius: 0 0.5rem 0.5rem 0 !important;
     background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.3)) !important;
@@ -5099,9 +5088,6 @@ html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.c
 }
 .hover\:bg-white\/5:hover{
   background-color: rgb(255 255 255 / 0.05);
-}
-.hover\:bg-white\/\[0\.02\]:hover{
-  background-color: rgb(255 255 255 / 0.02);
 }
 .hover\:bg-white\/\[0\.08\]:hover{
   background-color: rgb(255 255 255 / 0.08);

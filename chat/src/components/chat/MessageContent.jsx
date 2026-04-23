@@ -77,31 +77,40 @@ const markdownComponents = {
         );
     },
     table({ children }) {
+        // No outer wrapper border — cell separators are enough and doubled
+        // borders read badly in layouts like Slack that already frame the
+        // message. Keep horizontal scroll for wide tables.
         return (
-            <div className="overflow-x-auto my-4 rounded-lg border border-white/10">
+            <div className="overflow-x-auto my-4">
                 <table className="w-full border-collapse min-w-max">{children}</table>
             </div>
         );
     },
     thead({ children }) {
-        return <thead className="bg-dark-800/70">{children}</thead>;
+        return <thead style={{ background: 'var(--bg-2)' }}>{children}</thead>;
     },
     tbody({ children }) {
-        return <tbody className="divide-y divide-white/5">{children}</tbody>;
+        return <tbody>{children}</tbody>;
     },
     tr({ children }) {
-        return <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>;
+        return <tr>{children}</tr>;
     },
     th({ children }) {
         return (
-            <th className="px-4 py-3 text-left text-dark-200 font-semibold text-sm border-b border-white/10 whitespace-nowrap">
+            <th
+                className="px-4 py-3 text-left font-semibold text-sm whitespace-nowrap"
+                style={{ color: 'var(--ink)', borderBottom: '1px solid var(--rule)' }}
+            >
                 {children}
             </th>
         );
     },
     td({ children }) {
         return (
-            <td className="px-4 py-3 text-dark-300 text-sm border-b border-white/5">
+            <td
+                className="px-4 py-3 text-sm"
+                style={{ color: 'var(--ink-2)', borderBottom: '1px solid var(--rule-2)' }}
+            >
                 {children}
             </td>
         );
