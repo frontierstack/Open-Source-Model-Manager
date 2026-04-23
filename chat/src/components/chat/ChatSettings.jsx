@@ -1021,8 +1021,25 @@ export default function ChatSettings({
                                         )}
                                     </div>
                                     <div className="space-y-3">
-                                        {groupedMemories.map((group) => {
+                                        {groupedMemories.map((group, groupIdx) => {
                                             const isCollapsed = !!collapsedGroups[group.turnId];
+                                            // Fallback label: if the source turn isn't in the current messages
+                                            // store (e.g. conversation partially loaded, or turn deleted),
+                                            // derive a description from the first memory's own text so the
+                                            // row isn't "Turn " / "?" — which is what the user was seeing.
+                                            const fallbackPreview = group.memories[0]?.text
+                                                ? truncate(group.memories[0].text, 60)
+                                                : 'Memories';
+                                            const headerLabel = group.turnId === '__unlinked__'
+                                                ? 'Unlinked memories'
+                                                : group.promptText
+                                                    ? truncate(group.promptText, 60)
+                                                    : fallbackPreview;
+                                            // Badge shows the real turn number when we have one,
+                                            // otherwise a 1-based position in the group list.
+                                            const badgeLabel = group.turnId === '__unlinked__'
+                                                ? '·'
+                                                : (group.turnNumber ?? (groupIdx + 1));
                                             return (
                                                 <div key={group.turnId} className="space-y-1.5">
                                                     {/* Turn header (click to toggle collapse) */}
@@ -1039,14 +1056,10 @@ export default function ChatSettings({
                                                             : <ChevronDown className="w-3 h-3 text-dark-400 shrink-0" />
                                                         }
                                                         <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-500/15 border border-primary-500/30 text-[9px] font-bold text-primary-300">
-                                                            {group.turnId === '__unlinked__' ? '·' : (group.turnNumber ?? '?')}
+                                                            {badgeLabel}
                                                         </span>
                                                         <span className="text-[11px] font-medium text-dark-200 truncate flex-1">
-                                                            {group.turnId === '__unlinked__'
-                                                                ? 'Unlinked memories'
-                                                                : group.promptText
-                                                                    ? truncate(group.promptText, 60)
-                                                                    : `Turn ${group.turnNumber ?? ''}`}
+                                                            {headerLabel}
                                                         </span>
                                                         <div className="flex items-center gap-2 text-[9px] text-dark-500 shrink-0">
                                                             {group.groupTs && <span>{formatTurnTime(group.groupTs)}</span>}

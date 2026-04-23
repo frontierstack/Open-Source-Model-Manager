@@ -4627,7 +4627,8 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     top: calc(-1 * var(--msg-gap, 28px) / 2) !important;
     bottom: calc(-1 * var(--msg-gap, 28px) / 2) !important;
     width: var(--timeline-line-width) !important;
-    background: rgba(var(--primary-rgb, 99, 102, 241), 0.22) !important;
+    /* Line intensity tracks the Message Borders slider */
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.12) * 2 + 0.08)) !important;
     z-index: 0 !important;
 }
 
@@ -4657,12 +4658,14 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
 
 .chat-style-timeline .flex.flex-col.items-end::after {
     background: var(--accent-primary, #6366f1) !important;
-    box-shadow: 0 0 0 3px rgba(var(--primary-rgb, 99, 102, 241), 0.18) !important;
+    /* Dot halo tracks the Message Borders slider */
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.12) * 2)) !important;
 }
 
 .chat-style-timeline .flex.flex-col.items-start::after {
     background: var(--bg-primary) !important;
-    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), 0.6) !important;
+    /* Assistant dot ring opacity tracks the slider */
+    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.12) * 3 + 0.2)) !important;
 }
 
 .chat-style-timeline .message-user,
