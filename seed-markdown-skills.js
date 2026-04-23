@@ -608,6 +608,531 @@ Valid JSON only, no commentary. If multiple records, an array of
 objects with identical keys. If you had to guess on any field,
 include a \`_confidence\` key at the top mapping field → 0–1.`,
     },
+
+    // ========== Active search / research ==========
+    {
+        name: 'Verify a claim',
+        description: 'Fact-check a specific claim against multiple primary sources',
+        triggers: 'verify, fact check, is it true, confirm, claim',
+        body: `## Goal
+Decide if a claim is supported, contradicted, or unverifiable — with
+primary-source evidence.
+
+## Steps
+1. Restate the claim precisely. Claims often bundle a fact + a
+   framing; separate them.
+2. \`web_search\` the exact claim in quotes + "site:<reputable>".
+3. \`web_search\` the claim's ANTONYM — if the counter-claim is also
+   widely stated, the field is contested.
+4. \`fetch_url\` the top 2–3 primary sources (original study, org
+   press release, official data page — NOT aggregator blogs).
+5. Compare the numbers / dates / wording across sources. A genuine
+   fact reproduces verbatim across independent sources.
+
+## Output
+\`\`\`
+CLAIM: <one sentence>
+VERDICT: supported | contradicted | unverifiable | mostly-right-with-nuance
+EVIDENCE:
+  - <primary source URL> — quotes supporting/contradicting the claim
+  - …
+NUANCE: <one sentence if the claim is partially true>
+\`\`\`
+If the evidence doesn't reach a confident verdict, say "unverifiable"
+— never fabricate certainty.`,
+    },
+    {
+        name: 'Multi-step research',
+        description: 'Iterative drill-down research that narrows a fuzzy question',
+        triggers: 'research, investigate, find out, look into, deep dive',
+        body: `## Goal
+Convert a vague "I want to learn about X" into specific answers by
+running the search loop: generate → skim → narrow → search again.
+
+## Steps
+1. \`web_search\` the topic at surface level (4–5 results) to
+   identify the subtopics that come up repeatedly.
+2. Pick the 2–3 subtopics that actually matter for the user's
+   question (ignore tangents).
+3. For each, \`web_search\` "<subtopic>" + a specificity hint
+   ("in python", "for startups", "since 2023" — whatever matches
+   the user's domain).
+4. \`fetch_url\` one authoritative page per subtopic, not five.
+   Better to read one thing carefully than skim five.
+5. If a fact appears only in one source, flag it as low-confidence.
+6. If you can't answer without a specific unknown (a price, a version
+   number, a date), name that unknown — don't extrapolate.
+
+## Output
+Structured answer with section per subtopic. Keep quotes inline with
+source URLs. End with a "Still open" list of anything you couldn't
+pin down.`,
+    },
+    {
+        name: 'Find specific fact',
+        description: 'Locate a single data point (price, date, version, count) with a source',
+        triggers: 'how much, when did, what version, exactly, specific',
+        body: `## Goal
+Return the single fact the user asked for, with the URL where you
+found it. Not an essay.
+
+## Steps
+1. Frame the search as a question the answer would literally satisfy.
+   E.g., "Postgres 16 release date" not "Postgres history".
+2. \`web_search\` the targeted phrase.
+3. Top result should ideally be an official docs page or
+   changelog — \`fetch_url\` it.
+4. If the top result is a blog post, find the primary source it
+   cites and fetch that instead.
+5. If multiple sources disagree, pick the most recent authoritative
+   one and note the disagreement.
+
+## Output
+\`\`\`
+<fact>  —  <source url>
+\`\`\`
+That's it. No preamble. Add one sentence of caveat only if the fact
+is time-sensitive or disputed.`,
+    },
+    {
+        name: 'Find official docs',
+        description: 'Locate the canonical documentation for a tool / API / library',
+        triggers: 'docs, documentation, reference, manual, official',
+        body: `## Goal
+Point the user at the one URL where the authoritative docs live —
+not a blog, not a Stack Overflow answer, not an AI-generated
+aggregator.
+
+## Steps
+1. \`web_search\` "<tool> documentation" OR "<tool> reference".
+2. Recognize the signature of official docs: hosted on the project's
+   own domain (docs.project.com, project.io/docs, project.dev/api),
+   or on a well-known mirror (readthedocs for Python, pkg.go.dev
+   for Go, crates.io/docs.rs for Rust).
+3. Avoid: javatpoint / w3schools / tutorialspoint for non-obvious
+   APIs, and any domain that clearly republishes docs.
+4. \`fetch_url\` to confirm the page structure — a real docs site
+   has a nav sidebar, version switcher, and API index.
+
+## Output
+\`\`\`
+OFFICIAL DOCS: <url>
+RELEVANT SECTIONS:
+  - <url>  —  <what's there>
+  - <url>  —  <what's there>
+VERSION NOTES: <if multiple major versions exist and it matters>
+\`\`\``,
+    },
+    {
+        name: 'Compare sources',
+        description: 'Check whether multiple sources agree on a fact or diverge',
+        triggers: 'sources agree, contradictory, consensus, divergent',
+        body: `## Goal
+When the user has heard different things from different places, tell
+them which sources say what — and which one to trust.
+
+## Steps
+1. Identify the exact disagreement. Often sources differ on wording
+   but agree on the underlying fact, or vice versa.
+2. \`web_search\` the claim plus each source's typical vocabulary.
+3. \`fetch_url\` at least 3 sources with DIFFERENT incentive structures
+   (vendor / competitor / independent journalist / regulator).
+4. Note: date of publication (stale sources often cited wrongly),
+   methodology (did they measure it or quote someone?), direct
+   quotes vs paraphrase.
+
+## Output
+\`\`\`
+CLAIM: <the point being compared>
+SOURCES:
+  - <outlet>  (<date>)  says: <their version>
+  - <outlet>  (<date>)  says: <their version>
+ROOT CAUSE OF DIFFERENCE: <methodology | timing | incentive | just wrong>
+MOST TRUSTWORTHY: <source>  because <reason>
+\`\`\``,
+    },
+    {
+        name: 'Timeline events',
+        description: 'Build a chronological timeline of events on a topic',
+        triggers: 'timeline, history, chronological, sequence of events',
+        body: `## Goal
+Produce a dated timeline the user can scan to understand how
+something unfolded.
+
+## Steps
+1. \`web_search\` "<topic> history" AND "<topic> timeline".
+2. Pick a Wikipedia or similar overview article — \`fetch_url\` it
+   to get anchor dates.
+3. For any event that lacks a specific date, \`web_search\`
+   "<event> date" to pin it down. Don't guess.
+4. Filter ruthlessly: events that changed the trajectory only,
+   not every release or minor announcement.
+
+## Output
+\`\`\`
+YYYY-MM(-DD) — <event in 12 words>
+              <1-sentence why it mattered>
+\`\`\`
+10–20 entries max. End with "Current state: <one sentence>" if
+the story isn't finished.`,
+    },
+
+    // ========== Coding workflows ==========
+    {
+        name: 'Write unit tests for function',
+        description: 'Produce a test file for a specific function / class',
+        triggers: 'unit test, pytest, jest, test case, testing',
+        body: `## Goal
+Ship a runnable test file that covers the function's important
+behaviors — not a test-per-line trophy.
+
+## Steps
+1. Read the target function. Note: inputs, outputs, side effects,
+   exceptions thrown.
+2. Identify boundaries: empty / single / many inputs, None/null,
+   max size, wrong type.
+3. Pick the simplest matching framework:
+   - Python: pytest + parametrize
+   - JavaScript: Jest / vitest — whatever the project already uses
+   - Go: table-driven \`[]struct{ name, input, want }\`
+4. One test per behavior, not per line. Use parametrize / table
+   drivers to group similar cases.
+5. Mock ONLY external effects (DB, network, time). Don't mock pure
+   functions.
+
+## Output
+A complete test file that runs as-is with the project's existing
+test command. Include a comment block at top naming the SUT and a
+one-liner for how to run it.`,
+    },
+    {
+        name: 'Refactor for readability',
+        description: 'Improve readability without changing behavior',
+        triggers: 'refactor, clean up, readability, simplify',
+        body: `## Goal
+Make the code easier to read by the next person without changing
+what it does. Behavior-preserving only.
+
+## Hierarchy of fixes (apply in order)
+1. **Naming** — swap cryptic names (\`x\`, \`tmp\`, \`flag\`) for names
+   that say what the value represents. Single biggest readability
+   win.
+2. **Early returns** — flatten nested if/else by returning early on
+   the error / edge cases. "guard clauses first" pattern.
+3. **Extract intermediate variable** — give a named variable to an
+   expression that gets used in a condition. The name IS the comment.
+4. **Extract function** — pull out a cohesive block (5–15 lines that
+   could have their own one-line description) into a helper.
+5. **Remove dead branches** — unreachable \`else\`, impossible
+   conditions, commented-out code.
+
+## Do not
+- Rename public API.
+- Change behavior under edge inputs (None, empty, negative).
+- Reformat just to reformat (that's a linter's job).
+
+## Output
+The refactored snippet plus a numbered list of what you changed and
+why. If something tempted you but was risky (would change behavior),
+list it under "Skipped:" with the reason.`,
+    },
+    {
+        name: 'Trace data flow',
+        description: 'Walk a variable or value through a codebase to find where it originates',
+        triggers: 'where does, trace, follow, data flow, origin',
+        body: `## Goal
+When the user asks "where does this value come from" or "where does
+this get set", find the actual source, not a guess.
+
+## Steps
+1. Start at the usage site. Identify the variable / field / key.
+2. \`search_files\` for exact assignments: pattern like
+   \`<name>\s*=\` or \`<name>\s*:\s*\`. For Python/JS also look for
+   destructuring and dict literals.
+3. For each candidate assignment, ask: is this the real source,
+   or is it re-assigning something already set? Follow backward
+   until you hit: a function parameter, a file read, a network
+   response, or a constant.
+4. Note any transforms along the way (parseInt, .lower(), default
+   fallbacks).
+
+## Output
+\`\`\`
+<value> reaches <usage-site:line>
+  ← <transformation> at <file:line>
+  ← <source> at <file:line>        [origin]
+\`\`\`
+If multiple call paths converge on that usage, show each as a
+separate chain. Flag if a default is ever used (means the "real"
+source can be empty).`,
+    },
+    {
+        name: 'Explain git conflict',
+        description: 'Help the user understand and resolve a specific merge conflict',
+        triggers: 'git conflict, merge conflict, rebase conflict',
+        body: `## Goal
+Turn conflict markers into a clear picture of what the two sides
+changed and what the right resolution is.
+
+## Steps
+1. \`read_file\` the conflicted file. Locate the \`<<<<<<<\` /
+   \`=======\` / \`>>>>>>>\` blocks.
+2. For each block, identify what each side was TRYING to do —
+   both may have edited the same lines for different reasons.
+3. Ask the user (if needed) which behavior they want — you can
+   usually infer from context ("we're merging feature/X into main,
+   user asked for X so take the feature side").
+4. When the conflict is "both sides modified the same constant to
+   different values", the answer is usually NOT pick-one but
+   reconcile (new value that satisfies both intents).
+
+## Output
+For each block:
+\`\`\`
+FILE <path>  LINES <a–b>
+OURS:   <what our change was meant to accomplish>
+THEIRS: <what their change was meant to accomplish>
+RESOLVE: <the text to keep>   (pick 'ours' | pick 'theirs' | reconcile)
+\`\`\`
+End with the merged file content the user can paste in.`,
+    },
+    {
+        name: 'Regex crafting',
+        description: 'Write or fix a regex to match specified patterns',
+        triggers: 'regex, regexp, pattern match, substitute',
+        body: `## Goal
+A working regex with a short explanation of why it works — and a
+list of inputs it should and should not match.
+
+## Steps
+1. Confirm the regex flavor: PCRE / JavaScript / Python / POSIX
+   extended — they differ on lookarounds, \`\\d\`, character classes.
+2. List 4+ positive examples and 4+ negative examples from the
+   user's description. If the user was vague, generate examples and
+   ask them to confirm.
+3. Start from the SIMPLEST regex that matches the positives, then
+   add just enough to exclude the negatives.
+4. Avoid catastrophic backtracking: no nested quantifiers
+   (\`(\\w+)+\`), prefer possessive / atomic groups if the flavor
+   supports them.
+
+## Output
+\`\`\`
+PATTERN:    /<regex>/<flags>
+LANGUAGE:   <python / js / pcre / …>
+EXPLAIN:
+  - <part 1> — <what it does>
+  - <part 2> — <what it does>
+MATCHES:      <examples>
+DOESN'T MATCH: <examples>
+\`\`\`
+Include the exact language-specific example:
+\`\`\`python
+re.findall(r'…', text)
+\`\`\``,
+    },
+    {
+        name: 'Design REST API',
+        description: 'Sketch a clean REST API for a resource',
+        triggers: 'rest api, endpoint, design api, http',
+        body: `## Goal
+Produce a small, consistent REST surface with the right verbs,
+status codes, and shapes.
+
+## Design rules
+- Nouns in paths (\`/users/:id/posts\`), verbs in HTTP methods.
+- Plural collections. Always. Even when there's only ever one.
+- Status codes that mean something:
+  - 200 get / 201 create / 204 delete-no-body
+  - 400 bad input / 401 no auth / 403 authed-but-denied
+  - 404 missing / 409 conflict / 422 valid-shape-bad-semantics
+- Pagination is a default. \`?cursor=…&limit=…\` not \`?page=…\`.
+  Page numbers break on insert.
+- Idempotency: PUT yes, POST no, but POST-with-\`Idempotency-Key\`
+  header for payments / anything retryable.
+- Errors return JSON with { code, message, details? }.
+
+## Steps
+1. List the resources (nouns the user owns).
+2. For each: list the operations as HTTP verb + path.
+3. Define the JSON shape — fields, types, required?, nullable?
+4. Note the auth model (bearer token is default; flag if anything
+   different).
+
+## Output
+Markdown table per resource, showing method / path / body / returns /
+notes. End with one "Gotchas" section listing the parts that are
+non-obvious (e.g. "DELETE /projects/:id is soft-delete, data
+returns for 30 days").`,
+    },
+    {
+        name: 'Plot data',
+        description: 'Generate a matplotlib plot from data and save as artifact',
+        triggers: 'plot, chart, graph, matplotlib, visualize',
+        body: `## Goal
+Produce a readable plot that answers the question the user asked —
+not a default-styled dump.
+
+## Steps
+1. Identify the plot type that fits:
+   - Distribution: histogram / density
+   - Comparison of categories: bar chart
+   - Trend over time: line plot
+   - Relationship between 2 numerics: scatter
+   - Part-to-whole: bar (not pie, unless 2-3 slices)
+2. Use matplotlib with the Agg backend. Save to \`/artifacts/<name>.png\`
+   at 100–150 dpi — the chat UI renders it inline.
+3. Label axes with units. Add a title that states what the viewer
+   should take away, not just the subject. ("Error rate doubles
+   above 1k RPS", not "Error rate vs load").
+4. One chart, one message. Don't overload axes.
+
+## Output
+\`\`\`python
+import matplotlib.pyplot as plt
+plt.figure(figsize=(8, 4))
+# …
+plt.title("<takeaway>")
+plt.xlabel("<axis> (<unit>)")
+plt.ylabel("<axis> (<unit>)")
+plt.tight_layout()
+plt.savefig("/artifacts/<name>.png", dpi=120, bbox_inches="tight")
+\`\`\`
+Followed by a 1-sentence description of what the plot shows.`,
+    },
+    {
+        name: 'Type annotate Python',
+        description: 'Add or improve type hints on a Python snippet',
+        triggers: 'types, type hints, annotations, mypy, typed',
+        body: `## Goal
+Add type hints that survive \`mypy --strict\` (or \`pyright strict\`)
+and actually describe the code, not \`Any\` everywhere.
+
+## Steps
+1. Start with function signatures — they're the public interface.
+2. For containers, prefer the specific concrete types:
+   \`list[int]\` not \`list\`, \`dict[str, User]\` not \`dict\`.
+3. For functions that may return nothing: \`T | None\` and add an
+   early-return check.
+4. For overloaded callables, use \`typing.overload\` rather than
+   one signature that covers all.
+5. For generic containers: \`Protocol\` if you want structural
+   subtyping, \`TypeVar\` for parametric code.
+6. Collections you ONLY iterate: \`Iterable[T]\` not \`list[T]\` —
+   lets callers pass a generator.
+
+## Watch for
+- \`Any\` as an escape hatch — fine when justified (JSON decode,
+  \`**kwargs\`), tag with a # comment so it's intentional.
+- \`Optional[X]\` vs \`X | None\` — modern style is the latter
+  (PEP 604).
+- TypedDict for structured dicts that cross boundaries (API
+  requests, config files).
+
+## Output
+The annotated snippet + a list of non-trivial type decisions ("I
+used \`Protocol\` here because …", "I left \`Any\` on \`payload\`
+because it's JSON from the network").`,
+    },
+    {
+        name: 'Choose data structure',
+        description: 'Pick the right data structure for a given access pattern',
+        triggers: 'data structure, which container, list vs dict, performance',
+        body: `## Goal
+Match the access pattern to the structure with the right complexity.
+
+## Decision tree
+1. Need membership check? \`set\` / hash.  O(1) lookup.
+2. Need ordering? \`list\` if insert-at-end; balanced BST if
+   insert-in-middle-frequently.
+3. Need key→value? \`dict\`.  Preserve insertion order for free in
+   modern Python/JS.
+4. Need LIFO? \`list\` (Python) / \`Deque\` (JS).
+5. Need FIFO? \`collections.deque\` (Python) / \`Deque\` (JS).
+6. Need "top N"? \`heapq\` (min-heap; negate keys for max).
+7. Need "range query / prefix"? sorted list + bisect, or a tree.
+8. Need concurrency-safe? Actor / channel / lock depending on
+   language idioms.
+
+## Pitfalls
+- Premature use of \`O(log n)\` structures on n=50. The constant
+  factor swamps the asymptotic.
+- Using a list as a set — O(n) \`in\` checks are invisible until
+  the list grows.
+- Using a dict of dicts when a namedtuple / dataclass would be
+  clearer.
+
+## Output
+Structure recommendation + the 2-line code sketch + the asymptotic
+complexity for each operation the user cares about.`,
+    },
+    {
+        name: 'Benchmark snippet',
+        description: 'Measure how fast a Python function runs and where the time goes',
+        triggers: 'benchmark, timing, profile, how fast, performance',
+        body: `## Goal
+Produce numbers that let the user decide if the code needs to be
+faster.
+
+## Steps
+1. Use \`timeit\` for micro-benchmarks (single function, tight loop).
+   Set \`number\` so each trial takes > 0.1s (noise dominates below).
+2. Use \`cProfile\` for where-does-the-time-go questions on larger
+   code. Sort by cumulative then by self-time.
+3. Warm up the interpreter: run once before timing, so JIT-ish
+   effects (caches, import) don't pollute the measurement.
+4. Report: median of 7 runs, not mean (outliers).
+5. Compare against a baseline. "0.3 ms" is meaningless; "0.3 ms vs
+   1.2 ms for the old code" is useful.
+
+## Output
+\`\`\`
+FUNCTION: <name>
+INPUT:    <description of workload>
+TIME:     <median> ms  (7 runs, stddev <n> ms)
+HOT SPOTS:
+  - <file:line>  <percent>%  <reason>
+COMPARED TO: <baseline> — <speedup / slowdown>
+\`\`\`
+End with one sentence: "This is / isn't worth optimizing further
+because …"`,
+    },
+    {
+        name: 'Find counterexamples',
+        description: 'Stress-test a proposed rule / algorithm by looking for failure cases',
+        triggers: 'edge case, counterexample, failure, breaks, break this',
+        body: `## Goal
+Before the user ships something built on a stated rule, find the
+inputs where it quietly misbehaves.
+
+## Categories to probe
+1. **Empty** — empty string, empty list, empty dict, None.
+2. **One** — single-element input; often has special cases (no
+   separator, no averaging).
+3. **Very large** — what happens at 10^6, 10^9? Integer overflow,
+   memory, O(n²) starts biting.
+4. **Negative / zero** — where the signature says int, the user
+   was thinking positive int.
+5. **Unicode** — non-ASCII, combining chars, RTL, surrogate pairs,
+   zero-width chars in identifiers.
+6. **Timezone / locale** — naïve datetimes, DST transitions,
+   non-ISO date formats.
+7. **Duplicates** — keys that compare equal but aren't identical
+   (e.g., \`1\` vs \`True\` in a Python dict).
+8. **Adversarial** — SQL quotes, shell metachars, path separators,
+   unicode homoglyphs.
+
+## Output
+One counterexample per category that applies (not every category
+applies to every problem). For each:
+\`\`\`
+INPUT:    <value>
+EXPECTED: <what the rule says>
+ACTUAL:   <what actually happens>
+\`\`\`
+If the rule is robust against all categories, say so explicitly —
+that's a real finding.`,
+    },
 ];
 
 function request(method, path, body) {

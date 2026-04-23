@@ -4371,26 +4371,40 @@ ${code.split('\n').map(l => '        ' + l).join('\n')}
             toolName: 'chat-code-preview',
             userId: req.userId || null,
         });
-        try {
-            if (run.timedOut) return res.json({ success: false, error: 'Code timed out', timedOut: true });
-            if (run.result && typeof run.result === 'object') {
-                return res.json({
-                    success: true,
-                    language: 'python',
-                    stdout: run.result.stdout || '',
-                    stderr: run.result.stderr || '',
-                    durationMs: run.durationMs,
-                    sandboxed: run.sandboxed,
-                });
-            }
-            return res.json({
-                success: false,
-                error: run.parseError || run.stderr?.slice(0, 2000) || 'no result',
-                stdout: run.stdout?.slice(0, 2000) || '',
-            });
-        } finally {
+        // Artifacts written by the snippet to /artifacts survive long enough
+        // for the client to fetch them via /api/tool-artifacts/:runId/:name
+        // (same TTL sweep as skills). Only clean up immediately when nothing
+        // was produced so idle preview runs don't leave disk residue.
+        if (run.timedOut) {
+            sandbox.cleanupRun(run.runId).catch(() => {});
+            return res.json({ success: false, error: 'Code timed out', timedOut: true });
+        }
+        if (!run.artifacts.length) {
             sandbox.cleanupRun(run.runId).catch(() => {});
         }
+        const artifacts = (run.artifacts || []).map(a => ({
+            name: a.name,
+            size: a.size,
+            runId: run.runId,
+            url: `/api/tool-artifacts/${run.runId}/${encodeURIComponent(a.name)}`,
+        }));
+        if (run.result && typeof run.result === 'object') {
+            return res.json({
+                success: true,
+                language: 'python',
+                stdout: run.result.stdout || '',
+                stderr: run.result.stderr || '',
+                durationMs: run.durationMs,
+                sandboxed: run.sandboxed,
+                artifacts,
+            });
+        }
+        return res.json({
+            success: false,
+            error: run.parseError || run.stderr?.slice(0, 2000) || 'no result',
+            stdout: run.stdout?.slice(0, 2000) || '',
+            artifacts,
+        });
     } catch (e) {
         console.error('run-code failed:', e);
         res.status(500).json({ error: e.message || String(e) });

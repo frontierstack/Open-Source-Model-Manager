@@ -164,8 +164,8 @@ assert "Artifact endpoint rejects bad runId (got $st)" $?
 hr "Markdown Skills — library inventory"
 md_list=$(curl -sk "${BASE}/api/markdown-skills" "${AUTH[@]}")
 md_count=$(echo "$md_list" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null)
-[ -n "$md_count" ] && [ "$md_count" -ge 15 ]
-assert "Markdown skill library populated (count=$md_count)" $?
+[ -n "$md_count" ] && [ "$md_count" -ge 30 ]
+assert "Markdown skill library populated (count=$md_count ≥ 30)" $?
 echo "$md_list" | grep -q '"github-repo-research"'
 assert "Library contains github-repo-research skill" $?
 echo "$md_list" | grep -q '"troubleshoot-docker"'
@@ -269,6 +269,34 @@ netblock=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
     -d '{"language":"python","code":"import socket\ntry:\n    s=socket.socket()\n    s.settimeout(2)\n    s.connect((\"example.com\",80))\n    print(\"REACHED\")\nexcept Exception as e:\n    print(\"blocked:\", type(e).__name__)"}')
 echo "$netblock" | grep -q "blocked:"
 assert "run-code has no network access (network=none)" $? "$netblock"
+
+# Scientific stack imports
+scientific=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"language":"python","code":"import numpy, pandas, matplotlib, scipy, PIL, sympy, pygame\nprint(\"ok\", numpy.__version__)"}')
+echo "$scientific" | grep -q '"success":true'
+assert "Sandbox image includes numpy/pandas/matplotlib/scipy/pillow/sympy/pygame" $? "$scientific"
+
+# Matplotlib → artifact PNG surfaces in response
+mpl=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"language":"python","code":"import matplotlib.pyplot as plt\nplt.plot([1,2,3,4],[1,4,9,16])\nplt.savefig(\"/artifacts/fig.png\")\nprint(\"ok\")"}')
+echo "$mpl" | grep -q '"name":"fig.png"'
+assert "Matplotlib plot saved to /artifacts returns in response" $?
+art_url=$(echo "$mpl" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["artifacts"][0]["url"] if d.get("artifacts") else "")' 2>/dev/null)
+if [ -n "$art_url" ]; then
+    ct=$(curl -sk -o /tmp/_suite_fig.png -w "%{http_code}" "${BASE}${art_url}" "${AUTH[@]}")
+    [ "$ct" = "200" ] && head -c 8 /tmp/_suite_fig.png | xxd -p | grep -q "89504e470d0a1a0a"
+    assert "Artifact URL returns a real PNG (png magic bytes)" $?
+    rm -f /tmp/_suite_fig.png
+fi
+
+# pygame can init + render to offscreen surface
+pg=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"language":"python","code":"import pygame\npygame.init()\ns = pygame.Surface((32,32))\ns.fill((100,150,200))\npygame.image.save(s, \"/artifacts/sprite.png\")\nprint(\"pg\", pygame.version.ver)"}')
+echo "$pg" | grep -q '"name":"sprite.png"'
+assert "pygame renders offscreen to /artifacts (SDL_VIDEODRIVER=dummy)" $? "$pg"
 
 # -----------------------------------------------------------------------
 hr "Egress proxy — rejection counters increment on bad request"

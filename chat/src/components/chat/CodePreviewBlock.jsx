@@ -138,10 +138,41 @@ function PythonRunBlock({ code, language }) {
                             execution timed out
                         </div>
                     )}
+                    {Array.isArray(output.artifacts) && output.artifacts.length > 0 && (
+                        <div className="border-t border-white/5 p-2 flex flex-wrap gap-2 bg-dark-900/60">
+                            {output.artifacts.map(a => {
+                                const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(a.name);
+                                if (isImage) {
+                                    return (
+                                        <a key={a.runId + '/' + a.name} href={a.url} target="_blank" rel="noreferrer"
+                                           title={`${a.name} (${a.size} bytes)`}
+                                           className="block">
+                                            <img src={a.url} alt={a.name}
+                                                 className="max-h-64 max-w-full rounded border border-white/10 bg-white/5" />
+                                        </a>
+                                    );
+                                }
+                                return (
+                                    <a key={a.runId + '/' + a.name} href={a.url} target="_blank" rel="noreferrer"
+                                       className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] bg-dark-800 hover:bg-dark-700 text-dark-200 border border-white/10 transition-colors">
+                                        📎 {a.name}
+                                        <span className="text-dark-500">{formatBytes(a.size)}</span>
+                                    </a>
+                                );
+                            })}
+                        </div>
+                    )}
                 </div>
             )}
         </div>
     );
+}
+
+function formatBytes(n) {
+    if (n == null) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ---------------------------------------------------------------------------
