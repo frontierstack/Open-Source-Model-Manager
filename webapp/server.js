@@ -4320,6 +4320,40 @@ app.delete('/api/system-prompts/:modelName', requireAuth, async (req, res) => {
 // ============================================================================
 
 // Get system resource information
+// Tool-run artifact download. Files produced by a sandboxed tool are
+// staged under /models/.modelserver/sandbox/<runId>/artifacts/. A
+// successful tool call returns `_artifacts: [{ name, size, runId }]` so
+// the chat client can render download links via this endpoint.
+//
+// Security: runId is a crypto-random 24-hex string; unguessable per run.
+// We still require auth + validate the filename against path traversal.
+app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) => {
+    const path_ = require('path');
+    const { runId, filename } = req.params;
+    if (!/^[a-f0-9]{16,48}$/i.test(runId || '')) {
+        return res.status(400).json({ error: 'bad runId' });
+    }
+    // Reject any traversal or absolute components. path.basename normalizes
+    // most cases but we also reject dots just to be safe.
+    const safeName = path_.basename(filename || '');
+    if (!safeName || safeName.startsWith('.') || safeName.includes('..')) {
+        return res.status(400).json({ error: 'bad filename' });
+    }
+    const filePath = path_.join('/models/.modelserver/sandbox', runId, 'artifacts', safeName);
+    try {
+        const st = await fs.stat(filePath);
+        if (!st.isFile()) return res.status(404).json({ error: 'not a file' });
+        res.setHeader('Content-Disposition', `inline; filename="${safeName.replace(/"/g, '')}"`);
+        res.setHeader('Content-Length', String(st.size));
+        const stream = require('fs').createReadStream(filePath);
+        stream.on('error', () => res.end());
+        stream.pipe(res);
+    } catch (e) {
+        if (e.code === 'ENOENT') return res.status(404).json({ error: 'artifact not found' });
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Egress-proxy stats — admin-only observability for the sandbox network
 // allowlist. Returns grant counts, rejection reasons, and listening state.
 app.get('/api/system/egress-proxy', requireAuth, (req, res) => {
@@ -6108,33 +6142,37 @@ async function executePythonSkill(skill, params) {
                 cpus: skill.cpus || '1.0',
                 toolName: skill.name,
             });
-            try {
-                if (run.timedOut) {
-                    return { success: false, error: 'Skill timed out', timedOut: true };
-                }
-                if (run.result && typeof run.result === 'object') {
-                    // Attach artifact file names so callers (chat stream,
-                    // agents) can surface them. Actual file serving happens
-                    // via a dedicated endpoint in Phase 8.
-                    if (run.artifacts.length) {
-                        run.result._artifacts = run.artifacts.map(a => ({
-                            name: a.name, size: a.size, runId: run.runId,
-                        }));
-                    }
-                    return run.result;
-                }
-                // Fallback when skill didn't return JSON — expose raw output.
-                return {
-                    success: run.exitCode === 0,
-                    error: run.parseError || (run.stderr ? `sandbox stderr: ${run.stderr.slice(0, 2000)}` : 'no JSON output'),
-                    stdout: run.stdout.slice(0, 2000),
-                };
-            } finally {
-                // Best-effort cleanup. If artifacts need to persist for the
-                // chat stream to serve them, Phase 8 will hand off ownership
-                // before calling cleanupRun.
+            if (run.timedOut) {
+                // Runs with no artifacts are cleaned up immediately; nothing
+                // downstream will need them.
+                sandbox.cleanupRun(run.runId).catch(() => {});
+                return { success: false, error: 'Skill timed out', timedOut: true };
+            }
+            // Runs that produced artifacts are kept on disk so the
+            // `/api/tool-artifacts/:runId/:filename` endpoint can stream
+            // them to the client. Periodic sweep (set up at boot) removes
+            // runs older than ARTIFACT_TTL_MS. Runs without artifacts are
+            // cleaned up immediately.
+            if (!run.artifacts.length) {
                 sandbox.cleanupRun(run.runId).catch(() => {});
             }
+            if (run.result && typeof run.result === 'object') {
+                if (run.artifacts.length) {
+                    run.result._artifacts = run.artifacts.map(a => ({
+                        name: a.name,
+                        size: a.size,
+                        runId: run.runId,
+                        url: `/api/tool-artifacts/${run.runId}/${encodeURIComponent(a.name)}`,
+                    }));
+                }
+                return run.result;
+            }
+            // Fallback when skill didn't return JSON — expose raw output.
+            return {
+                success: run.exitCode === 0,
+                error: run.parseError || (run.stderr ? `sandbox stderr: ${run.stderr.slice(0, 2000)}` : 'no JSON output'),
+                stdout: run.stdout.slice(0, 2000),
+            };
         } catch (sandboxErr) {
             console.warn(`[executePythonSkill] sandbox run failed for "${skill.name}", falling back to in-process:`, sandboxErr.message);
             // Fall through to the legacy path below.
@@ -14254,6 +14292,34 @@ server.listen(PORT, async () => {
     } catch (e) {
         console.warn('[Startup] egressProxy failed to start:', e.message);
     }
+
+    // Sandbox scratch dir TTL sweeper — deletes run directories older than
+    // ARTIFACT_TTL_MS so artifact files from sandboxed tool runs don't
+    // accumulate on disk. Runs every 10 minutes; default TTL 1 hour.
+    const ARTIFACT_TTL_MS = parseInt(process.env.SANDBOX_ARTIFACT_TTL_MS || '3600000', 10);
+    const SANDBOX_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+    setInterval(async () => {
+        const sandboxDir = '/models/.modelserver/sandbox';
+        try {
+            const entries = await fs.readdir(sandboxDir, { withFileTypes: true }).catch(() => []);
+            const now = Date.now();
+            let swept = 0;
+            for (const e of entries) {
+                if (!e.isDirectory()) continue;
+                const p = `${sandboxDir}/${e.name}`;
+                try {
+                    const st = await fs.stat(p);
+                    if (now - st.mtimeMs > ARTIFACT_TTL_MS) {
+                        await fs.rm(p, { recursive: true, force: true });
+                        swept++;
+                    }
+                } catch (_) { /* ignore */ }
+            }
+            if (swept) console.log(`[SandboxSweeper] removed ${swept} expired tool-run dir(s)`);
+        } catch (e) {
+            console.warn('[SandboxSweeper] failed:', e.message);
+        }
+    }, SANDBOX_SWEEP_INTERVAL_MS).unref();
 
     console.log('Initialization complete');
 });
