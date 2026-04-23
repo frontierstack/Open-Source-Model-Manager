@@ -28,6 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpng16-16 \
         libjpeg62-turbo \
         libopenblas0 \
+        fontconfig \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for defense-in-depth (gVisor is already the primary
