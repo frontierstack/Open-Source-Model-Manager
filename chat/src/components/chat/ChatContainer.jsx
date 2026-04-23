@@ -2285,13 +2285,17 @@ export default function ChatContainer({
                 onClose={() => setArtifactsOpen(false)}
             />
 
-            {/* Settings drawer */}
+            {/* Settings drawer — shows ONLY user-owned prompts in the
+                management list. Built-in PERSONA_PRESETS live on the
+                composer's persona picker (always available) and are
+                deliberately not listed here because they can't be
+                edited or deleted — they're source-level constants. */}
             <ChatSettings
                 open={settingsOpen}
                 onClose={() => setSettingsOpen(false)}
                 settings={settings}
                 onUpdateSettings={updateSettings}
-                systemPrompts={systemPrompts}
+                systemPrompts={systemPrompts.filter(p => !p.preset)}
                 onSaveSystemPrompt={handleSaveSystemPrompt}
                 onDeleteSystemPrompt={handleDeleteSystemPrompt}
                 theme={theme}
