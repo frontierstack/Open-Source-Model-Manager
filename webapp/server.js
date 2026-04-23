@@ -11633,6 +11633,82 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let accumulatedToolCalls = [];
         let toolCallRound = 0;
 
+        // --- Auto-invoke base64_decode on input ---------------------------
+        // Models inconsistently pick base64_decode out of a 70+ tool catalog
+        // even with hand-tuned trigger-phrase descriptions — they guess the
+        // decoded value inline instead. Detect base64 in the latest user
+        // message server-side, run the skill deterministically, and inject
+        // a completed tool_call + tool-result pair into the message list so
+        // the model's first turn responds against decoded content.
+        //
+        // Skipped silently when:
+        //   - base64_decode isn't in the catalog (user disabled it)
+        //   - no base64-looking substrings in the message, or none decode
+        //     to mostly-printable UTF-8 (strict detector, not regex-only)
+        const base64Detector = require('./services/base64Detector');
+        const b64PreflightEncoded = new Set();
+        if (toolCatalog.some(t => t?.function?.name === 'base64_decode')) {
+            try {
+                let userText = '';
+                for (let i = chatMessages.length - 1; i >= 0; i--) {
+                    if (chatMessages[i].role === 'user') {
+                        userText = base64Detector.extractTextFromContent(chatMessages[i].content);
+                        break;
+                    }
+                }
+                const found = base64Detector.findBase64InText(userText);
+                if (found.length > 0) {
+                    const call = {
+                        id: `call_auto_b64_in_${Date.now()}`,
+                        type: 'function',
+                        function: {
+                            name: 'base64_decode',
+                            arguments: JSON.stringify({ text: userText }),
+                        },
+                    };
+                    const result = {
+                        success: true,
+                        mode: found.length === 1 ? 'single' : 'scan',
+                        count: found.length,
+                        results: found,
+                        note: `Auto-decoded ${found.length} base64 string(s) detected in user message`,
+                    };
+                    if (clientConnected) {
+                        try {
+                            res.write(`data: ${JSON.stringify({
+                                type: 'tool_executing',
+                                tool_call_id: call.id,
+                                name: 'base64_decode',
+                                arguments: call.function.arguments,
+                            })}\n\n`);
+                            res.write(`data: ${JSON.stringify({
+                                type: 'tool_result',
+                                tool_call_id: call.id,
+                                name: 'base64_decode',
+                                preview: JSON.stringify(result).slice(0, 240),
+                                result,
+                            })}\n\n`);
+                        } catch (_) { clientConnected = false; }
+                    }
+                    chatMessages.push({
+                        role: 'assistant',
+                        content: null,
+                        tool_calls: [call],
+                    });
+                    chatMessages.push({
+                        role: 'tool',
+                        tool_call_id: call.id,
+                        name: 'base64_decode',
+                        content: JSON.stringify(result),
+                    });
+                    for (const f of found) b64PreflightEncoded.add(f.encoded);
+                    logChatActivity(`Auto-invoked base64_decode on input (${found.length} candidate(s))`);
+                }
+            } catch (e) {
+                console.warn('[Chat Stream] base64 pre-flight failed:', e.message);
+            }
+        }
+
         // Job was registered at the top of the handler so refresh / switch-back
         // can see prep-phase work. Update the existing record with the live
         // inputMessages snapshot and flip phase to 'waiting' (model about to
@@ -12015,6 +12091,61 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
             if (toolCallRound > chatTools.MAX_TOOL_ITERATIONS) {
                 console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached`);
+            }
+
+            // --- Auto-invoke base64_decode on output ------------------
+            // If the model's final response contains base64 the
+            // pre-flight didn't already cover (e.g. the model quoted
+            // an encoded blob and offered a hallucinated "decoding"),
+            // run the skill against the response and push a
+            // tool_result SSE event so the UI surfaces the real
+            // decoded values. The response text itself is left as the
+            // model wrote it — the tool_result sits alongside as a
+            // trustworthy ground-truth panel.
+            if (fullResponse && toolCatalog.some(t => t?.function?.name === 'base64_decode')) {
+                try {
+                    const found = base64Detector
+                        .findBase64InText(fullResponse)
+                        .filter(f => !b64PreflightEncoded.has(f.encoded));
+                    if (found.length > 0) {
+                        const call = {
+                            id: `call_auto_b64_out_${Date.now()}`,
+                            type: 'function',
+                            function: {
+                                name: 'base64_decode',
+                                arguments: JSON.stringify({ text: fullResponse }),
+                            },
+                        };
+                        const result = {
+                            success: true,
+                            mode: found.length === 1 ? 'single' : 'scan',
+                            count: found.length,
+                            results: found,
+                            note: `Auto-decoded ${found.length} base64 string(s) found in response`,
+                            source: 'response',
+                        };
+                        if (clientConnected) {
+                            try {
+                                res.write(`data: ${JSON.stringify({
+                                    type: 'tool_executing',
+                                    tool_call_id: call.id,
+                                    name: 'base64_decode',
+                                    arguments: call.function.arguments,
+                                })}\n\n`);
+                                res.write(`data: ${JSON.stringify({
+                                    type: 'tool_result',
+                                    tool_call_id: call.id,
+                                    name: 'base64_decode',
+                                    preview: JSON.stringify(result).slice(0, 240),
+                                    result,
+                                })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
+                        logChatActivity(`Auto-invoked base64_decode on response (${found.length} candidate(s))`);
+                    }
+                } catch (e) {
+                    console.warn('[Chat Stream] base64 post-flight failed:', e.message);
+                }
             }
         } catch (streamError) {
             const isAborted = streamAbortController.signal.aborted || streamError.name === 'AbortError' || streamError.code === 'ERR_CANCELED';
