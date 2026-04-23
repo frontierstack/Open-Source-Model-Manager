@@ -157,10 +157,10 @@ export function useCreateSkill() {
         mutationFn: (skillData) => api.skills.create(skillData),
         onSuccess: (data) => {
             addSkill(data);
-            showSnackbar('Skill created successfully', 'success');
+            showSnackbar('Tool created successfully', 'success');
         },
         onError: (error) => {
-            showSnackbar(`Failed to create skill: ${error.message}`, 'error');
+            showSnackbar(`Failed to create tool: ${error.message}`, 'error');
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['skills'] });
@@ -182,10 +182,10 @@ export function useDeleteSkill() {
             removeSkill(skillId);
         },
         onSuccess: () => {
-            showSnackbar('Skill deleted successfully', 'success');
+            showSnackbar('Tool deleted successfully', 'success');
         },
         onError: (error) => {
-            showSnackbar(`Failed to delete skill: ${error.message}`, 'error');
+            showSnackbar(`Failed to delete tool: ${error.message}`, 'error');
             queryClient.invalidateQueries({ queryKey: ['skills'] });
         },
         onSettled: () => {

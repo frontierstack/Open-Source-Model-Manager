@@ -473,6 +473,18 @@ const App = () => {
         code: ''
     });
 
+    // Markdown Skills state — instructional .md files the LLM consults
+    // via the `load_skill` tool. NOT executable.
+    const [mdSkills, setMdSkills] = useState([]);
+    const [mdSkillDialogOpen, setMdSkillDialogOpen] = useState(false);
+    const [editingMdSkill, setEditingMdSkill] = useState(null);
+    const [mdSkillFormData, setMdSkillFormData] = useState({
+        name: '',
+        description: '',
+        triggers: '',
+        body: '',
+    });
+
     // Tasks state
     const [tasks, setTasks] = useState([]);
     const [taskDialogOpen, setTaskDialogOpen] = useState(false);
@@ -628,6 +640,7 @@ const App = () => {
         fetchApps();
         fetchAgents();
         fetchSkills();
+        fetchMdSkills();
         fetchTasks();
         fetchAgentPermissions();
 
@@ -840,6 +853,86 @@ const App = () => {
             .then(res => res.json())
             .then(data => setSkills(data))
             .catch(error => console.error('Error fetching skills:', error));
+    };
+
+    const fetchMdSkills = () => {
+        fetch('/api/markdown-skills', { credentials: 'include' })
+            .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+            .then(data => setMdSkills(Array.isArray(data) ? data : []))
+            .catch(error => console.error('Error fetching markdown skills:', error));
+    };
+
+    const openMdSkillEditor = async (skill) => {
+        if (!skill) {
+            setEditingMdSkill(null);
+            setMdSkillFormData({ name: '', description: '', triggers: '', body: '' });
+            setMdSkillDialogOpen(true);
+            return;
+        }
+        try {
+            const res = await fetch(`/api/markdown-skills/${skill.id}`, { credentials: 'include' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const full = await res.json();
+            setEditingMdSkill(full);
+            setMdSkillFormData({
+                name: full.name || '',
+                description: full.description || '',
+                triggers: full.triggers || '',
+                body: full.body || '',
+            });
+            setMdSkillDialogOpen(true);
+        } catch (e) {
+            showSnackbar(`Failed to load skill: ${e.message}`, 'error');
+        }
+    };
+
+    const handleSaveMdSkill = async () => {
+        const payload = {
+            name: mdSkillFormData.name,
+            description: mdSkillFormData.description,
+            triggers: mdSkillFormData.triggers,
+            body: mdSkillFormData.body,
+        };
+        try {
+            const isEdit = !!editingMdSkill;
+            const url = isEdit
+                ? `/api/markdown-skills/${editingMdSkill.id}`
+                : '/api/markdown-skills';
+            const res = await fetch(url, {
+                method: isEdit ? 'PUT' : 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            showSnackbar(isEdit ? 'Skill updated' : 'Skill created', 'success');
+            setMdSkillDialogOpen(false);
+            setEditingMdSkill(null);
+            fetchMdSkills();
+        } catch (e) {
+            showSnackbar(`Failed to save skill: ${e.message}`, 'error');
+        }
+    };
+
+    const handleDeleteMdSkill = async (skill) => {
+        if (!window.confirm(`Delete skill "${skill.name}"?`)) return;
+        try {
+            const res = await fetch(`/api/markdown-skills/${skill.id}`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            showSnackbar('Skill deleted', 'success');
+            fetchMdSkills();
+        } catch (e) {
+            showSnackbar(`Failed to delete skill: ${e.message}`, 'error');
+        }
     };
 
     const fetchTasks = () => {
@@ -9001,7 +9094,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                     <MenuItem value="query">Query Models</MenuItem>
                                                                     <MenuItem value="query_web">Query Web</MenuItem>
                                                                     <MenuItem value="agents">Manage Agents</MenuItem>
-                                                                    <MenuItem value="skills">Manage Skills</MenuItem>
+                                                                    <MenuItem value="skills">Manage Tools</MenuItem>
                                                                     <MenuItem value="models">Manage Models</MenuItem>
                                                                     <MenuItem value="instances">Manage Instances</MenuItem>
                                                                     <MenuItem value="admin">Admin Access</MenuItem>
@@ -9159,7 +9252,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                     <MenuItem value="query">Query Models</MenuItem>
                                                                     <MenuItem value="query_web">Query Web</MenuItem>
                                                                     <MenuItem value="agents">Manage Agents</MenuItem>
-                                                                    <MenuItem value="skills">Manage Skills</MenuItem>
+                                                                    <MenuItem value="skills">Manage Tools</MenuItem>
                                                                     <MenuItem value="models">Manage Models</MenuItem>
                                                                     <MenuItem value="instances">Manage Instances</MenuItem>
                                                                     <MenuItem value="admin">Admin Access</MenuItem>
@@ -9593,16 +9686,16 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <MenuItem value="/api/agents/:id/delete">DELETE /api/agents/:id - Delete Agent</MenuItem>
                                                             <MenuItem value="/api/agents/:id/regenerate-key">POST /api/agents/:id/regenerate-key - Regenerate Agent Key</MenuItem>
                                                             <MenuItem value="/api/agent-permissions">GET/PUT /api/agent-permissions - Manage Agent Permissions</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Skills ───</MenuItem>
-                                                            <MenuItem value="/api/skills">GET /api/skills - List Skills</MenuItem>
-                                                            <MenuItem value="/api/skills/create">POST /api/skills - Create Skill</MenuItem>
-                                                            <MenuItem value="/api/skills/:id">GET /api/skills/:id - Get Skill</MenuItem>
-                                                            <MenuItem value="/api/skills/:id/update">PUT /api/skills/:id - Update Skill</MenuItem>
-                                                            <MenuItem value="/api/skills/:id/delete">DELETE /api/skills/:id - Delete Skill</MenuItem>
-                                                            <MenuItem value="/api/skills/:skillName/execute">POST /api/skills/:name/execute - Execute Skill</MenuItem>
-                                                            <MenuItem value="/api/agents/skills/available">GET /api/agents/skills/available - Available Skills</MenuItem>
-                                                            <MenuItem value="/api/agents/skills/discover">GET /api/agents/skills/discover - Discover Skills</MenuItem>
-                                                            <MenuItem value="/api/agents/skills/recommend">POST /api/agents/skills/recommend - Recommend Skills</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Tools ───</MenuItem>
+                                                            <MenuItem value="/api/tools">GET /api/tools - List Tools</MenuItem>
+                                                            <MenuItem value="/api/tools/create">POST /api/tools - Create Tool</MenuItem>
+                                                            <MenuItem value="/api/tools/:id">GET /api/tools/:id - Get Tool</MenuItem>
+                                                            <MenuItem value="/api/tools/:id/update">PUT /api/tools/:id - Update Tool</MenuItem>
+                                                            <MenuItem value="/api/tools/:id/delete">DELETE /api/tools/:id - Delete Tool</MenuItem>
+                                                            <MenuItem value="/api/tools/:toolName/execute">POST /api/tools/:name/execute - Execute Tool</MenuItem>
+                                                            <MenuItem value="/api/agents/tools/available">GET /api/agents/tools/available - Available Tools</MenuItem>
+                                                            <MenuItem value="/api/agents/tools/discover">GET /api/agents/tools/discover - Discover Tools</MenuItem>
+                                                            <MenuItem value="/api/agents/tools/recommend">POST /api/agents/tools/recommend - Recommend Tools</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Tasks ───</MenuItem>
                                                             <MenuItem value="/api/tasks">GET /api/tasks - List Tasks</MenuItem>
                                                             <MenuItem value="/api/tasks/create">POST /api/tasks - Create Task</MenuItem>
@@ -9935,7 +10028,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                             </Box>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(59, 130, 246, 0.08)', borderRadius: 2, border: '1px solid rgba(59, 130, 246, 0.15)' }}>
                                                 <Chip label="agents" size="small" sx={{ mb: 1, bgcolor: 'info.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Agents, skills, tasks, file ops</Typography>
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Agents, tools, tasks, file ops</Typography>
                                             </Box>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.15)' }}>
                                                 <Chip label="admin" size="small" sx={{ mb: 1, bgcolor: 'error.main', color: '#fafafa', fontWeight: 600, fontSize: '0.7rem' }} />
@@ -10039,10 +10132,10 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage agent</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/:id/regenerate-key</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Regenerate agent key</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agent-permissions</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage permissions</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/skills</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create skills</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/skills/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage skill</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/skills/:name/execute</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Execute skill</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/skills/discover</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Discover skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tools</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create tools</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tools/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage tool</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tools/:name/execute</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Execute tool</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/tools/discover</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Discover tools</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tasks</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create tasks</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tasks/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage task</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agent/file/read</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Read file</TableCell></TableRow>
@@ -10708,16 +10801,17 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     </Box>
 
                                                     <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
+                                                        <Tab label="Tools" />
                                                         <Tab label="Skills" />
                                                         <Tab label="Permissions" />
                                                     </Tabs>
 
-                                                    {/* Skills Sub-Tab */}
+                                                    {/* Tools Sub-Tab */}
                                                     {agentSubTab === 0 && (
                                                         <Box>
                                                             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
                                                                 <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                                                                    Skills Library ({skills.length})
+                                                                    Tools Library ({skills.length})
                                                                 </Typography>
                                                                 <Button
                                                                     variant="contained"
@@ -10728,17 +10822,17 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                         setSkillDialogOpen(true);
                                                                     }}
                                                                 >
-                                                                    Create Skill
+                                                                    Create Tool
                                                                 </Button>
                                                             </Box>
 
                                                             {skills.length === 0 ? (
-                                                                <Alert severity="info">No skills created yet. Click "Create Skill" to get started.</Alert>
+                                                                <Alert severity="info">No tools created yet. Click "Create Tool" to get started.</Alert>
                                                             ) : (
                                                                 <Accordion defaultExpanded={false}>
                                                                     <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                                                                         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                                                                            View All Skills ({skills.length})
+                                                                            View All Tools ({skills.length})
                                                                         </Typography>
                                                                     </AccordionSummary>
                                                                     <AccordionDetails>
@@ -10763,10 +10857,10 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                                                 })
                                                                                                     .then(res => res.json())
                                                                                                     .then(() => {
-                                                                                                        showSnackbar(`Skill ${e.target.checked ? 'disabled' : 'enabled'}`, 'success');
+                                                                                                        showSnackbar(`Tool ${e.target.checked ? 'disabled' : 'enabled'}`, 'success');
                                                                                                         fetchSkills();
                                                                                                     })
-                                                                                                    .catch(error => showSnackbar(`Failed to update skill: ${error.message}`, 'error'));
+                                                                                                    .catch(error => showSnackbar(`Failed to update tool: ${error.message}`, 'error'));
                                                                                             }}
                                                                                             size="small"
                                                                                         />
@@ -10803,8 +10897,71 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                         </Box>
                                                     )}
 
-                                                    {/* Permissions Sub-Tab */}
+                                                    {/* Skills Sub-Tab — markdown instructional files */}
                                                     {agentSubTab === 1 && (
+                                                        <Box>
+                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'center' }}>
+                                                                <Box>
+                                                                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                                                                        Skills Library ({mdSkills.length})
+                                                                    </Typography>
+                                                                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                                                        Markdown guides the chat model loads on demand via <code>load_skill</code>. Not executable — tools do the work.
+                                                                    </Typography>
+                                                                </Box>
+                                                                <Button
+                                                                    variant="contained"
+                                                                    size="small"
+                                                                    onClick={() => openMdSkillEditor(null)}
+                                                                >
+                                                                    New Skill
+                                                                </Button>
+                                                            </Box>
+
+                                                            {mdSkills.length === 0 ? (
+                                                                <Alert severity="info">
+                                                                    No skills yet. Click "New Skill" to write your first one — describe a procedure the model should follow when a task matches the triggers.
+                                                                </Alert>
+                                                            ) : (
+                                                                <Grid container spacing={2}>
+                                                                    {mdSkills.map(skill => (
+                                                                        <Grid item xs={12} md={6} key={skill.id}>
+                                                                            <Card variant="outlined">
+                                                                                <CardContent>
+                                                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 1, gap: 1 }}>
+                                                                                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                                                                                            <Typography variant="h6" sx={{ fontSize: '1rem' }}>{skill.name}</Typography>
+                                                                                            {skill.owner == null && (
+                                                                                                <Chip label="global" size="small" sx={{ height: 18, fontSize: '0.65rem', mt: 0.5 }} />
+                                                                                            )}
+                                                                                        </Box>
+                                                                                    </Box>
+                                                                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                                                                        {skill.description || 'No description'}
+                                                                                    </Typography>
+                                                                                    {skill.triggers && (
+                                                                                        <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
+                                                                                            Triggers: {skill.triggers}
+                                                                                        </Typography>
+                                                                                    )}
+                                                                                    <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                                                                                        {skill.bodyPreview || '(empty body)'}
+                                                                                    </Typography>
+                                                                                </CardContent>
+                                                                                <CardActions>
+                                                                                    <Button size="small" onClick={() => openMdSkillEditor(skill)}>Edit</Button>
+                                                                                    <Button size="small" color="error" onClick={() => handleDeleteMdSkill(skill)}>Delete</Button>
+                                                                                </CardActions>
+                                                                            </Card>
+                                                                        </Grid>
+                                                                    ))}
+                                                                </Grid>
+                                                            )}
+                                                        </Box>
+                                                    )}
+
+                                                    {/* Permissions Sub-Tab */}
+                                                    {agentSubTab === 2 && (
                                                         <Box>
                                                             <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
                                                                 Global Agent Permissions
@@ -10941,9 +11098,69 @@ fetch('${baseUrl}/api/cli/files/package.json')
                 </DialogActions>
             </Dialog>
 
-            {/* Skill Dialog */}
+            {/* Markdown Skill Dialog */}
+            <Dialog
+                open={mdSkillDialogOpen}
+                onClose={() => { setMdSkillDialogOpen(false); setEditingMdSkill(null); }}
+                maxWidth="md"
+                fullWidth
+            >
+                <DialogTitle>{editingMdSkill ? 'Edit Skill' : 'New Skill'}</DialogTitle>
+                <DialogContent>
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 2 }}>
+                        Write a markdown procedure. The chat model will load this via its <code>load_skill</code> tool when a task matches the name, description, or triggers.
+                    </Typography>
+                    <TextField
+                        fullWidth
+                        label="Name"
+                        value={mdSkillFormData.name}
+                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, name: e.target.value })}
+                        sx={{ mt: 1, mb: 2 }}
+                        helperText={editingMdSkill ? `ID: ${editingMdSkill.id}` : 'ID will be derived from the name on save'}
+                        disabled={!!editingMdSkill}
+                    />
+                    <TextField
+                        fullWidth
+                        label="Description"
+                        value={mdSkillFormData.description}
+                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, description: e.target.value })}
+                        sx={{ mb: 2 }}
+                        helperText="One-line summary shown to the model when deciding whether to load this skill"
+                    />
+                    <TextField
+                        fullWidth
+                        label="Triggers"
+                        value={mdSkillFormData.triggers}
+                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, triggers: e.target.value })}
+                        sx={{ mb: 2 }}
+                        helperText="Comma-separated keywords that hint when this skill applies"
+                    />
+                    <TextField
+                        fullWidth
+                        label="Body (Markdown)"
+                        multiline
+                        rows={16}
+                        value={mdSkillFormData.body}
+                        onChange={(e) => setMdSkillFormData({ ...mdSkillFormData, body: e.target.value })}
+                        sx={{ mb: 1, '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
+                        placeholder={'## Steps\n1. Call web_search with the repo URL\n2. Summarize stars, languages, recent commits\n3. Report findings to the user'}
+                    />
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => { setMdSkillDialogOpen(false); setEditingMdSkill(null); }}>Cancel</Button>
+                    <Button
+                        onClick={handleSaveMdSkill}
+                        variant="contained"
+                        disabled={!mdSkillFormData.name.trim()}
+                    >
+                        {editingMdSkill ? 'Save' : 'Create'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* Tool Dialog */}
             <Dialog open={skillDialogOpen} onClose={() => { setSkillDialogOpen(false); setEditingSkill(null); }} maxWidth="md" fullWidth>
-                <DialogTitle>{editingSkill ? 'Edit Skill' : 'Create Skill'}</DialogTitle>
+                <DialogTitle>{editingSkill ? 'Edit Tool' : 'Create Tool'}</DialogTitle>
                 <DialogContent>
                     <TextField
                         fullWidth
@@ -10981,7 +11198,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                         value={skillFormData.code}
                         onChange={(e) => setSkillFormData({ ...skillFormData, code: e.target.value })}
                         sx={{ mb: 2, fontFamily: 'monospace' }}
-                        helperText="Enter the code or script for this skill"
+                        helperText="Enter the code or script for this tool"
                     />
                 </DialogContent>
                 <DialogActions>

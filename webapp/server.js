@@ -5599,6 +5599,96 @@ app.post('/api/agents/:id/regenerate-key', requireAuth, async (req, res) => {
 // ============================================================================
 // SKILLS API ENDPOINTS
 // ============================================================================
+//
+// The user-visible concept is now called "Tools" (the UI was renamed in Phase
+// 1). The stored data model + route handlers keep the "skills" name to avoid a
+// risky rename, but we expose /api/tools/* as first-class aliases that rewrite
+// to the existing /api/skills/* handlers. Both paths stay permanently — API
+// keys and external clients built against /api/skills won't break.
+//
+// Also aliases /api/agents/tools/* → /api/agents/skills/* for the agent-scoped
+// discovery/recommend endpoints that use a different prefix.
+app.use((req, res, next) => {
+    if (req.url.startsWith('/api/tools')) {
+        req.url = '/api/skills' + req.url.slice('/api/tools'.length);
+    } else if (req.url.startsWith('/api/agents/tools')) {
+        req.url = '/api/agents/skills' + req.url.slice('/api/agents/tools'.length);
+    }
+    next();
+});
+
+// ============================================================================
+// MARKDOWN SKILLS API ENDPOINTS
+// ============================================================================
+//
+// Markdown "skills" are instructional documents the LLM reads when it needs
+// to know how to do something (e.g. "here's how to research a GitHub repo").
+// They are NOT executable — the chat stream exposes a `load_skill` tool that
+// returns the body to the model, and the model uses real tools from the
+// catalog to carry out the steps.
+const markdownSkills = require('./services/markdownSkills');
+
+app.get('/api/markdown-skills', requireAuth, async (req, res) => {
+    try {
+        const items = await markdownSkills.listSkills(req.userId);
+        res.json(items);
+    } catch (e) {
+        console.error('list markdown-skills failed:', e);
+        res.status(500).json({ error: 'Failed to list skills' });
+    }
+});
+
+app.get('/api/markdown-skills/:id', requireAuth, async (req, res) => {
+    try {
+        const skill = await markdownSkills.getSkill(req.userId, req.params.id);
+        if (!skill) return res.status(404).json({ error: 'Skill not found' });
+        res.json(skill);
+    } catch (e) {
+        console.error('get markdown-skill failed:', e);
+        res.status(500).json({ error: 'Failed to load skill' });
+    }
+});
+
+app.post('/api/markdown-skills', requireAuth, async (req, res) => {
+    try {
+        const { name, description, triggers, body } = req.body || {};
+        const result = await markdownSkills.createSkill(req.userId, {
+            name, description, triggers, body,
+        });
+        res.status(201).json(result);
+    } catch (e) {
+        const msg = e.message || 'Failed to create skill';
+        const status = /already exists|required/i.test(msg) ? 400 : 500;
+        res.status(status).json({ error: msg });
+    }
+});
+
+app.put('/api/markdown-skills/:id', requireAuth, async (req, res) => {
+    try {
+        const { name, description, triggers, body } = req.body || {};
+        const result = await markdownSkills.updateSkill(req.userId, req.params.id, {
+            name, description, triggers, body,
+        });
+        res.json(result);
+    } catch (e) {
+        const msg = e.message || 'Failed to update skill';
+        if (msg === 'not_found') return res.status(404).json({ error: 'Skill not found' });
+        if (msg === 'forbidden') return res.status(403).json({ error: 'Cannot modify another user\'s skill' });
+        res.status(/exceeds/i.test(msg) ? 400 : 500).json({ error: msg });
+    }
+});
+
+app.delete('/api/markdown-skills/:id', requireAuth, async (req, res) => {
+    try {
+        await markdownSkills.deleteSkill(req.userId, req.params.id);
+        res.json({ ok: true });
+    } catch (e) {
+        const msg = e.message || 'Failed to delete skill';
+        if (msg === 'not_found') return res.status(404).json({ error: 'Skill not found' });
+        if (msg === 'forbidden') return res.status(403).json({ error: 'Cannot delete another user\'s skill' });
+        res.status(500).json({ error: msg });
+    }
+});
 
 // List all skills
 app.get('/api/skills', requireAuth, async (req, res) => {
@@ -11210,7 +11300,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
 
         // =====================================================================
-        // NORMAL STREAMING PATH (with automatic continuation)
+        // NORMAL STREAMING PATH (with automatic continuation + native tools)
         // =====================================================================
         const MAX_AUTO_CONTINUATIONS = 8; // Safety cap to prevent infinite loops
         const CONTINUATION_CONTEXT_CHARS = 3000; // ~750 tokens of tail context for better continuation pickup
@@ -11222,6 +11312,21 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let completionTokens = 0;
         let clientConnected = true;
         let continuationCount = 0;
+
+        // --- Native tool calling -------------------------------------------
+        // Build the tool catalog once per user turn. Subsequent tool-call
+        // rounds within this turn reuse the same catalog.
+        const chatTools = require('./services/chatTools');
+        const toolCtx = { userId: req.userId };
+        let toolCatalog = [];
+        try {
+            toolCatalog = await chatTools.buildToolCatalog(toolCtx);
+        } catch (e) {
+            console.warn('[Chat Stream] tool catalog build failed:', e.message);
+        }
+        // Accumulator is reset at the start of every model turn (outer loop).
+        let accumulatedToolCalls = [];
+        let toolCallRound = 0;
 
         // Job was registered at the top of the handler so refresh / switch-back
         // can see prep-phase work. Update the existing record with the live
@@ -11247,7 +11352,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         top_p: effectiveTopP,
                         stream: true,
                         max_tokens: maxTokens,
-                        stop: DEFAULT_STOP_STRINGS
+                        stop: DEFAULT_STOP_STRINGS,
+                        // Native tool calling — only attach `tools` when the
+                        // catalog has something. Empty arrays confuse some
+                        // backends; omitting the key is the safer default.
+                        ...(toolCatalog.length ? { tools: toolCatalog } : {}),
                     };
 
                     const response = await axios({
@@ -11294,6 +11403,20 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                             const delta = parsed.choices[0].delta;
                                             const content = delta.content || '';
                                             const reasoning = delta.reasoning_content || delta.reasoning || '';
+
+                                            // Native tool calling — model streams tool_calls as
+                                            // delta fragments; accumulate by index across chunks.
+                                            if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
+                                                chatTools.accumulateToolCallDelta(accumulatedToolCalls, delta.tool_calls);
+                                                if (clientConnected) {
+                                                    try {
+                                                        res.write(`data: ${JSON.stringify({
+                                                            type: 'tool_call_delta',
+                                                            tool_calls: delta.tool_calls,
+                                                        })}\n\n`);
+                                                    } catch (_) { clientConnected = false; }
+                                                }
+                                            }
 
                                             if (content || reasoning) {
                                                 if (content) fullResponse += content;
@@ -11413,10 +11536,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 kind: 'generating',
             });
             logChatActivity(`Generating response (context: ${contextSize}, input: ${totalInputTokens} tokens, reserve: ${responseReserve})`);
-            let finishReason = await streamOneRequest(chatMessages, initialMaxTokens);
 
-            // Auto-continuation loop: if model hit length limit, keep going
-            while (finishReason === 'length' && continuationCount < MAX_AUTO_CONTINUATIONS && clientConnected) {
+            // Native-tool-calling outer loop. Each iteration:
+            //   1. stream the model's next turn (may auto-continue on length)
+            //   2. if it ended with tool_calls, execute them and loop with the
+            //      tool results appended to the conversation
+            //   3. otherwise, break
+            let currentMessages = chatMessages;
+            let finishReason = 'stop';
+            while (toolCallRound <= chatTools.MAX_TOOL_ITERATIONS && clientConnected) {
+                // Reset per-round state. fullResponse is cumulative for the
+                // client stream; roundStart marks where THIS turn's text began
+                // so we can feed only this turn's content back as the assistant
+                // message when re-prompting after tool execution.
+                accumulatedToolCalls = [];
+                const roundStart = fullResponse.length;
+
+                finishReason = await streamOneRequest(currentMessages, initialMaxTokens);
+
+                // Auto-continuation loop: if model hit length limit, keep going
+                while (finishReason === 'length' && continuationCount < MAX_AUTO_CONTINUATIONS && clientConnected) {
                 continuationCount++;
                 console.log(`[Chat Stream] Auto-continuing response (${continuationCount}/${MAX_AUTO_CONTINUATIONS}), accumulated ${fullResponse.length} chars so far`);
 
@@ -11490,6 +11629,68 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
             if (continuationCount > 0) {
                 console.log(`[Chat Stream] Auto-continuation complete after ${continuationCount} continuation(s), total ${fullResponse.length} chars`);
+            }
+
+                // --- Tool-call dispatch (native) ---------------------------
+                // If the model's turn ended with tool_calls, execute each
+                // tool, append the assistant+tool messages to the conversation,
+                // and loop back to let the model continue with tool results.
+                if (finishReason === 'tool_calls' && accumulatedToolCalls.length) {
+                    const finalizedCalls = chatTools.finalizeToolCalls(accumulatedToolCalls);
+                    if (!finalizedCalls.length) break; // no valid calls — bail
+
+                    logChatActivity(`Tool-call round ${toolCallRound + 1}: ${finalizedCalls.length} call(s)`);
+                    const toolResultMessages = [];
+                    for (const call of finalizedCalls) {
+                        if (clientConnected) {
+                            try {
+                                res.write(`data: ${JSON.stringify({
+                                    type: 'tool_executing',
+                                    tool_call_id: call.id,
+                                    name: call.function.name,
+                                    arguments: call.function.arguments,
+                                })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
+                        const resultMsg = await chatTools.executeToolCall(call, toolCtx);
+                        toolResultMessages.push(resultMsg);
+                        if (clientConnected) {
+                            try {
+                                const preview = String(resultMsg.content || '').slice(0, 240);
+                                res.write(`data: ${JSON.stringify({
+                                    type: 'tool_result',
+                                    tool_call_id: call.id,
+                                    name: call.function.name,
+                                    preview,
+                                })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
+                    }
+
+                    // Build the next round's message list. The assistant
+                    // message must carry ONLY this turn's generated content
+                    // (not the cumulative stream) alongside its tool_calls.
+                    const turnContent = fullResponse.slice(roundStart);
+                    currentMessages = [
+                        ...currentMessages,
+                        {
+                            role: 'assistant',
+                            content: turnContent || null,
+                            tool_calls: finalizedCalls,
+                        },
+                        ...toolResultMessages,
+                    ];
+                    toolCallRound++;
+                    continuationCount = 0; // fresh length budget for next turn
+                    continue;
+                }
+
+                // Normal end — no tool calls. Exit outer loop.
+                break;
+            } // end tool-call outer loop
+
+            if (toolCallRound > chatTools.MAX_TOOL_ITERATIONS) {
+                console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached`);
             }
         } catch (streamError) {
             const isAborted = streamAbortController.signal.aborted || streamError.name === 'AbortError' || streamError.code === 'ERR_CANCELED';
@@ -11602,6 +11803,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         continuations: continuationCount,
                         maxReached: continuationCount >= MAX_AUTO_CONTINUATIONS
                     }
+                }),
+                ...(toolCallRound > 0 && {
+                    toolCalls: {
+                        rounds: toolCallRound,
+                        maxReached: toolCallRound > chatTools.MAX_TOOL_ITERATIONS,
+                    },
                 }),
                 // Include content continuation info if input content was truncated
                 ...(contentTruncated && {

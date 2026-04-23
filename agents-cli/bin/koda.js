@@ -8107,9 +8107,9 @@ async function handleSkills(api) {
         return;
     }
 
-    addToHistory('system', '━━━ Available Skills ━━━');
+    addToHistory('system', '━━━ Available Tools ━━━');
     if (result.data.length === 0) {
-        addToHistory('system', 'No skills found.');
+        addToHistory('system', 'No tools found.');
     } else {
         // Group by type
         const byType = { tool: [], function: [], command: [] };
@@ -8223,7 +8223,7 @@ async function handleChat(api, message) {
     } else {
         skills = cachedSkills; // Use cached skills if API fails
         if (skills.length === 0) {
-            addToHistory('system', 'Warning: Could not load skills from server. File operations may not work.');
+            addToHistory('system', 'Warning: Could not load tools from server. File operations may not work.');
         }
     }
 
@@ -8660,7 +8660,7 @@ YOU MUST NOT:
                 errorFeedback += '\nRetry now. If your edit is large, prefer multiple small search_replace_file calls over one update_file.\n';
 
                 // Show error to user
-                addToHistory('system', `Skill syntax error detected - asking AI to retry (${syntaxErrorRetries}/${MAX_SYNTAX_RETRIES})...`);
+                addToHistory('system', `Tool syntax error detected - asking AI to retry (${syntaxErrorRetries}/${MAX_SYNTAX_RETRIES})...`);
                 displayChatHistory();
 
                 // Continue the conversation with error feedback
@@ -8748,7 +8748,7 @@ YOU MUST NOT:
                 correctionFeedback += `- [SKILL:list_directory(dirPath="${userWorkingDirectory}")]\n\n`;
                 correctionFeedback += 'Execute the skill NOW - do not explain, just call the skill.\n';
 
-                addToHistory('system', 'Redirecting to use skills instead of shell commands...');
+                addToHistory('system', 'Redirecting to use tools instead of shell commands...');
                 displayChatHistory();
 
                 currentMessages = buildFeedbackMessages(response, correctionFeedback);
@@ -8837,7 +8837,7 @@ YOU MUST NOT:
         recentSignatures.push(currentSig);
         if (recentSignatures.length > 5) recentSignatures.shift();
         if (repeats >= 2) {
-            addToHistory('system', 'Detected repeated skill-call pattern — stopping to avoid a loop. The model may have truncated its output mid-argument; try a smaller edit or increase the model\'s max_tokens.');
+            addToHistory('system', 'Detected repeated tool-call pattern — stopping to avoid a loop. The model may have truncated its output mid-argument; try a smaller edit or increase the model\'s max_tokens.');
             displayChatHistory();
             break;
         }
@@ -8959,7 +8959,7 @@ YOU MUST NOT:
     }
 
     if (iteration >= MAX_SKILL_ITERATIONS) {
-        addToHistory('system', `Warning: Maximum skill execution iterations (${MAX_SKILL_ITERATIONS}) reached`);
+        addToHistory('system', `Warning: Maximum tool execution iterations (${MAX_SKILL_ITERATIONS}) reached`);
     }
 
     // Add assistant response to context
