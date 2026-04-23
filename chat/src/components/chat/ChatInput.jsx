@@ -54,10 +54,6 @@ export default function ChatInput({
     systemPrompts = [],
     selectedSystemPromptId,
     onSystemPromptSelect,
-    webSearchEnabled = false,
-    onWebSearchToggle,
-    urlFetchEnabled = false,
-    onUrlFetchToggle,
     messages = [],
     maxContextTokens = 4096,
     models = [],
@@ -637,26 +633,6 @@ export default function ChatInput({
                                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                             >
                                 <Paperclip className="w-[15px] h-[15px]" strokeWidth={1.75} />
-                            </button>
-
-                            <button
-                                onClick={onWebSearchToggle}
-                                disabled={disabled || isStreaming}
-                                style={{ ...(webSearchEnabled ? iconChipActive('var(--accent)') : iconChip), opacity: (disabled || isStreaming) ? 0.3 : 1 }}
-                                aria-label={webSearchEnabled ? 'Disable web search' : 'Enable web search'}
-                                title={webSearchEnabled ? 'Web search on' : 'Web search off'}
-                            >
-                                <Globe className="w-[15px] h-[15px]" strokeWidth={1.75} />
-                            </button>
-
-                            <button
-                                onClick={onUrlFetchToggle}
-                                disabled={disabled || isStreaming}
-                                style={{ ...(urlFetchEnabled ? iconChipActive('var(--accent)') : iconChip), opacity: (disabled || isStreaming) ? 0.3 : 1 }}
-                                aria-label={urlFetchEnabled ? 'Disable URL fetch' : 'Enable URL fetch'}
-                                title={urlFetchEnabled ? 'URL fetch on' : 'URL fetch off'}
-                            >
-                                <Link2 className="w-[15px] h-[15px]" strokeWidth={1.75} />
                             </button>
 
                             {/* Persona (system prompt) chip */}

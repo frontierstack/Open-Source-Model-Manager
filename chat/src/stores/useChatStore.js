@@ -156,9 +156,6 @@ export const useChatStore = create(
             fontSize: 'medium',
             fontFamily: 'system',
             ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
-            // Always start with web search and URL fetch off
-            webSearchEnabled: false,
-            urlFetchEnabled: false,
             // Live code previewer — default OFF so arbitrary code blocks
             // from the model never execute without the user opting in
             // per-session. When off, no Run button is rendered and no
@@ -625,36 +622,6 @@ export const useChatStore = create(
 
         setMaxTokens: (maxTokens) => set(state => {
             const settings = { ...state.settings, maxTokens };
-            saveToStorage(STORAGE_KEYS.SETTINGS, settings);
-            return { settings };
-        }),
-
-        toggleWebSearch: () => set(state => {
-            const settings = {
-                ...state.settings,
-                webSearchEnabled: !state.settings.webSearchEnabled
-            };
-            saveToStorage(STORAGE_KEYS.SETTINGS, settings);
-            return { settings };
-        }),
-
-        setWebSearchEnabled: (enabled) => set(state => {
-            const settings = { ...state.settings, webSearchEnabled: enabled };
-            saveToStorage(STORAGE_KEYS.SETTINGS, settings);
-            return { settings };
-        }),
-
-        toggleUrlFetch: () => set(state => {
-            const settings = {
-                ...state.settings,
-                urlFetchEnabled: !state.settings.urlFetchEnabled
-            };
-            saveToStorage(STORAGE_KEYS.SETTINGS, settings);
-            return { settings };
-        }),
-
-        setUrlFetchEnabled: (enabled) => set(state => {
-            const settings = { ...state.settings, urlFetchEnabled: enabled };
             saveToStorage(STORAGE_KEYS.SETTINGS, settings);
             return { settings };
         }),

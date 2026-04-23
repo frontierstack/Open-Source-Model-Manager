@@ -1015,149 +1015,6 @@ export default function ChatContainer({
         // place where the metadata is actually known.
         const toolCalls = [];
 
-        // Handle URL fetching if enabled
-        let urlFetchResults = null;
-        let urlContextSummary = null;
-        if (settings.urlFetchEnabled) {
-            const urls = extractUrls(content);
-            if (urls.length > 0) {
-                const urlFetchStart = Date.now();
-                try {
-                    setIsLoading(true);
-                    setProcessingStatus('parsing', `Fetching ${urls.length} URL${urls.length > 1 ? 's' : ''}`);
-                    pushProcessingLog({
-                        icon: 'link',
-                        text: `Fetching ${urls.length} URL${urls.length === 1 ? '' : 's'}`,
-                        kind: 'url_fetch'
-                    });
-
-                    const fetchResponse = await fetch('/api/url/fetch', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'include',
-                        body: JSON.stringify({ urls, maxLength: 50000, timeout: 30000 }),
-                        signal: abortControllerRef.current?.signal,
-                    });
-
-                    if (fetchResponse.ok) {
-                        let fetchData;
-                        try {
-                            fetchData = await fetchResponse.json();
-                        } catch (parseErr) {
-                            console.error('Failed to parse URL fetch response:', parseErr);
-                            showSnackbar('URL fetch returned invalid data, proceeding without fetched content', 'warning');
-                            fetchData = { results: [] };
-                        }
-                        const successfulResults = fetchData.results?.filter(r => r.success) || [];
-                        const failedResults = fetchData.results?.filter(r => !r.success) || [];
-
-                        // Record a tool-call entry for this URL fetch so the
-                        // assistant message can show a collapsible block.
-                        toolCalls.push({
-                            type: 'url_fetch',
-                            label: 'URL Fetch',
-                            query: urls.join('\n'),
-                            resultCount: successfulResults.length,
-                            durationMs: Date.now() - urlFetchStart,
-                            status: failedResults.length === 0
-                                ? 'success'
-                                : (successfulResults.length > 0 ? 'partial' : 'failed'),
-                            results: [...successfulResults, ...failedResults].map(r => ({
-                                url: r.url,
-                                title: r.title || r.url,
-                                snippet: r.content ? String(r.content).slice(0, 400) : (r.error || ''),
-                                success: !!r.success
-                            }))
-                        });
-                        pushProcessingLog({
-                            icon: 'check',
-                            text: `Retrieved ${successfulResults.length} of ${urls.length} page${urls.length === 1 ? '' : 's'}`,
-                            kind: 'url_fetch_done'
-                        });
-
-                        if (successfulResults.length > 0) {
-                            urlFetchResults = successfulResults;
-
-                            // Create a detailed summary for memory persistence (used in follow-up questions)
-                            // Total budget of 6000 chars, divided among URLs to prevent context overflow
-                            const URL_CONTEXT_BUDGET = 6000;
-                            const charsPerUrl = Math.floor(URL_CONTEXT_BUDGET / successfulResults.length);
-
-                            urlContextSummary = successfulResults
-                                .map((r) => {
-                                    let summary = `[${r.title || 'Untitled'}](${r.url})`;
-                                    if (r.content) {
-                                        // Allocate remaining budget after title/url (estimate ~100 chars for metadata)
-                                        const contentBudget = Math.max(200, charsPerUrl - 100);
-                                        const contentPreview = r.content.slice(0, contentBudget).trim();
-                                        summary += `\n${contentPreview}${r.content.length > contentBudget ? '...' : ''}`;
-                                    }
-                                    return summary;
-                                })
-                                .join('\n\n---\n\n');
-
-                            // Final safety cap in case of edge cases
-                            if (urlContextSummary.length > URL_CONTEXT_BUDGET + 1000) {
-                                urlContextSummary = urlContextSummary.slice(0, URL_CONTEXT_BUDGET + 1000) + '... [truncated]';
-                            }
-
-                            // Format fetched content for the model
-                            const urlContext = successfulResults
-                                .map((r) => {
-                                    let resultText = `[${r.title || 'Untitled'}]\nSource: ${r.url}\n`;
-                                    if (r.content) {
-                                        // Large content limit per URL - map-reduce handles overflow
-                                        const truncatedContent = r.content.length > 40000
-                                            ? r.content.slice(0, 40000) + '...'
-                                            : r.content;
-                                        resultText += `Content:\n${truncatedContent}\n`;
-                                    }
-                                    return resultText;
-                                })
-                                .join('\n---\n');
-
-                            // Prepend URL content to fullContent with strong instruction
-                            fullContent = `The following content was fetched from URLs in the user's message. You MUST use the ACTUAL DATA from this fetched content to answer the question. Do NOT make up, hallucinate, or guess information that is not present. If the fetched content is empty or insufficient, say so explicitly. Use specific details: numbers, names, dates, scores, IPs, hashes, etc.\n\n` +
-                                `--- Fetched URL Content ---\n${urlContext}\n--- End of Fetched Content ---\n\n` +
-                                `User message: ${fullContent}`;
-                        }
-
-                        // Log failed URLs
-                        if (failedResults.length > 0) {
-                            console.warn('Some URLs failed to fetch:', failedResults.map(r => r.url));
-                        }
-                    } else {
-                        // Handle non-OK HTTP responses
-                        const statusMsg = fetchResponse.status >= 500
-                            ? 'URL fetch service temporarily unavailable'
-                            : fetchResponse.status === 401
-                                ? 'Authentication required for URL fetch'
-                                : `URL fetch failed (HTTP ${fetchResponse.status})`;
-                        console.warn('URL fetch HTTP error:', fetchResponse.status);
-                        showSnackbar(`${statusMsg}, proceeding without fetched content`, 'warning');
-                    }
-                } catch (error) {
-                    if (error.name === 'AbortError') {
-                        // User stopped during URL fetch - clean up and exit
-                        if (!switchingConversationRef.current) {
-                            showSnackbar('Generation stopped', 'info');
-                        }
-                        setIsLoading(false);
-                        clearStreaming();
-                        clearProcessingStatus();
-                        streamingConversationRef.current = null;
-                        abortControllerRef.current = null;
-                        switchingConversationRef.current = false;
-                        return;
-                    }
-                    console.error('URL fetch failed:', error);
-                    const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
-                        ? 'Network error - unable to reach URL fetch service'
-                        : 'URL fetch failed';
-                    showSnackbar(`${errorMsg}, proceeding without fetched content`, 'warning');
-                }
-            }
-        }
 
         // Save enriched content (attachments + URL fetch) for follow-up message context
         const enrichedContent = fullContent;
@@ -1171,8 +1028,6 @@ export default function ChatContainer({
             ...(enrichedContent !== content && { apiContent: enrichedContent }),
             attachments: attachedFiles?.map(a => ({ filename: a.filename, type: a.type })),
             timestamp: new Date().toISOString(),
-            // Add URL context metadata if URLs were fetched
-            ...(urlContextSummary && { urlContext: urlContextSummary, hadUrlFetch: true }),
         };
 
         // For new conversations, start with empty array to avoid stale closure issues
@@ -1218,6 +1073,13 @@ export default function ChatContainer({
 
             // If this is a recent previous user message, include search/URL context
             // Skip if apiContent already has the full enriched content baked in
+            // Legacy: earlier versions of the app did client-side web search and URL
+            // fetch before the chat request and stashed the result text on the user
+            // message as `searchContext` / `urlContext`. Native tool calling
+            // replaced both (the model now calls web_search / fetch_url on demand
+            // and the results stream back as tool events) — so we no longer
+            // generate these fields on new turns. We still READ them here so old
+            // conversations replay correctly.
             if (m.role === 'user' && idx !== updatedMessages.length - 1 && isRecentUserMessage && !m.apiContent) {
                 if (m.searchContext) {
                     msgContent = `[Previous search context: ${m.searchContext}]\n\n${msgContent}`;
@@ -1267,141 +1129,6 @@ export default function ChatContainer({
             });
         }
 
-        // Handle web search
-        let searchResults = null;
-        let searchContextSummary = null;
-        if (settings.webSearchEnabled) {
-            const webSearchStart = Date.now();
-            try {
-                setIsLoading(true);
-                setProcessingStatus('searching', 'Searching the web');
-                pushProcessingLog({
-                    icon: 'search',
-                    text: `Searching the web: "${content.slice(0, 60)}${content.length > 60 ? '…' : ''}"`,
-                    kind: 'search'
-                });
-                const searchResponse = await fetch(`/api/search?q=${encodeURIComponent(content)}&limit=5&fetchContent=true&contentLimit=5`, {
-                    credentials: 'include',
-                    signal: abortControllerRef.current?.signal,
-                });
-
-                if (searchResponse.ok) {
-                    let searchData;
-                    try {
-                        searchData = await searchResponse.json();
-                    } catch (parseErr) {
-                        console.error('Failed to parse web search response:', parseErr);
-                        showSnackbar('Web search returned invalid data, proceeding without results', 'warning');
-                        searchData = { results: [] };
-                    }
-                    if (searchData.results && searchData.results.length > 0) {
-                        searchResults = searchData.results;
-
-                        // Record a tool-call entry so the assistant message
-                        // can show a collapsible block + favicon source row.
-                        toolCalls.push({
-                            type: 'web_search',
-                            label: 'Web Search',
-                            query: content,
-                            resultCount: searchData.results.length,
-                            durationMs: Date.now() - webSearchStart,
-                            status: 'success',
-                            results: searchData.results.map(r => ({
-                                url: r.url || r.link,
-                                title: r.title,
-                                snippet: r.snippet,
-                                content: r.content
-                            }))
-                        });
-                        pushProcessingLog({
-                            icon: 'check',
-                            text: `Found ${searchData.results.length} result${searchData.results.length === 1 ? '' : 's'}`,
-                            kind: 'search_done'
-                        });
-
-                        // Create a summary of search results for memory persistence
-                        searchContextSummary = searchData.results
-                            .slice(0, 3)
-                            .map((r, i) => `${i + 1}. "${r.title}" - ${r.snippet?.slice(0, 100) || ''}`)
-                            .join('; ');
-
-                        // Format search results for the model with total content budget
-                        // Budget prevents exceeding model context window when multiple results have large content
-                        const TOTAL_CONTENT_BUDGET = 24000; // Total chars for all search result content combined
-                        let contentBudgetRemaining = TOTAL_CONTENT_BUDGET;
-                        const resultCount = searchData.results.filter(r => r.content).length || 1;
-                        const perResultBudget = Math.floor(TOTAL_CONTENT_BUDGET / resultCount);
-
-                        const searchContext = searchData.results
-                            .map((r, i) => {
-                                let resultText = `[${i + 1}] ${r.title}\nURL: ${r.url || r.link}\n`;
-                                if (r.snippet) {
-                                    resultText += `Summary: ${r.snippet}\n`;
-                                }
-                                if (r.content && contentBudgetRemaining > 0) {
-                                    // Each result gets a fair share, but can use less if content is short
-                                    const maxForThis = Math.min(r.content.length, perResultBudget, contentBudgetRemaining);
-                                    const truncatedContent = r.content.length > maxForThis
-                                        ? r.content.slice(0, maxForThis) + '...'
-                                        : r.content;
-                                    resultText += `Content: ${truncatedContent}\n`;
-                                    contentBudgetRemaining -= truncatedContent.length;
-                                }
-                                return resultText;
-                            })
-                            .join('\n---\n');
-
-                        // Update the last user message with search context
-                        apiMessages[apiMessages.length - 1].content =
-                            `The following web search results are provided for reference. You MUST answer using ONLY the ACTUAL DATA from these results. Extract and use SPECIFIC details: names, numbers, identifiers, dates, CVEs, versions, IPs, hashes, detection counts, malware families, etc. Do NOT say "no results found" or "information unavailable" if data appears in the results below. Do NOT hallucinate or make up data not present in the results. Cite sources by number [1], [2], etc.\n\n` +
-                            `--- Web Search Results ---\n${searchContext}\n--- End of Search Results ---\n\n` +
-                            `User question: ${content}`;
-
-                        // Update the user message in store with search context for memory
-                        // Save the full search-enriched content as apiContent for follow-up context
-                        const updatedUserMessage = {
-                            ...userMessage,
-                            apiContent: apiMessages[apiMessages.length - 1].content,
-                            searchContext: searchContextSummary,
-                            hadWebSearch: true,
-                        };
-                        const messagesWithContext = [...currentMessages, updatedUserMessage];
-                        setMessages(messagesWithContext);
-                        saveMessages(conversationId, messagesWithContext);
-                    }
-                } else {
-                    // Handle non-OK HTTP responses with user-friendly messages
-                    const statusMsg = searchResponse.status >= 500
-                        ? 'Web search service temporarily unavailable'
-                        : searchResponse.status === 401
-                            ? 'Authentication required for web search'
-                            : searchResponse.status === 429
-                                ? 'Web search rate limit reached'
-                                : `Web search failed (HTTP ${searchResponse.status})`;
-                    console.warn('Web search HTTP error:', searchResponse.status);
-                    showSnackbar(`${statusMsg}, proceeding without search results`, 'warning');
-                }
-            } catch (error) {
-                if (error.name === 'AbortError') {
-                    // User stopped during web search - clean up and exit
-                    if (!switchingConversationRef.current) {
-                        showSnackbar('Generation stopped', 'info');
-                    }
-                    setIsLoading(false);
-                    clearStreaming();
-                    clearProcessingStatus();
-                    streamingConversationRef.current = null;
-                    abortControllerRef.current = null;
-                    switchingConversationRef.current = false;
-                    return;
-                }
-                console.error('Web search failed:', error);
-                const errorMsg = error.name === 'TypeError' && error.message?.includes('fetch')
-                    ? 'Network error - unable to reach web search service'
-                    : 'Web search failed';
-                showSnackbar(`${errorMsg}, proceeding without search results`, 'warning');
-            }
-        }
 
 
 
@@ -1427,11 +1154,6 @@ export default function ChatContainer({
                 stream: true,
                 conversationId: conversationId, // Include for background streaming support
             };
-
-            // Include search results metadata if available
-            if (searchResults) {
-                requestBody.searchResults = searchResults;
-            }
 
             const response = await fetch('/api/chat/stream', {
                 method: 'POST',
@@ -1872,7 +1594,6 @@ export default function ChatContainer({
                         content: finalContent,
                         reasoning: finalReasoning,
                         timestamp: new Date().toISOString(),
-                        searchResults: searchResults || undefined,
                         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
                         responseTime,
                         tokenCount: tokenCount > 0 ? tokenCount : undefined,
@@ -1909,11 +1630,10 @@ export default function ChatContainer({
                     content: finalContent,
                     reasoning: finalReasoning,
                     timestamp: new Date().toISOString(),
-                    // Persist the full search results array so the chat UI
-                    // can render SearchSources favicon chips. Previously we
-                    // only stored the count, which made sources impossible
-                    // to re-render on conversation reload.
-                    searchResults: searchResults || undefined,
+                    // Link references now travel inside individual toolCalls
+                    // entries (native_tool_call.sources) rather than on a
+                    // message-level searchResults field — see extractSources
+                    // in ChatContainer and SearchSources in ToolCallBlock.
                     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
                     responseTime,
                     tokenCount: tokenCount > 0 ? tokenCount : undefined,
@@ -2476,10 +2196,6 @@ export default function ChatContainer({
                                 systemPrompts={systemPrompts}
                                 selectedSystemPromptId={settings.selectedSystemPromptId}
                                 onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
-                                webSearchEnabled={settings.webSearchEnabled}
-                                onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
-                                urlFetchEnabled={settings.urlFetchEnabled}
-                                onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
                                 messages={messages}
                                 maxContextTokens={selectedModelContextSize}
                                 models={combinedModels}
@@ -2531,10 +2247,6 @@ export default function ChatContainer({
                                 systemPrompts={systemPrompts}
                                 selectedSystemPromptId={settings.selectedSystemPromptId}
                                 onSystemPromptSelect={(id) => updateSettings({ selectedSystemPromptId: id })}
-                                webSearchEnabled={settings.webSearchEnabled}
-                                onWebSearchToggle={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
-                                urlFetchEnabled={settings.urlFetchEnabled}
-                                onUrlFetchToggle={() => updateSettings({ urlFetchEnabled: !settings.urlFetchEnabled })}
                                 messages={messages}
                                 maxContextTokens={selectedModelContextSize}
                                 models={combinedModels}
