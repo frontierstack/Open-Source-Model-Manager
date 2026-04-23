@@ -199,37 +199,13 @@ export default function ChatContainer({
         setSystemPrompts,
     } = useChatStore();
 
-    // Built-in persona presets. Rendered in the composer persona chip
-    // alongside user-defined system prompts. Selecting a persona just
-    // sets it as the active system prompt.
-    const PERSONA_PRESETS = [
-        {
-            id: 'preset:researcher',
-            name: 'Research partner',
-            hint: 'Thorough, cites sources, questions assumptions.',
-            content: "You are an expert research partner. Cite sources where possible. Question assumptions in the user's question. Prefer concise, structured answers with clearly marked uncertainty. Flag any claim you're not confident about.",
-            preset: true,
-        },
-        {
-            id: 'preset:editor',
-            name: 'Line editor',
-            hint: 'Tightens prose, preserves voice.',
-            content: "You are a line editor. Tighten the user's prose while preserving their voice. Cut filler, passive constructions, and vague qualifiers. Return the edited text plus a short note on what you changed and why.",
-            preset: true,
-        },
-        {
-            id: 'preset:reviewer',
-            name: 'Code reviewer',
-            hint: 'Blunt, focuses on correctness + perf.',
-            content: "You are a blunt, experienced code reviewer. Focus on correctness, edge cases, performance, and concurrency bugs. Skip style nits unless they mask a real issue. Point out what's wrong and why, then suggest the minimal fix.",
-            preset: true,
-        },
-    ];
-
-    // Use system prompts from store, falling back to initial props.
-    // Personas are prepended so they appear at the top of the picker.
+    // System prompts come entirely from the server (user-managed in
+    // Settings). The built-in "Research partner / Line editor / Code
+    // reviewer" presets were removed per user request — they cluttered
+    // both the Settings management list and the composer persona chip
+    // with entries that couldn't be edited or deleted.
     const userSystemPrompts = storeSystemPrompts?.length > 0 ? storeSystemPrompts : initialSystemPrompts;
-    const systemPrompts = [...PERSONA_PRESETS, ...(Array.isArray(userSystemPrompts) ? userSystemPrompts : [])];
+    const systemPrompts = Array.isArray(userSystemPrompts) ? userSystemPrompts : [];
 
     // Slide-down animation when transitioning from empty to messages
     const chatIsEmpty = messages.length === 0 && !isStreaming;
@@ -2285,17 +2261,13 @@ export default function ChatContainer({
                 onClose={() => setArtifactsOpen(false)}
             />
 
-            {/* Settings drawer — shows ONLY user-owned prompts in the
-                management list. Built-in PERSONA_PRESETS live on the
-                composer's persona picker (always available) and are
-                deliberately not listed here because they can't be
-                edited or deleted — they're source-level constants. */}
+            {/* Settings drawer */}
             <ChatSettings
                 open={settingsOpen}
                 onClose={() => setSettingsOpen(false)}
                 settings={settings}
                 onUpdateSettings={updateSettings}
-                systemPrompts={systemPrompts.filter(p => !p.preset)}
+                systemPrompts={systemPrompts}
                 onSaveSystemPrompt={handleSaveSystemPrompt}
                 onDeleteSystemPrompt={handleDeleteSystemPrompt}
                 theme={theme}
