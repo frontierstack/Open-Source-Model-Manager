@@ -14756,11 +14756,20 @@ app.use((req, res) => {
                 const name = safeToolName(s.name);
                 if (!name || taken.has(name)) continue;
                 taken.add(name);
+                // Concatenate description + systemPrompt so the hand-written
+                // tool-selection nudge reaches the model. With a 70+ tool
+                // catalog, a terse description like "Decode Base64 data"
+                // loses to inline guessing; the systemPrompt usually carries
+                // the trigger phrases the model needs to pick correctly.
+                const desc = [s.description, s.systemPrompt]
+                    .map(v => (typeof v === 'string' ? v.trim() : ''))
+                    .filter(Boolean)
+                    .join(' — ') || `${s.name} skill`;
                 out.push({
                     type: 'function',
                     function: {
                         name,
-                        description: (s.description || `${s.name} skill`).slice(0, 1024),
+                        description: desc.slice(0, 1024),
                         parameters: paramsToJsonSchema(s.parameters),
                     },
                 });
