@@ -387,6 +387,28 @@ else
     log_success "SSL certificates found"
 fi
 
+# gVisor / sandbox runtime — required for the tool-execution sandbox the
+# webapp uses to run skills and tool calls. Idempotent: no-ops when runsc is
+# already registered as a Docker runtime. Honors SKIP_SANDBOX_SETUP=1 for
+# environments that can't / don't want gVisor.
+if [ "${SKIP_SANDBOX_SETUP:-0}" = "1" ]; then
+    log_warning "SKIP_SANDBOX_SETUP=1 set — skipping gVisor install (tools will run with the default runtime)"
+elif [ ! -f "$PROJECT_DIR/setup-sandbox.sh" ]; then
+    log_warning "setup-sandbox.sh not found — skipping sandbox setup"
+else
+    if docker info 2>/dev/null | grep -qw runsc; then
+        log_success "gVisor (runsc) runtime already registered"
+    else
+        log_step "Installing gVisor sandbox runtime (runsc)"
+        if bash "$PROJECT_DIR/setup-sandbox.sh" >/tmp/setup-sandbox.log 2>&1; then
+            log_success "gVisor installed — tool exec containers will use --runtime=runsc"
+        else
+            log_warning "gVisor install failed; tool exec will fall back to the default runtime"
+            log_warning "See /tmp/setup-sandbox.log for details"
+        fi
+    fi
+fi
+
 # ============================================================================
 # PHASE 2: SSL INSPECTION DETECTION
 # ============================================================================

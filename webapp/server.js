@@ -4320,6 +4320,19 @@ app.delete('/api/system-prompts/:modelName', requireAuth, async (req, res) => {
 // ============================================================================
 
 // Get system resource information
+// Egress-proxy stats — admin-only observability for the sandbox network
+// allowlist. Returns grant counts, rejection reasons, and listening state.
+app.get('/api/system/egress-proxy', requireAuth, (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'admin') && !req.user) {
+        return res.status(403).json({ error: 'Admin permission required' });
+    }
+    try {
+        res.json(require('./services/egressProxy').getStats());
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/system/resources', requireAuth, async (req, res) => {
 
     try {
@@ -6054,33 +6067,102 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
     }
 });
 
-// Python skill executor
+// Python skill executor. By default runs in a gVisor-sandboxed container
+// (see webapp/services/sandboxRunner.js). Individual skills can opt out with
+// `sandbox: false` on the skill definition — useful for trusted built-ins
+// that need host FS access (file ops etc.) which won't work under --read-only.
+//
+// The legacy in-process path is still here for opted-out skills and as an
+// automatic fallback if the sandbox runner throws during setup (missing
+// image, broken Docker socket, etc.) — we'd rather degrade to the old
+// behavior than fail the whole request.
 async function executePythonSkill(skill, params) {
-    const tempFile = `/tmp/skill_${Date.now()}_${crypto.randomBytes(12).toString('hex')}.py`;
+    const sandbox = require('./services/sandboxRunner');
+    // Sandbox policy:
+    //   - explicit skill.sandbox true/false → respect it
+    //   - user-created skill (has userId) → sandbox by default (untrusted origin)
+    //   - built-in default skill (no userId) → in-process by default because
+    //     many of them (create_file, read_file, list_directory, …) need
+    //     host FS access that --read-only would break. Containerizing the
+    //     full default catalog with workspace-bound mounts is follow-up
+    //     work; for now we trust the built-ins that ship with the product.
+    const wantSandbox = typeof skill.sandbox === 'boolean'
+        ? skill.sandbox
+        : !!skill.userId;
 
+    if (wantSandbox) {
+        try {
+            // Network policy from the skill definition. Built-in skills that
+            // need the internet (playwright, scrapling, web fetches) must
+            // declare network: 'allowlist' + `allowlist: [...]` so we don't
+            // grant open egress by accident.
+            const network = skill.network || 'none';
+            const allowlist = skill.allowlist || [];
+            const run = await sandbox.runPythonSkill({
+                code: skill.code,
+                params,
+                network,
+                allowlist,
+                timeoutMs: skill.timeoutMs || 30_000,
+                memory: skill.memory || '512m',
+                cpus: skill.cpus || '1.0',
+                toolName: skill.name,
+            });
+            try {
+                if (run.timedOut) {
+                    return { success: false, error: 'Skill timed out', timedOut: true };
+                }
+                if (run.result && typeof run.result === 'object') {
+                    // Attach artifact file names so callers (chat stream,
+                    // agents) can surface them. Actual file serving happens
+                    // via a dedicated endpoint in Phase 8.
+                    if (run.artifacts.length) {
+                        run.result._artifacts = run.artifacts.map(a => ({
+                            name: a.name, size: a.size, runId: run.runId,
+                        }));
+                    }
+                    return run.result;
+                }
+                // Fallback when skill didn't return JSON — expose raw output.
+                return {
+                    success: run.exitCode === 0,
+                    error: run.parseError || (run.stderr ? `sandbox stderr: ${run.stderr.slice(0, 2000)}` : 'no JSON output'),
+                    stdout: run.stdout.slice(0, 2000),
+                };
+            } finally {
+                // Best-effort cleanup. If artifacts need to persist for the
+                // chat stream to serve them, Phase 8 will hand off ownership
+                // before calling cleanupRun.
+                sandbox.cleanupRun(run.runId).catch(() => {});
+            }
+        } catch (sandboxErr) {
+            console.warn(`[executePythonSkill] sandbox run failed for "${skill.name}", falling back to in-process:`, sandboxErr.message);
+            // Fall through to the legacy path below.
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Legacy in-process path — runs on the webapp container directly.
+    // Only reached when skill.sandbox === false or when the sandbox path
+    // errored out of band.
+    // ------------------------------------------------------------------
+    const tempFile = `/tmp/skill_${Date.now()}_${crypto.randomBytes(12).toString('hex')}.py`;
     try {
-        // Create Python script with JSON I/O
-        // Write params to a separate JSON file to avoid shell escaping issues
         const paramsFile = `/tmp/skill_params_${Date.now()}_${crypto.randomBytes(12).toString('hex')}.json`;
-        const paramsJson = JSON.stringify(params);
-        await fs.writeFile(paramsFile, paramsJson);
+        await fs.writeFile(paramsFile, JSON.stringify(params));
 
         const pythonScript = `#!/usr/bin/env python3
 import json
 import sys
 import os
 
-# Load parameters from JSON file
 with open("${paramsFile}", "r") as f:
     params = json.load(f)
 
-# Skill code
 ${skill.code}
 
-# Execute skill
 try:
     result = execute(params)
-    # Ensure result is a dict
     if not isinstance(result, dict):
         result = {"success": False, "error": "Skill must return a dictionary"}
     print(json.dumps(result))
@@ -6089,31 +6171,20 @@ except Exception as e:
     sys.exit(1)
 `;
 
-        // Write Python script to temp file
         await fs.writeFile(tempFile, pythonScript, { mode: 0o755 });
-
-        // Execute Python script
         const { stdout, stderr } = await execPromise(
             `python3 "${tempFile}"`,
             { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }
         );
-
-        // Clean up params file
         await fs.unlink(paramsFile).catch(() => {});
-
-        // Clean up temp file
         await fs.unlink(tempFile).catch(() => {});
-
-        // Parse result
         try {
-            const result = JSON.parse(stdout.trim());
-            return result;
+            return JSON.parse(stdout.trim());
         } catch (parseError) {
             console.error('Failed to parse Python output:', stdout, stderr);
             throw new Error(`Invalid JSON output from Python skill: ${parseError.message}`);
         }
     } catch (error) {
-        // Clean up temp file on error
         await fs.unlink(tempFile).catch(() => {});
         throw error;
     }
@@ -14158,6 +14229,12 @@ server.listen(PORT, async () => {
     hostModelsPath = detectedPath;
     console.log(`Host models path configured: ${hostModelsPath}`);
 
+    // Sandbox runner needs the host path to stage scratch dirs that sibling
+    // tool-exec containers can mount. Tell it now that hostModelsPath is known.
+    try {
+        require('./services/sandboxRunner').setHostBase(hostModelsPath);
+    } catch (_) { /* sandbox runner absent — runs will throw on use */ }
+
     for (const [key, value] of loadedStats.entries()) {
         apiKeyUsageStats.set(key, value);
     }
@@ -14169,6 +14246,14 @@ server.listen(PORT, async () => {
         initializeDefaultApiKeys(),
         syncModelInstances()
     ]);
+
+    // Start the egress proxy used by sandboxed tool-execution containers.
+    // Safe to start even when no tools use 'allowlist' — it just sits idle.
+    try {
+        require('./services/egressProxy').start();
+    } catch (e) {
+        console.warn('[Startup] egressProxy failed to start:', e.message);
+    }
 
     console.log('Initialization complete');
 });
