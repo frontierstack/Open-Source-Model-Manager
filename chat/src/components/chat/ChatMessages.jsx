@@ -11,9 +11,35 @@ import { useChatStore } from '../../stores/useChatStore';
 function StreamingMessage() {
     const streamingContent = useChatStore(state => state.streamingContent);
     const streamingReasoning = useChatStore(state => state.streamingReasoning);
+    const streamingToolCalls = useChatStore(state => state.streamingToolCalls);
     const processingStatus = useChatStore(state => state.processingStatus);
     const processingMessage = useChatStore(state => state.processingMessage);
     const processingLog = useChatStore(state => state.processingLog);
+
+    // Map the in-flight tool records to the ToolCallBlock shape so chips can
+    // render live alongside streaming content.
+    const liveToolCalls = (streamingToolCalls || []).map(tc => {
+        let argPreview = '';
+        if (tc.arguments) {
+            try {
+                const args = JSON.parse(tc.arguments);
+                argPreview = Object.entries(args)
+                    .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`)
+                    .join(', ');
+            } catch (_) { argPreview = String(tc.arguments).slice(0, 80); }
+        }
+        return {
+            type: 'native_tool_call',
+            label: tc.name,
+            query: argPreview,
+            durationMs: tc.durationMs,
+            status: tc.status === 'running' ? 'partial'
+                : tc.status === 'success' ? 'success'
+                : 'failed',
+            error: tc.error,
+            preview: tc.preview,
+        };
+    });
 
     return (
         <ChatMessage
@@ -27,6 +53,7 @@ function StreamingMessage() {
             processingStatus={processingStatus}
             processingMessage={processingMessage}
             processingLog={processingLog}
+            toolCalls={liveToolCalls.length ? liveToolCalls : undefined}
         />
     );
 }

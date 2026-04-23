@@ -103,6 +103,12 @@ export const useChatStore = create(
         isStreaming: false,
         streamingContent: '',
         streamingReasoning: '',
+        // Native tool calls observed during the current stream. Each entry:
+        //   { tool_call_id, name, arguments, status: 'running'|'success'|'failed',
+        //     preview?, durationMs?, startedAt }
+        // Displayed live in the streaming bubble and merged into the final
+        // assistant message on commit.
+        streamingToolCalls: [],
 
         // Collapse state: object mapping messageId -> true. Lives in the store
         // (not local component state) so it survives React remounts/re-renders.
@@ -417,6 +423,37 @@ export const useChatStore = create(
             streamingReasoning: state.streamingReasoning + reasoning
         })),
 
+        // Record a newly-started server-side tool call.
+        startStreamingToolCall: (tc) => set(state => ({
+            streamingToolCalls: [
+                ...state.streamingToolCalls,
+                {
+                    tool_call_id: tc.tool_call_id,
+                    name: tc.name,
+                    arguments: tc.arguments || '',
+                    status: 'running',
+                    startedAt: Date.now(),
+                },
+            ],
+        })),
+
+        // Update an in-flight tool call with its result.
+        finishStreamingToolCall: (tc) => set(state => {
+            const next = state.streamingToolCalls.map(existing => {
+                if (existing.tool_call_id !== tc.tool_call_id) return existing;
+                return {
+                    ...existing,
+                    status: tc.error ? 'failed' : 'success',
+                    preview: tc.preview,
+                    error: tc.error,
+                    durationMs: Date.now() - existing.startedAt,
+                };
+            });
+            return { streamingToolCalls: next };
+        }),
+
+        clearStreamingToolCalls: () => set({ streamingToolCalls: [] }),
+
         // Atomically append the final assistant message(s) AND clear the
         // streaming state in one set() call. Doing these separately (append
         // first, clear in a later finally block) left a one-frame window
@@ -433,6 +470,7 @@ export const useChatStore = create(
                 messages: toAdd.length ? [...state.messages, ...toAdd] : state.messages,
                 streamingContent: '',
                 streamingReasoning: '',
+                streamingToolCalls: [],
                 isStreaming: false,
                 processingStatus: null,
                 processingMessage: null,
@@ -448,6 +486,7 @@ export const useChatStore = create(
         clearStreaming: () => set(state => ({
             streamingContent: '',
             streamingReasoning: '',
+            streamingToolCalls: [],
             isStreaming: false,
             processingStatus: null,
             processingMessage: null,

@@ -14240,6 +14240,152 @@ app.use((req, res) => {
 });
 
 // ============================================================================
+// NATIVE TOOL REGISTRATIONS
+// ============================================================================
+//
+// Registered here at the bottom of server.js because the tool `execute`
+// closures need in-scope access to helpers defined earlier in the file
+// (fetchUrlContent, extractSearchQuery, isPrivateUrl, axios). chatTools
+// is a singleton module, so this registration is visible to the chat
+// stream handler without further wiring.
+(() => {
+    const tools = require('./services/chatTools');
+
+    // ----- web_search ------------------------------------------------------
+    tools.registerTool({
+        name: 'web_search',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'web_search',
+                    description: 'Search the web via DuckDuckGo. Returns up to 5 results with title, url, and snippet. Use when you need current information not in your training data.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: 'Search query.' },
+                            limit: { type: 'integer', minimum: 1, maximum: 10, description: 'Max results (default 5).' },
+                        },
+                        required: ['query'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const rawQuery = String(args?.query || '').trim();
+            if (!rawQuery) return { error: 'query is required' };
+            const q = extractSearchQuery(rawQuery);
+            const limit = Math.min(10, Math.max(1, parseInt(args?.limit || 5, 10)));
+            try {
+                const resp = await axios.get(
+                    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+                    {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                        },
+                        timeout: 8000,
+                    },
+                );
+                const html = resp.data || '';
+                if (html.includes('anomaly-modal')) {
+                    // DDG hit CAPTCHA — fall back to Scrapling if available.
+                    // Mirrors the fallback chain used by /api/search.
+                    if (scraplingService) {
+                        try {
+                            const sr = await scraplingService.search(q, limit);
+                            if (sr?.success && Array.isArray(sr.results) && sr.results.length) {
+                                return {
+                                    query: q,
+                                    source: 'scrapling',
+                                    count: sr.results.length,
+                                    results: sr.results.slice(0, limit).map(r => ({
+                                        title: r.title || 'No title',
+                                        url: r.url,
+                                        snippet: r.snippet || '',
+                                    })),
+                                };
+                            }
+                        } catch (_) { /* fall through to error */ }
+                    }
+                    return { error: 'search rate-limited by DuckDuckGo (CAPTCHA); Scrapling fallback also failed or unavailable', query: q };
+                }
+                const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
+                const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
+                const snippetRegex = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i;
+                const seen = new Set();
+                const results = [];
+                let m;
+                while ((m = resultRegex.exec(html)) !== null && results.length < limit) {
+                    const htmlFrag = m[1];
+                    const tm = titleRegex.exec(htmlFrag);
+                    if (!tm) continue;
+                    const sm = snippetRegex.exec(htmlFrag);
+                    const url = decodeURIComponent(tm[1].replace(/^\/\/duckduckgo\.com\/l\/\?uddg=/, '').split('&')[0]);
+                    if (!url.startsWith('http') || seen.has(url)) continue;
+                    seen.add(url);
+                    results.push({
+                        title: tm[2].replace(/<[^>]*>/g, '').trim() || 'No title',
+                        url,
+                        snippet: sm ? sm[1].replace(/<[^>]*>/g, '').trim() : '',
+                    });
+                }
+                return { query: q, count: results.length, results };
+            } catch (e) {
+                return { error: `search failed: ${e.message}`, query: q };
+            }
+        },
+    });
+
+    // ----- fetch_url -------------------------------------------------------
+    tools.registerTool({
+        name: 'fetch_url',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'fetch_url',
+                    description: 'Fetch a URL and return its readable text content. Rejects private/internal addresses. Reuses the same pipeline that powers /api/url/fetch (Scrapling → Playwright → axios).',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'Absolute HTTP(S) URL to fetch.' },
+                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 15000).' },
+                        },
+                        required: ['url'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const url = String(args?.url || '').trim();
+            if (!url) return { error: 'url is required' };
+            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 15000, 10)));
+            try {
+                const result = await fetchUrlContent(url, { timeout: 20_000, maxLength, waitForJS: true });
+                if (!result.success) {
+                    return { url, success: false, error: result.error || 'fetch failed' };
+                }
+                return {
+                    url,
+                    success: true,
+                    title: result.title || '',
+                    source: result.source || 'unknown',
+                    content: (result.content || '').slice(0, maxLength),
+                };
+            } catch (e) {
+                return { url, success: false, error: e.message || String(e) };
+            }
+        },
+    });
+
+    console.log(`[chatTools] registered ${tools.toolRegistry.size} native tools:`, [...tools.toolRegistry.keys()].join(', '));
+})();
+
+// ============================================================================
 // SERVER
 // ============================================================================
 

@@ -1,20 +1,24 @@
 import React, { useState } from 'react';
-import { Globe, Link as LinkIcon, Wrench, AlertCircle, ChevronDown, Check } from 'lucide-react';
+import { Globe, Link as LinkIcon, Wrench, AlertCircle, ChevronDown, Check, Loader2 } from 'lucide-react';
 
 /**
  * ToolCallBlock — expandable block showing an assistant tool invocation.
  *
  * Visual matches the research-UI design: a row with a success dot,
  * tool icon, code-styled tool name, and summary caption on the left;
- * chevron on the right. Click to expand for error details (if any).
+ * chevron on the right. Click to expand for a text preview of the
+ * result (or error details).
  *
  * @param {Object} tool
- * @param {'web_search'|'url_fetch'|'skill'} tool.type
- * @param {string} tool.label
+ * @param {'web_search'|'url_fetch'|'skill'|'native_tool_call'} tool.type
+ * @param {string} tool.label          — display name (e.g. "load_skill")
+ * @param {string} [tool.query]        — arg summary ("name: foo, id: bar")
  * @param {number} [tool.durationMs]
  * @param {number} [tool.resultCount]
  * @param {'success'|'failed'|'partial'} tool.status
+ *                                     partial = still running (live chip)
  * @param {string} [tool.error]
+ * @param {string} [tool.preview]      — short result string for the expand
  */
 export default function ToolCallBlock({ tool }) {
     const [open, setOpen] = useState(false);
@@ -23,34 +27,46 @@ export default function ToolCallBlock({ tool }) {
     const {
         type = 'skill',
         label = 'Tool',
+        query,
         durationMs,
         resultCount,
         status = 'success',
         error,
+        preview,
     } = tool;
 
+    const isRunning = status === 'partial';
     const IconComponent =
-        type === 'web_search' ? Globe : type === 'url_fetch' ? LinkIcon : Wrench;
+        type === 'web_search' ? Globe :
+        type === 'url_fetch' ? LinkIcon :
+        Wrench;
 
     const toolName =
         type === 'web_search' ? 'web.search'
             : type === 'url_fetch' ? 'web.fetch'
+            : type === 'native_tool_call' ? label  // keep as-is, already a tool id
             : label.toLowerCase().replace(/\s+/g, '.');
 
     const captionParts = [];
+    if (type === 'native_tool_call' && query) {
+        captionParts.push(query.length > 80 ? query.slice(0, 80) + '…' : query);
+    }
     if (typeof resultCount === 'number') {
         const noun = type === 'web_search' ? 'result' : type === 'url_fetch' ? 'page' : 'result';
         captionParts.push(`${resultCount} ${noun}${resultCount === 1 ? '' : 's'}`);
     }
-    if (typeof durationMs === 'number' && durationMs >= 0) {
+    if (isRunning) {
+        captionParts.push('running…');
+    } else if (typeof durationMs === 'number' && durationMs >= 0) {
         const seconds = durationMs / 1000;
         captionParts.push(seconds >= 1 ? `${seconds.toFixed(1)}s` : `${Math.round(durationMs)}ms`);
     }
     const caption = captionParts.join(' · ');
-    const hasDetail = status !== 'success' && error;
+    const hasDetail = (status !== 'success' && error) || (preview && !isRunning);
 
     const statusColor =
-        status === 'success' ? 'var(--ok)'
+        isRunning ? 'var(--accent)'
+            : status === 'success' ? 'var(--ok)'
             : status === 'partial' ? 'var(--warning, #f59e0b)'
             : 'var(--danger)';
 
@@ -96,7 +112,9 @@ export default function ToolCallBlock({ tool }) {
                 onMouseLeave={(e) => { if (hasDetail) e.currentTarget.style.background = 'transparent'; }}
             >
                 <span style={statusDot}>
-                    {status === 'success'
+                    {isRunning
+                        ? <Loader2 className="animate-spin" style={{ width: 11, height: 11 }} strokeWidth={2.5} />
+                        : status === 'success'
                         ? <Check style={{ width: 10, height: 10 }} strokeWidth={3} />
                         : <AlertCircle style={{ width: 11, height: 11 }} strokeWidth={2} />}
                 </span>
@@ -117,10 +135,18 @@ export default function ToolCallBlock({ tool }) {
             </button>
             {open && hasDetail && (
                 <div style={body}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, color: 'var(--danger)' }}>
-                        <AlertCircle style={{ width: 13, height: 13, marginTop: 2, flexShrink: 0 }} strokeWidth={1.75} />
-                        <span style={{ fontSize: 12, lineHeight: 1.5 }}>{error}</span>
-                    </div>
+                    {error && (
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, color: 'var(--danger)' }}>
+                            <AlertCircle style={{ width: 13, height: 13, marginTop: 2, flexShrink: 0 }} strokeWidth={1.75} />
+                            <span style={{ fontSize: 12, lineHeight: 1.5 }}>{error}</span>
+                        </div>
+                    )}
+                    {preview && !error && (
+                        <pre style={{
+                            margin: 0, fontFamily: 'var(--font-mono)', fontSize: 11.5,
+                            color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                        }}>{preview}</pre>
+                    )}
                 </div>
             )}
         </div>

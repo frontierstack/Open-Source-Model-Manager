@@ -364,8 +364,9 @@ export default React.memo(function ChatMessage({
                         </div>
                     )}
 
-                    {/* Tool calls */}
-                    {!isUser && !isStreaming && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (
+                    {/* Tool calls — also rendered during streaming so live
+                        chips show up for native tool invocations in flight. */}
+                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
                             {toolCalls.map((tc, idx) => (
                                 <ToolCallBlock key={idx} tool={tc} />

@@ -150,6 +150,8 @@ export default function ChatContainer({
         setStreamingReasoning,
         appendStreamingContent,
         appendStreamingReasoning,
+        startStreamingToolCall,
+        finishStreamingToolCall,
         clearStreaming,
         commitStreamingMessage,
         setProcessingStatus,
@@ -1511,6 +1513,41 @@ export default function ChatContainer({
                                 continue;
                             }
 
+                            // Native tool-calling events. Server emits these
+                            // out-of-band (no `choices` field) so chip UI can
+                            // reflect in-flight / finished tools live. At
+                            // stream commit, these get folded into the
+                            // assistant message's toolCalls array so they
+                            // persist for reloads and history.
+                            if (parsed.type === 'tool_executing') {
+                                startStreamingToolCall({
+                                    tool_call_id: parsed.tool_call_id,
+                                    name: parsed.name,
+                                    arguments: parsed.arguments,
+                                });
+                                continue;
+                            }
+                            if (parsed.type === 'tool_result') {
+                                // Try to surface a JSON error field if present.
+                                let error = null;
+                                try {
+                                    const obj = JSON.parse(parsed.preview || '{}');
+                                    if (obj && obj.error) error = String(obj.error);
+                                } catch (_) { /* non-JSON preview — leave as-is */ }
+                                finishStreamingToolCall({
+                                    tool_call_id: parsed.tool_call_id,
+                                    preview: parsed.preview,
+                                    error,
+                                });
+                                continue;
+                            }
+                            if (parsed.type === 'tool_call_delta') {
+                                // Argument fragments — we already track
+                                // finalized args in tool_executing. Safe to
+                                // drop these for the chip UI.
+                                continue;
+                            }
+
                             const delta = parsed.choices?.[0]?.delta;
 
                             if (delta?.content) {
@@ -1737,6 +1774,36 @@ export default function ChatContainer({
             // Check if user switched to a different conversation
             const currentActiveId = useChatStore.getState().activeConversationId;
             const userSwitchedConversation = currentActiveId !== conversationId;
+
+            // Fold any native tool calls observed during streaming into the
+            // same `toolCalls` array used by the existing client-side tools.
+            // Mapping to ToolCallBlock's shape: type='native_tool_call',
+            // status=success/failed, resultCount=n/a, label="<name>(args)".
+            const nativeToolCallEntries = useChatStore.getState().streamingToolCalls || [];
+            for (const tc of nativeToolCallEntries) {
+                let argPreview = '';
+                if (tc.arguments) {
+                    try {
+                        const parsedArgs = JSON.parse(tc.arguments);
+                        const pairs = Object.entries(parsedArgs)
+                            .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`);
+                        argPreview = pairs.join(', ');
+                    } catch (_) {
+                        argPreview = String(tc.arguments).slice(0, 80);
+                    }
+                }
+                toolCalls.push({
+                    type: 'native_tool_call',
+                    label: tc.name || 'tool',
+                    query: argPreview,
+                    durationMs: tc.durationMs,
+                    status: tc.status === 'running' ? 'partial'
+                        : tc.status === 'success' ? 'success'
+                        : 'failed',
+                    error: tc.error,
+                    preview: tc.preview,
+                });
+            }
 
             // Use the messages we had at the start (updatedMessages) since the user may have switched
             // This ensures we save to the correct conversation
