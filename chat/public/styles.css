@@ -1153,6 +1153,9 @@ body.font-size-large .markdown-content,
 .grid{
   display: grid;
 }
+.contents{
+  display: contents;
+}
 .hidden{
   display: none;
 }

@@ -51,8 +51,12 @@ app.use(session(sessionConfig));
 // because it would consume the request body before the proxy can forward it.
 // All API requests are proxied to the main webapp which handles body parsing.
 
-// Serve static files (no-cache on JS/CSS so rebuilds are picked up immediately)
+// Serve static files (no-cache on JS/CSS so rebuilds are picked up immediately).
+// `index: false` disables express.static's default behavior of serving
+// public/index.html for `/`, so our custom handler below (which rewrites
+// bundle/styles URLs with a cache-bust stamp) always runs for HTML requests.
 app.use(express.static(path.join(__dirname, 'public'), {
+    index: false,
     setHeaders: (res, filePath) => {
         if (filePath.endsWith('.js') || filePath.endsWith('.css')) {
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
@@ -105,9 +109,33 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'chat-webapp' });
 });
 
-// Serve React app for all other routes
+// Build an asset version stamp from bundle mtime so browsers are forced to
+// refetch after each rebuild, regardless of any aggressive HTTP caching.
+const INDEX_HTML_PATH = path.join(__dirname, 'public', 'index.html');
+const BUNDLE_PATH = path.join(__dirname, 'public', 'bundle.js');
+const STYLES_PATH = path.join(__dirname, 'public', 'styles.css');
+function assetVersion() {
+    try {
+        const b = fs.statSync(BUNDLE_PATH).mtimeMs;
+        const s = fs.existsSync(STYLES_PATH) ? fs.statSync(STYLES_PATH).mtimeMs : 0;
+        return String(Math.floor(Math.max(b, s)));
+    } catch { return String(Date.now()); }
+}
+
+// Serve React app for all other routes — rewrite bundle/styles URLs with a
+// version query string so the browser is forced to pull the latest build.
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    try {
+        const v = assetVersion();
+        const html = fs.readFileSync(INDEX_HTML_PATH, 'utf8')
+            .replace(/\/bundle\.js(\?[^"']*)?/g, `/bundle.js?v=${v}`)
+            .replace(/\/styles\.css(\?[^"']*)?/g, `/styles.css?v=${v}`);
+        res.setHeader('Content-Type', 'text/html; charset=UTF-8');
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        res.send(html);
+    } catch (err) {
+        res.sendFile(INDEX_HTML_PATH);
+    }
 });
 
 // Start server with HTTPS

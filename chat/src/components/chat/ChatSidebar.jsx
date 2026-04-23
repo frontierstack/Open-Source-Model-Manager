@@ -13,7 +13,6 @@ import {
     Folder,
     FolderOpen,
     FolderPlus,
-    MoreHorizontal,
     FolderInput,
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
@@ -48,22 +47,21 @@ export default function ChatSidebar({
     collapsed,
     onToggleCollapsed,
 }) {
-    // When collapsed (desktop), hide the sidebar entirely.
-    if (collapsed && !isMobileOpen) return null;
-
     const [editingId, setEditingId] = useState(null);
     const [editTitle, setEditTitle] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [collapsedGroups, setCollapsedGroups] = useState({});
-    const [creatingFolder, setCreatingFolder] = useState(false);
-    const [newFolderName, setNewFolderName] = useState('');
     const [editingFolderId, setEditingFolderId] = useState(null);
     const [editingFolderName, setEditingFolderName] = useState('');
-    const [folderMenuOpenId, setFolderMenuOpenId] = useState(null);
     const [moveMenuConvId, setMoveMenuConvId] = useState(null);
-    const folderMenuRef = useRef(null);
+    // Drag & drop: which drop target is currently being hovered.
+    // `null` = none, a folder id = that folder, `'unassigned'` = unassigned bucket.
+    const [dragOverTarget, setDragOverTarget] = useState(null);
+    const [draggingConvId, setDraggingConvId] = useState(null);
     const moveMenuRef = useRef(null);
     const confirm = useConfirm();
+
+    const collapsedDesktop = collapsed && !isMobileOpen;
 
     const user = useChatStore(s => s.user);
     const folders = useChatStore(s => s.folders);
@@ -76,9 +74,6 @@ export default function ChatSidebar({
     // Close menus on outside click
     useEffect(() => {
         const onDocClick = (e) => {
-            if (folderMenuRef.current && !folderMenuRef.current.contains(e.target)) {
-                setFolderMenuOpenId(null);
-            }
             if (moveMenuRef.current && !moveMenuRef.current.contains(e.target)) {
                 setMoveMenuConvId(null);
             }
@@ -132,24 +127,54 @@ export default function ChatSidebar({
         if (onMobileClose) onMobileClose();
     };
 
+    // Click "New folder" → creates immediately with a default name and
+    // jumps straight into rename mode so the user can name it without
+    // a two-step input flow.
     const handleCreateFolder = () => {
-        const name = newFolderName.trim();
-        if (name) {
-            createFolder(name);
+        const existing = new Set((folders || []).map(f => (f.name || '').toLowerCase()));
+        let name = 'New folder';
+        let n = 2;
+        while (existing.has(name.toLowerCase())) {
+            name = `New folder ${n++}`;
         }
-        setNewFolderName('');
-        setCreatingFolder(false);
+        const folder = createFolder(name);
+        if (folder) {
+            // Default new folders to collapsed — user can expand once they
+            // start dragging chats into them.
+            setCollapsedGroups(prev => ({ ...prev, [`folder:${folder.id}`]: true }));
+            setEditingFolderId(folder.id);
+            setEditingFolderName(folder.name);
+        }
     };
 
-    const handleCancelCreateFolder = () => {
-        setNewFolderName('');
-        setCreatingFolder(false);
+    // Close rename mode without touching the folder. If the user wants the
+    // folder gone, the always-visible trash icon handles that.
+    const handleCancelFolderRename = () => {
+        setEditingFolderId(null);
+        setEditingFolderName('');
     };
+
+    // Bulk-delete any folders still carrying the auto-assigned default name
+    // ("New folder", "New folder 2", …). Lets users clean up orphans left
+    // behind by earlier rapid-click behavior in one step.
+    const handleClearOrphanFolders = async () => {
+        const orphans = (folders || []).filter(f => /^New folder( \d+)?$/i.test(f.name || ''));
+        if (!orphans.length) return;
+        const confirmed = await confirm({
+            title: 'Clear unnamed folders',
+            message: `Delete ${orphans.length} unnamed folder${orphans.length === 1 ? '' : 's'} ("New folder", "New folder 2", …)? Any conversations inside will move to Unassigned.`,
+            confirmText: 'Clear',
+            cancelText: 'Cancel',
+            variant: 'danger',
+        });
+        if (!confirmed) return;
+        orphans.forEach(f => deleteFolder(f.id));
+    };
+    const orphanCount = (folders || []).filter(f => /^New folder( \d+)?$/i.test(f.name || '')).length;
 
     const handleStartFolderRename = (folder) => {
         setEditingFolderId(folder.id);
         setEditingFolderName(folder.name);
-        setFolderMenuOpenId(null);
     };
 
     const handleSaveFolderRename = (id) => {
@@ -161,7 +186,6 @@ export default function ChatSidebar({
     };
 
     const handleDeleteFolder = async (folder) => {
-        setFolderMenuOpenId(null);
         const confirmed = await confirm({
             title: 'Delete Folder',
             message: `Delete folder "${folder.name}"? Its conversations will move to Unassigned. This cannot be undone.`,
@@ -176,6 +200,44 @@ export default function ChatSidebar({
         setConversationFolder(conversationId, folderId);
         setMoveMenuConvId(null);
     };
+
+    // ---------- Drag & drop helpers ----------
+    const handleChatDragStart = (conv) => (e) => {
+        e.dataTransfer.setData('application/x-conv-id', conv.id);
+        // Fallback plain text for browsers that ignore custom MIME
+        e.dataTransfer.setData('text/plain', conv.id);
+        e.dataTransfer.effectAllowed = 'move';
+        setDraggingConvId(conv.id);
+    };
+    const handleChatDragEnd = () => {
+        setDraggingConvId(null);
+        setDragOverTarget(null);
+    };
+    const dropTargetProps = (targetId) => ({
+        onDragOver: (e) => {
+            if (!draggingConvId) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (dragOverTarget !== targetId) setDragOverTarget(targetId);
+        },
+        onDragLeave: (e) => {
+            // Only clear if leaving the element entirely (not entering a child)
+            if (!e.currentTarget.contains(e.relatedTarget)) {
+                setDragOverTarget(prev => (prev === targetId ? null : prev));
+            }
+        },
+        onDrop: (e) => {
+            e.preventDefault();
+            const convId = e.dataTransfer.getData('application/x-conv-id')
+                || e.dataTransfer.getData('text/plain');
+            if (convId) {
+                // targetId === 'unassigned' → null folder
+                setConversationFolder(convId, targetId === 'unassigned' ? null : targetId);
+            }
+            setDragOverTarget(null);
+            setDraggingConvId(null);
+        },
+    });
 
     const categorizeDate = (dateString) => {
         const date = new Date(dateString);
@@ -265,11 +327,17 @@ export default function ChatSidebar({
 
     // Styles
     const aside = {
-        width: 268,
         height: '100%',
         flexShrink: 0,
-        borderRight: '1px solid var(--rule)',
         background: 'var(--bg-2)',
+        overflow: 'hidden',
+        // Width + border animated together for a smooth collapse
+        transition: 'width 0.22s ease, border-right-color 0.22s ease',
+    };
+    const asideInner = {
+        width: 268,
+        minWidth: 268,
+        height: '100%',
         display: 'flex',
         flexDirection: 'column',
     };
@@ -394,14 +462,21 @@ export default function ChatSidebar({
         const isEditing = editingId === conv.id;
         const moveMenuOpen = moveMenuConvId === conv.id;
         const currentFolderId = conversationFolderMap?.[conv.id] || null;
+        const isDragging = draggingConvId === conv.id;
         return (
             <div
                 key={conv.id}
                 onClick={() => !isEditing && handleSelectConversation(conv.id)}
-                style={chatRow(active)}
+                style={{
+                    ...chatRow(active),
+                    opacity: isDragging ? 0.45 : 1,
+                }}
                 onMouseEnter={(e) => { if (!active && !isEditing) e.currentTarget.style.background = 'var(--bg-3, var(--bg))'; }}
                 onMouseLeave={(e) => { if (!active && !isEditing) e.currentTarget.style.background = 'transparent'; }}
                 className="sidebar-chat-row"
+                draggable={!isEditing}
+                onDragStart={handleChatDragStart(conv)}
+                onDragEnd={handleChatDragEnd}
             >
                 {isEditing ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: '100%' }} onClick={e => e.stopPropagation()}>
@@ -651,9 +726,21 @@ export default function ChatSidebar({
         const open = !collapsedGroups[key];
         const Icon = open ? FolderOpen : Folder;
         const isRenaming = editingFolderId === folder.id;
-        const menuOpen = folderMenuOpenId === folder.id;
+        const isDropTarget = dragOverTarget === folder.id;
         return (
-            <div key={folder.id} style={{ marginBottom: 4, position: 'relative' }}>
+            <div
+                key={folder.id}
+                style={{
+                    marginBottom: 4,
+                    position: 'relative',
+                    borderRadius: 6,
+                    outline: isDropTarget ? '1.5px dashed var(--accent)' : '1.5px dashed transparent',
+                    outlineOffset: -1,
+                    background: isDropTarget ? 'var(--accent-soft)' : 'transparent',
+                    transition: 'background .1s, outline-color .1s',
+                }}
+                {...dropTargetProps(folder.id)}
+            >
                 {isRenaming ? (
                     <div
                         style={{
@@ -669,7 +756,22 @@ export default function ChatSidebar({
                             onChange={(e) => setEditingFolderName(e.target.value)}
                             onKeyDown={(e) => {
                                 if (e.key === 'Enter') handleSaveFolderRename(folder.id);
-                                if (e.key === 'Escape') { setEditingFolderId(null); setEditingFolderName(''); }
+                                if (e.key === 'Escape') handleCancelFolderRename();
+                            }}
+                            onBlur={(e) => {
+                                // If blur is going to Save/Cancel buttons in
+                                // the same row, let those handle it.
+                                const next = e.relatedTarget;
+                                if (next && e.currentTarget.parentElement?.contains(next)) return;
+                                // Commit whatever the user typed (or leave the
+                                // default name if they typed nothing). Either
+                                // way, exit rename mode — never silently delete.
+                                if ((editingFolderName || '').trim()
+                                    && editingFolderName.trim() !== folder.name) {
+                                    handleSaveFolderRename(folder.id);
+                                } else {
+                                    handleCancelFolderRename();
+                                }
                             }}
                             style={{
                                 flex: 1, padding: '3px 6px',
@@ -689,7 +791,7 @@ export default function ChatSidebar({
                             <Check style={{ width: 11, height: 11 }} strokeWidth={2} />
                         </button>
                         <button
-                            onClick={() => { setEditingFolderId(null); setEditingFolderName(''); }}
+                            onClick={handleCancelFolderRename}
                             style={{ ...iconBtn, width: 20, height: 20 }}
                             title="Cancel"
                         >
@@ -722,55 +824,43 @@ export default function ChatSidebar({
                                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                 textAlign: 'left',
                             }}>{folder.name}</span>
-                            <span style={{ ...count, paddingRight: 22 }}>{items.length}</span>
+                            <span style={{ ...count, paddingRight: 46 }}>{items.length}</span>
                         </button>
-                        {/* Menu trigger — always visible so Delete is discoverable */}
+                        {/* Direct Rename + Delete — always visible so users
+                            can delete a folder regardless of its contents. */}
                         <div
                             className="folder-menu-trigger"
                             style={{
                                 position: 'absolute',
                                 right: 4, top: '50%', transform: 'translateY(-50%)',
-                                opacity: menuOpen ? 1 : 0.55,
-                                transition: 'opacity .1s',
+                                display: 'flex', alignItems: 'center', gap: 1,
+                                background: 'var(--bg-2)',
+                                borderRadius: 5,
+                                padding: 1,
                             }}
-                            ref={menuOpen ? folderMenuRef : null}
                         >
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
-                                    setFolderMenuOpenId(menuOpen ? null : folder.id);
+                                    handleStartFolderRename(folder);
                                 }}
-                                style={{
-                                    ...iconBtn,
-                                    width: 20, height: 20,
-                                    background: menuOpen ? 'var(--bg-3, var(--bg))' : 'transparent',
-                                }}
-                                title="Folder options"
+                                style={{ ...iconBtn, width: 20, height: 20 }}
+                                title="Rename folder"
                             >
-                                <MoreHorizontal style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                                <Edit3 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
                             </button>
-                            {menuOpen && (
-                                <div style={popover} onClick={(e) => e.stopPropagation()}>
-                                    <button
-                                        onClick={() => handleStartFolderRename(folder)}
-                                        style={popoverItem}
-                                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-3, var(--bg))'}
-                                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                                    >
-                                        <Edit3 style={{ width: 12, height: 12 }} strokeWidth={1.75} />
-                                        <span>Rename</span>
-                                    </button>
-                                    <button
-                                        onClick={() => handleDeleteFolder(folder)}
-                                        style={popoverItem}
-                                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-3, var(--bg))'; e.currentTarget.style.color = 'var(--danger)'; }}
-                                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-2)'; }}
-                                    >
-                                        <Trash2 style={{ width: 12, height: 12 }} strokeWidth={1.75} />
-                                        <span>Delete</span>
-                                    </button>
-                                </div>
-                            )}
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteFolder(folder);
+                                }}
+                                style={{ ...iconBtn, width: 20, height: 20, color: 'var(--ink-3)' }}
+                                title="Delete folder"
+                                onMouseEnter={(e) => e.currentTarget.style.color = 'var(--danger)'}
+                                onMouseLeave={(e) => e.currentTarget.style.color = 'var(--ink-3)'}
+                            >
+                                <Trash2 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                            </button>
                         </div>
                     </div>
                 )}
@@ -865,72 +955,56 @@ export default function ChatSidebar({
                 </button>
             </div>
 
-            {/* New folder (subtle) */}
-            <div style={newFolderRow}>
-                {creatingFolder ? (
-                    <div
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: 4,
-                            padding: '4px 4px',
-                        }}
-                    >
-                        <FolderPlus style={{ width: 13, height: 13, color: 'var(--ink-3)' }} strokeWidth={1.75} />
-                        <input
-                            type="text"
-                            value={newFolderName}
-                            onChange={(e) => setNewFolderName(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleCreateFolder();
-                                if (e.key === 'Escape') handleCancelCreateFolder();
-                            }}
-                            placeholder="Folder name…"
-                            style={{
-                                flex: 1, padding: '4px 6px',
-                                fontSize: 12, color: 'var(--ink)',
-                                background: 'var(--surface)',
-                                border: '1px solid var(--accent)',
-                                borderRadius: 4,
-                                outline: 0,
-                            }}
-                            autoFocus
-                        />
-                        <button
-                            onClick={handleCreateFolder}
-                            style={{ ...iconBtn, width: 20, height: 20, color: 'var(--ok)' }}
-                            title="Create folder"
-                        >
-                            <Check style={{ width: 12, height: 12 }} strokeWidth={2} />
-                        </button>
-                        <button
-                            onClick={handleCancelCreateFolder}
-                            style={{ ...iconBtn, width: 20, height: 20 }}
-                            title="Cancel"
-                        >
-                            <X style={{ width: 12, height: 12 }} strokeWidth={2} />
-                        </button>
-                    </div>
-                ) : (
+            {/* New folder — one-click: creates + opens rename inline.
+                "Clear unnamed" only appears when auto-named "New folder" rows
+                have accumulated, so users can purge them without trashing
+                each one individually. */}
+            <div style={{ ...newFolderRow, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <button
+                    onClick={handleCreateFolder}
+                    style={{ ...newFolderBtn, flex: 1 }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'var(--bg-3, var(--bg))';
+                        e.currentTarget.style.color = 'var(--ink-2)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.color = 'var(--ink-3)';
+                    }}
+                >
+                    <FolderPlus style={{ width: 12, height: 12 }} strokeWidth={1.75} />
+                    <span>New folder</span>
+                </button>
+                {orphanCount > 1 && (
                     <button
-                        onClick={() => setCreatingFolder(true)}
-                        style={newFolderBtn}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.background = 'var(--bg-3, var(--bg))';
-                            e.currentTarget.style.color = 'var(--ink-2)';
+                        onClick={handleClearOrphanFolders}
+                        style={{
+                            ...newFolderBtn,
+                            width: 'auto',
+                            padding: '5px 8px',
+                            color: 'var(--danger)',
+                            fontSize: 10.5,
+                            flex: 'initial',
                         }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.background = 'transparent';
-                            e.currentTarget.style.color = 'var(--ink-3)';
-                        }}
+                        title={`Delete ${orphanCount} unnamed folders`}
                     >
-                        <FolderPlus style={{ width: 12, height: 12 }} strokeWidth={1.75} />
-                        <span>New folder</span>
+                        <Trash2 style={{ width: 11, height: 11 }} strokeWidth={1.75} />
+                        <span>Clear {orphanCount}</span>
                     </button>
                 )}
             </div>
 
-            {/* Conversation list */}
+            {/* Conversation list. Folders always render (even with zero chats)
+                so the user can organize before they start chatting. */}
             <div style={scroll} className="sidebar-scroll">
-                {(!conversations || conversations.length === 0) ? (
+                {/* Favorites — top */}
+                {renderSimpleGroup('Favorites', 'Favorites', favorites, { icon: Star, accent: true })}
+
+                {/* User folders */}
+                {sortedFolders.map(renderUserFolder)}
+
+                {/* Empty-state hint: only when nothing exists at all */}
+                {(!conversations || conversations.length === 0) && sortedFolders.length === 0 && (
                     <div style={{
                         padding: '40px 16px', textAlign: 'center',
                         color: 'var(--ink-3)',
@@ -942,90 +1016,49 @@ export default function ChatSidebar({
                         <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>No conversations</div>
                         <div style={{ fontSize: 11, marginTop: 2 }}>Start a new chat</div>
                     </div>
-                ) : (
-                    <>
-                        {/* Favorites — top */}
-                        {renderSimpleGroup('Favorites', 'Favorites', favorites, { icon: Star, accent: true })}
+                )}
 
-                        {/* User folders */}
-                        {sortedFolders.map(renderUserFolder)}
-
-                        {/* Unassigned — bottom, with date sub-groups.
-                            Placed at the bottom because user folders are the user's
-                            intentional organization; Unassigned is the "inbox" catch-all. */}
-                        {unassignedTotal > 0 && (
-                            (() => {
-                                const key = 'Unassigned';
-                                const open = !collapsedGroups[key];
-                                return (
-                                    <div key={key} style={{ marginBottom: 4 }}>
-                                        <button
-                                            onClick={() => toggleGroup(key)}
-                                            style={folderHeader}
-                                            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-3, var(--bg))'}
-                                            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                                        >
-                                            <span style={{
-                                                display: 'inline-flex',
-                                                transform: open ? 'rotate(0)' : 'rotate(-90deg)',
-                                                transition: 'transform .15s',
-                                                color: 'var(--ink-4)',
-                                            }}>
-                                                <ChevronDown style={{ width: 11, height: 11 }} strokeWidth={2} />
-                                            </span>
-                                            {open
-                                                ? <FolderOpen style={{ width: 13, height: 13, color: 'var(--ink-3)' }} strokeWidth={1.75} />
-                                                : <Folder style={{ width: 13, height: 13, color: 'var(--ink-3)' }} strokeWidth={1.75} />
-                                            }
-                                            <span style={{ fontWeight: 500 }}>Unassigned</span>
-                                            <span style={count}>{unassignedTotal}</span>
-                                        </button>
-                                        {open && (
-                                            <div style={{ paddingLeft: 4 }}>
-                                                {dateGroupOrder.map(name => {
-                                                    const items = unassignedDateGroups[name] || [];
-                                                    if (!items.length) return null;
-                                                    const subKey = `unassigned:${name}`;
-                                                    const subOpen = !collapsedGroups[subKey];
-                                                    return (
-                                                        <div key={subKey}>
-                                                            <button
-                                                                onClick={() => toggleGroup(subKey)}
-                                                                style={{
-                                                                    ...folderHeader,
-                                                                    padding: '4px 8px 4px 14px',
-                                                                    fontSize: 11,
-                                                                    color: 'var(--ink-3)',
-                                                                }}
-                                                                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-3, var(--bg))'}
-                                                                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                                                            >
-                                                                <span style={{
-                                                                    display: 'inline-flex',
-                                                                    transform: subOpen ? 'rotate(0)' : 'rotate(-90deg)',
-                                                                    transition: 'transform .15s',
-                                                                    color: 'var(--ink-4)',
-                                                                }}>
-                                                                    <ChevronDown style={{ width: 10, height: 10 }} strokeWidth={2} />
-                                                                </span>
-                                                                <span>{name}</span>
-                                                                <span style={count}>{items.length}</span>
-                                                            </button>
-                                                            {subOpen && (
-                                                                <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: 6 }}>
-                                                                    {items.map(renderChatRow)}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
+                {/* Unassigned chats — flat list with plain date labels. Drop
+                    target for "unassign from folder". */}
+                {unassignedTotal > 0 && (
+                    <div
+                        key="unassigned"
+                        style={{
+                            marginTop: 4,
+                            borderRadius: 6,
+                            outline: dragOverTarget === 'unassigned'
+                                ? '1.5px dashed var(--accent)'
+                                : '1.5px dashed transparent',
+                            outlineOffset: -1,
+                            background: dragOverTarget === 'unassigned'
+                                ? 'var(--accent-soft)'
+                                : 'transparent',
+                            transition: 'background .1s, outline-color .1s',
+                        }}
+                        {...dropTargetProps('unassigned')}
+                    >
+                        {dateGroupOrder.map(name => {
+                            const items = unassignedDateGroups[name] || [];
+                            if (!items.length) return null;
+                            return (
+                                <div key={`unassigned:${name}`} style={{ marginBottom: 2 }}>
+                                    <div style={{
+                                        padding: '8px 10px 3px',
+                                        fontSize: 10,
+                                        fontWeight: 600,
+                                        letterSpacing: 0.5,
+                                        textTransform: 'uppercase',
+                                        color: 'var(--ink-4)',
+                                    }}>
+                                        {name}
                                     </div>
-                                );
-                            })()
-                        )}
-                    </>
+                                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                        {items.map(renderChatRow)}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 )}
             </div>
 
@@ -1047,7 +1080,6 @@ export default function ChatSidebar({
 
             <style>{`
                 .sidebar-chat-row:hover .chat-row-actions { opacity: 1 !important; }
-                .sidebar-folder-row:hover .folder-menu-trigger { opacity: 1 !important; }
                 .sidebar-scroll::-webkit-scrollbar { width: 6px; }
                 .sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
                 .sidebar-scroll::-webkit-scrollbar-thumb {
@@ -1072,9 +1104,21 @@ export default function ChatSidebar({
                 />
             )}
 
-            {/* Desktop sidebar */}
-            <aside className="hidden md:flex" style={aside}>
-                {sidebarContent}
+            {/* Desktop sidebar — width animates for smooth collapse */}
+            <aside
+                className="hidden md:flex"
+                style={{
+                    ...aside,
+                    width: collapsedDesktop ? 0 : 268,
+                    borderRight: collapsedDesktop
+                        ? '1px solid transparent'
+                        : '1px solid var(--rule)',
+                }}
+                aria-hidden={collapsedDesktop}
+            >
+                <div style={asideInner}>
+                    {sidebarContent}
+                </div>
             </aside>
 
             {/* Mobile drawer */}
@@ -1082,13 +1126,17 @@ export default function ChatSidebar({
                 className="md:hidden"
                 style={{
                     ...aside,
+                    width: 268,
                     position: 'fixed', inset: '0 auto 0 0',
                     zIndex: 50,
+                    borderRight: '1px solid var(--rule)',
                     transform: isMobileOpen ? 'translateX(0)' : 'translateX(-100%)',
                     transition: 'transform 0.3s ease-out',
                 }}
             >
-                {sidebarContent}
+                <div style={asideInner}>
+                    {sidebarContent}
+                </div>
             </aside>
         </>
     );

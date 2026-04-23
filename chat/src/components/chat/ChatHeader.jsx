@@ -5,6 +5,7 @@ import {
     LogOut,
     PanelLeft,
     Eye,
+    User,
 } from 'lucide-react';
 
 export default function ChatHeader({
@@ -31,7 +32,6 @@ export default function ChatHeader({
     }, []);
 
     const displayName = user?.username || user?.name || 'User';
-    const userInitial = displayName.charAt(0).toUpperCase();
 
     // Shared styles using the design palette bridge
     const topBtn = {
@@ -158,13 +158,14 @@ export default function ChatHeader({
                     >
                         <div
                             style={{
-                                width: 24, height: 24, borderRadius: 6,
-                                background: 'var(--accent)', color: 'var(--accent-ink)',
+                                width: 24, height: 24, borderRadius: '50%',
+                                background: 'transparent',
+                                color: 'var(--ink-2)',
+                                border: '1px solid var(--rule)',
                                 display: 'grid', placeItems: 'center',
-                                fontSize: 11, fontWeight: 600,
                             }}
                         >
-                            {userInitial}
+                            <User style={{ width: 13, height: 13 }} strokeWidth={1.75} />
                         </div>
                         <ChevronDown
                             style={{

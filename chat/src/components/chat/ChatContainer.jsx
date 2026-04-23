@@ -676,7 +676,19 @@ export default function ChatContainer({
         }
     };
 
+    const creatingConversationRef = useRef(false);
     const handleNewConversation = async () => {
+        // Guard: ignore rapid repeat clicks while a create is still in flight.
+        if (creatingConversationRef.current) return;
+
+        // If the current conversation is already empty (no user/assistant
+        // messages yet), don't spawn a duplicate blank chat — just stay on it.
+        const activeConv = conversations.find(c => c.id === activeConversationId);
+        const activeIsEmpty = activeConv
+            && (!activeConv.messages || activeConv.messages.length === 0)
+            && (!messages || messages.length === 0);
+        if (activeIsEmpty) return;
+
         // Abort any active stream to prevent responses leaking into new conversation
         // The server continues processing in background and saves the result
         if (abortControllerRef.current) {
@@ -691,6 +703,7 @@ export default function ChatContainer({
         setMessages([]);
         setActiveConversation(null);
 
+        creatingConversationRef.current = true;
         try {
             const response = await fetch('/api/conversations', {
                 method: 'POST',
@@ -710,6 +723,8 @@ export default function ChatContainer({
         } catch (error) {
             console.error('Failed to create conversation:', error);
             showSnackbar(error.message || 'Failed to create conversation', 'error');
+        } finally {
+            creatingConversationRef.current = false;
         }
     };
 
