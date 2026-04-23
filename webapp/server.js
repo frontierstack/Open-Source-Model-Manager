@@ -4347,14 +4347,56 @@ app.post('/api/sandbox/run-code', requireAuth, async (req, res) => {
         // can be top-level code (no execute() required). stdout is
         // captured as-is; the harness prints a final JSON envelope with
         // stdout/stderr collected from within the user code.
+        //
+        // We also monkey-patch a couple of common infinite-loop sources
+        // so chat-generated snippets don't hit the timeout silently:
+        //   - pygame.display.flip() / update() — saves the current surface
+        //     to /artifacts/frame.png on the first call, then raises
+        //     SystemExit to escape any while-running loop. The user sees
+        //     the rendered frame as an inline image.
+        //   - input() — raises a fast error rather than waiting forever
+        //     on a stdin that doesn't exist.
         const harness = `
 def execute(params):
-    import sys, io, traceback
+    import sys, io, traceback, builtins
     _stdout = io.StringIO(); _stderr = io.StringIO()
     _orig_out, _orig_err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = _stdout, _stderr
+
+    # Fast-fail on input() instead of blocking on absent stdin.
+    def _no_stdin(prompt=""):
+        raise EOFError("input() not available in sandbox — no stdin attached")
+    builtins.input = _no_stdin
+
+    # pygame auto-capture: on first flip/update, save the frame and exit
+    # the snippet cleanly so typical "while running: ..." loops terminate
+    # after one render. Snippets that call pygame.quit() themselves are
+    # unaffected; SystemExit is caught below.
+    try:
+        import pygame as _pg
+        _pg_frame_saved = [False]
+        def _flip_save(*a, **kw):
+            if not _pg_frame_saved[0]:
+                try:
+                    _surf = _pg.display.get_surface()
+                    if _surf is not None:
+                        _pg.image.save(_surf, "/artifacts/frame.png")
+                        _stdout.write("[sandbox] pygame frame saved to /artifacts/frame.png; exiting game loop\\n")
+                except Exception:
+                    pass
+                _pg_frame_saved[0] = True
+            raise SystemExit(0)
+        _pg.display.flip = _flip_save
+        _pg.display.update = _flip_save
+    except Exception:
+        pass
+
     try:
 ${code.split('\n').map(l => '        ' + l).join('\n')}
+    except SystemExit:
+        # Clean exit — either user called sys.exit or our pygame helper
+        # bailed out of a game loop. Not an error.
+        pass
     except Exception as _e:
         _stderr.write(traceback.format_exc(limit=10))
     finally:

@@ -298,6 +298,25 @@ pg=$(curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
 echo "$pg" | grep -q '"name":"sprite.png"'
 assert "pygame renders offscreen to /artifacts (SDL_VIDEODRIVER=dummy)" $? "$pg"
 
+# pygame "while running:" game loop — harness auto-captures first frame
+# and raises SystemExit so chat-generated snippets don't hit the timeout.
+pg_loop=$(timeout 15 curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"language":"python","code":"import pygame\npygame.init()\nscreen = pygame.display.set_mode((100, 50))\nclock = pygame.time.Clock()\nrunning = True\nwhile running:\n    for e in pygame.event.get():\n        if e.type == pygame.QUIT: running = False\n    screen.fill((20, 60, 120))\n    pygame.display.flip()\n    clock.tick(60)\npygame.quit()"}')
+echo "$pg_loop" | grep -q '"success":true'
+assert "pygame game loop auto-exits instead of timing out" $? "$pg_loop"
+echo "$pg_loop" | grep -q '"name":"frame.png"'
+assert "pygame game loop saves first frame as artifact" $?
+
+# input() — fast-fail, not a timeout
+stdin=$(timeout 10 curl -sk -X POST "${BASE}/api/sandbox/run-code" "${AUTH[@]}" \
+    -H "Content-Type: application/json" \
+    -d '{"language":"python","code":"x = input(\"> \")\nprint(x)"}')
+echo "$stdin" | grep -q '"success":true'
+assert "input() fast-fails rather than blocking on stdin" $?
+echo "$stdin" | grep -q "not available in sandbox"
+assert "input() error message is clear about why" $?
+
 # -----------------------------------------------------------------------
 hr "Egress proxy — rejection counters increment on bad request"
 before=$(curl -sk "${BASE}/api/system/egress-proxy" "${AUTH[@]}" \

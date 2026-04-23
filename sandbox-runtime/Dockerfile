@@ -70,6 +70,11 @@ ENV MPLCONFIGDIR=/tmp/.matplotlib
 # offscreen surface the user can save to /artifacts via pygame.image.save).
 ENV SDL_VIDEODRIVER=dummy
 ENV SDL_AUDIODRIVER=dummy
+# pygame prints a 2-line "Hello from the pygame community" banner on
+# import. The run-code harness imports pygame preemptively to install
+# its auto-exit hook, so without this every snippet output would start
+# with that banner. Official env var for silent import.
+ENV PYGAME_HIDE_SUPPORT_PROMPT=hide
 ENV XDG_CACHE_HOME=/tmp/.cache
 ENV XDG_CONFIG_HOME=/tmp/.config
 
