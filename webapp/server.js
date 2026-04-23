@@ -4323,9 +4323,20 @@ app.delete('/api/system-prompts/:modelName', requireAuth, async (req, res) => {
             // 200 "deleted" even when nothing was removed, which made
             // the Settings UI look like it had deleted a prompt that
             // was still there on refresh.
+            console.warn('[DELETE system-prompts] name not found', {
+                requested: modelName,
+                requestedLen: modelName?.length,
+                requestedCodes: [...(modelName || '')].slice(0, 40).map(c => c.charCodeAt(0)),
+                userId: req.userId,
+                bucketExists: !!prompts[req.userId],
+                bucketKeys: Object.keys(prompts[req.userId] || {}),
+            });
             return res.status(404).json({
                 error: 'System prompt not found',
                 modelName,
+                // Tiny debugging hint for the client — ensures we
+                // surface the mismatch so the user can tell us.
+                availableNames: req.userId ? Object.keys(prompts[req.userId] || {}) : [],
             });
         }
 

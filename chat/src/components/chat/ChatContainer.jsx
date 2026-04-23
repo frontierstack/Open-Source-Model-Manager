@@ -685,7 +685,14 @@ export default function ChatContainer({
         }
     };
 
-    // Delete system prompt via API
+    // Delete system prompt via API.
+    //
+    // On success, refreshes the prompt list from the server. On 404
+    // ("not found"), the entry the user clicked doesn't exist on the
+    // server — usually because the list the UI was showing had grown
+    // stale since the last fetch. Refresh too in that case so the
+    // ghost entry disappears instead of hanging around with a
+    // misleading error.
     const handleDeleteSystemPrompt = async (promptId) => {
         try {
             const response = await fetch(`/api/system-prompts/${encodeURIComponent(promptId)}`, {
@@ -696,10 +703,21 @@ export default function ChatContainer({
             if (response.ok) {
                 await refreshSystemPrompts();
                 showSnackbar('System prompt deleted', 'success');
-            } else {
-                const error = await response.json().catch(() => ({}));
-                throw new Error(error.error || 'Failed to delete system prompt');
+                return;
             }
+
+            const error = await response.json().catch(() => ({}));
+            if (response.status === 404) {
+                // Stale UI. Pull fresh list and tell the user what
+                // happened in plain terms.
+                await refreshSystemPrompts();
+                showSnackbar(
+                    'Prompt was already gone on the server — list refreshed.',
+                    'warning',
+                );
+                return;
+            }
+            throw new Error(error.error || 'Failed to delete system prompt');
         } catch (error) {
             console.error('Failed to delete system prompt:', error);
             showSnackbar(error.message || 'Failed to delete system prompt', 'error');
