@@ -612,6 +612,50 @@ function scrubHarmonyTokens(s) {
     return s.replace(HARMONY_TOKEN_REGEX, '');
 }
 
+// Reasoning-loop detector. Some models (observed on gemma-4 Harmony
+// templates) get stuck in a "Wait, I will read X.**" style enumeration
+// in their reasoning stream — 50+ numbered steps, no tool call, no
+// content, just endless to-do restating. The tool-call loop detector
+// can't catch this because there are no tool calls. This watches the
+// reasoning accumulated during a single round and returns a reason
+// string when it looks pathological; caller aborts the stream.
+//
+// Two signals:
+//   - Hard cap: > REASONING_HARD_CAP chars of reasoning this round with
+//     zero content and zero tool calls → abort. Safety net for cases
+//     where the repeating phrase isn't one we recognize.
+//   - Phrase repetition: recognizable loop phrases appearing 8+ times
+//     in the last 4000 chars of the round's reasoning → abort. Catches
+//     it earlier than the hard cap.
+const REASONING_HARD_CAP = 15000;
+const REASONING_CHECK_GRANULARITY = 1500;
+const REASONING_LOOP_PHRASES = [
+    { pattern: /\bWait,\s*I\s+will\b/gi, name: 'Wait, I will' },
+    { pattern: /\bLet'?s\s+(go|start)\b/gi, name: "Let's go/start" },
+    { pattern: /\bOkay,?\s+let'?s\b/gi, name: "Okay, let's" },
+];
+function makeReasoningLoopDetector() {
+    // State per request. Tracks when we last ran the repetition check
+    // so we don't scan the buffer on every 20-char SSE delta.
+    let lastCheckAt = 0;
+    return function detect(reasoningThisRound) {
+        const len = reasoningThisRound.length;
+        if (len - lastCheckAt < REASONING_CHECK_GRANULARITY) return null;
+        lastCheckAt = len;
+        if (len > REASONING_HARD_CAP) {
+            return `hard cap (${REASONING_HARD_CAP} chars of reasoning with no content or tool call)`;
+        }
+        const tail = reasoningThisRound.slice(-4000);
+        for (const { pattern, name } of REASONING_LOOP_PHRASES) {
+            const matches = tail.match(pattern);
+            if (matches && matches.length >= 8) {
+                return `"${name}" appeared ${matches.length} times in the last ~4000 chars of reasoning`;
+            }
+        }
+        return null;
+    };
+}
+
 // Builds a short system-prompt prelude the chat stream prepends on every
 // turn. Two jobs: (1) tell the model what today's actual date is — local
 // models with training cutoffs earlier than "now" otherwise refuse queries
@@ -11889,8 +11933,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             kind: 'waiting',
         });
 
-        // Helper: stream one request to the model and return the finish_reason
-        const streamOneRequest = (requestMessages, maxTokens) => {
+        // Reasoning-loop guard — per-request state. Once a loop is detected
+        // and aborted, we stay in the aborted state for the rest of the turn.
+        let reasoningLoopAborted = false;
+        const reasoningLoopDetector = makeReasoningLoopDetector();
+
+        // Helper: stream one request to the model and return the finish_reason.
+        // roundContentStart / roundReasoningStart let the loop detector measure
+        // "progress within this round" instead of cumulative fullResponse
+        // growth (which would read as "progress" on round 2 of a tool-using
+        // turn even if round 2 itself is the one stuck looping).
+        const streamOneRequest = (requestMessages, maxTokens, options = {}) => {
+            const roundContentStart = options.roundContentStart ?? fullResponse.length;
+            const roundReasoningStart = options.roundReasoningStart ?? fullReasoning.length;
             return new Promise(async (resolve, reject) => {
                 let lastFinishReason = 'stop';
 
@@ -11999,6 +12054,36 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                                         res.write(`data: ${JSON.stringify(event)}\n\n`);
                                                     } catch (writeErr) {
                                                         clientConnected = false;
+                                                    }
+                                                }
+
+                                                // Reasoning-loop guard. Only triggers when this round
+                                                // has produced NO content and NO tool calls — a valid
+                                                // turn that happens to have long reasoning sprinkled
+                                                // with actual output won't be killed.
+                                                if (!reasoningLoopAborted) {
+                                                    const roundContentLen = fullResponse.length - roundContentStart;
+                                                    const noProgress = roundContentLen === 0 && accumulatedToolCalls.length === 0;
+                                                    if (noProgress) {
+                                                        const reason = reasoningLoopDetector(fullReasoning.slice(roundReasoningStart));
+                                                        if (reason) {
+                                                            reasoningLoopAborted = true;
+                                                            const note = `\n\n_[The model got stuck in a reasoning loop — ${reason}. Stream was stopped before burning the completion budget. Try rephrasing the request, breaking it into smaller steps, or using a different model.]_`;
+                                                            fullResponse += note;
+                                                            console.warn(`[Chat Stream] Reasoning loop detected — ${reason}; aborting stream`);
+                                                            if (clientConnected) {
+                                                                try {
+                                                                    res.write(`data: ${JSON.stringify({
+                                                                        choices: [{ delta: { content: note }, index: 0 }]
+                                                                    })}\n\n`);
+                                                                } catch (_) { clientConnected = false; }
+                                                            }
+                                                            if (streamingConversationId) {
+                                                                const job = activeStreamingJobs.get(streamingConversationId);
+                                                                if (job) job.content = fullResponse;
+                                                            }
+                                                            streamAbortController.abort();
+                                                        }
                                                     }
                                                 }
                                             }
@@ -12475,7 +12560,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Aborted streams still skip; the DELETE /streaming cancel
         // endpoint handles partial-response persistence for those.
         const wasAborted = streamAbortController.signal.aborted;
-        if (!wasAborted && streamingConversationId && fullResponse) {
+        // User-cancelled aborts skip this save — DELETE /streaming handles
+        // persistence for those. Reasoning-loop aborts DO save, because
+        // fullResponse already contains the "loop detected" note that the
+        // user needs to see persisted (otherwise the chat reloads as an
+        // empty assistant bubble with no explanation).
+        if ((!wasAborted || reasoningLoopAborted) && streamingConversationId && fullResponse) {
             try {
                 const conversationMsgs = await loadConversationMessages(userId, streamingConversationId);
                 // Only append if the last message isn't already this
