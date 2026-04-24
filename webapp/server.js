@@ -6729,6 +6729,26 @@ async function executeLegacySkill(skillName, params) {
                 }
                 break;
 
+            case 'extract_archive': {
+                const archiveExtractor = require('./services/archiveExtractor');
+                const fname = params.filename || params.archiveName;
+                const b64 = params.base64Data || params.archiveData;
+                if (!b64) throw new Error('base64Data required');
+                if (!fname) throw new Error('filename required (extension picks the extractor)');
+                let buf;
+                try {
+                    buf = Buffer.from(String(b64).replace(/^data:[^;]+;base64,/, ''), 'base64');
+                } catch (e) {
+                    throw new Error('Invalid base64Data: ' + e.message);
+                }
+                if (!buf.length) throw new Error('Decoded buffer is empty');
+                if (buf.length > 50 * 1024 * 1024) {
+                    throw new Error(`Archive is ${buf.length} bytes; 50MB max.`);
+                }
+                result = await archiveExtractor.extractArchive(buf, fname);
+                break;
+            }
+
             // Web & Network
             case 'fetch_url':
                 if (!params.url) {
@@ -10481,6 +10501,59 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             }
 
             return res.json(result);
+        }
+
+        // Archive uploads: persist to disk and return a short id the
+        // model passes to extract_archive. Bytes never transit through
+        // tool-call arguments (where base64 routinely gets truncated or
+        // mangled by the tokenizer — observed with 15MB 7z files that
+        // arrived as 30 bytes of random-looking data on the tool side).
+        const ARCHIVE_EXTS = /\.(zip|7z|rar|tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|gz|bz2|xz)$/i;
+        if (filename && ARCHIVE_EXTS.test(filename)) {
+            try {
+                const archiveRootDir = '/tmp/modelserver-archives';
+                const userDir = String(req.apiKeyData?.userId || req.user?.id || 'anon').replace(/[^a-zA-Z0-9_-]/g, '_');
+                const userArchiveDir = `${archiveRootDir}/${userDir}`;
+                await require('fs').promises.mkdir(userArchiveDir, { recursive: true, mode: 0o700 });
+
+                // TTL sweep: delete archive dirs older than 1 hour. Cheap,
+                // keeps /tmp from growing without bound.
+                try {
+                    const entries = await require('fs').promises.readdir(userArchiveDir);
+                    const now = Date.now();
+                    for (const e of entries) {
+                        const p = `${userArchiveDir}/${e}`;
+                        const st = await require('fs').promises.stat(p).catch(() => null);
+                        if (st && (now - st.mtimeMs) > 60 * 60 * 1000) {
+                            await require('fs').promises.rm(p, { recursive: true, force: true }).catch(() => {});
+                        }
+                    }
+                } catch (_) { /* sweep is best-effort */ }
+
+                const archiveId = crypto.randomBytes(16).toString('hex');
+                const dir = `${userArchiveDir}/${archiveId}`;
+                await require('fs').promises.mkdir(dir, { mode: 0o700 });
+                // Strip any directory component from the filename defensively;
+                // the extension is the only thing archiveExtractor cares about.
+                const safeName = require('path').basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+                const diskPath = `${dir}/${safeName}`;
+                const buf = Buffer.from(content, 'base64');
+                await require('fs').promises.writeFile(diskPath, buf);
+
+                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents.]`;
+                return res.json({
+                    type: 'archive',
+                    filename: safeName,
+                    archiveId,
+                    archiveSize: buf.length,
+                    content: marker,
+                    charCount: marker.length,
+                    estimatedTokens: Math.ceil(marker.length / 4),
+                });
+            } catch (archiveErr) {
+                console.error('[Chat Upload] archive persist failed:', archiveErr);
+                // Fall through to catch-all so the user still gets *something*.
+            }
         }
 
         // Catch-all: Try to decode as text first, fallback to binary
@@ -14641,6 +14714,21 @@ async function initializeDefaultSkillsOld() {
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             },
+            {
+                id: crypto.randomBytes(16).toString('hex'),
+                name: 'extract_archive',
+                description: 'Extract an archive (.zip, .7z, .rar, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz) from base64 bytes; returns entry list and inline text for small UTF-8 files.',
+                type: 'function',
+                parameters: { base64Data: 'string', filename: 'string' },
+                // "Runs " prefix routes this skill to executeLegacySkill
+                // instead of executePythonSkill (see the dispatcher at
+                // ~line 6386). Actual work lives in the 'extract_archive'
+                // switch case there, backed by services/archiveExtractor.js.
+                code: 'Runs natively via executeLegacySkill — see archiveExtractor.js',
+                enabled: true,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            },
 
             // CODE ANALYSIS (Tools)
             {
@@ -15723,6 +15811,115 @@ app.use((req, res) => {
                 };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e) };
+            }
+        },
+    });
+
+    // ----- extract_archive ------------------------------------------------
+    // Unpack an archive (zip, 7z, rar, tar, tar.gz/bz2/xz, gz, bz2, xz).
+    // Two input modes:
+    //   1. archiveId — refers to a file persisted by /api/chat/upload
+    //      (the normal chat-UI path). The upload endpoint writes the
+    //      bytes to disk and puts a [Archive uploaded: ...archiveId=X...]
+    //      marker in the user's message. This is the ONLY reliable path
+    //      for archives >~100KB — passing raw base64 through tool-call
+    //      arguments truncates silently.
+    //   2. base64Data + filename — direct bytes. Fine for tiny archives,
+    //      fails in practice for anything bigger due to tokenizer limits.
+    //
+    // Returns entry listing + inline text for small UTF-8 entries so the
+    // model can read them without a follow-up tool call. Cleans up its
+    // temp extraction directory on return.
+    const archiveExtractor = require('./services/archiveExtractor');
+    const ARCHIVE_STORE_ROOT = '/tmp/modelserver-archives';
+
+    async function resolveArchiveById(archiveId, userId) {
+        if (!/^[a-f0-9]{32}$/.test(String(archiveId || ''))) {
+            throw new Error('archiveId must be a 32-char hex string.');
+        }
+        const safeUser = String(userId || 'anon').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const dir = `${ARCHIVE_STORE_ROOT}/${safeUser}/${archiveId}`;
+        const fsp = require('fs').promises;
+        const pathMod = require('path');
+        const resolved = pathMod.resolve(dir);
+        if (!resolved.startsWith(pathMod.resolve(`${ARCHIVE_STORE_ROOT}/${safeUser}`) + pathMod.sep)) {
+            throw new Error('Resolved archive path escapes the store.');
+        }
+        const entries = await fsp.readdir(dir).catch(() => null);
+        if (!entries || !entries.length) {
+            throw new Error(`No archive found for id ${archiveId}. It may have expired (1-hour TTL) or the id is wrong.`);
+        }
+        const filename = entries[0];
+        const diskPath = `${dir}/${filename}`;
+        const buf = await fsp.readFile(diskPath);
+        return { buffer: buf, filename };
+    }
+
+    tools.registerTool({
+        name: 'extract_archive',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'extract_archive',
+                    description:
+                        'Extract an archive and list its contents. Supports .zip, .7z, .rar, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz. ' +
+                        'PREFERRED INPUT: when the user uploads an archive, the chat system persists it server-side and puts a marker in the user message like ' +
+                        '`[Archive uploaded: name.7z (archiveId=abc123..., size=N bytes). Call the extract_archive tool with ...]`. ' +
+                        'Pass that archiveId — do NOT try to paste the archive bytes yourself; base64 payloads get truncated through tool arguments and the extraction will fail. ' +
+                        'Fallback: for tiny archives given to you inline, you may pass `base64Data` + `filename` directly. ' +
+                        'Returns a list of entries with size plus inline UTF-8 text for files under ~200KB (total text capped at ~2MB).',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            archiveId: {
+                                type: 'string',
+                                description: '32-char hex id from the [Archive uploaded: ...] marker in the user message. Preferred input.',
+                            },
+                            base64Data: {
+                                type: 'string',
+                                description: 'Fallback for small inline archives only. Raw archive bytes encoded as standard base64 (no data: URL prefix).',
+                            },
+                            filename: {
+                                type: 'string',
+                                description: 'Required when using base64Data. The extension picks the extractor (e.g. "report.tar.gz").',
+                            },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            let buffer, filename;
+            const archiveId = String(args?.archiveId || '').trim();
+            if (archiveId) {
+                try {
+                    const resolved = await resolveArchiveById(archiveId, ctx?.userId);
+                    buffer = resolved.buffer;
+                    filename = resolved.filename;
+                } catch (e) {
+                    return { error: e.message };
+                }
+            } else {
+                const b64 = String(args?.base64Data || '').trim();
+                filename = String(args?.filename || '').trim();
+                if (!b64) return { error: 'Provide archiveId (preferred) or base64Data + filename.' };
+                if (!filename) return { error: 'filename is required when using base64Data.' };
+                try {
+                    buffer = Buffer.from(b64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+                } catch (e) {
+                    return { error: `Invalid base64Data: ${e.message}` };
+                }
+            }
+            if (!buffer?.length) return { error: 'Decoded buffer is empty' };
+            if (buffer.length > 50 * 1024 * 1024) {
+                return { error: `Archive is ${buffer.length} bytes; 50MB max.` };
+            }
+            try {
+                return await archiveExtractor.extractArchive(buffer, filename);
+            } catch (e) {
+                return { error: e.message || String(e) };
             }
         },
     });

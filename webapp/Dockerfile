@@ -67,6 +67,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sqlite3 \
     # Video analysis tools (analyze_video skill)
     ffmpeg \
+    # Archive extraction tools (extract_archive skill) — unzip/tar/gzip/bzip2/xz
+    # are already pulled above; add 7z and unrar for .7z / .rar support.
+    p7zip-full \
+    unrar-free \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python libraries for skills (pinned to major versions to prevent breaking changes)
