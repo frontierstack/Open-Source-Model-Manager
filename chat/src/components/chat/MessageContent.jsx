@@ -157,7 +157,16 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
 
     // Finalised message: full markdown with syntax-highlighted code blocks
     // and all the trimmings. Only runs once per completed response.
-    const processed = content.replace(/<br\s*\/?>/gi, '  \n');
+    // Repair GFM tables emitted on a single line (models sometimes skip
+    // the newlines between rows, leaving remark-gfm to render raw pipes).
+    const repairedTables = content.includes('|')
+        ? content.split('\n').map((line) => (
+            /\|\s*:?-{3,}:?\s*\|/.test(line)
+                ? line.replace(/\s*\|\s*\|\s*/g, ' |\n| ')
+                : line
+        )).join('\n')
+        : content;
+    const processed = repairedTables.replace(/<br\s*\/?>/gi, '  \n');
     return (
         <div className="markdown-content">
             <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>

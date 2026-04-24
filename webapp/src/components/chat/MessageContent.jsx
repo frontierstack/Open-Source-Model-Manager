@@ -6,11 +6,26 @@ import Typography from '@mui/material/Typography';
 import Link from '@mui/material/Link';
 import CodeBlock from './CodeBlock';
 
+// Repair GFM tables emitted on a single line. Models occasionally produce
+// `| H1 | H2 | | :--- | :--- | | a | b |` with no row breaks, which
+// remark-gfm then renders as literal text. If a line contains the GFM
+// separator pattern (`| :--- |` / `| --- |`), split on row boundaries
+// (`| |` with optional whitespace) to restore a parseable table.
+function repairInlineTables(md) {
+    if (!md || !md.includes('|')) return md;
+    return md.split('\n').map((line) => {
+        if (!/\|\s*:?-{3,}:?\s*\|/.test(line)) return line;
+        return line.replace(/\s*\|\s*\|\s*/g, ' |\n| ');
+    }).join('\n');
+}
+
 /**
  * MessageContent - Renders markdown content with proper styling
  */
 export default React.memo(function MessageContent({ content }) {
     if (!content) return null;
+
+    const processed = repairInlineTables(content);
 
     return (
         <ReactMarkdown
@@ -228,7 +243,7 @@ export default React.memo(function MessageContent({ content }) {
                 },
             }}
         >
-            {content}
+            {processed}
         </ReactMarkdown>
     );
 });
