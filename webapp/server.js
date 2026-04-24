@@ -590,6 +590,28 @@ function modelSupportsNoThinkPrefix(modelName) {
     return /qwen\s?[23]|qwen-?3|deepseek[-_ ]?r1|deepseek[-_ ]?v?3\.?\d*/i.test(modelName);
 }
 
+// Harmony / gpt-oss-style chat templates use special tokens like
+// <|channel|>, <|message|>, <|tool_call|>, <|end|>. gemma-4 and some
+// other GGUF fine-tunes run on a similar template and, when they get
+// confused (tool-iteration cap hit, mid-turn de-rail), emit these
+// tokens as literal TEXT in the content/reasoning stream instead of
+// treating them as control. Users then see "<|channel><tool_call|>"
+// flash by in the thinking area and the response just stops.
+//
+// Scrub any token-shaped sequence at the stream boundary so they never
+// reach persisted content or the UI:
+//   <|channel|>, <|tool_call|>         — well-formed
+//   <|channel>, <|tool_call>           — missing closing `|`
+//   <tool_call|>, <channel|>           — missing opening `|`
+// Regular tags like <think>, <div>, </think> don't match (no `|`).
+// Split-across-chunk leakage is accepted as a pragmatic tradeoff —
+// token strings usually arrive in a single delta anyway.
+const HARMONY_TOKEN_REGEX = /<\|[^>\n|]{0,60}\|?>|<[a-z_]{1,30}\|>/gi;
+function scrubHarmonyTokens(s) {
+    if (typeof s !== 'string' || !s) return s;
+    return s.replace(HARMONY_TOKEN_REGEX, '');
+}
+
 // Builds a short system-prompt prelude the chat stream prepends on every
 // turn. Two jobs: (1) tell the model what today's actual date is — local
 // models with training cutoffs earlier than "now" otherwise refuse queries
@@ -11929,8 +11951,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                                         if (parsed.choices && parsed.choices[0]?.delta) {
                                             const delta = parsed.choices[0].delta;
-                                            const content = delta.content || '';
-                                            const reasoning = delta.reasoning_content || delta.reasoning || '';
+                                            // Scrub Harmony control tokens that some templates
+                                            // leak as literal text when the model de-rails.
+                                            const content = scrubHarmonyTokens(delta.content || '');
+                                            const reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
 
                                             // Native tool calling — model streams tool_calls as
                                             // delta fragments; accumulate by index across chunks.
@@ -12015,8 +12039,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     }
                                     const delta = parsed.choices?.[0]?.delta;
                                     if (delta) {
-                                        const content = delta.content || '';
-                                        const reasoning = delta.reasoning_content || delta.reasoning || '';
+                                        const content = scrubHarmonyTokens(delta.content || '');
+                                        const reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
                                         if (content) fullResponse += content;
                                         if (reasoning) fullReasoning += reasoning;
                                         if ((content || reasoning) && clientConnected) {
