@@ -37,7 +37,25 @@ function decodeCandidate(s) {
     }
 }
 
-function findBase64InText(text, { minLength = 16 } = {}) {
+// Peel nested base64 layers. If a decoded string is itself base64 that
+// round-trips to mostly-printable UTF-8, keep going — up to maxDepth.
+// Returns the final decoded text plus the intermediate layers so callers
+// can report "3 layers" to the UI.
+function peelLayers(initial, maxDepth = 5) {
+    const layers = [initial];
+    let current = initial;
+    for (let i = 0; i < maxDepth; i++) {
+        const trimmed = current.trim();
+        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) break;
+        const next = decodeCandidate(trimmed);
+        if (next === null || next === current) break;
+        layers.push(next);
+        current = next;
+    }
+    return { decoded: current, layers };
+}
+
+function findBase64InText(text, { minLength = 16, maxDepth = 5 } = {}) {
     if (typeof text !== 'string' || !text) return [];
     const out = [];
     const seen = new Set();
@@ -47,9 +65,10 @@ function findBase64InText(text, { minLength = 16 } = {}) {
         const candidate = m[0];
         if (seen.has(candidate)) continue;
         seen.add(candidate);
-        const decoded = decodeCandidate(candidate);
-        if (decoded !== null) {
-            out.push({ encoded: candidate, decoded });
+        const firstDecoded = decodeCandidate(candidate);
+        if (firstDecoded !== null) {
+            const { decoded, layers } = peelLayers(firstDecoded, maxDepth);
+            out.push({ encoded: candidate, decoded, layers: layers.length });
         }
     }
     return out;
@@ -68,6 +87,7 @@ function extractTextFromContent(content) {
 
 module.exports = {
     decodeCandidate,
+    peelLayers,
     findBase64InText,
     extractTextFromContent,
 };

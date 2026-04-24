@@ -11907,7 +11907,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         const decShort = f.decoded.length > perBullet
                             ? f.decoded.slice(0, perBullet) + '…[truncated]'
                             : f.decoded;
-                        bullets.push(`- "${encShort}" → ${JSON.stringify(decShort)}`);
+                        const layerSuffix = f.layers > 1 ? ` (${f.layers} nested layers)` : '';
+                        bullets.push(`- "${encShort}"${layerSuffix} → ${JSON.stringify(decShort)}`);
                         remaining -= decShort.length;
                         if (remaining <= 0) break;
                     }
@@ -11930,10 +11931,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         }
                     }
                     for (const f of found) b64PreflightEncoded.add(f.encoded);
-                    // Drop base64_decode from the catalog for this turn —
-                    // the work is done, and exposing the tool invites the
-                    // model to "re-call" it and leak template tokens.
-                    toolCatalog = toolCatalog.filter(t => t?.function?.name !== 'base64_decode');
+                    // Keep base64_decode in the catalog — if a blob slipped
+                    // past the detector (split across lines, odd framing)
+                    // or the nested peeler bottomed out before fully
+                    // unwrapping, the model can still invoke the skill.
                     logChatActivity(`Auto-invoked base64_decode on input (${found.length} candidate(s))`);
                 }
             } catch (e) {
