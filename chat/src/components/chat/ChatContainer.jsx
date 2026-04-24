@@ -1304,6 +1304,24 @@ export default function ChatContainer({
                                 // drop these for the chip UI.
                                 continue;
                             }
+                            if (parsed.type === 'reasoning_reclassified') {
+                                // Server detected that this turn's whole
+                                // answer got routed to reasoning_content
+                                // by the model's chat template (Gemma-4
+                                // misroutes when the model emits a
+                                // `[{"thought":""}]` JSON preamble).
+                                // Swap the local buffers so the final
+                                // render puts the text in the main bubble
+                                // instead of keeping it stuck in the
+                                // Thinking dropdown.
+                                assistantContent = parsed.content || '';
+                                assistantReasoning = '';
+                                pendingContentRef.current = assistantContent;
+                                pendingReasoningRef.current = '';
+                                setStreamingContent(assistantContent);
+                                setStreamingReasoning('');
+                                continue;
+                            }
 
                             const delta = parsed.choices?.[0]?.delta;
 
@@ -1950,6 +1968,20 @@ export default function ChatContainer({
                                     inStreamError = typeof parsed.error === 'object'
                                         ? parsed.error.message || JSON.stringify(parsed.error)
                                         : parsed.error;
+                                    continue;
+                                }
+                                if (parsed.type === 'reasoning_reclassified') {
+                                    // Continuation path mirror of the main-stream handler.
+                                    // See the main loop for rationale — server detected
+                                    // that the whole turn's output got misrouted to
+                                    // reasoning_content by the model template.
+                                    assistantContent = parsed.content || '';
+                                    assistantReasoning = '';
+                                    const currentActiveId = useChatStore.getState().activeConversationId;
+                                    if (currentActiveId === conversationId) {
+                                        setStreamingContent(originalContent + '\n\n' + assistantContent);
+                                        setStreamingReasoning(originalReasoning || '');
+                                    }
                                     continue;
                                 }
 

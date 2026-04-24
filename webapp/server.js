@@ -12482,6 +12482,47 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 }
             }
 
+            // --- Misrouted-reasoning fix ------------------------------
+            // Some llama.cpp chat templates (observed on Gemma-4 family)
+            // route the entire response to delta.reasoning_content when
+            // the model emits a `[{"thought": "..."}]` JSON preamble.
+            // Result: persisted message has content="" and reasoning=
+            // <the full answer>. UI shows the whole thing inside the
+            // Thinking dropdown and never renders the main bubble.
+            //
+            // Detect the preamble signature, strip it, and move the
+            // remainder into content. Emit a `reasoning_reclassified`
+            // SSE event so the streaming client can swap its local
+            // state before finalizing the message (otherwise the in-
+            // session bubble stays stuck in the Thinking panel).
+            if (!fullResponse.trim() && fullReasoning) {
+                const THOUGHT_PREFIX = /^\s*\[\s*(?:\{\s*"thought"\s*:\s*"[^"]*"\s*\}\s*,?\s*)+\]\s*/;
+                const match = fullReasoning.match(THOUGHT_PREFIX);
+                if (match) {
+                    const remainder = fullReasoning.slice(match[0].length);
+                    if (remainder.trim()) {
+                        console.log(`[Chat Stream] Misrouted content detected: ${remainder.length} chars in reasoning → moving to content`);
+                        fullResponse = remainder;
+                        fullReasoning = '';
+                        if (streamingConversationId) {
+                            const job = activeStreamingJobs.get(streamingConversationId);
+                            if (job) {
+                                job.content = fullResponse;
+                                job.reasoning = '';
+                            }
+                        }
+                        if (clientConnected) {
+                            try {
+                                res.write(`data: ${JSON.stringify({
+                                    type: 'reasoning_reclassified',
+                                    content: remainder,
+                                })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
+                    }
+                }
+            }
+
             // --- Auto-invoke base64_decode on output ------------------
             // If the model's final response contains base64 the
             // pre-flight didn't already cover (e.g. the model quoted
