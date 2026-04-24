@@ -148,6 +148,10 @@ lerna-debug.log*
 
 # Test scripts and reports
 test-*.js
+test-*.mjs
+test-*.cjs
+test-*.sh
+test-*.py
 *-test.js
 *.test.js
 test_*.js
