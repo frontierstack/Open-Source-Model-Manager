@@ -81,8 +81,29 @@ function hostMatches(host, allow) {
 function extractToken(req) {
     const hdr = req.headers['proxy-authorization'];
     if (!hdr || typeof hdr !== 'string') return null;
-    const m = hdr.match(/^Bearer\s+(.+)$/i);
-    return m ? m[1].trim() : null;
+    // Preferred form — skills that control their own HTTP client (Python
+    // `requests`, Node `https`) attach Bearer explicitly.
+    const bearer = hdr.match(/^Bearer\s+(.+)$/i);
+    if (bearer) return bearer[1].trim();
+    // Fallback: Basic auth from the proxy URL (git, curl, wget, and any
+    // HTTP client that reads HTTPS_PROXY will encode as Basic). Accept
+    // the token as either username or password — callers use
+    //   HTTPS_PROXY=http://TOKEN@host:port          (user form)
+    //   HTTPS_PROXY=http://:TOKEN@host:port         (password form)
+    const basic = hdr.match(/^Basic\s+(.+)$/i);
+    if (basic) {
+        try {
+            const decoded = Buffer.from(basic[1].trim(), 'base64').toString('utf8');
+            const idx = decoded.indexOf(':');
+            if (idx < 0) return decoded.trim() || null;
+            const user = decoded.slice(0, idx);
+            const pass = decoded.slice(idx + 1);
+            return (pass || user || '').trim() || null;
+        } catch {
+            return null;
+        }
+    }
+    return null;
 }
 
 function checkGrant(token) {
@@ -164,7 +185,14 @@ function onConnect(req, clientSocket, head) {
         stats[`rejected${check.reason === 'no_token' ? 'NoToken'
                : check.reason === 'bad_token' ? 'BadToken'
                : 'Expired'}`]++;
-        clientSocket.write('HTTP/1.1 407 Proxy Authentication Required\r\n\r\n');
+        // Include Proxy-Authenticate so clients (git, curl, wget) retry
+        // with Basic creds pulled from the proxy URL. Without this they
+        // give up immediately and never send Proxy-Authorization.
+        clientSocket.write(
+            'HTTP/1.1 407 Proxy Authentication Required\r\n' +
+            'Proxy-Authenticate: Basic realm="sandbox-egress"\r\n' +
+            'Connection: close\r\n\r\n',
+        );
         clientSocket.destroy();
         return;
     }

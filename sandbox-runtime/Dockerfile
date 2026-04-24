@@ -30,6 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libopenblas0 \
         fontconfig \
         fonts-dejavu-core \
+        # git + TLS roots for the sandboxed git_clone_shallow skill.
+        # Only needed when the model asks to inspect a remote repo; cheap
+        # to include unconditionally.
+        git \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for defense-in-depth (gVisor is already the primary

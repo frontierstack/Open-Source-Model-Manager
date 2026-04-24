@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Globe, Link as LinkIcon, Wrench, AlertCircle, ChevronDown, Check, Loader2 } from 'lucide-react';
+import { Globe, Link as LinkIcon, Wrench, AlertCircle, ChevronDown, Check, Loader2, Shield } from 'lucide-react';
 import SearchSources from './SearchSources';
 
 /**
@@ -38,6 +38,8 @@ export default function ToolCallBlock({ tool }) {
                    // returned link references (web_search / fetch_url)
         results,   // old-style client-side web_search / url_fetch payload;
                    // used by SearchSources directly
+        sandboxed, // bool | undefined — server-reported sandbox policy
+        sandboxNetwork, // 'none' | 'allowlist' | 'open' (skills only)
     } = tool;
 
     const isRunning = status === 'partial';
@@ -132,6 +134,50 @@ export default function ToolCallBlock({ tool }) {
                 </span>
                 <IconComponent style={{ width: 13, height: 13, color: 'var(--ink-3)', flexShrink: 0 }} strokeWidth={1.75} />
                 <code style={toolNameStyle}>{toolName}</code>
+                {sandboxed === true && (
+                    <span
+                        title={
+                            'Ran inside the gVisor sandbox' +
+                            (sandboxNetwork ? ` · network=${sandboxNetwork}` : '')
+                        }
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                            padding: '1px 6px',
+                            borderRadius: 10,
+                            fontSize: 10,
+                            fontWeight: 500,
+                            color: 'var(--ok, #22c55e)',
+                            background: 'color-mix(in oklab, var(--ok, #22c55e) 12%, transparent)',
+                            border: '1px solid color-mix(in oklab, var(--ok, #22c55e) 30%, transparent)',
+                            flexShrink: 0,
+                        }}
+                    >
+                        <Shield style={{ width: 9, height: 9 }} strokeWidth={2.5} />
+                        sandboxed
+                    </span>
+                )}
+                {sandboxed === false && (
+                    <span
+                        title="Ran in-process in the webapp container (not sandboxed)"
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                            padding: '1px 6px',
+                            borderRadius: 10,
+                            fontSize: 10,
+                            fontWeight: 500,
+                            color: 'var(--warning, #f59e0b)',
+                            background: 'color-mix(in oklab, var(--warning, #f59e0b) 10%, transparent)',
+                            border: '1px solid color-mix(in oklab, var(--warning, #f59e0b) 28%, transparent)',
+                            flexShrink: 0,
+                        }}
+                    >
+                        in-process
+                    </span>
+                )}
                 {caption && <span style={summaryStyle}>{caption}</span>}
                 {hasDetail && (
                     <span style={{

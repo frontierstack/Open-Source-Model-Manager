@@ -12114,8 +12114,31 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     if (!finalizedCalls.length) break; // no valid calls — bail
 
                     logChatActivity(`Tool-call round ${toolCallRound + 1}: ${finalizedCalls.length} call(s)`);
+                    // Pre-resolve the sandbox policy for each tool call so the
+                    // UI can label every chip. For skills this mirrors
+                    // executePythonSkill's wantSandbox logic; for static native
+                    // tools (web_search, fetch_url, chart_plot, ...) it's
+                    // always false because those are hand-coded JS in-process.
+                    const allSkillsForPolicy = await loadSkills().catch(() => []);
+                    const skillByName = new Map(allSkillsForPolicy.map(s => [s.name, s]));
+                    const toolPolicy = (toolName) => {
+                        const s = skillByName.get(toolName);
+                        if (!s) {
+                            return { sandboxed: false, source: 'native' };
+                        }
+                        const wantSandbox = typeof s.sandbox === 'boolean'
+                            ? s.sandbox
+                            : !!s.userId;
+                        return {
+                            sandboxed: !!wantSandbox,
+                            source: 'skill',
+                            workspace: !!s.workspace,
+                            network: s.network || 'none',
+                        };
+                    };
                     const toolResultMessages = [];
                     for (const call of finalizedCalls) {
+                        const policy = toolPolicy(call.function.name);
                         if (clientConnected) {
                             try {
                                 res.write(`data: ${JSON.stringify({
@@ -12123,6 +12146,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     tool_call_id: call.id,
                                     name: call.function.name,
                                     arguments: call.function.arguments,
+                                    sandboxed: policy.sandboxed,
+                                    source: policy.source,
+                                    ...(policy.source === 'skill' ? { network: policy.network, workspace: policy.workspace } : {}),
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
                         }
@@ -12191,6 +12217,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     tool_call_id: call.id,
                                     name: call.function.name,
                                     preview,
+                                    sandboxed: policy.sandboxed,
+                                    source: policy.source,
+                                    ...(policy.source === 'skill' ? { network: policy.network } : {}),
                                     ...(resultPayload !== undefined ? { result: resultPayload } : {}),
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }

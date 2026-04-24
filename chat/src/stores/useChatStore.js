@@ -431,6 +431,14 @@ export const useChatStore = create(
                     arguments: tc.arguments || '',
                     status: 'running',
                     startedAt: Date.now(),
+                    // Sandbox policy, piped through from the server so the
+                    // chip UI can label this call. undefined is fine — the
+                    // chip renders no badge in that case (e.g. for very
+                    // old conversations restored from disk).
+                    sandboxed: tc.sandboxed,
+                    sandboxSource: tc.source,
+                    sandboxNetwork: tc.network,
+                    sandboxWorkspace: tc.workspace,
                 },
             ],
         })),

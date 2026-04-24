@@ -1268,6 +1268,10 @@ export default function ChatContainer({
                                     tool_call_id: parsed.tool_call_id,
                                     name: parsed.name,
                                     arguments: parsed.arguments,
+                                    sandboxed: parsed.sandboxed,
+                                    source: parsed.source,
+                                    network: parsed.network,
+                                    workspace: parsed.workspace,
                                 });
                                 continue;
                             }
@@ -1562,6 +1566,12 @@ export default function ChatContainer({
                     error: tc.error,
                     preview: tc.preview,
                     sources: sources && sources.length ? sources : undefined,
+                    // Sandbox metadata for the chip badge. Undefined when the
+                    // server didn't supply it (older stream or native tool
+                    // for which the policy couldn't be resolved).
+                    sandboxed: tc.sandboxed,
+                    sandboxSource: tc.sandboxSource,
+                    sandboxNetwork: tc.sandboxNetwork,
                 });
             }
 

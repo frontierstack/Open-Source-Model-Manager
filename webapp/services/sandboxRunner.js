@@ -233,15 +233,29 @@ except Exception as _e:
         });
         const host = process.env.EGRESS_HOST || 'webapp';
         const port = egressProxy.PROXY_PORT || 3180;
-        // Skills that use `requests` or `urllib` read these env vars.
-        // The Proxy-Authorization header must come from the skill code
-        // itself; we expose the token so well-behaved skills can attach it.
+        // Pre-resolve the proxy host. runsc's in-kernel DNS resolver
+        // doesn't always see docker-network hostnames like "webapp"; by
+        // resolving at grant time we give the sandbox a literal IP that
+        // works whether it's using runc or runsc.
+        let proxyHost = host;
+        try {
+            const { resolve4 } = require('dns').promises;
+            const addrs = await resolve4(host);
+            if (addrs && addrs.length) proxyHost = addrs[0];
+        } catch { /* fall back to the hostname — may still work under runc */ }
+        // Embed the token as Basic-auth credentials in the proxy URL so any
+        // HTTP client that reads HTTPS_PROXY picks it up automatically
+        // (git, curl, wget). Skills that use Python `requests` still see
+        // SANDBOX_EGRESS_TOKEN for explicit Bearer use if they prefer.
+        const proxyBase = `http://:${egressToken}@${proxyHost}:${port}`;
         env.push(
-            `HTTP_PROXY=http://${host}:${port}`,
-            `HTTPS_PROXY=http://${host}:${port}`,
-            `http_proxy=http://${host}:${port}`,
-            `https_proxy=http://${host}:${port}`,
+            `HTTP_PROXY=${proxyBase}`,
+            `HTTPS_PROXY=${proxyBase}`,
+            `http_proxy=${proxyBase}`,
+            `https_proxy=${proxyBase}`,
             `SANDBOX_EGRESS_TOKEN=${egressToken}`,
+            `SANDBOX_EGRESS_HOST=${proxyHost}`,
+            `SANDBOX_EGRESS_PORT=${port}`,
         );
     } else if (network === 'open') {
         networkMode = 'bridge';
