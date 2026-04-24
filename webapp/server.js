@@ -590,6 +590,34 @@ function modelSupportsNoThinkPrefix(modelName) {
     return /qwen\s?[23]|qwen-?3|deepseek[-_ ]?r1|deepseek[-_ ]?v?3\.?\d*/i.test(modelName);
 }
 
+// Builds a short system-prompt prelude the chat stream prepends on every
+// turn. Two jobs: (1) tell the model what today's actual date is — local
+// models with training cutoffs earlier than "now" otherwise refuse queries
+// about recent dates thinking they're in the future; (2) nudge tool
+// selection so "current news / recent events" requests route to
+// web_search instead of find_patterns or get_timestamp loops.
+function buildChatRuntimePrelude() {
+    const now = new Date();
+    const iso = now.toISOString().slice(0, 10);
+    const human = now.toLocaleDateString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
+    return (
+        `Runtime context (injected by the server, not the user):\n` +
+        `- Today's date is ${human} (${iso}). References to "today", "current", ` +
+        `"recent", or a specific recent date refer to real data from the present, ` +
+        `not the future. Your training cutoff is earlier than today; do not refuse ` +
+        `or hedge a request on the basis of "not knowing" recent events — call a tool.\n` +
+        `- For any question about current events, news, prices, or real-time / recent ` +
+        `information, call the web_search tool first. To read a specific URL, call ` +
+        `fetch_url. find_patterns is a LOCAL regex on text you supply; it cannot search ` +
+        `the web or any external corpus, so never use it to look up news or online data.\n` +
+        `- If the same tool returns an empty or identical result twice in a row, stop ` +
+        `calling it and switch strategy (usually: call web_search) or give the user a ` +
+        `direct answer from what you already have.`
+    );
+}
+
 /**
  * Estimate token count from content (string or vision array)
  * @param {string|Array} content - The content to estimate tokens for
@@ -10882,6 +10910,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             console.warn(`[Memory] Retrieval failed (continuing without): ${memErr.message}`);
         }
 
+        // Inject runtime context (today's date + tool-use guidance) into
+        // the leading system message. Local models with older training
+        // cutoffs otherwise refuse queries that reference recent dates,
+        // and without this nudge they reach for find_patterns / get_timestamp
+        // instead of web_search on "current news" style prompts.
+        try {
+            const prelude = buildChatRuntimePrelude();
+            if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
+                const existing = chatMessages[0].content;
+                if (typeof existing === 'string') {
+                    chatMessages[0] = {
+                        ...chatMessages[0],
+                        content: `${prelude}\n\n${existing}`,
+                    };
+                }
+            } else {
+                chatMessages.unshift({ role: 'system', content: prelude });
+            }
+        } catch (preludeErr) {
+            console.warn(`[Chat] Runtime prelude injection failed: ${preludeErr.message}`);
+        }
+
         // Calculate total tokens from all messages
         let totalInputTokens = 0;
         for (const msg of chatMessages) {
@@ -11632,6 +11682,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Accumulator is reset at the start of every model turn (outer loop).
         let accumulatedToolCalls = [];
         let toolCallRound = 0;
+        // Fingerprint + result-hash history across rounds. Used to detect
+        // the model calling the same tool with the same args repeatedly
+        // and getting the same (usually empty) result — a pathological
+        // loop we short-circuit with a nudge instead of burning iterations.
+        // Cleared per user turn, not per conversation.
+        const toolCallHistory = []; // { fp: 'name:args', resultHash: string }
 
         // --- Auto-invoke base64_decode on input ---------------------------
         // Models inconsistently pick base64_decode out of a 70+ tool catalog
@@ -12070,7 +12126,44 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
                         }
-                        const resultMsg = await chatTools.executeToolCall(call, toolCtx);
+                        // Loop-detection short-circuit. If the model is
+                        // calling the same (name, args) that already
+                        // produced an identical result in this turn, the
+                        // odds of a different outcome on a third try are
+                        // ~zero and we've seen the model burn all 10
+                        // iterations on "find_patterns count:0" spins.
+                        // Intercept, return a nudge, and let the model
+                        // pick a different tool next round.
+                        const fp = `${call.function.name}:${call.function.arguments || ''}`;
+                        const priorHits = toolCallHistory.filter(h => h.fp === fp);
+                        let resultMsg;
+                        if (priorHits.length >= 2 &&
+                            priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash) {
+                            const nudge = {
+                                error: 'loop_detected',
+                                message: `You have called ${call.function.name} with the same arguments ${priorHits.length} times this turn and received an identical result each time. Stop calling this tool with these arguments. If you need external/current information, call web_search or fetch_url. Otherwise, write a direct answer from what you already have and end your turn.`,
+                                previous_call_count: priorHits.length,
+                            };
+                            resultMsg = {
+                                tool_call_id: call.id,
+                                role: 'tool',
+                                name: call.function.name,
+                                content: JSON.stringify(nudge),
+                            };
+                            console.warn(`[Chat Stream] Loop detected for ${call.function.name}; short-circuited with nudge after ${priorHits.length} identical calls`);
+                        } else {
+                            resultMsg = await chatTools.executeToolCall(call, toolCtx);
+                        }
+                        // Record fingerprint + result hash for future loop checks.
+                        try {
+                            const rh = crypto.createHash('sha1')
+                                .update(String(resultMsg.content || ''))
+                                .digest('hex')
+                                .slice(0, 16);
+                            toolCallHistory.push({ fp, resultHash: rh });
+                            // Cap history so a long session doesn't grow unbounded.
+                            if (toolCallHistory.length > 40) toolCallHistory.shift();
+                        } catch (_) { /* ignore hash failures */ }
                         toolResultMessages.push(resultMsg);
                         if (clientConnected) {
                             try {
@@ -14253,7 +14346,7 @@ async function initializeDefaultSkillsOld() {
             {
                 id: crypto.randomBytes(16).toString('hex'),
                 name: 'find_patterns',
-                description: 'Search for regex patterns in text or code',
+                description: 'Apply a regex to TEXT YOU PROVIDE in the `text` parameter and return the matches. LOCAL operation only — does not search the web, news, files, or any external source. If you need information from the internet, call web_search or fetch_url first, then pass the returned text to this tool.',
                 type: 'tool',
                 parameters: { text: 'string', pattern: 'string', flags: 'string' },
                 code: `function execute(params) {

@@ -35,6 +35,22 @@ export default React.memo(function ChatMessage({
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
     const [hovered, setHovered] = useState(false);
+    // Tool-call group collapse. When a turn fires many tool calls the
+    // chip strip gets visually crowded; we group them above a threshold
+    // and let the user collapse to a one-line summary. Default to
+    // expanded while streaming so in-flight chips stay visible, then
+    // auto-collapse once streaming ends for that message.
+    const TOOL_GROUP_THRESHOLD = 3;
+    const [toolsExpanded, setToolsExpanded] = useState(true);
+    const prevStreamingRef = useRef(isStreaming);
+    React.useEffect(() => {
+        if (prevStreamingRef.current && !isStreaming) {
+            if (Array.isArray(toolCalls) && toolCalls.length >= TOOL_GROUP_THRESHOLD) {
+                setToolsExpanded(false);
+            }
+        }
+        prevStreamingRef.current = isStreaming;
+    }, [isStreaming, toolCalls?.length]);
     const reasoningRef = useRef(null);
 
     // Collapse state lives in the Zustand store so it survives remounts during streaming.
@@ -365,14 +381,71 @@ export default React.memo(function ChatMessage({
                     )}
 
                     {/* Tool calls — also rendered during streaming so live
-                        chips show up for native tool invocations in flight. */}
-                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
-                            {toolCalls.map((tc, idx) => (
-                                <ToolCallBlock key={idx} tool={tc} />
-                            ))}
-                        </div>
-                    )}
+                        chips show up for native tool invocations in flight.
+                        When the count hits TOOL_GROUP_THRESHOLD we wrap in
+                        a collapsible container and let the user fold to a
+                        one-line summary; otherwise the chips render inline
+                        as before. */}
+                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (() => {
+                        const grouped = toolCalls.length >= TOOL_GROUP_THRESHOLD;
+                        if (!grouped) {
+                            return (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                                    {toolCalls.map((tc, idx) => (
+                                        <ToolCallBlock key={idx} tool={tc} />
+                                    ))}
+                                </div>
+                            );
+                        }
+                        // Group header summary: count unique tool names so the user
+                        // sees "web_search, fetch_url (x5)" rather than a raw count.
+                        const counts = {};
+                        for (const tc of toolCalls) {
+                            const nm = tc?.name || tc?.label || tc?.type || 'tool';
+                            counts[nm] = (counts[nm] || 0) + 1;
+                        }
+                        const summary = Object.entries(counts)
+                            .map(([n, c]) => c > 1 ? `${n} ×${c}` : n)
+                            .join(', ');
+                        return (
+                            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                                <button
+                                    type="button"
+                                    onClick={() => setToolsExpanded(v => !v)}
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        padding: '4px 10px',
+                                        borderRadius: 6,
+                                        background: 'color-mix(in oklab, var(--accent, #6366f1) 10%, transparent)',
+                                        border: '1px solid color-mix(in oklab, var(--accent, #6366f1) 25%, transparent)',
+                                        color: 'var(--text-secondary)',
+                                        fontSize: 11,
+                                        cursor: 'pointer',
+                                    }}
+                                    aria-expanded={toolsExpanded}
+                                    aria-label={toolsExpanded ? 'Collapse tool calls' : 'Expand tool calls'}
+                                >
+                                    {toolsExpanded
+                                        ? <ChevronUp style={{ width: 12, height: 12 }} />
+                                        : <ChevronDown style={{ width: 12, height: 12 }} />}
+                                    <span style={{ fontWeight: 500 }}>
+                                        {toolCalls.length} tool {toolCalls.length === 1 ? 'call' : 'calls'}
+                                    </span>
+                                    <span style={{ opacity: 0.75 }}>·</span>
+                                    <span style={{ opacity: 0.85 }}>{summary}</span>
+                                </button>
+                                {toolsExpanded && (
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+                                        {toolCalls.map((tc, idx) => (
+                                            <ToolCallBlock key={idx} tool={tc} />
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })()}
 
                     {/* Partial / interrupted indicator */}
                     {!isUser && !isStreaming && (needsContinuation || isPartial) && (
