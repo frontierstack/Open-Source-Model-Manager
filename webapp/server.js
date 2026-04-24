@@ -14717,6 +14717,43 @@ app.use((req, res) => {
 (() => {
     const tools = require('./services/chatTools');
 
+    // ----- bot-protection heuristic ---------------------------------------
+    // When fetch_url or playwright_fetch come back with a Cloudflare/DataDome
+    // interstitial (or a suspiciously thin body) the model has no clean
+    // signal that the fetch was challenged rather than genuinely empty —
+    // so it gives up. This helper inspects the result and returns an
+    // escalation hint the tool payload can carry alongside the content.
+    // Callers attach the hint when present; models that read it will
+    // retry via scrapling_fetch.
+    const CHALLENGE_MARKERS = [
+        /checking your browser/i,
+        /enable javascript and cookies to continue/i,
+        /cf-browser-verification/i,
+        /cf-challenge/i,
+        /challenge-platform/i,
+        /__cf_chl_/i,
+        /just a moment\.\.\./i,
+        /attention required/i,
+        /access denied/i,
+        /please verify you are a human/i,
+        /ddos protection by cloudflare/i,
+        /perimeterx/i,
+        /datadome/i,
+        /px-captcha/i,
+        /h-captcha/i,
+        /recaptcha/i,
+    ];
+    function detectBotChallenge({ title = '', content = '' } = {}) {
+        const blob = `${title}\n${content}`.slice(0, 8000);
+        const hit = CHALLENGE_MARKERS.find(rx => rx.test(blob));
+        if (hit) return `bot protection detected (${hit.source}) — retry with scrapling_fetch for better evasion`;
+        const trimmed = typeof content === 'string' ? content.trim() : '';
+        if (trimmed.length < 400) {
+            return 'response body is very thin — page may be JS-gated or bot-challenged; if unexpected, retry with scrapling_fetch';
+        }
+        return null;
+    }
+
     // ----- web_search ------------------------------------------------------
     tools.registerTool({
         name: 'web_search',
@@ -14823,7 +14860,8 @@ app.use((req, res) => {
                         'Fetch a URL and return its readable text content. Rejects private/internal addresses. ' +
                         'Reuses the same pipeline as /api/url/fetch (Scrapling → Playwright → axios).\n\n' +
                         'CRITICAL: The returned content reflects the live page. When it contradicts what you "know" from ' +
-                        'training, trust the fetched content — it is current, your training is not. Cite the URL.',
+                        'training, trust the fetched content — it is current, your training is not. Cite the URL. ' +
+                        'If the result includes a `hint` mentioning bot protection or thin content, retry the same URL with scrapling_fetch before giving up or asking the user to paste.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -14846,15 +14884,198 @@ app.use((req, res) => {
                 if (!result.success) {
                     return { url, success: false, error: result.error || 'fetch failed' };
                 }
+                const content = (result.content || '').slice(0, maxLength);
+                const title = result.title || '';
+                const hint = detectBotChallenge({ title, content });
+                return {
+                    url,
+                    success: true,
+                    title,
+                    source: result.source || 'unknown',
+                    content,
+                    ...(hint ? { hint } : {}),
+                };
+            } catch (e) {
+                return { url, success: false, error: e.message || String(e) };
+            }
+        },
+    });
+
+    // ----- scrapling_fetch -------------------------------------------------
+    // Exposes Scrapling (StealthyFetcher + curl_cffi) as a first-class tool.
+    // Today Scrapling only runs as a fallback inside fetch_url / web_search;
+    // this lets the model deliberately pick it when a site is known to block
+    // bots (Cloudflare, PerimeterX, etc.) instead of burning a failed
+    // playwright_fetch first.
+    tools.registerTool({
+        name: 'scrapling_fetch',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'scrapling_fetch',
+                    description:
+                        'Fetch a webpage using Scrapling stealth mode (StealthyFetcher + fingerprint evasion + curl_cffi). Strongest anti-bot tool available — use it when:\n' +
+                        '- a previous fetch_url or playwright_fetch returned a `hint` field mentioning bot protection / thin content\n' +
+                        '- the site is known to gate bots: abuse.ch (threatfox, urlhaus, malwarebazaar), Cloudflare-protected sites, PerimeterX, DataDome, Akamai, ticket sites, most threat-intel portals\n' +
+                        '- the page shows "Checking your browser", "Just a moment...", "Access denied", or any CAPTCHA\n' +
+                        'Do NOT fall back to asking the user to paste content before trying this tool. Slower than fetch_url, so only reach for it when evasion is actually needed. Rejects private/internal addresses.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'Absolute HTTP(S) URL to fetch.' },
+                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Timeout in ms (default 30000).' },
+                            extractLinks: { type: 'boolean', description: 'Include extracted links in the result (default false).' },
+                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 15000).' },
+                        },
+                        required: ['url'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const url = String(args?.url || '').trim();
+            if (!url) return { error: 'url is required' };
+            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            if (!scraplingService) {
+                return { success: false, error: 'Scrapling service not available on this host' };
+            }
+            if (scraplingEnabled === false) {
+                return { success: false, error: 'Scrapling Python module not installed — fall back to fetch_url or playwright_fetch' };
+            }
+            const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 30000, 10)));
+            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 15000, 10)));
+            const extractLinks = args?.extractLinks === true;
+            try {
+                const result = await scraplingService.fetchUrl(url, { timeout, extractLinks });
+                if (!result?.success) {
+                    return { url, success: false, error: result?.error || 'scrapling fetch failed', engine: 'scrapling' };
+                }
+                const content = typeof result.content === 'string' ? result.content.slice(0, maxLength) : '';
                 return {
                     url,
                     success: true,
                     title: result.title || '',
-                    source: result.source || 'unknown',
-                    content: (result.content || '').slice(0, maxLength),
+                    content,
+                    ...(extractLinks && Array.isArray(result.links) ? { links: result.links.slice(0, 100) } : {}),
+                    engine: 'scrapling',
                 };
             } catch (e) {
-                return { url, success: false, error: e.message || String(e) };
+                return { url, success: false, error: e.message || String(e), engine: 'scrapling' };
+            }
+        },
+    });
+
+    // ----- playwright_fetch -----------------------------------------------
+    // The default skill's `code` field is comment-only documentation — the
+    // real work lives at /api/playwright/fetch. Register as a static native
+    // tool so the chat tool-call dispatcher routes straight to
+    // playwrightService instead of trying to exec the comments as Python
+    // (which fails with `name 'execute' is not defined`). The dynamic skill
+    // provider dedupes against toolRegistry, so the comment-only skill is
+    // skipped there.
+    tools.registerTool({
+        name: 'playwright_fetch',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'playwright_fetch',
+                    description:
+                        'Fetch a webpage rendered by a real browser (Playwright + stealth). Use for JavaScript-heavy pages, SPAs, and sites where fetch_url returned empty or wrong content. Falls back to axios if Playwright is unavailable. Rejects private/internal addresses. ' +
+                        'If the result includes a `hint` mentioning bot protection or thin content (Cloudflare, "Just a moment...", CAPTCHA), retry the same URL with scrapling_fetch — do NOT ask the user to paste before trying it.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'Absolute HTTP(S) URL to fetch.' },
+                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Timeout in ms (default 15000).' },
+                            waitForJS: { type: 'boolean', description: 'Wait for JS to render (default true).' },
+                            includeLinks: { type: 'boolean', description: 'Include extracted links (default false).' },
+                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 8000).' },
+                        },
+                        required: ['url'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const url = String(args?.url || '').trim();
+            if (!url) return { error: 'url is required' };
+            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 15000, 10)));
+            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 8000, 10)));
+            const waitForJS = args?.waitForJS !== false;
+            const includeLinks = args?.includeLinks === true;
+            if (!playwrightEnabled || !playwrightService) {
+                try {
+                    const fallback = await fetchUrlContentAxios(url, timeout);
+                    return { ...fallback, engine: 'axios' };
+                } catch (e) {
+                    return { url, success: false, error: e.message || String(e), engine: 'axios' };
+                }
+            }
+            try {
+                const result = await playwrightService.fetchUrlContent(url, {
+                    timeout, waitForJS, includeLinks, maxLength,
+                });
+                const hint = result?.success
+                    ? detectBotChallenge({ title: result.title, content: result.content })
+                    : null;
+                return { ...result, engine: 'playwright', ...(hint ? { hint } : {}) };
+            } catch (e) {
+                return { url, success: false, error: e.message || String(e), engine: 'playwright' };
+            }
+        },
+    });
+
+    // ----- playwright_interact --------------------------------------------
+    // Same shape as playwright_fetch — the default skill's code is
+    // comment-only, so we register a static handler that calls
+    // playwrightService.interactAndFetch directly.
+    tools.registerTool({
+        name: 'playwright_interact',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'playwright_interact',
+                    description:
+                        'Navigate a page and perform an action sequence (click, type, wait, scroll, waitForNavigation) before extracting content. Use when a page needs interaction (accept cookies, submit a form, scroll for lazy content) before it renders useful text. Requires Playwright; errors if unavailable.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'Absolute HTTP(S) URL to navigate to.' },
+                            actions: {
+                                type: 'array',
+                                description: 'Ordered list of actions. Each action is an object with `type` (click|type|wait|scroll|waitForNavigation), plus `selector`, `text`, or `timeout` as needed.',
+                                items: { type: 'object' },
+                            },
+                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Overall timeout in ms (default 30000).' },
+                            maxLength: { type: 'integer', minimum: 100, maximum: 100000, description: 'Truncate content to this many chars (default 8000).' },
+                        },
+                        required: ['url'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const url = String(args?.url || '').trim();
+            if (!url) return { error: 'url is required' };
+            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            if (!playwrightEnabled || !playwrightService) {
+                return { success: false, error: 'Playwright not available — interaction requires browser automation' };
+            }
+            const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 30000, 10)));
+            const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 8000, 10)));
+            const actions = Array.isArray(args?.actions) ? args.actions : [];
+            try {
+                const result = await playwrightService.interactAndFetch(url, actions, { timeout, maxLength });
+                return { ...result, engine: 'playwright' };
+            } catch (e) {
+                return { url, success: false, error: e.message || String(e), engine: 'playwright' };
             }
         },
     });
