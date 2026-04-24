@@ -6332,7 +6332,7 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
 // automatic fallback if the sandbox runner throws during setup (missing
 // image, broken Docker socket, etc.) — we'd rather degrade to the old
 // behavior than fail the whole request.
-async function executePythonSkill(skill, params) {
+async function executePythonSkill(skill, params, ctx = null) {
     const sandbox = require('./services/sandboxRunner');
     // Sandbox policy:
     //   - explicit skill.sandbox true/false → respect it
@@ -6364,7 +6364,15 @@ async function executePythonSkill(skill, params) {
                 memory: skill.memory || '512m',
                 cpus: skill.cpus || '1.0',
                 toolName: skill.name,
-                userId: skill.userId || null,
+                // userId scopes the workspace owner; ctx.userId (from the
+                // chat stream) wins over skill.userId so anonymous/global
+                // built-in skills still bucket under the caller's account.
+                userId: (ctx && ctx.userId) || skill.userId || null,
+                // conversationId scopes the per-chat sub-bucket so cleanup
+                // on DELETE /api/conversations/:id can wipe everything the
+                // chat produced. Null for direct /api/skills/:name/execute
+                // (falls back to the 'global' bucket).
+                conversationId: (ctx && ctx.conversationId) || null,
             });
             if (run.timedOut) {
                 // Runs with no artifacts are cleaned up immediately; nothing
@@ -9262,6 +9270,40 @@ app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
         // accumulate dead state and leak content across reused ids.
         await deleteMemoryDir(userId, id);
 
+        // Wipe the per-conversation sandbox workspace — git clones, files
+        // written by run_python / create_file, chart PNGs, anything else
+        // sandboxed skills produced during this chat. Non-blocking log
+        // event to the user's Logs tab regardless of whether anything was
+        // actually there to delete.
+        //
+        // Workspace owner must match the userId that the sandbox saw when
+        // writing: tool dispatch passes req.userId (null for API-key auth
+        // without a bound user; ensureWorkspace buckets those under
+        // `global/`). Using the broader `userId` variable declared above
+        // (which falls back to apiKeyData.id then 'default') would point at
+        // the wrong dir and silently skip the cleanup.
+        const workspaceUserId = req.userId ?? null;
+        try {
+            const sbRunner = require('./services/sandboxRunner');
+            const wipe = await sbRunner.deleteConversationWorkspace(workspaceUserId, id);
+            if (wipe && wipe.deleted) {
+                const kb = Math.round((wipe.byteCount || 0) / 1024);
+                const logMsg = `[Sandbox] Wiped workspace for deleted conversation ${id.slice(0, 8)}… — ${wipe.fileCount} file(s), ${kb} KB`;
+                console.log(logMsg);
+                try {
+                    broadcast({ type: 'log', level: 'info', message: logMsg }, userId);
+                } catch (_) { /* broadcast is best-effort */ }
+            } else if (wipe && wipe.error) {
+                const logMsg = `[Sandbox] Workspace cleanup for ${id.slice(0, 8)}… failed: ${wipe.error}`;
+                console.warn(logMsg);
+                try {
+                    broadcast({ type: 'log', level: 'warn', message: logMsg }, userId);
+                } catch (_) {}
+            }
+        } catch (e) {
+            console.warn('[Sandbox] workspace wipe on conv delete failed:', e.message);
+        }
+
         res.json({ success: true });
     } catch (error) {
         console.error('Error deleting conversation:', error);
@@ -11672,7 +11714,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Build the tool catalog once per user turn. Subsequent tool-call
         // rounds within this turn reuse the same catalog.
         const chatTools = require('./services/chatTools');
-        const toolCtx = { userId: req.userId };
+        // conversationId is plumbed through so per-conv workspace scoping
+        // (see sandboxRunner.ensureWorkspace) buckets all skills fired in
+        // this turn under `workspaces/<userId>/conv-<id>/`.
+        const toolCtx = { userId: req.userId, conversationId: conversationId || null };
         let toolCatalog = [];
         try {
             toolCatalog = await chatTools.buildToolCatalog(toolCtx);
@@ -15583,7 +15628,7 @@ app.use((req, res) => {
         try {
             let result;
             if (skill.code && skill.code.trim() && !skill.code.startsWith('Uses ') && !skill.code.startsWith('Runs ')) {
-                result = await executePythonSkill(skill, args);
+                result = await executePythonSkill(skill, args, ctx);
             } else {
                 result = await executeLegacySkill(skill.name, args);
             }
@@ -15650,6 +15695,20 @@ server.listen(PORT, async () => {
         require('./services/egressProxy').start();
     } catch (e) {
         console.warn('[Startup] egressProxy failed to start:', e.message);
+    }
+
+    // One-shot legacy-workspace migration: older installs kept per-user
+    // files directly under /models/.modelserver/workspaces/<userId>/; the
+    // new per-conversation scheme buckets into <userId>/{conv-<id>|global}/.
+    // Shuffle loose legacy entries into the `global` bucket so existing
+    // content stays accessible to non-chat callers. Idempotent.
+    try {
+        const sbRunner = require('./services/sandboxRunner');
+        if (typeof sbRunner.migrateLegacyWorkspaces === 'function') {
+            await sbRunner.migrateLegacyWorkspaces();
+        }
+    } catch (e) {
+        console.warn('[workspace-migration] failed (non-fatal):', e.message);
     }
 
     // Sandbox scratch dir TTL sweeper — deletes run directories older than

@@ -125,6 +125,9 @@ async function runPythonSkill(opts) {
         cpus = DEFAULT_CPUS,
         toolName = 'anonymous',
         userId = null,
+        // Per-chat scope so all skills firing in the same conversation
+        // share a workspace bucket that can be wiped on conv delete.
+        conversationId = null,
     } = opts;
 
     if (typeof code !== 'string' || !code.trim()) {
@@ -157,7 +160,7 @@ async function runPythonSkill(opts) {
     let workspaceInfo = null;
     let resolvedParams = params;
     if (workspace) {
-        workspaceInfo = await ensureWorkspace(userId);
+        workspaceInfo = await ensureWorkspace(userId, conversationId);
         try {
             resolvedParams = normalizePathArgs(params, workspaceInfo.containerMount);
         } catch (pathErr) {
@@ -403,20 +406,33 @@ const PATH_ARG_NAMES = [
     'from', 'to', 'output', 'input',
 ];
 
-/** Create (if needed) + chmod the per-user workspace. Returns both the
- *  in-container path and the host path needed for the bind mount. */
-async function ensureWorkspace(userId) {
+/** Create (if needed) + chmod the per-(user, conversation) workspace.
+ *  Returns both the in-container path and the host path for the bind mount.
+ *
+ *  Bucket layout:
+ *    <base>/workspaces/<userId>/conv-<conversationId>/   (chat turn with a conv)
+ *    <base>/workspaces/<userId>/global/                  (non-chat callers,
+ *                                                         e.g. direct skill execute)
+ *
+ *  Per-conv scoping lets us wipe everything a chat produced (git clones,
+ *  files, downloads) when the conversation is deleted — clean cleanup semantics
+ *  with no cross-conversation leakage. Non-chat callers still get persistent
+ *  state under `global/`. */
+async function ensureWorkspace(userId, conversationId = null) {
     if (!sandboxHostBase) {
         throw new Error('sandboxRunner: hostBase not set — workspace unavailable');
     }
     const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
-    const userDirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, owner);
+    const bucket = conversationId
+        ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_')
+        : 'global';
+    const userDirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, owner, bucket);
     // Host workspace base lives next to the sandbox base.
     const workspaceHostBase = path.posix.join(
         path.posix.dirname(sandboxHostBase),
         'workspaces',
     );
-    const userDirHost = path.posix.join(workspaceHostBase, owner);
+    const userDirHost = path.posix.join(workspaceHostBase, owner, bucket);
 
     await fs.mkdir(userDirIn, { recursive: true });
     // umask may strip bits; be explicit.
@@ -425,7 +441,99 @@ async function ensureWorkspace(userId) {
         containerMount: CONTAINER_MOUNT,   // what the skill sees
         hostMount: userDirHost,             // what Docker binds
         localInContainer: userDirIn,        // where webapp reads/writes
+        bucket,                             // 'global' or 'conv-<id>'
+        owner,
     };
+}
+
+/** Delete a conversation-scoped workspace bucket. Called from the
+ *  conversation-delete handler to wipe every sandboxed artifact that
+ *  chat produced. Returns { deleted, byteCount } for audit logging.
+ *  Silently no-ops if the bucket never existed.
+ */
+async function deleteConversationWorkspace(userId, conversationId) {
+    if (!conversationId) return { deleted: false };
+    // Owner resolution must match ensureWorkspace exactly — null/undefined
+    // userId buckets under 'global' there, so it must here. Otherwise the
+    // deletion points at a non-existent dir (e.g. /workspaces/<apiKeyId>/)
+    // while the real data sits under /workspaces/global/.
+    const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const bucket = 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const dirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, owner, bucket);
+    let byteCount = 0;
+    let fileCount = 0;
+    try {
+        for await (const entry of walkFiles(dirIn)) {
+            try {
+                const st = await fs.stat(entry);
+                byteCount += st.size;
+                fileCount += 1;
+            } catch { /* ignore */ }
+        }
+        await fs.rm(dirIn, { recursive: true, force: true });
+    } catch (e) {
+        return { deleted: false, error: e.message };
+    }
+    return { deleted: true, path: dirIn, byteCount, fileCount };
+}
+
+async function* walkFiles(dir) {
+    let entries;
+    try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+        return;
+    }
+    for (const e of entries) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) {
+            yield* walkFiles(p);
+        } else {
+            yield p;
+        }
+    }
+}
+
+/** One-shot migration: any legacy per-user workspace whose contents sit
+ *  directly under <userId>/ (pre-bucketing scheme) is shuffled into
+ *  <userId>/global/ so the new code can find them. Idempotent — if the
+ *  user dir already has bucket subdirs (conv-* or global), we skip. */
+async function migrateLegacyWorkspaces() {
+    if (!sandboxHostBase) return;
+    let ownerDirs;
+    try {
+        ownerDirs = await fs.readdir(WORKSPACE_DIR_IN_CONTAINER, { withFileTypes: true });
+    } catch {
+        return;
+    }
+    let migrated = 0;
+    for (const od of ownerDirs) {
+        if (!od.isDirectory()) continue;
+        const ownerPath = path.join(WORKSPACE_DIR_IN_CONTAINER, od.name);
+        let contents;
+        try {
+            contents = await fs.readdir(ownerPath, { withFileTypes: true });
+        } catch { continue; }
+        // If every child is already a bucket dir (global / conv-*), nothing to do.
+        const looseChildren = contents.filter(c => !(c.isDirectory() && (c.name === 'global' || c.name.startsWith('conv-'))));
+        if (!looseChildren.length) continue;
+        const globalDir = path.join(ownerPath, 'global');
+        try {
+            await fs.mkdir(globalDir, { recursive: true });
+            await fs.chmod(globalDir, 0o777);
+        } catch { continue; }
+        for (const child of looseChildren) {
+            const from = path.join(ownerPath, child.name);
+            const to = path.join(globalDir, child.name);
+            try {
+                await fs.rename(from, to);
+                migrated++;
+            } catch { /* ignore — already moved / permissions */ }
+        }
+    }
+    if (migrated) {
+        console.log(`[workspace-migration] moved ${migrated} legacy item(s) into global/ bucket`);
+    }
 }
 
 /** Resolve `input` against `/workspace` inside the sandbox. Any traversal
@@ -492,6 +600,8 @@ module.exports = {
     runPythonSkill,
     cleanupRun,
     setHostBase,
+    deleteConversationWorkspace,
+    migrateLegacyWorkspaces,
     ensureWorkspace,
     resolveInWorkspace,
     normalizePathArgs,
