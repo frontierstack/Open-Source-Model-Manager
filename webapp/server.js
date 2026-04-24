@@ -12128,6 +12128,49 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
             if (toolCallRound > chatTools.MAX_TOOL_ITERATIONS) {
                 console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached`);
+                // The outer loop exited mid-tool-call: the last model turn
+                // ended with `tool_calls` and we ran the tools, but the
+                // next round got blocked by the cap. Without a forced
+                // synthesis the user sees the tool results flash by and no
+                // final answer. Make one more call with tools disabled so
+                // the model has to write text from what it already has.
+                if (finishReason === 'tool_calls' && clientConnected) {
+                    try {
+                        if (clientConnected) {
+                            try {
+                                res.write(`data: ${JSON.stringify({
+                                    type: 'status',
+                                    message: 'Tool call budget exhausted — synthesizing from collected results',
+                                })}\n\n`);
+                            } catch (_) { clientConnected = false; }
+                        }
+                        const synthesisMessages = [
+                            ...currentMessages,
+                            {
+                                role: 'user',
+                                content:
+                                    'You have reached the maximum number of tool calls allowed for this turn. ' +
+                                    'Synthesize your final answer now from the tool results already in this conversation — ' +
+                                    'do not request any more tools. If some information is missing, state that clearly ' +
+                                    'and summarize what you did find.',
+                            },
+                        ];
+                        // Suppress the tools catalog for this last round so
+                        // the backend can't re-offer function calls. The
+                        // closure captures toolCatalog by reference; mutating
+                        // it in place is enough for the next streamOneRequest.
+                        const savedCatalog = toolCatalog.slice();
+                        toolCatalog.length = 0;
+                        try {
+                            await streamOneRequest(synthesisMessages, initialMaxTokens);
+                        } finally {
+                            toolCatalog.length = 0;
+                            toolCatalog.push(...savedCatalog);
+                        }
+                    } catch (synthErr) {
+                        console.warn('[Chat Stream] Forced synthesis failed:', synthErr.message);
+                    }
+                }
             }
 
             // --- Auto-invoke base64_decode on output ------------------
@@ -15116,6 +15159,62 @@ app.use((req, res) => {
                 return { ...result, engine: 'playwright' };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e), engine: 'playwright' };
+            }
+        },
+    });
+
+    // ----- virustotal_lookup -----------------------------------------------
+    // Queries VirusTotal for an IP, domain, URL, or file hash. Primary
+    // path hits VT API v3 with process.env.VIRUSTOTAL_API_KEY; when the
+    // key is absent, falls back to a Scrapling scrape of the GUI page so
+    // the model still gets *something* (unstructured, best-effort) to
+    // work with. Resource type is auto-detected from the input.
+    const virustotalService = require('./services/virustotalService');
+    tools.registerTool({
+        name: 'virustotal_lookup',
+        build() {
+            const keySet = !!(process.env.VIRUSTOTAL_API_KEY && process.env.VIRUSTOTAL_API_KEY.trim());
+            const keyNote = keySet
+                ? 'API key configured — returns structured detection stats, flagging engines, and metadata.'
+                : 'No VIRUSTOTAL_API_KEY set — falls back to scraping the GUI page (unstructured text). Set the env var for full detection data.';
+            return {
+                type: 'function',
+                function: {
+                    name: 'virustotal_lookup',
+                    description:
+                        `Query VirusTotal for threat intel on an IP, domain, URL, or file hash (md5/sha1/sha256). ${keyNote}\n\n` +
+                        'Views:\n' +
+                        '- detection (default): last_analysis_stats (malicious/suspicious/harmless/undetected), list of flagging engines with verdicts, reputation, metadata (country/ASN/owner for IPs; registrar/categories for domains; size/names/tags for files).\n' +
+                        '- community: aggregated user votes (harmless vs malicious) and the 10 most recent comments.\n' +
+                        '- full: detection + community in one call (3 API calls; mind the rate limit).\n\n' +
+                        'Resource type is auto-detected from the input; pass resource_type explicitly for ambiguous cases. Use this tool before asking the user to paste VT screenshots.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            resource: { type: 'string', description: 'IP address, domain, absolute URL, or file hash (md5/sha1/sha256).' },
+                            resource_type: { type: 'string', enum: ['ip_address', 'domain', 'url', 'file'], description: 'Optional override when auto-detection is wrong.' },
+                            view: { type: 'string', enum: ['detection', 'community', 'full'], description: 'Which slice to fetch (default detection).' },
+                            timeout: { type: 'integer', minimum: 1000, maximum: 60000, description: 'Per-request timeout in ms (default 15000).' },
+                        },
+                        required: ['resource'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const resource = String(args?.resource || '').trim();
+            if (!resource) return { error: 'resource is required' };
+            const timeout = Math.min(60_000, Math.max(1000, parseInt(args?.timeout || 15000, 10)));
+            try {
+                const result = await virustotalService.lookup(resource, {
+                    resource_type: args?.resource_type,
+                    view: args?.view || 'detection',
+                    timeout,
+                });
+                return result;
+            } catch (e) {
+                return { success: false, resource, error: e.message || String(e) };
             }
         },
     });

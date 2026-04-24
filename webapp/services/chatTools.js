@@ -265,7 +265,7 @@ async function executeToolCall(call, ctx) {
 // Config
 // ---------------------------------------------------------------------------
 
-const MAX_TOOL_ITERATIONS = 5; // Cap on model⇄tool rounds per user turn.
+const MAX_TOOL_ITERATIONS = 10; // Cap on model⇄tool rounds per user turn.
 
 module.exports = {
     registerTool,
