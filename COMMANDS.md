@@ -18,10 +18,12 @@ Complete command reference for Open Source Model Manager utilities, management s
 
 ## Service Management
 
+> All utility scripts (`./start.sh`, `./stop.sh`, `./reload.sh`, `./reset.sh`, `./update.sh`, `./build.sh`) require root for Docker access. Run with `sudo` — the scripts will exit immediately otherwise. The top-level names are symlinks into `scripts/`.
+
 ### Start Services
 
 ```bash
-./start.sh
+sudo ./start.sh
 ```
 
 Starts all services in detached mode:
@@ -32,7 +34,7 @@ Starts all services in detached mode:
 ### Stop Services
 
 ```bash
-./stop.sh
+sudo ./stop.sh
 ```
 
 Stops all services and cleans up:
@@ -46,11 +48,11 @@ Rebuild and restart services without data loss:
 
 ```bash
 # Reload specific service
-./reload.sh webapp              # Rebuild and restart webapp only
-./reload.sh all                 # Rebuild and restart all services
+sudo ./reload.sh webapp         # Rebuild and restart webapp only
+sudo ./reload.sh all            # Rebuild and restart all services
 
 # Examples
-./reload.sh webapp              # After code changes to webapp
+sudo ./reload.sh webapp         # After code changes to webapp
 ```
 
 **Use Cases:**
@@ -63,12 +65,12 @@ System reset with various options:
 
 ```bash
 # Basic reset (preserves models)
-./reset.sh
+sudo ./reset.sh
 
 # Reset with options
-./reset.sh --rebuild            # Reset and rebuild all images from scratch
-./reset.sh --full               # Full factory reset (removes EVERYTHING including models)
-./reset.sh --full -f            # Full factory reset without prompts
+sudo ./reset.sh --rebuild       # Reset and rebuild all images from scratch
+sudo ./reset.sh --full          # Full factory reset (removes EVERYTHING including models)
+sudo ./reset.sh --full -f       # Full factory reset without prompts
 ```
 
 **Reset Levels:**
@@ -85,7 +87,7 @@ System reset with various options:
 Quick rebuild of webapp only (faster than full rebuild):
 
 ```bash
-./update.sh
+sudo ./update.sh
 ```
 
 Rebuilds and restarts only the webapp service without affecting running models.
@@ -98,31 +100,31 @@ Rebuilds and restarts only the webapp service without affecting running models.
 
 ```bash
 # Build all images (parallel mode, incremental)
-./build.sh
+sudo ./build.sh
 
 # View all options
-./build.sh --help
+sudo ./build.sh --help
 ```
 
 ### Build Options
 
 ```bash
 # Parallel vs Sequential
-./build.sh                      # Default: parallel builds (saves ~10-15 min)
-./build.sh --no-parallel        # Sequential builds (for low RAM systems)
+sudo ./build.sh                      # Default: parallel builds (saves ~10-15 min)
+sudo ./build.sh --no-parallel        # Sequential builds (for low RAM systems)
 
 # Cache Control
-./build.sh --no-cache           # Force rebuild without Docker cache
-./build.sh --no-cleanup         # Skip Docker build cache cleanup after build
+sudo ./build.sh --no-cache           # Force rebuild without Docker cache
+sudo ./build.sh --no-cleanup         # Skip Docker build cache cleanup after build
 
 # Build State
-./build.sh --no-resume          # Start fresh (ignore previous build state)
-./build.sh --retry 5            # Set retry attempts on failure (default: 2)
+sudo ./build.sh --no-resume          # Start fresh (ignore previous build state)
+sudo ./build.sh --retry 5            # Set retry attempts on failure (default: 2)
 
 # Combined Examples
-./build.sh --no-parallel        # Sequential builds for low memory
-./build.sh --no-cache --no-resume  # Complete fresh rebuild
-./build.sh --retry 3            # Allow 3 retry attempts per image
+sudo ./build.sh --no-parallel        # Sequential builds for low memory
+sudo ./build.sh --no-cache --no-resume  # Complete fresh rebuild
+sudo ./build.sh --retry 3            # Allow 3 retry attempts per image
 ```
 
 ### Build Features
@@ -141,10 +143,10 @@ Rebuilds and restarts only the webapp service without affecting running models.
 rm -rf .build-state/
 
 # Force rebuild all images
-./build.sh --no-cache --no-resume
+sudo ./build.sh --no-cache --no-resume
 
 # Resume interrupted build
-./build.sh                      # Automatically resumes
+sudo ./build.sh                 # Automatically resumes
 ```
 
 ---
@@ -418,7 +420,7 @@ koda
 - AI executes skills automatically when needed
 - Format: `[SKILL:skill_name(param="value")]`
 - Works in standalone, agent, and collab modes
-- 77 built-in skills across 20 categories including:
+- 74 default skills across 20 categories including:
   - File operations (create, read, update, delete, list)
   - Email parsing (.eml and .msg) with nested attachment extraction
   - PDF generation and reading
@@ -446,37 +448,25 @@ When performing web searches, the system uses a multi-engine fallback:
 
 ## Chat UI Features
 
-The Chat UI (https://localhost:3002) includes several intelligent features that can be toggled via buttons in the input bar.
+The Chat UI (https://localhost:3002) exposes enabled skills to the model as native tool calls and surfaces a handful of composer-level conveniences (attachments, clipboard paste, paste-as-file). Legacy globe/link toggles have been removed — web search and URL fetch are now invoked by the model on demand through the native tool interface.
 
-### Web Search Toggle (Globe Icon)
+### Native Tool Calling
 
-When enabled, the AI will search the web for relevant information before responding:
-- Click the globe icon (🌐) to toggle
-- Searches multiple engines (DuckDuckGo, Scrapling, Brave Search)
-- Results are included as context for the model
+Every enabled skill is surfaced to the chat model as a native tool. The model decides when to call them; the UI renders each invocation as a chip with the tool name, arguments, and (on click) the full result.
 
-### URL Fetch Toggle (Link Icon)
+- **Tool catalog**: built from the server-side skill registry; toggling a skill off in Settings removes it from the catalog immediately.
+- **Rendering**: tool calls stream as `native_tool_call` events from the server and appear inline in the message flow.
+- **No user toggle required**: the model calls `web_search`, `fetch_url`, `crawl_pages`, etc. when the query warrants it. There is no longer a globe or link button to enable these.
+- **Iteration cap**: a silent no-response path when the tool loop hit its cap was fixed in `d9bf5f5` — the model now always produces a final user-visible message.
 
-When enabled, URLs pasted in your message will be automatically fetched and included as context:
-- Click the link icon (🔗) to toggle
-- Automatically detects URLs in your message (up to 3 per message)
-- Fetches page content using Scrapling/Playwright/axios fallback chain
-- Direct file download for known file types (PDF, DOCX, XLSX, CSV, etc.) - up to 50,000 chars
-- HTML page content up to 12,000 chars per URL
-- Fetched content is included in the model context
-- Map-reduce chunking handles overflow if content exceeds model context window
-
-**Example usage:**
-```
-[URL fetch enabled]
-User: Summarize this article: https://example.com/news/article
-
-The system will:
-1. Detect the URL
-2. Fetch the page content
-3. Include the content as context
-4. Model responds with a summary of the actual article
-```
+**Notable native tools added recently:**
+- `web_search` — fallback chain: DuckDuckGo → Scrapling → Brave → Playwright
+- `fetch_url` — direct file download for PDF/DOCX/XLSX/CSV, then Scrapling → Playwright → axios for HTML
+- `crawl_pages` — multi-page crawl with depth/limit controls
+- `playwright_fetch` / `playwright_interact` — JS-rendered pages and scripted interactions
+- `scrapling_fetch` — CAPTCHA-evading fetch via StealthyFetcher
+- `virustotal_lookup` — indicator / hash / URL reputation lookup
+- `base64_decode` — auto-invoked server-side on chat input and output; also callable as a tool in scan mode
 
 ### File Attachments (Paperclip Icon)
 
@@ -519,25 +509,24 @@ Models that use `<think>` tags (Qwen, DeepSeek R1, etc.):
 
 ### Chat Layouts
 
-Select from 7 layout options in Settings:
+Select from 6 layout options in Settings:
 - **Default** - Classic chat layout
 - **Centered** - Messages centered
-- **Wide** - Full width messages
 - **Timeline** - Vertical timeline flow
-- **Terminal** - Monospace, flat style
+- **Bubbles** - Rounded speech-bubble style
 - **Slack** - Flat, left-aligned messages
 - **Minimal** - Clean dividers, no bubbles
 - Slack/Minimal layouts include a Message Borders slider (0-40%)
 
 ### Themes
 
-20 themes available in Settings:
-- **Standard**: dark, light, midnight
+18 themes available in Settings:
+- **Standard**: dark, light
 - **Nature**: ocean, sunset, sand
-- **Warm Tones**: copper, vesper
+- **Warm Tones**: copper, mocha
 - **Neutral**: slate, storm
 - **Dev Classics**: solarized, kanagawa, palenight, ayu
-- **Vibrant**: matrix, andromeda, poimandres, oxocarbon, crimson, synthwave
+- **Vibrant**: matrix, andromeda, poimandres, oxocarbon, crimson
 
 ### Background Streaming
 
