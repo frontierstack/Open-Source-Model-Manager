@@ -90,9 +90,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     duckdb==1.2.* \
     matplotlib==3.10.* \
     # Writing-quality skill (readability_score)
-    textstat==0.7.* \
-    # Knowledge skill (youtube_transcript) — 1.x API (ytt_api.fetch(vid))
-    youtube-transcript-api==1.2.*
+    textstat==0.7.*
 
 # Install Playwright browsers for Python (shares with Node.js)
 RUN python3 -m playwright install chromium
