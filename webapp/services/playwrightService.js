@@ -1010,27 +1010,46 @@ async function interactAndFetch(url, actions = [], options = {}) {
         for (const action of actions) {
             await page.waitForTimeout(randomDelay(100, 300));
 
-            switch (action.type) {
-                case 'click':
-                    await page.click(action.selector, { timeout: 5000 });
-                    break;
-                case 'type':
-                    await page.type(action.selector, action.text, { delay: randomDelay(30, 80) });
-                    break;
-                case 'wait':
-                    // Support both selector-based wait and simple timeout
-                    if (action.selector) {
-                        await page.waitForSelector(action.selector, { timeout: action.timeout || 5000 });
-                    } else {
-                        await page.waitForTimeout(action.timeout || 1000);
-                    }
-                    break;
-                case 'scroll':
-                    await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-                    break;
-                case 'waitForNavigation':
-                    await page.waitForNavigation({ timeout: action.timeout || 10000 });
-                    break;
+            // Per-action timeout with sensible defaults; the model can pass
+            // action.timeout to widen it for slow / lazy-loaded sites.
+            const actTimeout = Math.max(500, parseInt(action.timeout || 8000, 10));
+            try {
+                switch (action.type) {
+                    case 'click':
+                        await page.click(action.selector, { timeout: actTimeout });
+                        break;
+                    case 'type':
+                        await page.type(action.selector, action.text, { delay: randomDelay(30, 80), timeout: actTimeout });
+                        break;
+                    case 'wait':
+                        // Support both selector-based wait and simple timeout
+                        if (action.selector) {
+                            await page.waitForSelector(action.selector, { timeout: actTimeout });
+                        } else {
+                            await page.waitForTimeout(action.timeout || 1000);
+                        }
+                        break;
+                    case 'scroll':
+                        await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+                        break;
+                    case 'waitForNavigation':
+                        await page.waitForNavigation({ timeout: actTimeout });
+                        break;
+                }
+            } catch (actionErr) {
+                // Rewrap selector-timeout errors with an actionable hint so
+                // the model doesn't keep retrying the same bad selector.
+                // Playwright's raw message is terse ("page.click: Timeout
+                // 5000ms exceeded. Call log: - waiting for locator('X')")
+                // and reads as "network was slow" rather than "selector
+                // did not match". Make the failure mode explicit.
+                const raw = actionErr?.message || String(actionErr);
+                const isTimeout = /timeout .* exceeded/i.test(raw);
+                const sel = action.selector ? ` '${action.selector}'` : '';
+                const msg = isTimeout
+                    ? `${action.type} action timed out — selector${sel} not found / not visible within ${actTimeout}ms. Inspect the page with scrapling_fetch or playwright_fetch to find the real selector before retrying, or consider whether the data is already available without interaction. Raw: ${raw}`
+                    : raw;
+                throw new Error(msg);
             }
         }
 
@@ -1093,11 +1112,180 @@ function getPoolStatus() {
     };
 }
 
+// Common selectors the crawler tries when the caller doesn't pass an
+// explicit nextSelector / loadMoreSelector. Ordered specific → generic.
+const NEXT_SELECTORS = [
+    'a[rel="next"]',
+    'nav a[rel="next"]',
+    '[aria-label="Next page"]',
+    '[aria-label*="next page" i]',
+    '[aria-label*="Next" i]:not([aria-label*="previous" i])',
+    '.pagination-next a',
+    '.pagination-next',
+    '.pagination .next a',
+    '.pagination li.next a',
+    '.page-next',
+    'a.next',
+    'a.pagination__next',
+    'button[aria-label*="Next" i]',
+];
+const LOAD_MORE_SELECTORS = [
+    'button[class*="load-more" i]',
+    'button[class*="loadmore" i]',
+    'button[class*="show-more" i]',
+    '[aria-label*="Load more" i]',
+    '[aria-label*="Show more" i]',
+    'a[class*="load-more" i]',
+    'a[class*="loadmore" i]',
+];
+
+async function findFirstVisible(page, selectors) {
+    for (const sel of selectors) {
+        try {
+            const loc = page.locator(sel).first();
+            if (await loc.count() === 0) continue;
+            if (!(await loc.isVisible().catch(() => false))) continue;
+            return loc;
+        } catch (_) { /* try next */ }
+    }
+    return null;
+}
+
+async function detectPaginationMode(page, opts = {}) {
+    if (opts.nextSelector) return 'link-follow';
+    if (opts.loadMoreSelector) return 'load-more';
+    const nextLoc = await findFirstVisible(page, NEXT_SELECTORS);
+    if (nextLoc) return 'link-follow';
+    const moreLoc = await findFirstVisible(page, LOAD_MORE_SELECTORS);
+    if (moreLoc) return 'load-more';
+    return 'infinite-scroll';
+}
+
+async function crawlPages(url, options = {}) {
+    const {
+        mode = 'auto',
+        maxPages = 5,
+        nextSelector,
+        loadMoreSelector,
+        timeout = 20000,
+        maxLength = 30000,
+        waitForSelector,
+        includeLinks = false,
+    } = options;
+
+    const cappedMaxPages = Math.min(20, Math.max(1, parseInt(maxPages, 10) || 5));
+    const perPageCap = Math.max(500, Math.floor(maxLength / cappedMaxPages));
+
+    let poolEntry = null;
+    let context = null;
+    let page = null;
+
+    try {
+        poolEntry = await getBrowser();
+        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        page = await context.newPage();
+        await applyStealthPatches(page);
+
+        await page.goto(url, { timeout, waitUntil: 'load' });
+        if (waitForSelector) {
+            await page.waitForSelector(waitForSelector, { timeout }).catch(() => {});
+        }
+
+        const resolvedMode = mode === 'auto'
+            ? await detectPaginationMode(page, { nextSelector, loadMoreSelector })
+            : mode;
+
+        const pages = [];
+        let total = 0;
+        let prevContentHash = '';
+
+        const hash = (s) => {
+            let h = 0;
+            for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+            return h;
+        };
+
+        for (let i = 0; i < cappedMaxPages; i++) {
+            await page.waitForTimeout(randomDelay(150, 400));
+            const content = await extractContent(page, { includeLinks, maxLength: perPageCap });
+            const title = await page.title().catch(() => '');
+            const currentUrl = page.url();
+
+            const thisHash = `${hash(content)}|${content.length}`;
+            if (i > 0 && thisHash === prevContentHash) break; // pagination exhausted
+            prevContentHash = thisHash;
+
+            pages.push({
+                index: i,
+                url: currentUrl,
+                title,
+                content: content.slice(0, perPageCap),
+            });
+            total += content.length;
+            if (total >= maxLength) break;
+            if (i === cappedMaxPages - 1) break;
+
+            // Advance to the next "page".
+            if (resolvedMode === 'link-follow') {
+                const nextLoc = nextSelector
+                    ? page.locator(nextSelector).first()
+                    : await findFirstVisible(page, NEXT_SELECTORS);
+                if (!nextLoc) break;
+                const isDisabled = await nextLoc.getAttribute('aria-disabled').catch(() => null);
+                const classList = await nextLoc.getAttribute('class').catch(() => '') || '';
+                if (isDisabled === 'true' || /\bdisabled\b/i.test(classList)) break;
+                try {
+                    await Promise.all([
+                        page.waitForLoadState('load', { timeout }).catch(() => {}),
+                        nextLoc.click({ timeout: Math.min(timeout, 8000) }),
+                    ]);
+                } catch (e) {
+                    break;
+                }
+            } else if (resolvedMode === 'load-more') {
+                const moreLoc = loadMoreSelector
+                    ? page.locator(loadMoreSelector).first()
+                    : await findFirstVisible(page, LOAD_MORE_SELECTORS);
+                if (!moreLoc) break;
+                try {
+                    await moreLoc.click({ timeout: Math.min(timeout, 8000) });
+                    await page.waitForTimeout(1500);
+                } catch (e) {
+                    break;
+                }
+            } else {
+                // infinite-scroll
+                const prevH = await page.evaluate(() => document.body.scrollHeight);
+                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                await page.waitForTimeout(1500);
+                const newH = await page.evaluate(() => document.body.scrollHeight);
+                if (newH === prevH) break;
+            }
+        }
+
+        return {
+            success: true,
+            url,
+            finalUrl: page.url(),
+            mode: resolvedMode,
+            pagesVisited: pages.length,
+            pages,
+        };
+    } catch (error) {
+        return { success: false, error: error.message, url };
+    } finally {
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
+        if (poolEntry) releaseBrowser(poolEntry);
+    }
+}
+
 module.exports = {
     fetchUrlContent,
     fetchMultipleUrls,
     searchAndFetch,
     interactAndFetch,
+    crawlPages,
     cleanup,
     getPoolStatus
 };

@@ -14800,8 +14800,8 @@ app.use((req, res) => {
                 );
                 const html = resp.data || '';
                 if (html.includes('anomaly-modal')) {
-                    // DDG hit CAPTCHA — fall back to Scrapling if available.
-                    // Mirrors the fallback chain used by /api/search.
+                    // DDG hit CAPTCHA — fall back through the same chain
+                    // /api/search uses: Scrapling → Brave Search HTML parse.
                     if (scraplingService) {
                         try {
                             const sr = await scraplingService.search(q, limit);
@@ -14817,9 +14817,49 @@ app.use((req, res) => {
                                     })),
                                 };
                             }
-                        } catch (_) { /* fall through to error */ }
+                        } catch (_) { /* fall through to Brave */ }
                     }
-                    return { error: 'search rate-limited by DuckDuckGo (CAPTCHA); Scrapling fallback also failed or unavailable', query: q };
+                    try {
+                        const braveResp = await axios.get(
+                            `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
+                            {
+                                headers: {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                    'Accept-Language': 'en-US,en;q=0.9',
+                                },
+                                timeout: 10000,
+                            },
+                        );
+                        const bhtml = braveResp.data || '';
+                        // Reuse the same Brave parsing /api/search uses.
+                        const linkPattern = /<a\s+href="(https?:\/\/(?!(?:search\.)?brave\.com|cdn\.search\.brave\.com|imgs\.search\.brave\.com|tiles\.search\.brave\.com)[^"]+)"[^>]*target="_self"[^>]*class="[^"]*svelte[^"]*"[^>]*>/gi;
+                        const titlePattern = /<span[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)<\/span>/gi;
+                        const descPattern = /<p[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/p>/gi;
+                        const bUrls = [];
+                        const bTitles = [];
+                        const bDescs = [];
+                        let lm;
+                        while ((lm = linkPattern.exec(bhtml)) !== null) bUrls.push(lm[1]);
+                        while ((lm = titlePattern.exec(bhtml)) !== null) bTitles.push(lm[1].trim());
+                        while ((lm = descPattern.exec(bhtml)) !== null) bDescs.push(lm[1].replace(/<[^>]*>/g, '').trim());
+                        const bSeen = new Set();
+                        const bResults = [];
+                        for (let i = 0; i < bUrls.length && bResults.length < limit; i++) {
+                            const url = bUrls[i];
+                            if (bSeen.has(url)) continue;
+                            bSeen.add(url);
+                            let title = bTitles[i] || '';
+                            if (!title) {
+                                try { title = new URL(url).hostname.replace(/^www\./, ''); } catch { title = 'Web Result'; }
+                            }
+                            bResults.push({ title, url, snippet: bDescs[i] || '' });
+                        }
+                        if (bResults.length) {
+                            return { query: q, source: 'brave', count: bResults.length, results: bResults };
+                        }
+                    } catch (_) { /* fall through to error */ }
+                    return { error: 'search rate-limited by DuckDuckGo; Scrapling and Brave fallbacks also failed. Consider calling scrapling_fetch directly on the target domain.', query: q };
                 }
                 const resultRegex = /<div class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
                 const titleRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
@@ -15076,6 +15116,90 @@ app.use((req, res) => {
                 return { ...result, engine: 'playwright' };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e), engine: 'playwright' };
+            }
+        },
+    });
+
+    // ----- crawl_pages ----------------------------------------------------
+    // Walks paginated listings. Four modes — url-pattern (fast, stateless;
+    // increments a ?page=N / /page/N/ / ?offset=N marker), link-follow
+    // (clicks Next), load-more (clicks a Load-more button), and
+    // infinite-scroll (scrolls the viewport). `auto` picks one by
+    // inspecting the URL and, if needed, the rendered DOM.
+    const crawlerService = require('./services/crawlerService');
+    tools.registerTool({
+        name: 'crawl_pages',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'crawl_pages',
+                    description:
+                        'Walk a paginated listing and return content from multiple pages in one call. Use when the user asks for "the N most recent / top N" items from a site that shows results across multiple pages, or when a single fetch returned only the first page of a listing. Modes:\n' +
+                        '- auto (default): detects pagination pattern in the URL first, otherwise inspects the DOM for Next / Load more.\n' +
+                        '- url-pattern: increments ?page= / ?p= / ?offset= / /page/N/ in the URL (fastest).\n' +
+                        '- link-follow: clicks the page\'s Next link (pass nextSelector to override).\n' +
+                        '- load-more: repeatedly clicks a Load-more button (pass loadMoreSelector to override).\n' +
+                        '- infinite-scroll: scrolls to the bottom to trigger lazy loading.\n' +
+                        'Rejects private/internal addresses. Stops early when a page repeats content already seen.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'Absolute HTTP(S) starting URL.' },
+                            maxPages: { type: 'integer', minimum: 1, maximum: 20, description: 'Hard cap on pages to walk (default 5).' },
+                            mode: { type: 'string', enum: ['auto', 'url-pattern', 'link-follow', 'load-more', 'infinite-scroll'], description: 'Pagination strategy (default auto).' },
+                            nextSelector: { type: 'string', description: 'CSS selector for the Next link (link-follow mode). Optional override when auto-detection picks the wrong element.' },
+                            loadMoreSelector: { type: 'string', description: 'CSS selector for the Load-more button (load-more mode).' },
+                            waitForSelector: { type: 'string', description: 'CSS selector to wait for on each page before extracting.' },
+                            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Per-page timeout in ms (default 20000).' },
+                            maxLength: { type: 'integer', minimum: 1000, maximum: 200000, description: 'Total combined content cap across all pages (default 30000).' },
+                            includeLinks: { type: 'boolean', description: 'Include extracted links per page (default false).' },
+                            stealth: { type: 'boolean', description: 'Prefer Scrapling for url-pattern fetches (use when a site is known to be bot-gated).' },
+                        },
+                        required: ['url'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const url = String(args?.url || '').trim();
+            if (!url) return { error: 'url is required' };
+            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            const mode = args?.mode || 'auto';
+            const maxPages = Math.min(20, Math.max(1, parseInt(args?.maxPages || 5, 10)));
+            const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 20000, 10)));
+            const maxLength = Math.min(200_000, Math.max(1000, parseInt(args?.maxLength || 30000, 10)));
+            const includeLinks = args?.includeLinks === true;
+            const stealth = args?.stealth === true;
+            try {
+                const result = await crawlerService.crawl(url, {
+                    mode, maxPages, timeout, maxLength, includeLinks, stealth,
+                    nextSelector: args?.nextSelector,
+                    loadMoreSelector: args?.loadMoreSelector,
+                    waitForSelector: args?.waitForSelector,
+                });
+                if (!result?.success) {
+                    return { url, success: false, error: result?.error || 'crawl failed', mode: result?.mode };
+                }
+                // Build the combined content here (rather than inside the
+                // service) so we can attach a challenge hint at the outer
+                // tool layer, same as fetch_url / playwright_fetch.
+                const combinedContent = (result.pages || [])
+                    .map(p => `=== Page ${p.index + 1}: ${p.title || '(no title)'} — ${p.url} ===\n${p.content}`)
+                    .join('\n\n');
+                const hint = detectBotChallenge({ content: combinedContent });
+                return {
+                    url,
+                    success: true,
+                    mode: result.mode,
+                    pagesVisited: result.pagesVisited,
+                    pages: result.pages,
+                    combinedContent,
+                    ...(hint ? { hint } : {}),
+                };
+            } catch (e) {
+                return { url, success: false, error: e.message || String(e) };
             }
         },
     });
