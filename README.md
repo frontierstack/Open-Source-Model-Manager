@@ -37,6 +37,16 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
 - **Auto-Continuation** — Automatically continues truncated responses up to 8 times
 
+### Native Tool Calling
+
+The chat model can invoke tools on its own via OpenAI-style function calls. Every enabled skill in your workspace is surfaced to the model as a named tool; the UI renders each call as an inline chip showing the tool name, arguments, and (on click) the full result. There are no "web search" or "URL fetch" toggles anymore — the model decides when to reach for them.
+
+- **Catalog built from your skill registry** — toggling a skill off in Settings removes it from the tool catalog the model sees on the next turn
+- **Streamed tool chips** — `native_tool_call` events render live below the assistant message while the model works
+- **Multi-round reasoning** — the model can call several tools in sequence and see each result before responding
+- **Shipped tools include** — `web_search` (DuckDuckGo → Scrapling → Brave → Playwright fallback chain), `fetch_url` (direct file download for PDF/DOCX/XLSX then Scrapling/Playwright/axios for HTML), `crawl_pages`, `playwright_fetch` / `playwright_interact` for JS-rendered pages, `scrapling_fetch` for CAPTCHA-evading fetches, `dns_lookup`, `virustotal_lookup`, `base64_decode`, plus every built-in skill (file ops, git, system info, OCR, PDF, email parsing, and more)
+- **No silent dead-ends** — if the tool-iteration cap is reached, the model still returns a final user-visible message
+
 ### Web Scraping & Search
 
 - **[Scrapling](https://github.com/D4Vinci/Scrapling) Integration** — CAPTCHA-evading web scraping with StealthyFetcher
@@ -57,16 +67,20 @@ Long conversations consume increasing amounts of context window and VRAM. AIMem 
 
 Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
 
-- 20 themes and 7 chat layouts (Default, Centered, Wide, Timeline, Terminal, Slack, Minimal)
+- Native tool-call chips rendered inline with each assistant message
+- 18 themes and 6 chat layouts (Default, Centered, Timeline, Bubbles, Slack, Minimal)
 - 54 font choices with dynamic Google Fonts loading
 - Clipboard image paste and drag-and-drop file attachments
 - Paste-as-file for large text (500+ chars auto-converted to attachment)
-- Web search and URL fetch toggles with smart query extraction
 - Email file parsing (.eml, .msg) with nested attachment extraction
 - OCR text extraction for uploaded images via Tesseract
 
 <p align="center">
-  <img src="docs/images/chat-ui.png" alt="Model Chat Interface" width="800">
+  <img src="docs/images/chat-ui.png" alt="Chat UI with native tool-call chips (web_search, scrapling_fetch) rendered inline with the assistant response" width="800">
+</p>
+
+<p align="center">
+  <em>The model decides to call <code>web_search</code>, reads the results, and follows up with <code>scrapling_fetch</code> to pull a full page — each call appears as a clickable chip below the response.</em>
 </p>
 
 ### Koda — AI Agent TUI
@@ -83,7 +97,7 @@ Your autonomous AI project assistant running as an interactive terminal user int
   Your AI project assistant
 ```
 
-- 77 built-in skills across 20 categories (file ops, git, web, email, OCR, PDF, system info, and more)
+- 74 default skills across 20 categories (file ops, git, web, email, OCR, PDF, system info, and more)
 - Multi-agent collaboration for complex tasks
 - Autonomous skill execution with false-completion detection
 - AES-256 encrypted credentials
@@ -219,8 +233,9 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           │  │                    │ │          │ │  (API client) │     │
           │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
           │  │  Express API       │ │ Tailwind │         │             │
-          │  │  WebSocket Server  │ │ 20 Themes│   :3001/api           │
-          │  │  77 Skills Engine  │ │ 7 Layouts│         │             │
+          │  │  WebSocket Server  │ │ 18 Themes│   :3001/api           │
+          │  │  74 Skills Engine  │ │ 6 Layouts│         │             │
+          │  │  Native Tool Calls │ │Tool Chips│         │             │
           │  │  OpenAI Endpoints  │ │ OCR/File │         │             │
           │  │  Web Scraping      │ │ Uploads  │         │             │
           │  │  Map-Reduce        │ └────┬─────┘         │             │
