@@ -674,13 +674,32 @@ function buildChatRuntimePrelude() {
         `"recent", or a specific recent date refer to real data from the present, ` +
         `not the future. Your training cutoff is earlier than today; do not refuse ` +
         `or hedge a request on the basis of "not knowing" recent events — call a tool.\n` +
-        `- For any question about current events, news, prices, or real-time / recent ` +
-        `information, call the web_search tool first. To read a specific URL, call ` +
-        `fetch_url. find_patterns is a LOCAL regex on text you supply; it cannot search ` +
-        `the web or any external corpus, so never use it to look up news or online data.\n` +
+        `- For any question about current events, news, prices, release dates/times, ` +
+        `sports results, stock/crypto prices, weather, real-time / recent information, ` +
+        `or the current state of any public entity (companies, people, games, products): ` +
+        `you MUST call web_search before answering. To read a specific URL, call fetch_url. ` +
+        `find_patterns is a LOCAL regex on text you supply; it cannot search the web or ` +
+        `any external corpus, so never use it to look up news or online data.\n` +
+        `- Never state a specific date, time, price, version number, score, or other ` +
+        `concrete fact about a real-world current event from memory. If the user asks ` +
+        `"when does X release", "what's the price of Y", "who won Z" — call web_search ` +
+        `first, cite the URL you pulled the fact from, and if the snippets don't contain ` +
+        `the exact fact call fetch_url on the most authoritative-looking result.\n` +
+        `- FOLLOW-UP questions: if the user asks about a specific detail (date, time, ` +
+        `number, name) related to a topic you already searched, call web_search AGAIN ` +
+        `with a query targeted at that detail. Do not paraphrase or infer from the ` +
+        `previous turn's search snippets — they may not have contained the specific ` +
+        `answer, and re-searching with a narrower query often surfaces it.\n` +
+        `- If the user contests your answer ("wrong", "incorrect", "check again", ` +
+        `"are you sure", "not right"): ALWAYS call web_search with a DIFFERENT, more ` +
+        `specific query. Do not simply repeat your previous answer or re-run the same ` +
+        `query. If two searches still disagree, present both and let the user decide ` +
+        `— do not guess.\n` +
+        `- When answering from web_search results, cite source URLs inline so the user ` +
+        `can verify. Do not present search-derived facts as if from your own knowledge.\n` +
         `- If the same tool returns an empty or identical result twice in a row, stop ` +
-        `calling it and switch strategy (usually: call web_search) or give the user a ` +
-        `direct answer from what you already have.`
+        `calling it and switch strategy (usually: call web_search with different terms) ` +
+        `or give the user a direct answer from what you already have.`
     );
 }
 
