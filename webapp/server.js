@@ -13358,16 +13358,65 @@ async function migrateDefaultSkillsToSandbox() {
     }
 }
 
+// Sync new default skills into an existing install. `initializeDefaultSkills`
+// short-circuits when skills.json is non-empty (the seed has already run at
+// least once), so new entries in default-skills.json would otherwise never
+// reach existing users. This compares on-disk skills by name against the
+// current default-skills.json template and appends anything missing —
+// idempotent, safe to run every boot. Does NOT modify or delete existing
+// skills, only adds new ones.
+async function addMissingDefaultSkills() {
+    try {
+        const defaultSkillsPath = path.join(__dirname, 'default-skills.json');
+        const template = JSON.parse(await fs.readFile(defaultSkillsPath, 'utf8'));
+        const skills = await loadSkills();
+        const existingNames = new Set(
+            skills.filter(s => !s.userId).map(s => s.name)
+        );
+        const missing = template.filter(t => t && t.name && !existingNames.has(t.name));
+        if (!missing.length) return;
+        const stamped = missing.map(skill => {
+            const out = {
+                id: crypto.randomBytes(16).toString('hex'),
+                ...skill,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            };
+            // Honor sandbox/workspace/network flags declared on the template,
+            // then layer the global WORKSPACE_/NETWORK_SANDBOX_DEFAULTS maps
+            // so older defaults still get the right policy.
+            if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                out.sandbox = true;
+                out.workspace = true;
+                out.network = out.network || 'none';
+            } else if (NETWORK_SANDBOX_DEFAULTS[out.name]) {
+                const spec = NETWORK_SANDBOX_DEFAULTS[out.name];
+                out.sandbox = true;
+                out.network = out.network || 'allowlist';
+                out.allowlist = out.allowlist || spec.allowlist;
+            }
+            return out;
+        });
+        const merged = [...skills, ...stamped];
+        await saveSkills(merged);
+        console.log(`[skill-migration] added ${stamped.length} missing default skill(s): ${stamped.map(s => s.name).join(', ')}`);
+    } catch (e) {
+        console.error('[skill-migration] addMissingDefaultSkills failed (non-fatal):', e.message);
+    }
+}
+
 async function initializeDefaultSkills() {
     try {
         await ensureDataDir();
         const skills = await loadSkills();
 
-        // Existing install — opt in known defaults to sandbox/workspace.
-        // Harmless no-op when already migrated. Runs BEFORE the early-return
-        // so it also picks up any older installs that already have skills.
+        // Existing install — opt in known defaults to sandbox/workspace,
+        // then sync any new defaults from the template that this install
+        // is missing. Harmless no-op when fully migrated. Runs BEFORE the
+        // early-return so both migrations reach older installs.
         if (skills.length > 0) {
             await migrateDefaultSkillsToSandbox();
+            await addMissingDefaultSkills();
             return;
         }
 

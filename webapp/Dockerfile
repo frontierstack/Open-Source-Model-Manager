@@ -84,7 +84,15 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     # AIMem memory compression (TF-IDF dedup, lossy compression, relevance gating)
     tiktoken==0.9.* \
     numpy==2.2.* \
-    scikit-learn==1.6.*
+    scikit-learn==1.6.* \
+    # Data-analysis skills (csv_describe, spreadsheet_query, chart_plot)
+    pandas==2.2.* \
+    duckdb==1.2.* \
+    matplotlib==3.10.* \
+    # Writing-quality skill (readability_score)
+    textstat==0.7.* \
+    # Knowledge skill (youtube_transcript) — 1.x API (ytt_api.fetch(vid))
+    youtube-transcript-api==1.2.*
 
 # Install Playwright browsers for Python (shares with Node.js)
 RUN python3 -m playwright install chromium
