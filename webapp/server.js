@@ -2082,25 +2082,29 @@ function parseSessionCookie(cookieHeader) {
     return decoded;
 }
 
-// Helper function to get userId from session ID
+// Helper function to get userId from session ID.
+//
+// Session files on disk are encrypted by kruptein (session-file-store's
+// default when `secret` is set). Reading the raw JSON and looking for
+// `.passport.user` finds nothing — the parse succeeds because the file
+// IS valid JSON (`{"hmac":..., "ct":...}`), but the passport data lives
+// inside the encrypted `ct` field. So we delegate to `sessionStore.get()`
+// which knows to decrypt via the kruptein instance we configured.
+//
+// Before this fix every WebSocket upgrade landed as "Connection without
+// session" and per-user broadcasts (log events, sandbox wipes, download
+// progress) went nowhere.
 async function getUserIdFromSession(sessionId) {
     if (!sessionId) return null;
-
-    try {
-        const sessionFile = path.join(SESSION_DIR, `${sessionId}.json`);
-        const sessionData = await fs.readFile(sessionFile, 'utf8');
-        const session = JSON.parse(sessionData);
-
-        // If user is authenticated via Passport, session.passport.user contains user ID
-        if (session.passport && session.passport.user) {
-            return session.passport.user;
-        }
-    } catch (error) {
-        // Session file doesn't exist or can't be read
-        return null;
-    }
-
-    return null;
+    return new Promise((resolve) => {
+        sessionStore.get(sessionId, (err, session) => {
+            if (err || !session) return resolve(null);
+            if (session.passport && session.passport.user) {
+                return resolve(session.passport.user);
+            }
+            resolve(null);
+        });
+    });
 }
 
 // Enhanced WebSocket connection with user binding
