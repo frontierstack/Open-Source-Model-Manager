@@ -12411,15 +12411,34 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 break;
             } // end tool-call outer loop
 
-            if (toolCallRound > chatTools.MAX_TOOL_ITERATIONS) {
-                console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached`);
-                // The outer loop exited mid-tool-call: the last model turn
-                // ended with `tool_calls` and we ran the tools, but the
-                // next round got blocked by the cap. Without a forced
-                // synthesis the user sees the tool results flash by and no
-                // final answer. Make one more call with tools disabled so
-                // the model has to write text from what it already has.
-                if (finishReason === 'tool_calls' && clientConnected) {
+            // Forced synthesis triggers in two distinct situations:
+            //
+            // 1. We hit MAX_TOOL_ITERATIONS with the model still asking for
+            //    tool calls. Historic trigger — model wants more tools but
+            //    we cut it off; need to force it to write text now.
+            //
+            // 2. The model exited the tool loop before the cap but with
+            //    EMPTY fullResponse. Observed on gemma-4 after 5 real tool
+            //    calls, where round 6 emits `finish_reason=tool_calls`
+            //    with malformed/empty args (accumulator drops them) or
+            //    `finish_reason=stop` with zero content. Outer loop breaks,
+            //    user sees tool chips run and then nothing — no summary,
+            //    no answer. Re-run with tools suppressed so the model has
+            //    to write text from the tool results already in context.
+            //
+            // Skip forced synthesis when reasoningLoopAborted is set —
+            // fullResponse already carries the "loop detected" note that
+            // the user needs to see, and forcing another round would
+            // likely re-enter the same loop.
+            const hitIterationCap = toolCallRound > chatTools.MAX_TOOL_ITERATIONS && finishReason === 'tool_calls';
+            const exitedEmptyAfterTools = toolCallRound > 0 && !fullResponse.trim() && !reasoningLoopAborted;
+            if (hitIterationCap || exitedEmptyAfterTools) {
+                if (hitIterationCap) {
+                    console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached — forcing synthesis`);
+                } else {
+                    console.warn(`[Chat Stream] Tool loop exited with empty response after ${toolCallRound} tool call(s) — forcing synthesis`);
+                }
+                if (clientConnected) {
                     try {
                         if (clientConnected) {
                             try {
@@ -12433,11 +12452,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             ...currentMessages,
                             {
                                 role: 'user',
-                                content:
-                                    'You have reached the maximum number of tool calls allowed for this turn. ' +
-                                    'Synthesize your final answer now from the tool results already in this conversation — ' +
-                                    'do not request any more tools. If some information is missing, state that clearly ' +
-                                    'and summarize what you did find.',
+                                content: hitIterationCap
+                                    ? 'You have reached the maximum number of tool calls allowed for this turn. ' +
+                                      'Synthesize your final answer now from the tool results already in this conversation — ' +
+                                      'do not request any more tools. If some information is missing, state that clearly ' +
+                                      'and summarize what you did find.'
+                                    : 'You have called several tools and now must write your actual answer. ' +
+                                      'Do not call any more tools. Respond directly to the original question using the ' +
+                                      'tool results already in this conversation. If you need more information to be ' +
+                                      'fully confident, state that clearly and summarize what you did find — but you ' +
+                                      'must write an answer now.',
                             },
                         ];
                         // Suppress the tools catalog for this last round so
