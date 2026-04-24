@@ -759,7 +759,8 @@
     "enabled": true,
     "sandbox": true,
     "workspace": true,
-    "network": "none"
+    "network": "none",
+    "pathNormalize": false
   },
   {
     "name": "git_branch",
@@ -1099,7 +1100,8 @@
       "bitbucket.org",
       "*.bitbucket.org",
       "ssh.github.com"
-    ]
+    ],
+    "pathNormalize": false
   },
   {
     "name": "git_list_tree",
@@ -1117,7 +1119,8 @@
     "enabled": true,
     "sandbox": true,
     "workspace": true,
-    "network": "none"
+    "network": "none",
+    "pathNormalize": false
   },
   {
     "name": "git_show_commit",
@@ -1134,7 +1137,8 @@
     "enabled": true,
     "sandbox": true,
     "workspace": true,
-    "network": "none"
+    "network": "none",
+    "pathNormalize": false
   },
   {
     "name": "git_file_history",
@@ -1152,7 +1156,8 @@
     "enabled": true,
     "sandbox": true,
     "workspace": true,
-    "network": "none"
+    "network": "none",
+    "pathNormalize": false
   },
   {
     "name": "git_blame",
@@ -1171,6 +1176,7 @@
     "enabled": true,
     "sandbox": true,
     "workspace": true,
-    "network": "none"
+    "network": "none",
+    "pathNormalize": false
   }
 ]

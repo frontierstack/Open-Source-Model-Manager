@@ -157,12 +157,21 @@ async function runPythonSkill(opts) {
     // a skill's own runtime error), NOT thrown — so the caller sees
     // `{ success: false, error: "path escapes workspace: ..." }` instead of
     // a generic "Skill execution failed".
+    // Optional per-skill escape hatch. File-op skills benefit from the
+    // automatic path-rewriting (any `path` / `filePath` gets rerouted
+    // under /workspace), but skills that use param names like `path`
+    // for non-filesystem values — e.g. git_log's repo-relative path
+    // filter — need to opt out. Default stays on to preserve the
+    // existing hardening for every built-in that relied on it.
+    const pathNormalize = opts.pathNormalize !== false;
     let workspaceInfo = null;
     let resolvedParams = params;
     if (workspace) {
         workspaceInfo = await ensureWorkspace(userId, conversationId);
         try {
-            resolvedParams = normalizePathArgs(params, workspaceInfo.containerMount);
+            if (pathNormalize) {
+                resolvedParams = normalizePathArgs(params, workspaceInfo.containerMount);
+            }
         } catch (pathErr) {
             await cleanupRun(runId).catch(() => {});
             return {

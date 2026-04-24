@@ -6360,6 +6360,11 @@ async function executePythonSkill(skill, params, ctx = null) {
                 network,
                 allowlist,
                 workspace: !!skill.workspace,
+                // Opt out of sandbox-side path rewriting when the skill
+                // declares it. Needed for git_* skills where `path` is a
+                // repo-relative filter ('.', 'src/app.py'), not a
+                // filesystem path to be rerouted under /workspace.
+                pathNormalize: skill.pathNormalize !== false,
                 timeoutMs: skill.timeoutMs || 30_000,
                 memory: skill.memory || '512m',
                 cpus: skill.cpus || '1.0',
