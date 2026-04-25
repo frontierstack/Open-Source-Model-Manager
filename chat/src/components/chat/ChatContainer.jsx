@@ -1421,6 +1421,19 @@ export default function ChatContainer({
                                 continue; // Don't process this as a content event
                             }
 
+                            // Handle memory injection notice (server pulled in
+                            // relevant memories from earlier in this convo as
+                            // context for this turn).
+                            if (parsed.type === 'memory_injected') {
+                                const count = parsed.count || 0;
+                                const tokens = parsed.tokens || 0;
+                                const noun = count === 1 ? 'memory' : 'memories';
+                                const msg = `Referenced ${count} ${noun} from this conversation (${tokens} tokens)`;
+                                pushProcessingLog({ icon: 'brain', text: msg, kind: 'memory_injected' });
+                                showSnackbar(msg, 'info');
+                                continue;
+                            }
+
                             // Handle map-reduce completion info
                             if (parsed.mapReduce?.enabled) {
                                 const mr = parsed.mapReduce;

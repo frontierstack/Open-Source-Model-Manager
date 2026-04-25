@@ -9199,7 +9199,12 @@ async function retrieveRelevantMemories(userId, conversationId, query, tokenBudg
     picked.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
     const lines = picked.map(m => `- ${m.text}`).join('\n');
     console.log(`[Memory] Injecting ${picked.length} memories (${usedTokens} tokens) for conversation ${conversationId}`);
-    return `Relevant context from earlier in this conversation:\n${lines}`;
+    return {
+        block: `Relevant context from earlier in this conversation:\n${lines}`,
+        count: picked.length,
+        tokens: usedTokens,
+        previews: picked.slice(0, 5).map(m => (m.text || '').slice(0, 120)),
+    };
 }
 
 // List all conversations for a user
@@ -11095,10 +11100,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     }
                 }
                 if (latestUserText) {
-                    const memoryBlock = await retrieveRelevantMemories(
+                    const memoryResult = await retrieveRelevantMemories(
                         chatUserId, chatConvId, latestUserText, MEMORY_RETRIEVAL_TOKEN_BUDGET
                     );
-                    if (memoryBlock) {
+                    if (memoryResult && memoryResult.block) {
+                        const memoryBlock = memoryResult.block;
                         // Append to existing system message if one exists,
                         // otherwise insert a new system message at position 0.
                         if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
@@ -11112,6 +11118,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         } else {
                             chatMessages.unshift({ role: 'system', content: memoryBlock });
                         }
+                        // Notify the client so the UI can show a "memories
+                        // referenced" status chip / notice for this turn.
+                        try {
+                            res.write(`data: ${JSON.stringify({
+                                type: 'memory_injected',
+                                count: memoryResult.count,
+                                tokens: memoryResult.tokens,
+                                previews: memoryResult.previews,
+                            })}\n\n`);
+                        } catch {}
                     }
                 }
             }
@@ -14795,6 +14811,77 @@ async function initializeDefaultSkillsOld() {
             },
             {
                 id: crypto.randomBytes(16).toString('hex'),
+                name: 'search_string',
+                description: 'Search for a string or regex inside provided text or a file and return matching lines with context. Use after fetch_url / web_search to pinpoint specific data (names, numbers, dates, error codes, IPs) without re-reading the whole page. Provide either `text` or `file` (path under /tmp, /models, or /app).',
+                type: 'tool',
+                parameters: { query: 'string', text: 'string', file: 'string', mode: 'string', case_sensitive: 'boolean', context_lines: 'number', max_matches: 'number' },
+                code: `async function execute(params) {
+    const fs = require('fs').promises;
+    const path = require('path');
+    if (!params.query) throw new Error('query is required');
+    const hasText = typeof params.text === 'string' && params.text.length > 0;
+    const hasFile = typeof params.file === 'string' && params.file.length > 0;
+    if (hasText === hasFile) throw new Error('Provide exactly one of text or file');
+    const mode = params.mode === 'regex' ? 'regex' : 'literal';
+    const caseSensitive = params.case_sensitive === true;
+    const contextLines = Math.min(10, Math.max(0, parseInt(params.context_lines ?? 2, 10)));
+    const maxMatches = Math.min(500, Math.max(1, parseInt(params.max_matches ?? 50, 10)));
+
+    let content, sourceLabel;
+    if (hasFile) {
+        const filePath = path.resolve(String(params.file));
+        const allowed = ['/tmp/', '/models/', '/app/'];
+        if (!allowed.some(r => filePath === r.slice(0, -1) || filePath.startsWith(r))) {
+            throw new Error('file path must be under /tmp, /models, or /app');
+        }
+        const stat = await fs.stat(filePath);
+        if (!stat.isFile()) throw new Error('not a regular file');
+        if (stat.size > 20 * 1024 * 1024) throw new Error('file too large; cap is 20MB');
+        content = await fs.readFile(filePath, 'utf8');
+        sourceLabel = filePath;
+    } else {
+        content = String(params.text);
+        sourceLabel = 'text';
+    }
+
+    const escaped = mode === 'regex' ? params.query : String(params.query).replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+    const regex = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
+
+    const lines = content.split(/\\r?\\n/);
+    const matches = [];
+    let totalMatches = 0;
+    for (let i = 0; i < lines.length; i++) {
+        regex.lastIndex = 0;
+        if (!regex.test(lines[i])) continue;
+        totalMatches++;
+        if (matches.length >= maxMatches) continue;
+        const start = Math.max(0, i - contextLines);
+        const end = Math.min(lines.length - 1, i + contextLines);
+        matches.push({
+            line_number: i + 1,
+            line: lines[i].length > 500 ? lines[i].slice(0, 500) + '…' : lines[i],
+            ...(contextLines > 0 ? { context_before: lines.slice(start, i), context_after: lines.slice(i + 1, end + 1) } : {}),
+        });
+    }
+    return {
+        success: true,
+        source: sourceLabel,
+        query: params.query,
+        mode,
+        case_sensitive: caseSensitive,
+        total_lines: lines.length,
+        total_matches: totalMatches,
+        returned_matches: matches.length,
+        truncated: totalMatches > matches.length,
+        matches,
+    };
+}`,
+                enabled: true,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            },
+            {
+                id: crypto.randomBytes(16).toString('hex'),
                 name: 'count_lines',
                 description: 'Count lines of code, comments, and blanks',
                 type: 'tool',
@@ -15812,6 +15899,125 @@ app.use((req, res) => {
             } catch (e) {
                 return { url, success: false, error: e.message || String(e) };
             }
+        },
+    });
+
+    // ----- search_string --------------------------------------------------
+    // Line-oriented search inside provided text or a file on disk. Use this
+    // instead of dumping a whole fetched page or large file back to yourself
+    // when you only need lines that mention a specific keyword/pattern —
+    // saves a lot of tokens and lets the model pinpoint data quickly.
+    tools.registerTool({
+        name: 'search_string',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'search_string',
+                    description:
+                        'Search for a string or regex inside text content or a file, and return matching lines with surrounding context. ' +
+                        'Use this when you need to find specific data (a name, number, date, error code, IP, etc.) inside a long body of text — ' +
+                        'such as the content returned by fetch_url / web_search / scrapling_fetch / playwright_fetch, or inside an uploaded file. ' +
+                        'Much more token-efficient than re-reading the whole page. ' +
+                        'Provide either `text` (raw content to search) OR `file` (path to a file to read and search) — not both.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: 'The string or regex pattern to search for.' },
+                            text: { type: 'string', description: 'Raw text content to search within. Pass the body returned by a previous fetch_url / web_search call.' },
+                            file: { type: 'string', description: 'Absolute path to a text file to search within. Use only for paths under /tmp or /models.' },
+                            mode: { type: 'string', enum: ['literal', 'regex'], description: 'How to interpret query (default literal).' },
+                            case_sensitive: { type: 'boolean', description: 'Match case (default false).' },
+                            context_lines: { type: 'integer', minimum: 0, maximum: 10, description: 'Lines of surrounding context to include around each match (default 2).' },
+                            max_matches: { type: 'integer', minimum: 1, maximum: 500, description: 'Cap on returned matches (default 50).' },
+                        },
+                        required: ['query'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const query = String(args?.query || '');
+            if (!query) return { error: 'query is required' };
+            const hasText = typeof args?.text === 'string' && args.text.length > 0;
+            const hasFile = typeof args?.file === 'string' && args.file.length > 0;
+            if (hasText === hasFile) {
+                return { error: 'Provide exactly one of `text` or `file`.' };
+            }
+            const mode = args?.mode === 'regex' ? 'regex' : 'literal';
+            const caseSensitive = args?.case_sensitive === true;
+            const contextLines = Math.min(10, Math.max(0, parseInt(args?.context_lines ?? 2, 10)));
+            const maxMatches = Math.min(500, Math.max(1, parseInt(args?.max_matches ?? 50, 10)));
+
+            let content;
+            let sourceLabel;
+            if (hasFile) {
+                const filePath = path.resolve(String(args.file));
+                // Confine file access to the same areas existing tools touch:
+                // /tmp (chat uploads, archive extracts) and /models (mounted
+                // models tree which holds .modelserver/conversations etc.).
+                const allowedRoots = ['/tmp/', '/models/', '/app/'];
+                if (!allowedRoots.some(r => filePath === r.slice(0, -1) || filePath.startsWith(r))) {
+                    return { error: `file path must be under one of: ${allowedRoots.join(', ')}` };
+                }
+                try {
+                    const stat = await fs.stat(filePath);
+                    if (!stat.isFile()) return { error: 'file is not a regular file' };
+                    if (stat.size > 20 * 1024 * 1024) {
+                        return { error: `file too large (${stat.size} bytes); cap is 20MB` };
+                    }
+                    content = await fs.readFile(filePath, 'utf8');
+                    sourceLabel = filePath;
+                } catch (e) {
+                    return { error: `failed to read file: ${e.message}` };
+                }
+            } else {
+                content = String(args.text);
+                sourceLabel = 'text';
+            }
+
+            let regex;
+            try {
+                const escaped = mode === 'regex'
+                    ? query
+                    : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                regex = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
+            } catch (e) {
+                return { error: `invalid regex: ${e.message}` };
+            }
+
+            const lines = content.split(/\r?\n/);
+            const matches = [];
+            let totalMatches = 0;
+            for (let i = 0; i < lines.length; i++) {
+                regex.lastIndex = 0;
+                if (!regex.test(lines[i])) continue;
+                totalMatches++;
+                if (matches.length >= maxMatches) continue;
+                const start = Math.max(0, i - contextLines);
+                const end = Math.min(lines.length - 1, i + contextLines);
+                const before = lines.slice(start, i);
+                const after = lines.slice(i + 1, end + 1);
+                matches.push({
+                    line_number: i + 1,
+                    line: lines[i].length > 500 ? lines[i].slice(0, 500) + '…' : lines[i],
+                    ...(contextLines > 0 ? { context_before: before, context_after: after } : {}),
+                });
+            }
+
+            return {
+                success: true,
+                source: sourceLabel,
+                query,
+                mode,
+                case_sensitive: caseSensitive,
+                total_lines: lines.length,
+                total_matches: totalMatches,
+                returned_matches: matches.length,
+                truncated: totalMatches > matches.length,
+                matches,
+            };
         },
     });
 

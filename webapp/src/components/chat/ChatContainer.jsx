@@ -590,6 +590,15 @@ export default function ChatContainer({
                                 continue; // Don't process as content
                             }
 
+                            // Handle memory-injection notice
+                            if (parsed.type === 'memory_injected') {
+                                const count = parsed.count || 0;
+                                const tokens = parsed.tokens || 0;
+                                const noun = count === 1 ? 'memory' : 'memories';
+                                showSnackbar(`Referenced ${count} ${noun} from this conversation (${tokens} tokens)`, 'info');
+                                continue;
+                            }
+
                             // Handle map-reduce completion info
                             if (parsed.mapReduce?.enabled) {
                                 const mr = parsed.mapReduce;
