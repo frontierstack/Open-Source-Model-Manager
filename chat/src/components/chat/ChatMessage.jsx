@@ -207,6 +207,7 @@ export default React.memo(function ChatMessage({
                 {!isUser && displayContent && !isStreaming && collapseKey && (
                     <button
                         onClick={() => toggleMessageCollapsed(collapseKey)}
+                        className="message-collapse-btn"
                         style={collapseBtn}
                         onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-2)'; }}
                         onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
@@ -468,7 +469,7 @@ export default React.memo(function ChatMessage({
 
             {/* Hover-revealed action row (assistant messages) */}
             {!isUser && displayContent && !isStreaming && (
-                <div style={{ ...actionsRow, alignSelf: 'stretch' }}>
+                <div className="message-actions-row" style={{ ...actionsRow, alignSelf: 'stretch' }}>
                     <button
                         onClick={handleCopy}
                         style={copied ? actionBtnActive : actionBtn}

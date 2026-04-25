@@ -337,18 +337,18 @@ export default function ChatSettings({
                                 <button
                                     type="button"
                                     onClick={() => handleStartEditMemory(mem)}
-                                    className="p-1 rounded hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors"
+                                    className="p-2 sm:p-1 rounded hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                                     title="Edit"
                                 >
-                                    <Edit3 className="w-3 h-3" />
+                                    <Edit3 className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                                 </button>
                                 <button
                                     type="button"
                                     onClick={() => handleDeleteMemory(mem.id)}
-                                    className="p-1 rounded hover:bg-red-500/20 text-dark-400 hover:text-red-300 transition-colors"
+                                    className="p-2 sm:p-1 rounded hover:bg-red-500/20 text-dark-400 hover:text-red-300 transition-colors min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                                     title="Delete"
                                 >
-                                    <Trash2 className="w-3 h-3" />
+                                    <Trash2 className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                                 </button>
                             </div>
                         </div>
@@ -662,7 +662,7 @@ export default function ChatSettings({
                             <button
                                 key={tab.id}
                                 onClick={() => setActiveTab(tab.id)}
-                                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                                className={`flex items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] min-w-[40px] text-xs font-medium border-b-2 transition-colors ${
                                     activeTab === tab.id
                                         ? 'text-primary-400 border-primary-500'
                                         : 'text-dark-400 border-transparent hover:text-dark-200 hover:border-white/10'
@@ -930,17 +930,17 @@ export default function ChatSettings({
                                                 <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity ml-2">
                                                     <button
                                                         onClick={() => handleStartEdit(prompt)}
-                                                        className="p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200"
+                                                        className="p-2 sm:p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200 min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                                                         title="Edit"
                                                     >
-                                                        <Edit3 className="w-3.5 h-3.5" />
+                                                        <Edit3 className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                                                     </button>
                                                     <button
                                                         onClick={() => handleDeletePrompt(prompt.id)}
-                                                        className="p-1.5 rounded-md hover:bg-red-500/20 text-dark-400 hover:text-red-400"
+                                                        className="p-2 sm:p-1.5 rounded-md hover:bg-red-500/20 text-dark-400 hover:text-red-400 min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                                                         title="Delete"
                                                     >
-                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                        <Trash2 className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                                                     </button>
                                                 </div>
                                             </div>

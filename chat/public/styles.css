@@ -1250,6 +1250,12 @@ body.font-size-large .markdown-content,
 .min-h-\[120px\]{
   min-height: 120px;
 }
+.min-h-\[32px\]{
+  min-height: 32px;
+}
+.min-h-\[40px\]{
+  min-height: 40px;
+}
 .min-h-screen{
   min-height: 100vh;
 }
@@ -1321,6 +1327,12 @@ body.font-size-large .markdown-content,
 }
 .min-w-\[320px\]{
   min-width: 320px;
+}
+.min-w-\[32px\]{
+  min-width: 32px;
+}
+.min-w-\[40px\]{
+  min-width: 40px;
 }
 .min-w-max{
   min-width: -moz-max-content;
@@ -4626,6 +4638,37 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     }
 }
 
+/* ============================================
+   Touch-device adaptations — reveal hover-only states + bump tap targets
+   `(hover: none)` matches phones/tablets without overriding desktop hover behavior
+   ============================================ */
+@media (hover: none), (max-width: 640px) {
+    /* Sidebar chat-row actions (favorite/move/edit/delete) — were opacity:0 until hover */
+    .chat-row-actions {
+        opacity: 1 !important;
+    }
+    .chat-row-actions button {
+        min-width: 28px !important;
+        min-height: 28px !important;
+    }
+
+    /* Message action row (copy/continue/timing) — was opacity:0 until message hover */
+    .message-actions-row {
+        opacity: 1 !important;
+    }
+    .message-actions-row button {
+        min-height: 32px;
+        padding: 6px 10px !important;
+    }
+
+    /* Collapse button on assistant messages — was 0.35 opacity until hover */
+    .message-collapse-btn {
+        opacity: 1 !important;
+        min-height: 28px;
+        padding: 4px 9px !important;
+    }
+}
+
 /* Artifacts panel — inline 420px on desktop, fullscreen overlay on mobile */
 .artifacts-panel {
     width: 420px;
@@ -5330,6 +5373,38 @@ html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.c
 
   .sm\:inline{
     display: inline;
+  }
+
+  .sm\:h-3{
+    height: 0.75rem;
+  }
+
+  .sm\:h-3\.5{
+    height: 0.875rem;
+  }
+
+  .sm\:min-h-0{
+    min-height: 0px;
+  }
+
+  .sm\:w-3{
+    width: 0.75rem;
+  }
+
+  .sm\:w-3\.5{
+    width: 0.875rem;
+  }
+
+  .sm\:min-w-0{
+    min-width: 0px;
+  }
+
+  .sm\:p-1{
+    padding: 0.25rem;
+  }
+
+  .sm\:p-1\.5{
+    padding: 0.375rem;
   }
 
   .sm\:opacity-0{

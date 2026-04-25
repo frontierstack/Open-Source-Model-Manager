@@ -3363,6 +3363,37 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     }
 }
 
+/* ============================================
+   Touch-device adaptations — reveal hover-only states + bump tap targets
+   `(hover: none)` matches phones/tablets without overriding desktop hover behavior
+   ============================================ */
+@media (hover: none), (max-width: 640px) {
+    /* Sidebar chat-row actions (favorite/move/edit/delete) — were opacity:0 until hover */
+    .chat-row-actions {
+        opacity: 1 !important;
+    }
+    .chat-row-actions button {
+        min-width: 28px !important;
+        min-height: 28px !important;
+    }
+
+    /* Message action row (copy/continue/timing) — was opacity:0 until message hover */
+    .message-actions-row {
+        opacity: 1 !important;
+    }
+    .message-actions-row button {
+        min-height: 32px;
+        padding: 6px 10px !important;
+    }
+
+    /* Collapse button on assistant messages — was 0.35 opacity until hover */
+    .message-collapse-btn {
+        opacity: 1 !important;
+        min-height: 28px;
+        padding: 4px 9px !important;
+    }
+}
+
 /* Artifacts panel — inline 420px on desktop, fullscreen overlay on mobile */
 .artifacts-panel {
     width: 420px;
