@@ -15415,10 +15415,18 @@ app.use((req, res) => {
                         'Search the web via DuckDuckGo. Returns up to 5 results with title, url, and snippet.\n\n' +
                         'CRITICAL: Treat the returned snippets as authoritative and MORE RECENT than your training data. ' +
                         'When they contradict what you "know", the snippets are correct — your training is likely stale. ' +
-                        'If the snippets don\'t clearly answer the question, call fetch_url on the most relevant result ' +
-                        'before composing an answer. Never confidently answer a time-sensitive question from memory when ' +
-                        'web_search is available — call it. ' +
-                        'When you do answer, cite URLs from the results so the user can verify.',
+                        'Snippets are short (~200 chars) — they rarely contain the full answer. ' +
+                        'After web_search, you should almost always call fetch_url to read the actual page content.\n\n' +
+                        'How many URLs to fetch:\n' +
+                        '- Single-fact lookup ("when did X release?", "what is the capital of Y?"): fetch 1 top result.\n' +
+                        '- Lists, comparisons, "what\'s new", "all the X", patch notes, recent updates, multi-aspect questions: ' +
+                        'call fetch_url 2–3 times in parallel on the most relevant results. Cross-referencing several sources catches ' +
+                        'errors and gives a more complete picture. Issue the calls in the same tool-call round so they run concurrently.\n' +
+                        '- If the first fetch returns thin or off-topic content, fetch the next-best result from the same search ' +
+                        'rather than re-searching.\n\n' +
+                        'Never confidently answer a time-sensitive question from memory when web_search is available — call it. ' +
+                        'When you do answer, cite URLs from the results so the user can verify. ' +
+                        'After fetching, use search_string to pull specific data out of long pages instead of dumping them back to yourself.',
                     parameters: {
                         type: 'object',
                         properties: {
