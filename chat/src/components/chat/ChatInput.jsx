@@ -488,7 +488,7 @@ export default function ChatInput({
             {/* Composer wrapper — centered at 720px with generous padding
                 (matches the design's `padding: 10px 28px 16px` and keeps
                 the input compact per the chat-input-compact memory). */}
-            <div className="mx-auto w-full" style={{ maxWidth: 720, padding: '10px 28px 16px' }}>
+            <div className="mx-auto w-full composer-wrapper" style={{ maxWidth: 720 }}>
                 {/* Attachment chips above the box */}
                 {(attachments.length > 0 || uploadingFiles.length > 0) && (
                     <div style={{ marginBottom: 8 }}>
@@ -552,12 +552,12 @@ export default function ChatInput({
                                     </span>
                                     <button
                                         onClick={() => onRemoveAttachment(index)}
-                                        style={{ padding: 2, borderRadius: 3, opacity: 0.6, background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer' }}
+                                        style={{ padding: 6, marginLeft: 2, borderRadius: 4, opacity: 0.6, background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 24, minHeight: 24 }}
                                         onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
                                         onMouseLeave={(e) => e.currentTarget.style.opacity = 0.6}
                                         aria-label={`Remove ${att.filename}`}
                                     >
-                                        <X className="w-3 h-3" />
+                                        <X className="w-3.5 h-3.5" />
                                     </button>
                                 </div>
                             ))}
@@ -567,6 +567,7 @@ export default function ChatInput({
 
                 {/* Main composer box */}
                 <div
+                    className="composer-box"
                     style={{
                         position: 'relative',
                         border: `1px solid ${isDragOver ? 'var(--accent)' : 'var(--rule-2)'}`,
@@ -575,6 +576,7 @@ export default function ChatInput({
                         padding: '4px 4px 4px',
                         boxShadow: '0 1px 0 rgba(0,0,0,.02), 0 10px 30px -20px rgba(0,0,0,.25)',
                         transition: 'border-color .12s',
+                        minWidth: 0,
                     }}
                     onDrop={handleDrop}
                     onDragOver={handleDragOver}
@@ -602,6 +604,7 @@ export default function ChatInput({
                         placeholder={isDragOver ? 'Drop files…' : 'Ask anything, attach a file, or paste a paper…'}
                         disabled={disabled}
                         rows={1}
+                        className="chat-composer-textarea"
                         style={{
                             width: '100%',
                             minHeight: 44,
@@ -611,7 +614,6 @@ export default function ChatInput({
                             resize: 'none',
                             padding: '12px 14px 6px',
                             background: 'transparent',
-                            fontSize: 14.5,
                             lineHeight: 1.55,
                             color: 'var(--ink)',
                             fontFamily: 'inherit',
@@ -620,7 +622,7 @@ export default function ChatInput({
                     />
 
                     {/* Bottom control row */}
-                    <div style={{ display: 'flex', alignItems: 'center', padding: '6px 6px 6px 8px' }}>
+                    <div className="composer-bottom-row" style={{ display: 'flex', alignItems: 'center', padding: '6px 6px 6px 8px', gap: 6, minWidth: 0 }}>
                         {/* Left controls */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0 }}>
                             <button
@@ -641,12 +643,13 @@ export default function ChatInput({
                                     <button
                                         onClick={() => setPromptDropdownOpen(!promptDropdownOpen)}
                                         disabled={disabled || isStreaming}
-                                        style={{ ...(selectedPrompt ? chipActive : chip), opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 180 }}
+                                        className="composer-chip-persona"
+                                        style={{ ...(selectedPrompt ? chipActive : chip), opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 180, minWidth: 0 }}
                                         aria-label="Choose persona"
                                         title={selectedPrompt ? `Persona: ${selectedPrompt.name}` : 'Choose persona'}
                                     >
-                                        <Sparkles className="w-[13px] h-[13px]" strokeWidth={1.75} />
-                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <Sparkles className="w-[13px] h-[13px] shrink-0" strokeWidth={1.75} />
+                                        <span className="composer-chip-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                             {selectedPrompt ? selectedPrompt.name : 'Persona'}
                                         </span>
                                         <ChevronDown className={`w-[11px] h-[11px] transition-transform duration-150 ${promptDropdownOpen ? 'rotate-180' : ''}`} strokeWidth={1.75} />
@@ -695,18 +698,20 @@ export default function ChatInput({
                                     <button
                                         onClick={() => { setModelDropdownOpen(o => !o); setPromptDropdownOpen(false); }}
                                         disabled={disabled || isStreaming}
-                                        style={{ ...chip, opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 220 }}
+                                        className="composer-chip-model"
+                                        style={{ ...chip, opacity: (disabled || isStreaming) ? 0.3 : 1, maxWidth: 220, minWidth: 0 }}
                                         aria-label="Choose model"
                                         title={selectedModel ? `Model: ${selectedModel}` : 'Select model'}
                                     >
                                         <Circle
+                                            className="shrink-0"
                                             style={{
                                                 width: 6, height: 6,
                                                 fill: getModelStatusColor(selectedModelData?.status),
                                                 color: getModelStatusColor(selectedModelData?.status),
                                             }}
                                         />
-                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                                             {selectedModel || 'Select model'}
                                         </span>
                                         <ChevronDown
@@ -768,6 +773,7 @@ export default function ChatInput({
                                 <button
                                     onClick={onStop}
                                     style={stopBtn}
+                                    className="tap-feedback"
                                     onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
                                     onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
                                     aria-label="Stop"
@@ -779,6 +785,7 @@ export default function ChatInput({
                                 <button
                                     onClick={handleSend}
                                     disabled={!canSend}
+                                    className="tap-feedback"
                                     style={{
                                         ...sendBtn,
                                         opacity: canSend ? 1 : 0.4,

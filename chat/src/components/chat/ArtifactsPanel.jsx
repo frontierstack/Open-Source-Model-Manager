@@ -52,7 +52,7 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
     if (!open) return null;
 
     const panel = {
-        width: 420, height: '100%',
+        height: '100%',
         flexShrink: 0,
         borderLeft: '1px solid var(--rule)',
         background: 'var(--bg-2)',
@@ -106,7 +106,14 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
     };
 
     return (
-        <aside style={panel}>
+        <>
+            {/* Mobile overlay backdrop — taps close the panel */}
+            <div
+                className="md:hidden fixed inset-0 z-40"
+                style={{ background: 'color-mix(in oklab, var(--ink) 60%, transparent)', backdropFilter: 'blur(4px)' }}
+                onClick={onClose}
+            />
+            <aside style={panel} className="artifacts-panel">
             <div style={header}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{
@@ -227,7 +234,8 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                     </button>
                 )}
             </div>
-        </aside>
+            </aside>
+        </>
     );
 }
 

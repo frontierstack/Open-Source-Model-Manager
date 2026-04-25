@@ -143,12 +143,11 @@ const ChatMessages = React.memo(function ChatMessages({
             className={`flex-1 overflow-y-auto ${chatStyleClass}`}
             style={{ '--message-border-opacity': (messageBorderStrength || 10) / 100 }}
         >
-            {/* Design-spec column: max-width 780, padding 28/28/8 */}
-            <div style={{
+            {/* Design-spec column: max-width 780, padding 28/28/8 (reduced on mobile) */}
+            <div className="messages-column" style={{
                 maxWidth: 780,
                 width: '100%',
                 margin: '0 auto',
-                padding: '28px 28px 8px',
                 minWidth: 0,
             }}>
             {header}

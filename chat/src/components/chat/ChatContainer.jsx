@@ -2210,6 +2210,7 @@ export default function ChatContainer({
                     onLogout={onLogout}
                     sidebarCollapsed={sidebarCollapsed}
                     onOpenSidebar={() => setSidebarCollapsed(false)}
+                    onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
                     breadcrumb={breadcrumb}
                     artifactsOpen={artifactsOpen}
                     onToggleArtifacts={artifacts.length > 0 ? () => setArtifactsOpen(o => !o) : null}
@@ -2217,7 +2218,7 @@ export default function ChatContainer({
 
                 {/* Content area - centered when empty, normal when messages */}
                 {chatIsEmpty ? (
-                    <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[8vh]">
+                    <div className="flex-1 flex flex-col items-center justify-center px-4 pb-[8vh] supports-[height:100svh]:pb-[8svh]">
                         <div className="w-full max-w-2xl">
                             <ChatInput
                                 onSend={handleSendMessage}
@@ -2269,7 +2270,7 @@ export default function ChatContainer({
                         </div>
 
                         {/* Input - slides down from center on first message */}
-                        <div className={`flex-shrink-0 ${slideDown ? 'animate-input-slide-down' : ''}`}>
+                        <div className={`flex-shrink-0 input-area ${slideDown ? 'animate-input-slide-down' : ''}`}>
                             <ChatInput
                                 onSend={handleSendMessage}
                                 onStop={handleStopGeneration}

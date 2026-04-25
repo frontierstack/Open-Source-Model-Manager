@@ -5,6 +5,7 @@ import {
     LogOut,
     PanelLeft,
     Eye,
+    Menu,
     User,
 } from 'lucide-react';
 
@@ -14,6 +15,7 @@ export default function ChatHeader({
     onLogout,
     sidebarCollapsed,
     onOpenSidebar,
+    onOpenMobileSidebar,
     breadcrumb,
     artifactsOpen,
     onToggleArtifacts,
@@ -78,7 +80,7 @@ export default function ChatHeader({
         <header
             style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '10px 16px',
+                padding: 'calc(10px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 10px calc(16px + env(safe-area-inset-left))',
                 borderBottom: '1px solid var(--rule)',
                 background: 'var(--bg)',
                 flexShrink: 0,
@@ -88,11 +90,24 @@ export default function ChatHeader({
             }}
         >
             {/* Left: sidebar toggle + breadcrumb */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                {/* Show-sidebar button when collapsed */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1, overflow: 'hidden' }}>
+                {/* Mobile hamburger — only visible <768px */}
+                {onOpenMobileSidebar && (
+                    <button
+                        onClick={onOpenMobileSidebar}
+                        className="md:hidden tap-feedback"
+                        style={{ ...topBtn, padding: '8px', minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' }}
+                        aria-label="Open sidebar"
+                        title="Open sidebar"
+                    >
+                        <Menu style={{ width: 18, height: 18 }} strokeWidth={1.75} />
+                    </button>
+                )}
+                {/* Desktop show-sidebar button when collapsed */}
                 {sidebarCollapsed && onOpenSidebar && (
                     <button
                         onClick={onOpenSidebar}
+                        className="hidden md:inline-flex"
                         style={{ ...topBtn, padding: '6px 7px' }}
                         title="Show sidebar"
                     >
@@ -105,18 +120,18 @@ export default function ChatHeader({
                     <div style={{
                         display: 'flex', alignItems: 'center', gap: 6,
                         fontSize: 12.5, color: 'var(--ink)',
-                        maxWidth: 360,
+                        maxWidth: 360, minWidth: 0, overflow: 'hidden',
                     }}>
                         {breadcrumb.map((item, i) => (
                             <React.Fragment key={i}>
-                                <span style={{
+                                <span className="breadcrumb-item" style={{
                                     color: i === breadcrumb.length - 1 ? 'var(--ink)' : 'var(--ink-3)',
                                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                     maxWidth: 160,
                                 }}>
                                     {item}
                                 </span>
-                                {i < breadcrumb.length - 1 && <span style={{ color: 'var(--ink-4)' }}>/</span>}
+                                {i < breadcrumb.length - 1 && <span className="breadcrumb-spacer" style={{ color: 'var(--ink-4)' }}>/</span>}
                             </React.Fragment>
                         ))}
                     </div>
@@ -135,7 +150,7 @@ export default function ChatHeader({
                         title="Toggle artifacts panel"
                     >
                         <Eye style={{ width: 14, height: 14 }} strokeWidth={1.75} />
-                        <span>Artifacts</span>
+                        <span className="artifacts-toggle-label">Artifacts</span>
                     </button>
                 )}
 
