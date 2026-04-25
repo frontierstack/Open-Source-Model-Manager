@@ -11084,6 +11084,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // it flows through AIMem compression and the chunking gate just
         // like any other system context, so injection can't blow up the
         // context budget.
+        let pendingMemoryNotice = null;
         try {
             const chatUserId = req.user?.id || req.apiKeyData?.id || 'default';
             const chatConvId = conversationId || req.body.conversationId;
@@ -11118,16 +11119,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         } else {
                             chatMessages.unshift({ role: 'system', content: memoryBlock });
                         }
-                        // Notify the client so the UI can show a "memories
-                        // referenced" status chip / notice for this turn.
-                        try {
-                            res.write(`data: ${JSON.stringify({
-                                type: 'memory_injected',
-                                count: memoryResult.count,
-                                tokens: memoryResult.tokens,
-                                previews: memoryResult.previews,
-                            })}\n\n`);
-                        } catch {}
+                        // Defer the SSE notice — at this point the response
+                        // is still in pre-stream mode (headers not yet set).
+                        // Stash the payload and emit it once SSE setup runs
+                        // below.
+                        pendingMemoryNotice = {
+                            type: 'memory_injected',
+                            count: memoryResult.count,
+                            tokens: memoryResult.tokens,
+                            previews: memoryResult.previews,
+                        };
                     }
                 }
             }
@@ -11582,6 +11583,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Node.js default is 2 minutes which kills long-running streams
         req.setTimeout(0);
         res.setTimeout(0);
+
+        // Flush any deferred pre-stream notices now that SSE is live.
+        if (pendingMemoryNotice) {
+            try { res.write(`data: ${JSON.stringify(pendingMemoryNotice)}\n\n`); } catch {}
+            pendingMemoryNotice = null;
+        }
         if (req.socket) req.socket.setTimeout(0);
 
         // SSE keepalive: emit a comment line every 25s for as long as the
