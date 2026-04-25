@@ -5554,7 +5554,10 @@ async function executeDataSkill(skillName, params) {
     try {
         switch (skillName) {
             case 'parse_json': {
-                const content = params.content || params.json;
+                // Server publishes this skill's parameter as `jsonString` (see /api/skills),
+                // so the model emits {"jsonString": "..."} on the native tool path.
+                // Older [SKILL:...] examples used `content`/`json`, kept as aliases.
+                const content = params.content || params.json || params.jsonString;
                 if (!content) return { success: false, error: 'content parameter is required' };
                 try {
                     const parsed = JSON.parse(content);
@@ -5587,7 +5590,10 @@ async function executeDataSkill(skillName, params) {
             }
 
             case 'base64_decode': {
-                const content = params.content || params.data;
+                // Server publishes the parameter as `text` (see /api/skills), so
+                // native tool calls arrive as {"text": "..."}. Server's Python
+                // also accepts `encodedData`/`data`. `content` is the legacy alias.
+                const content = params.content || params.text || params.encodedData || params.data;
                 if (!content) return { success: false, error: 'content parameter is required' };
                 try {
                     const decoded = Buffer.from(content, 'base64').toString('utf8');
@@ -5667,7 +5673,8 @@ async function executeDataSkill(skillName, params) {
             }
 
             case 'decompress_data': {
-                const content = params.content || params.data;
+                // Server publishes the parameter as `compressedData`.
+                const content = params.content || params.compressedData || params.data;
                 if (!content) return { success: false, error: 'content parameter is required' };
                 return new Promise((resolve) => {
                     zlib.gunzip(Buffer.from(content, 'base64'), (err, result) => {
