@@ -15558,7 +15558,10 @@ app.use((req, res) => {
                         'Reuses the same pipeline as /api/url/fetch (Scrapling → Playwright → axios).\n\n' +
                         'CRITICAL: The returned content reflects the live page. When it contradicts what you "know" from ' +
                         'training, trust the fetched content — it is current, your training is not. Cite the URL. ' +
-                        'If the result includes a `hint` mentioning bot protection or thin content, retry the same URL with scrapling_fetch before giving up or asking the user to paste.',
+                        'If the result includes a `hint` mentioning bot protection or thin content, retry the same URL with scrapling_fetch before giving up or asking the user to paste.\n\n' +
+                        'AFTER FETCHING: if the page is long (>1000 chars) and the user asked for a specific fact, ' +
+                        'call search_string on the returned content (text=<the content>) instead of scanning the whole page. ' +
+                        'It is much faster, uses fewer tokens, and gives you exact line citations.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -15930,11 +15933,27 @@ app.use((req, res) => {
                 function: {
                     name: 'search_string',
                     description:
-                        'Search for a string or regex inside text content or a file, and return matching lines with surrounding context. ' +
-                        'Use this when you need to find specific data (a name, number, date, error code, IP, etc.) inside a long body of text — ' +
-                        'such as the content returned by fetch_url / web_search / scrapling_fetch / playwright_fetch, or inside an uploaded file. ' +
-                        'Much more token-efficient than re-reading the whole page. ' +
-                        'Provide either `text` (raw content to search) OR `file` (path to a file to read and search) — not both.',
+                        'Search for a string or regex inside text content or a file, and return only matching lines with surrounding context. ' +
+                        'This is your default tool for pulling specific data out of any large blob of text — fetched web pages, file contents, log dumps, ' +
+                        'documents, archives, command output, prior tool results. Provide either `text` (raw content to search) OR `file` (path to a file ' +
+                        'to read and search) — not both.\n\n' +
+                        'WHEN TO USE (strong triggers — call this without asking):\n' +
+                        '- After fetch_url / scrapling_fetch / playwright_fetch / crawl_pages: if the user asked for specific data (a price, date, ' +
+                        'name, number, error code, IP, hash, version, status, etc.), call search_string on the returned content instead of re-reading ' +
+                        'the whole page. The page is already in your context — searching it is free; reasoning over the full body is expensive.\n' +
+                        '- Any time you have text content longer than ~1000 chars and the user wants something specific from it.\n' +
+                        '- Inside uploaded files (logs, CSVs, code, transcripts, PDFs already converted to text).\n' +
+                        '- Looking up a keyword across a large pasted block.\n' +
+                        '- Verifying whether a fact appears in fetched documentation before answering.\n\n' +
+                        'WHY IT MATTERS:\n' +
+                        '- Saves context tokens — only matching lines come back, not the full page.\n' +
+                        '- Faster responses — less text for you to re-read on the next iteration.\n' +
+                        '- More precise — line numbers + surrounding context let you cite exact locations.\n\n' +
+                        'TIPS:\n' +
+                        '- Use mode="regex" for patterns (IPs, dates, prices, hashes).\n' +
+                        '- Use case_sensitive=false (default) unless case actually matters.\n' +
+                        '- Bump context_lines to 3–5 when you need the surrounding paragraph.\n' +
+                        '- If the first query returns nothing, try a shorter / more lenient pattern before giving up.',
                     parameters: {
                         type: 'object',
                         properties: {
