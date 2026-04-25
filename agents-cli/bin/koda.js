@@ -43,16 +43,10 @@ function colorize(text, color) {
     return `${colors[color] || ''}${text}${colors.reset}`;
 }
 
-// Quiet logging - only show user-relevant messages
-let quietMode = true;
-
 // Chat history for improved UI
 const chatHistory = [];
 const MAX_HISTORY = 50;
 
-// Mode tracking
-let websearchMode = false; // Web search enhancement mode
-let lastWebModeError = false; // Track if last skill failure was due to web mode requirement
 let cachedSkills = []; // Cache last successful skills fetch for resilience
 const conversationContext = []; // For session awareness
 let userWorkingDirectory = process.cwd(); // Track user's CWD
@@ -1806,7 +1800,6 @@ function displayChatHistory() {
         log(' ' + colorize('tips', 'yellow') + colorize('  Tab', 'cyan') +
             colorize(' cycles / commands   ', 'dim') +
             colorize('/help', 'cyan') + colorize(' commands   ', 'dim') +
-            colorize('/web', 'cyan') + colorize(' toggle search   ', 'dim') +
             colorize('/exit', 'yellow') + colorize(' quit', 'dim'));
         log('');
     } else {
@@ -1912,13 +1905,6 @@ function displayStatusBar() {
 
     // "koda" label acts as the left anchor — no mode concept anymore.
     leftParts.push(colorize('◆', 'cyan') + colorize(' koda', 'bright'));
-
-    // Web search indicator
-    if (websearchMode) {
-        leftParts.push(colorize('web', 'green'));
-    } else {
-        leftParts.push(colorize('web off', 'dim'));
-    }
 
     // Compact cwd label
     const cwdLabel = userWorkingDirectory.length > 38
@@ -2623,7 +2609,7 @@ class AgentAPI {
                             reject(new Error(
                                 `Stream timeout: no data received for ${Math.round(ACTIVITY_TIMEOUT / 1000)}s. ` +
                                 `The server may still be processing (web scraping, map-reduce, or a slow model). ` +
-                                `Try a shorter query or disable /web.`
+                                `Try a shorter query.`
                             ));
                         }
                     }, ACTIVITY_TIMEOUT);
@@ -2811,6 +2797,269 @@ class AgentAPI {
                 resetActivityTimer();
             });
 
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+
+    // ── Native tool calling via /v1/chat/completions passthrough ──────────
+    // Discover the served model id (cached). The /v1/* proxy forwards any
+    // GET request to the first running vLLM/llamacpp instance, and the
+    // OpenAI /v1/models endpoint returns the served-model-name in data[0].id.
+    // We need this because /v1/chat/completions requires an explicit `model`
+    // field; vLLM/llamacpp will reject the request otherwise.
+    async getServedModelId() {
+        if (this._cachedModelId) return this._cachedModelId;
+        const result = await this.request('GET', '/v1/models', null, 10000);
+        if (result.success && result.data) {
+            // OpenAI shape: { data: [{ id, ... }] }; webapp shape may also
+            // include a sibling `models` array. Prefer OpenAI's `data`.
+            const list = Array.isArray(result.data.data) ? result.data.data
+                       : Array.isArray(result.data.models) ? result.data.models
+                       : [];
+            const first = list[0];
+            const id = first && (first.id || first.name);
+            if (id) {
+                this._cachedModelId = id;
+                return id;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Raw OpenAI-compatible streaming chat completion.
+     *
+     * Hits /v1/chat/completions (a transparent passthrough to the loaded
+     * model) so we can pass our own `tools` array and receive structured
+     * `tool_calls` deltas back. This is the path Koda uses for native tool
+     * calling. The legacy /api/chat/stream path stays for the text-only
+     * fallback when the model doesn't emit tool_calls.
+     *
+     * opts:
+     *   { messages, tools?, model?, temperature?, maxTokens?, toolChoice? }
+     * callbacks:
+     *   onToken(text)              - assistant content delta
+     *   onToolCallDelta(delta)     - raw OpenAI tool_call delta (for live UI)
+     *
+     * Returns:
+     *   { success, data: { content, toolCalls, finishReason, model, tokens } }
+     *   toolCalls: [{ id, type:'function', function: { name, arguments(string) } }]
+     */
+    async chatCompletionsRaw(opts, callbacks = {}) {
+        lastApiCallStartTime = Date.now();
+        const { onToken, onToolCallDelta } = callbacks;
+        const ACTIVITY_TIMEOUT = 300000;
+        const MAX_TOTAL_TIMEOUT = 900000;
+
+        try {
+            const https = require('https');
+            const url = require('url');
+            const parsedUrl = url.parse(this.baseUrl);
+
+            // Resolve the model id once. /v1/chat/completions requires it.
+            const modelId = opts.model || await this.getServedModelId();
+            if (!modelId) {
+                return { success: false, error: 'No model loaded on the server' };
+            }
+
+            const body = {
+                model: modelId,
+                messages: opts.messages,
+                stream: true
+            };
+            if (Array.isArray(opts.tools) && opts.tools.length) {
+                body.tools = opts.tools;
+                body.tool_choice = opts.toolChoice || 'auto';
+            }
+            if (typeof opts.temperature === 'number') body.temperature = opts.temperature;
+            if (typeof opts.maxTokens === 'number') body.max_tokens = opts.maxTokens;
+
+            const postData = JSON.stringify(body);
+            const options = {
+                hostname: parsedUrl.hostname,
+                port: parsedUrl.port || 443,
+                path: '/v1/chat/completions',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': this.apiKey,
+                    'X-API-Secret': this.apiSecret,
+                    'Accept': 'text/event-stream',
+                    'Content-Length': Buffer.byteLength(postData)
+                },
+                rejectUnauthorized: false
+            };
+
+            return new Promise((resolve, reject) => {
+                let resolved = false;
+                let activityTimer = null;
+                let totalTimer = null;
+                const cleanup = () => {
+                    if (activityTimer) clearTimeout(activityTimer);
+                    if (totalTimer) clearTimeout(totalTimer);
+                };
+                const resetActivityTimer = () => {
+                    if (activityTimer) clearTimeout(activityTimer);
+                    activityTimer = setTimeout(() => {
+                        if (!resolved) {
+                            resolved = true;
+                            cleanup();
+                            if (req) req.destroy();
+                            reject(new Error(
+                                `Stream timeout: no data received for ${Math.round(ACTIVITY_TIMEOUT / 1000)}s.`
+                            ));
+                        }
+                    }, ACTIVITY_TIMEOUT);
+                };
+                totalTimer = setTimeout(() => {
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        req.destroy();
+                        reject(new Error('Request timeout: maximum total time exceeded'));
+                    }
+                }, MAX_TOTAL_TIMEOUT);
+
+                // Accumulators for the final result.
+                let content = '';
+                // tool_calls arrive as fragments keyed by `index`. OpenAI
+                // streams the `arguments` JSON in pieces — we concat them
+                // and parse at the end.
+                const toolCallsByIndex = new Map();
+                let finishReason = null;
+                let tokens = null;
+                let modelEcho = modelId;
+
+                const req = https.request(options, (res) => {
+                    resetActivityTimer();
+                    if (res.statusCode !== 200) {
+                        let errorData = '';
+                        res.on('data', c => { errorData += c; });
+                        res.on('end', () => {
+                            if (!resolved) {
+                                resolved = true;
+                                cleanup();
+                                try {
+                                    const parsed = JSON.parse(errorData);
+                                    reject(new Error(parsed.error?.message || parsed.error || `HTTP ${res.statusCode}`));
+                                } catch (_) {
+                                    reject(new Error(`HTTP ${res.statusCode}: ${errorData.substring(0, 300)}`));
+                                }
+                            }
+                        });
+                        return;
+                    }
+
+                    let buffer = '';
+                    res.on('data', (chunk) => {
+                        resetActivityTimer();
+                        buffer += chunk.toString();
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+                        for (const rawLine of lines) {
+                            const line = rawLine.trim();
+                            if (!line.startsWith('data:')) continue;
+                            const dataStr = line.slice(5).trim();
+                            if (dataStr === '[DONE]') continue;
+                            let data;
+                            try { data = JSON.parse(dataStr); } catch (_) { continue; }
+
+                            if (data.error) {
+                                if (!resolved) {
+                                    resolved = true;
+                                    cleanup();
+                                    const msg = typeof data.error === 'object'
+                                        ? (data.error.message || JSON.stringify(data.error))
+                                        : data.error;
+                                    reject(new Error(msg));
+                                }
+                                return;
+                            }
+
+                            if (data.model) modelEcho = data.model;
+                            if (data.usage) tokens = data.usage;
+
+                            const choice = data.choices && data.choices[0];
+                            if (!choice) continue;
+
+                            if (choice.finish_reason) finishReason = choice.finish_reason;
+
+                            const delta = choice.delta || {};
+                            if (typeof delta.content === 'string' && delta.content.length) {
+                                content += delta.content;
+                                if (onToken) onToken(delta.content);
+                            }
+
+                            if (Array.isArray(delta.tool_calls)) {
+                                for (const tc of delta.tool_calls) {
+                                    const idx = (typeof tc.index === 'number') ? tc.index : 0;
+                                    let entry = toolCallsByIndex.get(idx);
+                                    if (!entry) {
+                                        entry = { id: '', type: 'function', function: { name: '', arguments: '' } };
+                                        toolCallsByIndex.set(idx, entry);
+                                    }
+                                    if (tc.id) entry.id = tc.id;
+                                    if (tc.type) entry.type = tc.type;
+                                    if (tc.function) {
+                                        if (tc.function.name) entry.function.name += tc.function.name;
+                                        if (typeof tc.function.arguments === 'string') {
+                                            entry.function.arguments += tc.function.arguments;
+                                        }
+                                    }
+                                    if (onToolCallDelta) onToolCallDelta(tc);
+                                }
+                            }
+                        }
+                    });
+
+                    res.on('end', () => {
+                        if (resolved) return;
+                        resolved = true;
+                        cleanup();
+                        lastApiCallEndTime = Date.now();
+                        // Order tool calls by their index so caller sees a
+                        // deterministic execution order.
+                        const toolCalls = [...toolCallsByIndex.entries()]
+                            .sort((a, b) => a[0] - b[0])
+                            .map(([, v]) => v)
+                            // Drop anything that's empty or has no name —
+                            // some backends emit a phantom delta with just
+                            // an id at the top of the stream.
+                            .filter(c => c.function && c.function.name);
+                        // If finish_reason is set to 'tool_calls' but the
+                        // accumulator is empty, surface it for diagnostics.
+                        if (tokens) {
+                            const elapsed = (lastApiCallEndTime - lastApiCallStartTime) / 1000;
+                            if (elapsed > 0 && tokens.completion_tokens) {
+                                lastTokensPerSecond = tokens.completion_tokens / elapsed;
+                            }
+                        }
+                        resolve({
+                            success: true,
+                            data: { content, toolCalls, finishReason, model: modelEcho, tokens }
+                        });
+                    });
+
+                    res.on('error', (err) => {
+                        if (resolved) return;
+                        resolved = true;
+                        cleanup();
+                        reject(err);
+                    });
+                });
+
+                req.on('error', (err) => {
+                    if (resolved) return;
+                    resolved = true;
+                    cleanup();
+                    reject(err);
+                });
+
+                req.write(postData);
+                req.end();
+                resetActivityTimer();
+            });
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -3263,15 +3512,15 @@ const INTENT_KEYWORDS = {
 };
 
 // Detect which skill categories are relevant based on user message
-function detectIntentCategories(userMessage, websearchEnabled) {
-    // FILE_OPS is the only always-on category — file CRUD is the most common
-    // Koda workflow and small models get confused if it ever disappears.
-    // Everything else (PROCESS/SYSTEM/GIT/ENV/WEB/…) ships only when the
-    // message actually asks for it, keeping the skill catalog lean.
-    const coreCategories = ['FILE_OPS'];
+function detectIntentCategories(userMessage) {
+    // FILE_OPS and WEB are always-on — file CRUD is the most common Koda
+    // workflow and web tools (web_search/fetch_url) should always be available
+    // for the model to invoke. Everything else (PROCESS/SYSTEM/GIT/ENV/…)
+    // ships only when the message actually asks for it.
+    const coreCategories = ['FILE_OPS', 'WEB'];
 
     if (!userMessage) {
-        return websearchEnabled ? [...coreCategories, 'WEB'] : coreCategories;
+        return coreCategories;
     }
 
     const messageLower = userMessage.toLowerCase();
@@ -3298,12 +3547,6 @@ function detectIntentCategories(userMessage, websearchEnabled) {
     // Check for IOC patterns - enable NETWORK category for dns_lookup, ping_host, etc.
     const hasIOC = ipv4Pattern.test(userMessage) || hashPattern.test(userMessage) || domainPattern.test(userMessage);
     if (hasIOC) {
-        detectedCategories.add('NETWORK');
-    }
-
-    // If websearch is enabled, include web-dependent categories
-    if (websearchEnabled) {
-        detectedCategories.add('WEB');
         detectedCategories.add('NETWORK');
     }
 
@@ -3410,7 +3653,7 @@ const MATH_WORDS_REGEX = /^(what('?s| is)|calculate|compute|solve)\s+([0-9().+\-
 const GREETING_REGEX = /^(hi|hello|hey|yo|howdy|greetings|sup|hola|bonjour)[\s!.,?]*$/i;
 const CODE_REQUEST_REGEX = /\b(write|show|give me|generate|produce|implement)\s+(a|an|some)?\s*(python|javascript|js|typescript|ts|bash|shell|sql|go|rust|c\+\+|c#|java|regex|function|script|class|snippet|code|example)\b/i;
 
-function classifyQuery(message, websearchEnabled = false) {
+function classifyQuery(message) {
     const m = (message || '').trim();
     if (!m) return 'chat';
 
@@ -3449,7 +3692,7 @@ function classifyQuery(message, websearchEnabled = false) {
 // model performs much better when the prompt fits comfortably in a few
 // hundred tokens. The guardrails at the bottom are the minimum needed to
 // stop the specific bugs observed in testing.
-function buildLeanSystemPrompt(queryType, websearchEnabled = false) {
+function buildLeanSystemPrompt(queryType) {
     const base =
 `You are Koda, a concise AI assistant running in a terminal.
 
@@ -3463,17 +3706,15 @@ Formatting rules (output is rendered as markdown in a terminal):
 - For code requests, output the code in a fenced code block with the language tag (\`\`\`python, \`\`\`js, etc) and keep the explanation brief.
 - For news, summaries, or research responses, lead with a one-line summary, then use short bullets for the key points, and cite sources by number [1], [2] if they were provided.
 - Never invent "skill" calls in square brackets — those are only used when actually executing tools, not for conversation.
-- Never fabricate that you have executed a tool, saved a file, or counted words unless you actually did.`;
+- Never fabricate that you have executed a tool, saved a file, or counted words unless you actually did.
 
-    const tail = websearchEnabled
-        ? '\n\nWeb search is ON. If search results are provided below, use them as the primary source and cite briefly.'
-        : '';
+Web search and URL fetching are always available — use the web_search and fetch_url skills whenever the question needs current information or external content.`;
 
-    return base + tail;
+    return base;
 }
 
 // Build system prompt with skill instructions - SMART ROUTING VERSION
-function buildSkillSystemPrompt(skills, websearchEnabled = false, userMessage = '') {
+function buildSkillSystemPrompt(skills, userMessage = '') {
     if (!skills || skills.length === 0) {
         return '';
     }
@@ -3484,7 +3725,7 @@ function buildSkillSystemPrompt(skills, websearchEnabled = false, userMessage = 
     }
 
     // Detect relevant categories based on user message
-    const relevantCategories = detectIntentCategories(userMessage, websearchEnabled);
+    const relevantCategories = detectIntentCategories(userMessage);
 
     // Get skills that should have expanded details (in relevant categories)
     const expandedSkillNames = new Set();
@@ -3780,20 +4021,103 @@ search_replace_file matches LITERAL text — do NOT escape regex metacharacters.
 - GOOD: [SKILL:read_file(filePath="/path")]
 `;
 
-    // Add web search capability note
-    if (websearchEnabled) {
-        prompt += `
-=== WEB CAPABILITIES ENABLED ===
-- You CAN search the web and fetch content - use web_search, playwright_fetch
-- DO NOT say "I can't browse the web" - you have full web access via skills
+    prompt += `
+=== WEB CAPABILITIES ===
+- You CAN search the web and fetch content — use web_search and fetch_url
+- DO NOT say "I can't browse the web" — you have full web access via skills
 `;
-    }
 
     prompt += `
 Use skills naturally based on user requests. The catalog above shows the skills relevant to this turn; ${enabledSkills.length} total are available across all categories.
 `;
 
     return prompt;
+}
+
+// ── Native tool calling: build OpenAI tools array from Koda's skill catalog ─
+//
+// Convert each enabled, intent-relevant skill into an OpenAI
+// `{ type: 'function', function: { name, description, parameters } }`
+// descriptor. We deliberately filter by intent (same logic as
+// buildSkillSystemPrompt) so a small model isn't handed 65 tool schemas
+// when only 5 apply — empirically that wrecks tool selection accuracy on
+// 7B-class models.
+//
+// The skill metadata from /api/skills returns `parameters` as a flat dict
+// of name → primitive type ({"filePath": "string", "content": "string"}).
+// We expand that to a JSONSchema object. We do NOT mark fields required —
+// some skills accept many optional knobs and being strict here causes
+// well-formed calls to fail upstream validation. Native models that need
+// a hint get one from the description.
+function buildToolsArray(skills, userMessage = '') {
+    if (!skills || skills.length === 0) return [];
+    const enabled = skills.filter(s => s.enabled);
+    if (enabled.length === 0) return [];
+
+    const relevantCategories = detectIntentCategories(userMessage);
+    const relevantNames = new Set();
+    for (const category of relevantCategories) {
+        for (const name of getSkillsInCategory(category)) {
+            relevantNames.add(name);
+        }
+    }
+
+    // If intent routing matched something, send only those tools.
+    // Otherwise (no category matched at all) fall back to the full enabled
+    // catalog so the model isn't left toolless on edge-case prompts.
+    const candidates = relevantNames.size
+        ? enabled.filter(s => relevantNames.has(s.name))
+        : enabled;
+
+    const TYPE_MAP = {
+        'string': 'string',
+        'number': 'number',
+        'integer': 'integer',
+        'int': 'integer',
+        'boolean': 'boolean',
+        'bool': 'boolean',
+        'array': 'array',
+        'object': 'object'
+    };
+
+    return candidates.map(skill => {
+        const properties = {};
+        const params = skill.parameters && typeof skill.parameters === 'object' ? skill.parameters : {};
+        for (const [paramName, paramType] of Object.entries(params)) {
+            // paramType may be a primitive string ("string") or a richer
+            // descriptor object — accept both shapes.
+            if (paramType && typeof paramType === 'object') {
+                properties[paramName] = paramType;
+            } else {
+                const t = TYPE_MAP[String(paramType).toLowerCase()] || 'string';
+                properties[paramName] = { type: t };
+            }
+        }
+        // Combine description + a short slice of systemPrompt so the model
+        // sees the same hints it would in the text catalog. Cap at 600
+        // chars to keep the tools payload small.
+        let desc = skill.description || '';
+        if (skill.systemPrompt) {
+            const hint = String(skill.systemPrompt).split('\n')[0].trim();
+            if (hint && !desc.includes(hint)) {
+                desc = desc ? `${desc}. ${hint}` : hint;
+            }
+        }
+        if (desc.length > 600) desc = desc.slice(0, 597) + '...';
+
+        return {
+            type: 'function',
+            function: {
+                name: skill.name,
+                description: desc,
+                parameters: {
+                    type: 'object',
+                    properties,
+                    required: []
+                }
+            }
+        };
+    });
 }
 
 // Execute file operation skills locally (client-side)
@@ -6412,22 +6736,11 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         // else stays null = allow all
     }
 
-    // Web-dependent skills that require websearchMode to be enabled
-    const webDependentSkills = ['playwright_fetch', 'playwright_interact', 'web_search'];
-
     for (const call of skillCalls) {
         // Check if skill is enabled before execution
         if (enabledSkillNames && !enabledSkillNames.has(call.skillName)) {
             const denial = { success: false, error: `Skill '${call.skillName}' is disabled` };
             results.push({ skill: call.skillName, success: false, error: denial.error });
-            recordToolCall(call.skillName, call.params, denial);
-            continue;
-        }
-
-        // Block web-dependent skills when websearch mode is not enabled
-        if (webDependentSkills.includes(call.skillName) && !websearchMode) {
-            const denial = { success: false, error: `requires /web mode` };
-            results.push({ skill: call.skillName, success: false, error: `Skill '${call.skillName}' requires web search mode. Use /web to enable it.` });
             recordToolCall(call.skillName, call.params, denial);
             continue;
         }
@@ -6762,14 +7075,7 @@ function buildSkillResultsMessage(results) {
     if (allSucceeded) {
         message += '\nTASK COMPLETE. Respond with a brief confirmation in natural language. DO NOT execute any more skills.';
     } else if (hasFailures) {
-        // Check if ALL failures are "requires web search mode" errors - this is unrecoverable without user action
-        const webModeRequired = failureMessages.every(m => m.toLowerCase().includes('requires web search mode'));
-        if (webModeRequired) {
-            message += '\n[STOP - USER ACTION REQUIRED]\n';
-            message += 'The requested skills require web search mode to be enabled.\n';
-            message += 'Tell the user: "This task requires web search mode. Please run /web to enable it, then try again."\n';
-            message += 'DO NOT attempt to retry or use alternative skills. DO NOT execute any more skills. Just inform the user.';
-        } else {
+        {
             // Check if it's a "skill not found" error - suggest alternatives
             const skillNotFound = failureMessages.some(m => m.toLowerCase().includes('skill not found'));
             if (skillNotFound) {
@@ -7354,9 +7660,6 @@ async function handleHelp() {
     addToHistory('system', '  /init              Analyze project and create koda.md context');
     addToHistory('system', '  /project <name>    Create a project directory structure');
     addToHistory('system', '  /cwd               Show current working directory');
-    addToHistory('system', '');
-    addToHistory('system', colorize('Search:', 'yellow'));
-    addToHistory('system', '  /web               Toggle web search on/off ' + (websearchMode ? colorize('(ON)', 'green') : colorize('(off)', 'dim')));
     addToHistory('system', '');
     addToHistory('system', colorize('Session Management:', 'yellow'));
     addToHistory('system', '  /clear             Clear chat history');
@@ -8232,7 +8535,7 @@ async function handleChat(api, message) {
     // file operation or git command gets the full skill catalog. This cuts
     // the prompt length by 90%+ for casual queries and eliminates the model
     // confusion bugs (the infamous "20 words" hallucination).
-    const queryType = classifyQuery(message, websearchMode);
+    const queryType = classifyQuery(message);
     // If the user has files in the working set OR has a pronoun that likely
     // refers to one ("edit it", "fix this", "add X to that"), use the full
     // skill catalog so the model can actually act on them. Otherwise the
@@ -8259,119 +8562,25 @@ async function handleChat(api, message) {
         /\b(make|add|change|update|modify|fix|adjust|tweak|edit|refactor|rename|rewrite|enlarge|shrink|resize|convert|remove|delete|insert|replace|improve|optimize|extend|support|enable|disable|set|turn)\b/i.test(message);
     const useFullSkillCatalog =
         queryType === 'skill' ||
-        websearchMode ||
         pronounRefersToFile ||
         mentionsWorkingFile ||
         modifyIntent;
 
     let systemPrefix = '';
     if (useFullSkillCatalog) {
-        systemPrefix = buildSkillSystemPrompt(skills, websearchMode, message) + '\n\n';
+        systemPrefix = buildSkillSystemPrompt(skills, message) + '\n\n';
     } else {
-        systemPrefix = buildLeanSystemPrompt(queryType, websearchMode) + '\n\n';
+        systemPrefix = buildLeanSystemPrompt(queryType) + '\n\n';
     }
 
     // Build context-aware message for the API
     let userMessage = message;
 
-    // If websearch mode is enabled, perform search with content fetching
-    // Skip search for simple file save requests (use existing conversation context instead)
-    let searchResults = null;
-    const skipSearchForFileSave = isFileSaveRequest(message);
-    if (websearchMode && !skipSearchForFileSave) {
-        try {
-            // Display chat history first to show user's message, then start animation
-            displayChatHistory();
-            startAnimation('Searching the web', 'dots');
-
-            // Search with content fetching enabled (8 results, fetch content from top 5)
-            const searchResponse = await api.webSearch(message, 8, true, 5);
-
-            // Stop animation
-            stopAnimation(true);
-
-            if (!searchResponse.success) {
-                throw new Error(searchResponse.error || 'Search API returned unsuccessful response');
-            }
-
-            if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
-                searchResults = searchResponse.data.results;
-                const contentCount = searchResponse.data.contentFetchedCount || 0;
-
-                // Add search results to system prefix with actual content
-                systemPrefix += '=== WEB SEARCH RESULTS ===\n';
-                systemPrefix += `Query: "${message}"`;
-                if (searchResponse.data.enhancedQuery) {
-                    systemPrefix += ` (enhanced: "${searchResponse.data.enhancedQuery}")`;
-                }
-                systemPrefix += `\nFound ${searchResults.length} results (${contentCount} with full content):\n\n`;
-
-                searchResults.forEach((result, idx) => {
-                    systemPrefix += `━━━ SOURCE [${idx + 1}] ━━━\n`;
-                    systemPrefix += `Title: ${result.title}\n`;
-                    systemPrefix += `URL: ${result.url}\n`;
-
-                    if (result.content && result.contentFetched) {
-                        // Include actual fetched content
-                        systemPrefix += `\nCONTENT:\n${result.content}\n`;
-                    } else if (result.snippet) {
-                        // Fall back to snippet if content wasn't fetched
-                        systemPrefix += `\nSnippet: ${result.snippet}\n`;
-                    }
-                    systemPrefix += '\n';
-                });
-                systemPrefix += '=== END OF SEARCH RESULTS ===\n\n';
-                systemPrefix += `CRITICAL - WEB SEARCH CONTENT ALREADY FETCHED:
-The search results above contain ACTUAL PAGE CONTENT that has already been fetched for you.
-
-YOU MUST:
-1. Use the content above IMMEDIATELY to answer the question - do NOT fetch again
-2. If asked to summarize an article, write the summary NOW using the content provided
-3. If asked to save to PDF/TXT, create the files NOW using create_pdf and create_file skills
-4. Extract specific facts, quotes, and data from the content provided
-5. Do NOT say "I need you to provide a link" or "I can fetch the article" - the content IS ALREADY HERE
-
-YOU MUST NOT:
-- Ask the user for a URL (you already have URLs and content above)
-- Say "I found results" and then ask what to do (just DO IT)
-- Use playwright_fetch or fetch_url (content is already fetched)
-- Loop asking for clarification (pick the first relevant article and proceed)\n\n`;
-
-                // Show compact results flash
-                showCompletionFlash(`Found ${searchResults.length} results (${contentCount} with content)`, true);
-            } else {
-                const noResultsMsg = searchResponse.data && searchResponse.data.results
-                    ? 'No search results found'
-                    : 'Search returned empty response';
-                showCompletionFlash(noResultsMsg, false);
-            }
-        } catch (error) {
-            // Stop animation on error
-            stopAnimation(true);
-
-            // Handle improved error responses from backend
-            let errorMsg = 'Web search failed';
-            if (error.response?.data?.error) {
-                errorMsg = error.response.data.error;
-            } else if (error.message) {
-                errorMsg = error.message;
-            }
-
-            showCompletionFlash(errorMsg, false);
-
-            // Show retry suggestion if error is retryable
-            if (error.response?.data?.retryable) {
-                process.stdout.write(colorize('  Try again in a few seconds\n', 'yellow'));
-            }
-        }
-    }
-
-
-    // Build the SYSTEM message content: system prefix + working files. Web
-    // search results and agent task state were already appended into
-    // systemPrefix above. This stays in its own message so the model sees a
-    // real system role instead of having all of it stuffed into the user
-    // turn (which is what caused most of the legacy response-quality bugs).
+    // Build the SYSTEM message content: system prefix + working files. The
+    // model invokes web_search / fetch_url itself when it needs them; there
+    // is no auto-pre-search step. This stays in its own message so the model
+    // sees a real system role instead of having all of it stuffed into the
+    // user turn (which is what caused most of the legacy response-quality bugs).
     let systemContent = systemPrefix.trimEnd();
     const workingFilesContext = buildWorkingFilesContext();
     if (workingFilesContext) {
@@ -8399,10 +8608,21 @@ YOU MUST NOT:
         { role: 'user', content: userMessage }
     ];
 
+    // Native tool calling: build the OpenAI tools array once for this turn.
+    // Same intent-routing as the text catalog so a small model isn't given
+    // 65 schemas it doesn't need.
+    const toolsArray = buildToolsArray(skills, message);
+
     // Skill execution loop
     let iteration = 0;
     let currentMessages = baseMessages.slice();
     let finalResponse = '';
+    // Latch flipped when the model emits a structured tool_call. From that
+    // point we trust the native path on this turn and skip the legacy
+    // text-detection retries (false-completion, shell-command, intent-only).
+    // Those retries exist because the [SKILL:...] string protocol is fragile;
+    // structured tool_calls don't have those failure modes.
+    let usedNativeToolCallsThisTurn = false;
 
     // Helper: produce a fresh messages array that represents
     //   baseMessages + assistant(lastResponse) + user(feedback)
@@ -8482,103 +8702,111 @@ YOU MUST NOT:
         let isInThinkBlock = false;
         let thinkingIndicatorShown = false;
 
-        const result = await api.chatStream(
-            // Proper OpenAI-style messages array with a real `system` role.
-            // The backend routes this through /api/chat/stream which clamps
-            // max_tokens against input size server-side.
-            { messages: currentMessages, temperature: 0.7 },
-            null,
-            4000,
-            // onToken callback - display tokens in real-time
-            (token) => {
-                streamingResponse += token;
-                tokenCount++;
+        // Native-primary path: hit /v1/chat/completions directly so the
+        // model can emit structured tool_calls. The legacy [SKILL:...] text
+        // parser still runs against `result.data.content` further down for
+        // models whose chat template doesn't produce native tool_calls.
+        let toolCallDeltaSeen = false;
+        const result = await api.chatCompletionsRaw(
+            {
+                messages: currentMessages,
+                tools: toolsArray.length ? toolsArray : undefined,
+                temperature: 0.7,
+                maxTokens: 4000
+            },
+            {
+                onToken: (token) => {
+                    streamingResponse += token;
+                    tokenCount++;
 
-                // Track thinking state for <think> tags
-                if (streamingResponse.includes('<think>') && !streamingResponse.includes('</think>')) {
-                    if (!isInThinkBlock) {
-                        isInThinkBlock = true;
-                        // Show thinking indicator instead of leaving screen blank
-                        if (!thinkingIndicatorShown) {
-                            if (!hasStoppedAnimation) {
-                                stopAnimation(true);
-                                hasStoppedAnimation = true;
+                    // Track thinking state for <think> tags
+                    if (streamingResponse.includes('<think>') && !streamingResponse.includes('</think>')) {
+                        if (!isInThinkBlock) {
+                            isInThinkBlock = true;
+                            if (!thinkingIndicatorShown) {
+                                if (!hasStoppedAnimation) {
+                                    stopAnimation(true);
+                                    hasStoppedAnimation = true;
+                                }
+                                startAnimation('Thinking', 'dots');
+                                thinkingIndicatorShown = true;
                             }
-                            startAnimation('Thinking', 'dots');
-                            thinkingIndicatorShown = true;
+                        }
+                        return;
+                    } else if (isInThinkBlock && streamingResponse.includes('</think>')) {
+                        isInThinkBlock = false;
+                        if (thinkingIndicatorShown) {
+                            stopAnimation(true);
                         }
                     }
-                    return; // Don't process display during thinking
-                } else if (isInThinkBlock && streamingResponse.includes('</think>')) {
-                    isInThinkBlock = false;
-                    // Stop thinking animation when think block ends
-                    if (thinkingIndicatorShown) {
+
+                    if (!hasStoppedAnimation) {
                         stopAnimation(true);
+                        hasStoppedAnimation = true;
+                    }
+
+                    const lastMsg = chatHistory[chatHistory.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant-streaming') {
+                        lastMsg.content = streamingResponse;
+                    } else {
+                        addToHistory('assistant-streaming', streamingResponse);
+                    }
+
+                    if (tokenCount === 1 || tokenCount % 3 === 0 || token.includes('\n')) {
+                        updateStreamingMessage(streamingResponse);
+                    }
+                },
+                onToolCallDelta: (_delta) => {
+                    // Suppress the spinner the moment we see a native tool
+                    // call coming in — content may stay empty for the entire
+                    // turn, so without this the user just stares at "Thinking…"
+                    toolCallDeltaSeen = true;
+                    if (!hasStoppedAnimation) {
+                        stopAnimation(true);
+                        hasStoppedAnimation = true;
                     }
                 }
-
-                // Stop animation on first visible token and clear the line
-                if (!hasStoppedAnimation) {
-                    stopAnimation(true);
-                    hasStoppedAnimation = true;
-                }
-
-                // Update or add assistant message in history
-                const lastMsg = chatHistory[chatHistory.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant-streaming') {
-                    lastMsg.content = streamingResponse;
-                } else {
-                    addToHistory('assistant-streaming', streamingResponse);
-                }
-
-                // Update display in real-time during streaming (no full refresh)
-                // Show first token immediately, then update periodically
-                if (tokenCount === 1 || tokenCount % 3 === 0 || token.includes('\n')) {
-                    updateStreamingMessage(streamingResponse);
-                }
-            },
-            // onComplete callback
-            (fullResponse, tokens) => {
-                // Ensure streaming output ends with newline before screen refresh
-                if (lastStreamedMessage !== '' && !fullResponse.endsWith('\n')) {
-                    process.stdout.write('\n');
-                }
-
-                // Disable streaming mode
-                isStreaming = false;
-                lastStreamedMessage = '';
-                lastCleanedMessage = '';
-
-                // Remove streaming cursor and strip thinking tags from final content
-                const cleanedFinalResponse = fullResponse
-                    .replace(/<think>[\s\S]*?<\/think>/g, '')
-                    .replace(/<think>[\s\S]*$/g, '')
-                    .replace(/<\/think>/g, '')
-                    .trim();
-                const lastMsg = chatHistory[chatHistory.length - 1];
-                if (lastMsg && lastMsg.role === 'assistant-streaming') {
-                    lastMsg.role = 'assistant';
-                    lastMsg.content = cleanedFinalResponse;
-                }
-
-                // Update token usage stats
-                if (tokens) {
-                    lastTokenUsage = {
-                        prompt: tokens.prompt_tokens || 0,
-                        completion: tokens.completion_tokens || 0,
-                        total: tokens.total_tokens || 0
-                    };
-                    totalTokensUsed += lastTokenUsage.total;
-
-                    // Update context window tracking
-                    contextWindowUsed = conversationContext.length > 0 ?
-                        conversationContext.reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0) : 0;
-                }
-
-                // Don't call displayChatHistory() here - let the skill processing flow handle it
-                // This prevents duplicate display when skills need to be executed
             }
         );
+
+        // Inline the post-stream cleanup that the old onComplete used to do.
+        // Stays out of the streaming-callback layer so we can branch on
+        // tool_calls vs text below without coupling.
+        {
+            const fullResponse = result.success ? (result.data.content || '') : '';
+            if (lastStreamedMessage !== '' && !fullResponse.endsWith('\n')) {
+                process.stdout.write('\n');
+            }
+            isStreaming = false;
+            lastStreamedMessage = '';
+            lastCleanedMessage = '';
+
+            const cleanedFinalResponse = fullResponse
+                .replace(/<think>[\s\S]*?<\/think>/g, '')
+                .replace(/<think>[\s\S]*$/g, '')
+                .replace(/<\/think>/g, '')
+                .trim();
+            const lastMsg = chatHistory[chatHistory.length - 1];
+            if (lastMsg && lastMsg.role === 'assistant-streaming') {
+                lastMsg.role = 'assistant';
+                lastMsg.content = cleanedFinalResponse;
+                // If the model sent a tool call with no visible text, don't
+                // leave an empty assistant bubble in the transcript.
+                if (!cleanedFinalResponse) chatHistory.pop();
+            }
+
+            const tokens = result.success ? result.data.tokens : null;
+            if (tokens) {
+                lastTokenUsage = {
+                    prompt: tokens.prompt_tokens || 0,
+                    completion: tokens.completion_tokens || 0,
+                    total: tokens.total_tokens || 0
+                };
+                totalTokensUsed += lastTokenUsage.total;
+                contextWindowUsed = conversationContext.length > 0 ?
+                    conversationContext.reduce((sum, msg) => sum + Math.ceil(msg.content.length / 4), 0) : 0;
+            }
+        }
 
         if (!result.success) {
             addToHistory('system', `Error: ${result.error}`);
@@ -8587,10 +8815,143 @@ YOU MUST NOT:
         }
 
         // Strip thinking tags from response before processing
-        let response = result.data.response;
+        let response = (result.data.content || '');
         response = response.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/g, '').replace(/<\/think>/g, '').trim();
         finalResponse = response;
 
+        // ── Native tool_calls branch ──────────────────────────────────────
+        // If the model emitted structured tool calls, run them and append
+        // OpenAI-format `assistant` (with tool_calls) + `tool` (with results)
+        // messages to the conversation. We deliberately bypass the legacy
+        // text-based detection paths (false-completion, shell-command,
+        // intent-without-action retries) because native tool calls are
+        // structurally reliable — those paths exist to compensate for
+        // [SKILL:...] string parsing flakiness.
+        const nativeToolCalls = Array.isArray(result.data.toolCalls) ? result.data.toolCalls : [];
+        if (nativeToolCalls.length > 0) {
+            usedNativeToolCallsThisTurn = true;
+
+            // Convert OpenAI-shape tool_calls into the {skillName, params}
+            // shape executeSkillCalls expects.
+            const skillCalls = [];
+            const parseFailures = [];
+            for (const tc of nativeToolCalls) {
+                const name = tc.function && tc.function.name;
+                if (!name) continue;
+                let params = {};
+                const argsStr = (tc.function && tc.function.arguments) || '';
+                if (argsStr.trim()) {
+                    try {
+                        params = JSON.parse(argsStr);
+                    } catch (e) {
+                        parseFailures.push({ id: tc.id, name, error: e.message, raw: argsStr });
+                        continue;
+                    }
+                }
+                skillCalls.push({ skillName: name, params, _toolCallId: tc.id, fullMatch: '' });
+            }
+
+            // Drop the assistant text bubble while skills run (matches the
+            // legacy path's behavior — the model's preamble can lie about
+            // outcomes, so we hide it until we know what actually happened).
+            const lastMsg = chatHistory[chatHistory.length - 1];
+            if (lastMsg && lastMsg.role === 'assistant') {
+                chatHistory.pop();
+                displayChatHistory();
+            }
+
+            // If every tool call had an unparseable arguments blob, surface
+            // it and bail rather than looping silently.
+            if (skillCalls.length === 0 && parseFailures.length > 0) {
+                addToHistory('system', `Tool call failed: model returned malformed JSON arguments (${parseFailures[0].error})`);
+                displayChatHistory();
+                break;
+            }
+
+            const skillResults = await executeSkillCalls(api, skillCalls);
+
+            // Track file-op skills the same way the legacy path does, so any
+            // post-loop logic that consults the set still works.
+            const fileOpSkillNames = ['delete_file', 'delete_directory', 'create_file', 'create_directory',
+                                       'move_file', 'copy_file', 'update_file', 'write_file', 'append_to_file'];
+            for (const r of skillResults) {
+                if (r.success) {
+                    executedSkillsThisTurn.add(r.skill);
+                    if (fileOpSkillNames.includes(r.skill)) executedFileOpSkills.add(r.skill);
+                }
+            }
+
+            // User-visible summary in the chat transcript.
+            const userVisibleResults = buildUserVisibleSkillResults(skillResults);
+            if (userVisibleResults) {
+                addToHistory('system', userVisibleResults);
+                conversationContext.push({ role: 'system', content: userVisibleResults });
+            }
+
+            // Build the OpenAI assistant + tool messages and append to
+            // currentMessages so the next iteration sees them in proper
+            // protocol shape (not as a synthetic [user] feedback blob).
+            const assistantMsg = { role: 'assistant', content: response || '', tool_calls: nativeToolCalls };
+            // OpenAI requires `content` to be a string OR null on assistant
+            // messages with tool_calls — empty string is fine on most
+            // backends, but normalize to null when there's nothing to say.
+            if (!response) assistantMsg.content = null;
+            currentMessages = [...currentMessages, assistantMsg];
+
+            // Each tool call needs a corresponding tool-role response.
+            for (let i = 0; i < skillCalls.length; i++) {
+                const call = skillCalls[i];
+                const r = skillResults[i] || { success: false, error: 'no result' };
+                const payload = r.success
+                    ? (r.result !== undefined ? r.result : { success: true })
+                    : { success: false, error: r.error };
+                let contentStr;
+                try { contentStr = JSON.stringify(payload); }
+                catch (_) { contentStr = String(payload); }
+                // Cap payload size — some skills (read_file on big files)
+                // return huge blobs that blow the next request's context.
+                if (contentStr.length > 12000) {
+                    contentStr = contentStr.slice(0, 12000) + '\n…[truncated]';
+                }
+                currentMessages.push({
+                    role: 'tool',
+                    tool_call_id: call._toolCallId || `call_${i}`,
+                    content: contentStr
+                });
+            }
+            // Also append parse-failure tool messages so the model sees
+            // why those calls didn't run and can self-correct.
+            for (const f of parseFailures) {
+                currentMessages.push({
+                    role: 'tool',
+                    tool_call_id: f.id || 'call_err',
+                    content: JSON.stringify({ success: false, error: `Invalid JSON arguments for ${f.name}: ${f.error}` })
+                });
+            }
+
+            // Short-circuit when the user's single-purpose request is done
+            // (mirrors the legacy path's early break).
+            const requestedDeleteDone = /\b(delete|remove)\b.*\b(file|folder|directory|dir)\b/i.test(originalMessage) &&
+                skillResults.some(r => r.success && (r.skill === 'delete_file' || r.skill === 'delete_directory'));
+            const requestedCreateDirDone = /\b(create|make|new)\b.*\b(folder|directory|dir)\b/i.test(originalMessage) &&
+                !/\b(file|\.txt|\.pdf|\.json|\.csv|\.md)\b/i.test(originalMessage) &&
+                skillResults.some(r => r.success && r.skill === 'create_directory');
+            const requestedCreateFileDone = /\b(create|make|write|save|put|place|store|output|export|dump|record|log|append)\b.*\b(file|\.txt|\.pdf|\.json|\.csv|\.md|into\s+a\s+\w+|to\s+a\s+\w+\s+file)\b/i.test(originalMessage) &&
+                !/\b(search|find|web|browse|fetch)\b/i.test(originalMessage) &&
+                skillResults.some(r => r.success && (r.skill === 'create_file' || r.skill === 'update_file' || r.skill === 'write_file' || r.skill === 'append_to_file'));
+            const multiSkillWriteDone = skillResults.length >= 2 &&
+                skillResults.some(r => r.success &&
+                    (r.skill === 'create_file' || r.skill === 'update_file' ||
+                     r.skill === 'write_file' || r.skill === 'append_to_file'));
+            if (requestedDeleteDone || requestedCreateDirDone || requestedCreateFileDone || multiSkillWriteDone) {
+                displayChatHistory();
+                break;
+            }
+
+            continue; // next iteration uses the new currentMessages
+        }
+
+        // ── Legacy [SKILL:...] text-parsing fallback (non-tool models) ────
         // Check for skill calls in the response
         const skillCalls = parseSkillCalls(response);
 
@@ -8845,18 +9206,6 @@ YOU MUST NOT:
         // Execute the skills
         const skillResults = await executeSkillCalls(api, skillCalls);
 
-        // Check if ALL skills failed due to web mode requirement - this is unrecoverable without user action
-        const allFailedDueToWebMode = skillResults.length > 0 &&
-            skillResults.every(r => !r.success && r.error && r.error.toLowerCase().includes('requires web search mode'));
-
-        if (allFailedDueToWebMode) {
-            // Don't loop - inform the user and stop
-            lastWebModeError = true; // Track this for handling "y" input
-            addToHistory('system', 'Web search mode is required for this task. Use /web to enable it.');
-            displayChatHistory();
-            break;
-        }
-
         // Track successfully executed file operation skills to prevent false completion detection loops
         const fileOpSkillNames = ['delete_file', 'delete_directory', 'create_file', 'create_directory',
                                    'move_file', 'copy_file', 'update_file', 'write_file', 'append_to_file'];
@@ -9024,7 +9373,6 @@ async function startShell() {
     // Command definitions with descriptions for live suggestions
     const commandDefs = [
         { cmd: '/auth', desc: 'authenticate with API' },
-        { cmd: '/web', desc: 'toggle web search' },
         { cmd: '/init', desc: 'analyze project' },
         { cmd: '/project', desc: 'create project' },
         { cmd: '/cwd', desc: 'show directory' },
@@ -9290,19 +9638,6 @@ async function startShell() {
             return;
         }
 
-        // Check for "y"/"yes" input after a web mode error - user might be confused
-        const lowerInput = input.toLowerCase().trim();
-        if (lastWebModeError && (lowerInput === 'y' || lowerInput === 'yes')) {
-            // User typed "y" after web mode error - they probably expected a confirmation
-            addToHistory('system', 'There\'s no pending confirmation. To enable web search mode, type /web');
-            displayChatHistory();
-            rl.prompt();
-            return;
-        }
-
-        // Clear web mode error flag when user sends a real message
-        lastWebModeError = false;
-
         try {
             // Check if it's a command
             if (input.startsWith('/')) {
@@ -9337,22 +9672,6 @@ async function startShell() {
 
                     case '/cwd':
                         await handleCwd();
-                        break;
-
-                    case '/web':
-                    case '/websearch':
-                    case '/ws':
-                        // Toggle websearch mode
-                        websearchMode = !websearchMode;
-                        lastWebModeError = false; // Clear web mode error flag
-                        const webStatus = websearchMode ? 'enabled' : 'disabled';
-                        const webIcon = websearchMode ? '[web]' : '[ ]';
-                        const webColor = websearchMode ? 'green' : 'yellow';
-                        addToHistory('system', `${webIcon} Web search ${colorize(webStatus, webColor)}`);
-                        if (websearchMode) {
-                            addToHistory('system', colorize('Queries will include live web results', 'dim'));
-                        }
-                        displayChatHistory();
                         break;
 
                     case '/help':
