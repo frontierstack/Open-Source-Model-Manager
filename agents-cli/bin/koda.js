@@ -646,13 +646,14 @@ function startAnimation(message, style = 'dots', options = {}) {
 
         animationFrameIndex = (animationFrameIndex + 1) % frames.length;
         const frame = frames[animationFrameIndex];
-        const elapsed = ((Date.now() - animationStartTime) / 1000).toFixed(1);
+        const elapsedMs = Date.now() - animationStartTime;
 
         // Clear the current line and rewrite
         process.stdout.write('\r\x1b[K'); // Clear line
 
-        const timeDisplay = showElapsed ? ` ${colorize(`${elapsed}s`, 'dim')}` : '';
-        activeAnimation.line = `${prefix}${colorize(frame, color)} ${colorize(activeAnimation.message, 'white')}${timeDisplay}`;
+        const timeDisplay = showElapsed ? ` ${colorize(formatElapsed(elapsedMs), elapsedColor(elapsedMs))}` : '';
+        const heartbeat = longRunSuffix(elapsedMs, activeAnimation.message);
+        activeAnimation.line = `${prefix}${colorize(frame, activeAnimation.color || color)} ${colorize(activeAnimation.message, 'white')}${heartbeat}${timeDisplay}`;
         process.stdout.write(activeAnimation.line);
     }, 80);
 
@@ -679,12 +680,49 @@ function updateAnimationMessage(newMessage, newColor = null) {
     if (newColor) activeAnimation.color = newColor;
 
     const frame = activeAnimation.frames[animationFrameIndex];
-    const elapsed = ((Date.now() - animationStartTime) / 1000).toFixed(1);
-    const timeDisplay = activeAnimation.showElapsed ? ` ${colorize(`${elapsed}s`, 'dim')}` : '';
+    const elapsedMs = Date.now() - animationStartTime;
+    const timeDisplay = activeAnimation.showElapsed ? ` ${colorize(formatElapsed(elapsedMs), elapsedColor(elapsedMs))}` : '';
+    const heartbeat = longRunSuffix(elapsedMs, newMessage);
 
     process.stdout.write('\r\x1b[K');
-    activeAnimation.line = `${activeAnimation.prefix}${colorize(frame, activeAnimation.color)} ${colorize(newMessage, 'white')}${timeDisplay}`;
+    activeAnimation.line = `${activeAnimation.prefix}${colorize(frame, activeAnimation.color)} ${colorize(newMessage, 'white')}${heartbeat}${timeDisplay}`;
     process.stdout.write(activeAnimation.line);
+}
+
+// Format elapsed milliseconds: "1.2s", "45.0s", "1m 32s", "12m 04s"
+function formatElapsed(ms) {
+    const totalSec = ms / 1000;
+    if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
+    const m = Math.floor(totalSec / 60);
+    const s = Math.floor(totalSec % 60);
+    return `${m}m ${String(s).padStart(2, '0')}s`;
+}
+
+// Color elapsed timer based on duration so very long runs visually stand out.
+function elapsedColor(ms) {
+    if (ms >= 5 * 60 * 1000) return 'red';      // 5m+
+    if (ms >= 2 * 60 * 1000) return 'yellow';   // 2m+
+    return 'dim';
+}
+
+// After ~30s, append a rotating "still <action>..." heartbeat so the user
+// knows the process isn't frozen. Variant rotates every 30s for liveness.
+function longRunSuffix(ms, message) {
+    if (ms < 30000) return '';
+    const verb = (() => {
+        const m = (message || '').trim();
+        if (!m) return 'working';
+        const first = m.split(/\s+/)[0].toLowerCase();
+        return first.endsWith('ing') ? first : 'working';
+    })();
+    const variants = [
+        `still ${verb}`,
+        `${verb}, hang tight`,
+        `still ${verb} — long-running task`,
+        `${verb} (this can take a while)`
+    ];
+    const idx = Math.floor(ms / 30000) % variants.length;
+    return colorize(` · ${variants[idx]}`, 'dim');
 }
 
 // Show a brief completion indicator with modern styling
@@ -4845,7 +4883,22 @@ async function executeFileOperationSkill(skillName, params) {
                 const content = sanitizeContentForFile(filePath, rawContent);
 
                 if (!filePath) {
-                    return { success: false, error: 'filePath is required' };
+                    // Suggest the most recently touched working-set file so the
+                    // model can copy-paste the path on retry instead of guessing.
+                    let hintPath = null;
+                    try {
+                        let newest = 0;
+                        for (const [p, meta] of workingFiles.entries()) {
+                            if ((meta.lastModified || 0) > newest) { newest = meta.lastModified; hintPath = p; }
+                        }
+                    } catch (_) {}
+                    const example = hintPath
+                        ? `[SKILL:${skillName}(filePath="${hintPath}", content="...")]`
+                        : `[SKILL:${skillName}(filePath="/absolute/path/to/file", content="...")]`;
+                    return {
+                        success: false,
+                        error: `Missing required parameter "filePath". You sent only "content". Retry with both params, e.g. ${example}`
+                    };
                 }
 
                 // Ensure directory exists
