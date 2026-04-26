@@ -13681,7 +13681,7 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'create_directory', 'delete_directory', 'list_directory',
     'move_file', 'copy_file', 'append_to_file',
     'tail_file', 'head_file', 'search_files', 'search_replace_file',
-    'diff_files',
+    'diff_files', 'grep_code', 'outline_file', 'replace_lines',
     // archives
     'create_archive', 'extract_archive',
     // pdf / docs generation + reading

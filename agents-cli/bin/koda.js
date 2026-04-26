@@ -23,6 +23,189 @@ const generate = require('@babel/generator').default;
 // Configuration
 const CONFIG_DIR = path.join(os.homedir(), '.koda');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const MEMORY_FILE = path.join(CONFIG_DIR, 'memory.md');
+const SESSIONS_DIR = path.join(CONFIG_DIR, 'sessions');
+const SESSION_INDEX_FILE = path.join(SESSIONS_DIR, 'index.json');
+
+// Per-project guidance file names, in priority order. First match wins.
+const PROJECT_GUIDANCE_FILES = ['KODA.md', 'koda.md', 'CLAUDE.md', 'AGENTS.md'];
+
+// ── Project guidance + cross-session memory loaders ──────────────────────────
+// These return a short string to be injected into the SYSTEM prompt of every
+// turn. Both are best-effort and silently empty on failure.
+
+function loadProjectGuidance() {
+    try {
+        for (const name of PROJECT_GUIDANCE_FILES) {
+            const full = path.join(userWorkingDirectory, name);
+            if (!fsSync.existsSync(full)) continue;
+            const stat = fsSync.statSync(full);
+            if (!stat.isFile()) continue;
+            // Cap at 64 KB so a runaway README doesn't blow up the context.
+            const MAX = 64 * 1024;
+            const buf = fsSync.readFileSync(full, 'utf8');
+            const content = buf.length > MAX ? buf.slice(0, MAX) + '\n…(truncated)' : buf;
+            return { name, content };
+        }
+    } catch { /* swallow */ }
+    return null;
+}
+
+function loadUserMemory() {
+    try {
+        if (!fsSync.existsSync(MEMORY_FILE)) return '';
+        const buf = fsSync.readFileSync(MEMORY_FILE, 'utf8').trim();
+        if (!buf) return '';
+        const MAX = 32 * 1024;
+        return buf.length > MAX ? buf.slice(0, MAX) + '\n…(truncated)' : buf;
+    } catch { return ''; }
+}
+
+function appendUserMemory(text) {
+    try {
+        if (!fsSync.existsSync(CONFIG_DIR)) fsSync.mkdirSync(CONFIG_DIR, { recursive: true });
+        const stamp = new Date().toISOString().slice(0, 10);
+        const entry = `\n- (${stamp}) ${text.trim()}\n`;
+        if (!fsSync.existsSync(MEMORY_FILE)) {
+            fsSync.writeFileSync(MEMORY_FILE,
+                '# Koda memory\n\nNotes Koda should remember across sessions. Edit freely.\n' + entry,
+                'utf8');
+        } else {
+            fsSync.appendFileSync(MEMORY_FILE, entry, 'utf8');
+        }
+        fsSync.chmodSync(MEMORY_FILE, 0o600);
+        return true;
+    } catch { return false; }
+}
+
+function clearUserMemory() {
+    try {
+        if (fsSync.existsSync(MEMORY_FILE)) fsSync.unlinkSync(MEMORY_FILE);
+        return true;
+    } catch { return false; }
+}
+
+// Build the optional system-prompt prefix from project guidance + user memory.
+// Returns '' when nothing is present so callers can simply concatenate.
+function buildPersistentContext() {
+    const parts = [];
+    const guidance = loadProjectGuidance();
+    if (guidance) {
+        parts.push(`[Project Guidance — from ${guidance.name} in cwd]\n${guidance.content.trim()}`);
+    }
+    const mem = loadUserMemory();
+    if (mem) {
+        parts.push(`[User Memory — cross-session notes from ~/.koda/memory.md]\n${mem}`);
+    }
+    return parts.length ? parts.join('\n\n') + '\n\n' : '';
+}
+
+// ── Session persistence (resume / continue) ──────────────────────────────────
+// Each session is a JSON file under ~/.koda/sessions/<id>.json, plus an
+// index.json at ~/.koda/sessions/index.json that tracks {id, cwd, createdAt,
+// updatedAt, turns, preview} for fast listing without reading every file.
+
+let _kodaCurrentSessionId = null;
+
+function ensureSessionsDir() {
+    if (!fsSync.existsSync(SESSIONS_DIR)) {
+        fsSync.mkdirSync(SESSIONS_DIR, { recursive: true });
+    }
+}
+
+function newSessionId() {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const rand = crypto.randomBytes(3).toString('hex');
+    return `${stamp}-${rand}`;
+}
+
+function loadSessionIndex() {
+    try {
+        if (!fsSync.existsSync(SESSION_INDEX_FILE)) return [];
+        const j = JSON.parse(fsSync.readFileSync(SESSION_INDEX_FILE, 'utf8'));
+        return Array.isArray(j) ? j : [];
+    } catch { return []; }
+}
+
+function saveSessionIndex(idx) {
+    try {
+        ensureSessionsDir();
+        fsSync.writeFileSync(SESSION_INDEX_FILE, JSON.stringify(idx, null, 2), 'utf8');
+        fsSync.chmodSync(SESSION_INDEX_FILE, 0o600);
+    } catch { /* swallow */ }
+}
+
+function persistSession() {
+    if (!_kodaCurrentSessionId) return;
+    try {
+        ensureSessionsDir();
+        const file = path.join(SESSIONS_DIR, `${_kodaCurrentSessionId}.json`);
+        const data = {
+            id: _kodaCurrentSessionId,
+            cwd: userWorkingDirectory,
+            updatedAt: Date.now(),
+            conversationContext: conversationContext,
+        };
+        // Preserve createdAt across writes
+        if (fsSync.existsSync(file)) {
+            try {
+                const prev = JSON.parse(fsSync.readFileSync(file, 'utf8'));
+                if (prev && prev.createdAt) data.createdAt = prev.createdAt;
+            } catch {}
+        }
+        if (!data.createdAt) data.createdAt = data.updatedAt;
+        fsSync.writeFileSync(file, JSON.stringify(data), 'utf8');
+        fsSync.chmodSync(file, 0o600);
+
+        // Update index
+        const idx = loadSessionIndex();
+        const firstUser = conversationContext.find(m => m.role === 'user');
+        const preview = firstUser ? String(firstUser.content || '').replace(/\s+/g, ' ').slice(0, 80) : '';
+        const existing = idx.findIndex(e => e.id === _kodaCurrentSessionId);
+        const entry = {
+            id: _kodaCurrentSessionId,
+            cwd: data.cwd,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt,
+            turns: conversationContext.filter(m => m.role === 'user').length,
+            preview,
+        };
+        if (existing >= 0) idx[existing] = entry;
+        else idx.push(entry);
+        // Cap to 200 most-recent sessions
+        idx.sort((a, b) => b.updatedAt - a.updatedAt);
+        if (idx.length > 200) {
+            const drop = idx.splice(200);
+            for (const e of drop) {
+                try { fsSync.unlinkSync(path.join(SESSIONS_DIR, `${e.id}.json`)); } catch {}
+            }
+        }
+        saveSessionIndex(idx);
+    } catch { /* swallow */ }
+}
+
+function loadSessionById(id) {
+    try {
+        const file = path.join(SESSIONS_DIR, `${id}.json`);
+        if (!fsSync.existsSync(file)) return null;
+        return JSON.parse(fsSync.readFileSync(file, 'utf8'));
+    } catch { return null; }
+}
+
+function findMostRecentSessionForCwd(cwd) {
+    const idx = loadSessionIndex();
+    return idx
+        .filter(e => e.cwd === cwd)
+        .sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
+}
+
+function restoreSession(sess) {
+    if (!sess || !Array.isArray(sess.conversationContext)) return false;
+    conversationContext.length = 0;
+    for (const m of sess.conversationContext) conversationContext.push(m);
+    _kodaCurrentSessionId = sess.id;
+    return true;
+}
 
 // Colors for terminal output
 const colors = {
@@ -8535,6 +8718,10 @@ async function handleHelp() {
     addToHistory('system', colorize('Session Management:', 'yellow'));
     addToHistory('system', '  /clear             Clear chat history');
     addToHistory('system', '  /clearsession      Clear session context (keeps history visible)');
+    addToHistory('system', '  /sessions          List saved sessions for this directory');
+    addToHistory('system', '  /resume <id>       Resume a saved session by id');
+    addToHistory('system', colorize('                     (also: koda --continue / koda --resume <id>)', 'dim'));
+    addToHistory('system', '  /memory            View/add/clear cross-session memory (~/.koda/memory.md)');
     addToHistory('system', '  /yolo              Toggle approval-free mode ' +
         colorize('(also: --dangerously-skip-permissions / KODA_DANGEROUSLY_SKIP_PERMISSIONS=1)', 'dim'));
     addToHistory('system', '  /quit              Exit koda');
@@ -9459,12 +9646,63 @@ async function handleChat(api, message) {
     // Build context-aware message for the API
     let userMessage = message;
 
+    // ── Confirmation-loop fix ───────────────────────────────────────────────
+    // The previous-turn behavior we're patching: the model replies with
+    // "Should I proceed? Would you like me to apply this fix?" — the user
+    // says "yes" / "continue" / "go ahead" — and the next turn the model just
+    // re-describes the fix and asks again, because nothing in the new user
+    // message tells it that approval was just granted.
+    //
+    // Detection: (a) the LAST assistant message in conversationContext ended
+    // with a permission-seeking question, AND (b) the CURRENT user message is
+    // a short confirmation phrase. When both are true, prefix an explicit
+    // execution directive to userMessage so the model treats this turn as
+    // green-light-to-act, not as a fresh open-ended prompt.
+    {
+        const trimmed = message.trim();
+        const isConfirmPhrase = /^(y|yes|yep|yeah|sure|ok|okay|do it|go|go ahead|proceed|continue|please proceed|please do|please|run it|approved|confirmed|apply it|apply|fix it|make it so|sounds good|lgtm)\.?\!?$/i.test(trimmed);
+        if (isConfirmPhrase) {
+            // Find the last assistant message before the user message we just pushed.
+            let lastAssistant = null;
+            for (let i = conversationContext.length - 2; i >= 0; i--) {
+                if (conversationContext[i].role === 'assistant') {
+                    lastAssistant = conversationContext[i].content || '';
+                    break;
+                }
+            }
+            const askedForApproval = lastAssistant && (
+                /\b(shall|should|would|may|can)\s+(i|we)\b[^.!?]*\?/i.test(lastAssistant) ||
+                /\bwould you like me to\b/i.test(lastAssistant) ||
+                /\b(do you want me to|want me to|let me know if)\b/i.test(lastAssistant) ||
+                /\bproceed\?|continue\?|apply\?|go ahead\?/i.test(lastAssistant) ||
+                /\b(ready to|about to|going to)\b[^.!?]*\?/i.test(lastAssistant)
+            );
+            if (askedForApproval) {
+                userMessage =
+                    '[USER CONFIRMED — execute the proposed action immediately. ' +
+                    'Do NOT re-explain the plan, do NOT ask for further confirmation, do NOT re-read files you already read this conversation. ' +
+                    'Emit the skill calls (e.g. search_replace_file / replace_lines / create_file / update_file) right now and report the result.]\n\n' +
+                    'Original confirmation: "' + trimmed + '"';
+            }
+        }
+    }
+
     // Build the SYSTEM message content: system prefix + working files. The
     // model invokes web_search / fetch_url itself when it needs them; there
     // is no auto-pre-search step. This stays in its own message so the model
     // sees a real system role instead of having all of it stuffed into the
     // user turn (which is what caused most of the legacy response-quality bugs).
     let systemContent = systemPrefix.trimEnd();
+
+    // Per-project guidance (KODA.md / CLAUDE.md / AGENTS.md from cwd) and
+    // cross-session user memory (~/.koda/memory.md). Both are best-effort and
+    // empty when not present. Loaded fresh each turn so edits to either file
+    // take effect immediately without restarting koda.
+    const persistent = buildPersistentContext();
+    if (persistent) {
+        systemContent += '\n\n' + persistent.trimEnd();
+    }
+
     const workingFilesContext = buildWorkingFilesContext();
     if (workingFilesContext) {
         systemContent += '\n\n' + workingFilesContext.trimEnd();
@@ -10280,6 +10518,11 @@ async function handleChat(api, message) {
         conversationContext.splice(0, conversationContext.length - 20);
     }
 
+    // Persist session for --continue / --resume. First write also assigns the
+    // session id; subsequent writes update in place.
+    if (!_kodaCurrentSessionId) _kodaCurrentSessionId = newSessionId();
+    persistSession();
+
     // Update API key usage stats after chat
     await updateApiKeyUsage(api);
 
@@ -10323,6 +10566,46 @@ async function startShell() {
         if (loaded.length > 0) {
             addToHistory('system', `Loaded project context: ${loaded.join(', ')}`);
         }
+
+        // --continue / --resume <id>: restore a prior session before the REPL
+        // accepts input. --resume with no id lists candidates and exits.
+        if (_kodaResumeId === '__list__') {
+            const idx = loadSessionIndex().filter(e => e.cwd === userWorkingDirectory);
+            if (idx.length === 0) {
+                console.log('\nNo saved sessions for this directory.\n');
+            } else {
+                console.log('\nSaved sessions for this directory:');
+                for (const e of idx.slice(0, 30)) {
+                    const when = new Date(e.updatedAt).toISOString().replace('T', ' ').slice(0, 19);
+                    console.log(`  ${e.id}  [${e.turns} turns]  ${when}  ${e.preview || ''}`);
+                }
+                console.log('\nResume with:  koda --resume <id>\n');
+            }
+            process.exit(0);
+        }
+        const replayToHistory = (sess, label) => {
+            for (const m of sess.conversationContext) {
+                if (m.role === 'user' || m.role === 'assistant') addToHistory(m.role, m.content);
+            }
+            addToHistory('system', colorize(`${label} ${sess.id} (${conversationContext.length} messages)`, 'green'));
+        };
+        if (_kodaResumeId) {
+            const sess = loadSessionById(_kodaResumeId);
+            if (!sess) {
+                addToHistory('system', colorize(`Session not found: ${_kodaResumeId}`, 'red'));
+            } else if (restoreSession(sess)) {
+                replayToHistory(sess, 'Resumed session');
+            }
+        } else if (_kodaContinueFlag) {
+            const recent = findMostRecentSessionForCwd(userWorkingDirectory);
+            if (!recent) {
+                addToHistory('system', colorize('No prior session for this directory. Starting fresh.', 'dim'));
+            } else {
+                const sess = loadSessionById(recent.id);
+                if (sess && restoreSession(sess)) replayToHistory(sess, 'Continued session');
+            }
+        }
+
         addToHistory('system', 'Type a message to chat or /help for commands.');
     }
 
@@ -10352,6 +10635,9 @@ async function startShell() {
         { cmd: '/help', desc: 'show commands' },
         { cmd: '/clear', desc: 'clear history' },
         { cmd: '/clearsession', desc: 'clear session' },
+        { cmd: '/sessions', desc: 'list saved sessions for cwd' },
+        { cmd: '/resume', desc: 'resume a saved session by id' },
+        { cmd: '/memory', desc: 'view/add/clear cross-session memory' },
         { cmd: '/quit', desc: 'exit koda' },
         { cmd: '/exit', desc: 'exit koda' }
     ];
@@ -10719,6 +11005,73 @@ async function startShell() {
                         }
                         break;
 
+                    case '/sessions': {
+                        const idx = loadSessionIndex().filter(e => e.cwd === userWorkingDirectory);
+                        if (idx.length === 0) {
+                            addToHistory('system', 'No saved sessions for this directory.');
+                        } else {
+                            addToHistory('system', `Saved sessions for ${userWorkingDirectory}:`);
+                            for (const e of idx.slice(0, 20)) {
+                                const when = new Date(e.updatedAt).toISOString().replace('T', ' ').slice(0, 19);
+                                addToHistory('system', `  ${e.id}  [${e.turns}t]  ${when}  ${e.preview || ''}`);
+                            }
+                            addToHistory('system', 'Resume with: /resume <id>');
+                        }
+                        displayChatHistory();
+                        break;
+                    }
+
+                    case '/resume': {
+                        const id = args[0];
+                        if (!id) {
+                            addToHistory('system', 'Usage: /resume <session-id>   (use /sessions to list ids)');
+                            displayChatHistory();
+                            break;
+                        }
+                        const sess = loadSessionById(id);
+                        if (!sess) {
+                            addToHistory('system', colorize(`Session not found: ${id}`, 'red'));
+                        } else if (restoreSession(sess)) {
+                            chatHistory.length = 0;
+                            for (const m of sess.conversationContext) {
+                                if (m.role === 'user' || m.role === 'assistant') addToHistory(m.role, m.content);
+                            }
+                            addToHistory('system', colorize(`Resumed session ${sess.id} (${conversationContext.length} messages)`, 'green'));
+                        }
+                        displayChatHistory();
+                        break;
+                    }
+
+                    case '/memory': {
+                        const sub = (args[0] || '').toLowerCase();
+                        if (!sub || sub === 'show' || sub === 'list') {
+                            const mem = loadUserMemory();
+                            if (!mem) {
+                                addToHistory('system', `No memory yet. Add with: /memory add <note>   (file: ${MEMORY_FILE})`);
+                            } else {
+                                addToHistory('system', `── ~/.koda/memory.md ──\n${mem}`);
+                            }
+                        } else if (sub === 'add') {
+                            const text = args.slice(1).join(' ').trim();
+                            if (!text) {
+                                addToHistory('system', 'Usage: /memory add <note>');
+                            } else if (appendUserMemory(text)) {
+                                addToHistory('system', colorize(`Saved to ${MEMORY_FILE}`, 'green'));
+                            } else {
+                                addToHistory('system', colorize('Failed to write memory file', 'red'));
+                            }
+                        } else if (sub === 'clear') {
+                            if (clearUserMemory()) addToHistory('system', colorize('Memory cleared.', 'yellow'));
+                            else addToHistory('system', colorize('Failed to clear memory', 'red'));
+                        } else if (sub === 'edit') {
+                            addToHistory('system', `Edit directly: ${MEMORY_FILE}`);
+                        } else {
+                            addToHistory('system', 'Usage: /memory [show|add <note>|clear|edit]');
+                        }
+                        displayChatHistory();
+                        break;
+                    }
+
                     case '/exit':
                     case '/quit':
                         logDim('Goodbye!');
@@ -10830,6 +11183,17 @@ async function startShell() {
 // -----------------------------------------------------------------------------
 const _kodaArgv = process.argv.slice(2);
 const _kodaPromptIdx = _kodaArgv.findIndex(a => a === '-p' || a === '--prompt');
+
+// Session resume flags. --continue picks up the most recent session for cwd.
+// --resume <id> restores a specific session; --resume alone lists available
+// sessions and exits so the user can copy an id.
+const _kodaContinueFlag = _kodaArgv.includes('--continue') || _kodaArgv.includes('-c');
+const _kodaResumeIdx = _kodaArgv.findIndex(a => a === '--resume' || a === '-r');
+const _kodaResumeId = _kodaResumeIdx !== -1
+    ? (_kodaArgv[_kodaResumeIdx + 1] && !_kodaArgv[_kodaResumeIdx + 1].startsWith('-')
+        ? _kodaArgv[_kodaResumeIdx + 1]
+        : '__list__')
+    : null;
 
 // "Dangerously skip permissions" mode: bypass every confirmation prompt,
 // including the diff preview before file writes. Mirrors Claude Code's
