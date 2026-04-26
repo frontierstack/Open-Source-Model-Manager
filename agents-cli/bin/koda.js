@@ -4925,7 +4925,7 @@ async function executeFileOperationSkill(skillName, params) {
             }
 
             case 'read_file': {
-                const filePath = params.filePath;
+                let filePath = params.filePath;
                 const startLine = params.startLine ? parseInt(params.startLine) : null;
                 const endLine = params.endLine ? parseInt(params.endLine) : null;
                 const chunkIndex = params.chunkIndex ? parseInt(params.chunkIndex) : null;
@@ -4934,6 +4934,29 @@ async function executeFileOperationSkill(skillName, params) {
 
                 if (!filePath) {
                     return { success: false, error: 'filePath is required' };
+                }
+
+                // Auto-recover from bare-name lookups: model often calls
+                // read_file("./script.js") when the file actually lives at
+                // ./tower-defense-game/script.js. If the resolved path is
+                // missing but a working-set entry shares the basename, use
+                // that entry instead.
+                if (!fsSync.existsSync(filePath)) {
+                    try {
+                        const wantedBase = path.basename(filePath);
+                        let candidate = null;
+                        let newest = 0;
+                        for (const [p, meta] of workingFiles.entries()) {
+                            if (path.basename(p) === wantedBase && (meta.lastModified || 0) > newest) {
+                                newest = meta.lastModified;
+                                candidate = p;
+                            }
+                        }
+                        if (candidate && fsSync.existsSync(candidate)) {
+                            try { showInfoFlash(`read_file: "${filePath}" not found — resolving to "${candidate}" from working-set`); } catch (_) {}
+                            filePath = candidate;
+                        }
+                    } catch (_) {}
                 }
 
                 const content = await fs.readFile(filePath, 'utf8');
