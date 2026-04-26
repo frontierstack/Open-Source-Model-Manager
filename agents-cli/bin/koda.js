@@ -2367,6 +2367,12 @@ function promptConfirmation(message, timeoutMs = 30000) {
         }, timeoutMs);
 
         process.stdin.once('data', onData);
+        // mainRl.pause() internally pauses the underlying stdin stream;
+        // without an explicit resume, the just-registered data listener
+        // never fires and the prompt silently times out into the default
+        // 'yes' answer 30s later — which is how a destructive op could
+        // succeed in non-yolo mode without the user ever pressing a key.
+        if (typeof process.stdin.resume === 'function') process.stdin.resume();
     });
 }
 
