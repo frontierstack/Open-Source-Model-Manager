@@ -987,11 +987,13 @@ function beginToolCall(skillName, params) {
     };
     drawFrame();
     const interval = setInterval(drawFrame, 80);
+    global.__kodaToolInFlight = true;
 
     return {
         skillName, params, action, target,
         finish(result) {
             clearInterval(interval);
+            global.__kodaToolInFlight = false;
             const entry = {
                 skillName,
                 action,
@@ -1493,6 +1495,71 @@ function highlightYamlLine(line) {
         .replace(/:\s*(true|false|null|~)\s*$/i, (m, w) => m.replace(w, colorize(w, 'cyan')));
 }
 
+// Word-level diff between a removed line and an immediately-following added
+// line. Returns { left, right } with bg-colored tokens marking what changed,
+// or null when the two lines diverge too much to be a useful pair (less
+// than 40% common tokens) or the LCS table would blow up.
+//
+// The "background-color" we use is bright fg-on-default-bg via reverse video
+// + color — terminals reliably support this without bg color codes.
+function wordDiffLines(oldLine, newLine) {
+    if (typeof oldLine !== 'string' || typeof newLine !== 'string') return null;
+    // Tokenize on word boundaries but keep separators so we can rejoin
+    // without losing whitespace/punctuation.
+    const split = (s) => s.split(/(\s+|[^\w\s]+)/).filter(t => t.length > 0);
+    const a = split(oldLine);
+    const b = split(newLine);
+    if (a.length * b.length > 20000) return null; // anti-quadratic guard
+
+    // LCS table
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+    for (let i = m - 1; i >= 0; i--) {
+        for (let j = n - 1; j >= 0; j--) {
+            dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+    }
+    // Bail if the lines barely overlap — full-line color reads better there.
+    const lcsLen = dp[0][0];
+    const overlap = lcsLen / Math.max(a.length, b.length, 1);
+    if (overlap < 0.4) return null;
+
+    // Walk the table to mark each token as "common" or "diff" on each side.
+    const leftMark = new Array(m).fill(false);  // true = changed
+    const rightMark = new Array(n).fill(false);
+    let i = 0, j = 0;
+    while (i < m && j < n) {
+        if (a[i] === b[j]) { i++; j++; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { leftMark[i++] = true; }
+        else { rightMark[j++] = true; }
+    }
+    while (i < m) leftMark[i++] = true;
+    while (j < n) rightMark[j++] = true;
+
+    // Render with reverse-video on changed runs (`\x1b[7m` reverse).
+    const renderSide = (tokens, marks, baseColor) => {
+        let out = '';
+        let inDiff = false;
+        for (let k = 0; k < tokens.length; k++) {
+            if (marks[k] && !inDiff) {
+                // Bright reverse for the changed run
+                out += '\x1b[7;1m' + (baseColor === 'red' ? '\x1b[31m' : '\x1b[32m');
+                inDiff = true;
+            } else if (!marks[k] && inDiff) {
+                out += colors.reset + colors[baseColor];
+                inDiff = false;
+            }
+            out += tokens[k];
+        }
+        if (inDiff) out += colors.reset;
+        return colors[baseColor] + out + colors.reset;
+    };
+    return {
+        left:  renderSide(a, leftMark, 'red'),
+        right: renderSide(b, rightMark, 'green')
+    };
+}
+
 // Format code blocks cleanly without borders for easy copying
 function formatCodeBlocks(content) {
     // Match code blocks with ```language or just ```
@@ -1871,29 +1938,45 @@ function displayDiff(oldContent, newContent, filePath, options = {}) {
             log(indent + colorize('⋮'.padStart(gutterWidth + 2), 'dim'));
         }
 
-        for (const line of hunk.lines) {
+        // Pre-compute word-level diff for each adjacent -/+ pair in this
+        // hunk. Maps hunk-line-index → { left, right } strings that replace
+        // the full-line +/- color when both lines are similar enough.
+        const wordDiffByIdx = new Map();
+        for (let k = 0; k < hunk.lines.length - 1; k++) {
+            if (hunk.lines[k][0] === '-' && hunk.lines[k + 1][0] === '+') {
+                const wd = wordDiffLines(hunk.lines[k].slice(1), hunk.lines[k + 1].slice(1));
+                if (wd) {
+                    wordDiffByIdx.set(k, { side: 'left', text: wd.left });
+                    wordDiffByIdx.set(k + 1, { side: 'right', text: wd.right });
+                }
+            }
+        }
+
+        for (let lineIdx = 0; lineIdx < hunk.lines.length; lineIdx++) {
+            const line = hunk.lines[lineIdx];
             if (linesShown >= maxLines) { truncated = true; break; }
             const marker = line[0];
             const body = line.slice(1);
+            const wd = wordDiffByIdx.get(lineIdx);
             let gutterNum;
             let coloredBody;
             if (marker === '+') {
                 gutterNum = String(newLn).padStart(gutterWidth);
-                coloredBody = colorize('+ ' + body, 'green');
+                coloredBody = wd
+                    ? colorize('+ ', 'green') + wd.text
+                    : colorize('+ ' + body, 'green');
                 newLn++;
             } else if (marker === '-') {
                 gutterNum = String(oldLn).padStart(gutterWidth);
-                coloredBody = colorize('- ' + body, 'red');
+                coloredBody = wd
+                    ? colorize('- ', 'red') + wd.text
+                    : colorize('- ' + body, 'red');
                 oldLn++;
             } else if (marker === '\\') {
-                // "\ No newline at end of file" — render as context
                 gutterNum = ' '.repeat(gutterWidth);
                 coloredBody = colorize('  ' + body, 'dim');
             } else {
                 gutterNum = String(newLn).padStart(gutterWidth);
-                // Context line: syntax-highlight if the file's language is
-                // known; otherwise dim. Keeps unchanged code legible while
-                // +/- lines still pop with full color.
                 const lit = lang ? highlightCode(body, lang) : null;
                 coloredBody = lit
                     ? colorize('  ', 'dim') + lit
@@ -2177,6 +2260,15 @@ function displayChatHistory() {
     } else {
         let lastWasSystem = false;
         let prevRole = null;
+        // Track consecutive tool-call runs so we can draw a single ┃
+        // bracket spanning the group instead of each chip standing alone.
+        let toolGroupActive = false;
+        const closeToolGroup = () => {
+            if (toolGroupActive) {
+                log('  ' + colorize('┻', 'dim'));
+                toolGroupActive = false;
+            }
+        };
         for (const msg of chatHistory) {
             // Dim separator between turns so each exchange reads as its own block
             if (prevRole && (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'assistant-streaming')
@@ -2184,17 +2276,18 @@ function displayChatHistory() {
                 log('');
             }
 
+            if (msg.role !== 'tool') closeToolGroup();
+
             if (msg.role === 'user') {
                 if (lastWasSystem) { log(''); lastWasSystem = false; }
                 const lines = msg.content.split('\n');
-                const labelPlain = '▶ You ';
-                const label = colorize('▶', 'green') + ' ' + colorize('You', 'bright') + ' ';
+                const label = colorize('▶', 'cyan') + ' ' + colorize('You', 'bright') + ' ';
                 if (lines.length > 1) {
-                    // Multi-line message: render as a quote-bar block so the
-                    // bounds are obvious without the heavy box-drawing.
+                    // Multi-line message: bright-cyan quote-bar block so the
+                    // user input visually anchors against the assistant's response.
                     log(label);
                     for (const line of lines) {
-                        log('  ' + colorize('│', 'green') + ' ' + line);
+                        log('  ' + colorize('│', 'cyan') + ' ' + line);
                     }
                 } else {
                     log(label + msg.content);
@@ -2206,41 +2299,57 @@ function displayChatHistory() {
                     const label = colorize('◆', 'cyan') + ' ' + colorize('Koda', 'bright') + ' ';
                     if (msg.role === 'assistant') {
                         // Final message — run the markdown renderer with no
-                        // indent so it sits flush left, then inline the label
-                        // with the first line for a compact "Koda: answer"
-                        // look. Multi-line responses still wrap cleanly.
+                        // indent so it sits flush left, then prefix wrapped
+                        // continuation lines with a dim │ left border so the
+                        // assistant's response visually groups together.
                         const rendered = renderMarkdown(cleanedContent, { indent: '' });
                         if (rendered) {
-                            const firstNl = rendered.indexOf('\n');
-                            if (firstNl === -1) {
-                                log(label + rendered);
-                            } else {
-                                log(label + rendered.slice(0, firstNl));
-                                log(rendered.slice(firstNl + 1));
+                            const renderedLines = rendered.split('\n');
+                            log(label + renderedLines[0]);
+                            for (let li = 1; li < renderedLines.length; li++) {
+                                // Skip already-styled box edges (code-block frames)
+                                // since they have their own left character.
+                                const ln = renderedLines[li];
+                                const stripped = ln.replace(/\x1b\[[0-9;]*m/g, '');
+                                if (stripped.startsWith('╭') || stripped.startsWith('│') || stripped.startsWith('╰')) {
+                                    log('  ' + ln);
+                                } else if (stripped.length === 0) {
+                                    log('');
+                                } else {
+                                    log('  ' + colorize('│', 'dim') + ' ' + ln);
+                                }
                             }
                         } else {
                             log(label);
                         }
                     } else {
                         // Streaming fallback (rare — usually streamed directly
-                        // via stdout.write during generation). Keep minimal.
+                        // via stdout.write during generation).
                         const formattedContent = formatCodeBlocks(cleanedContent);
                         log(label + formattedContent);
                     }
                 }
             } else if (msg.role === 'tool') {
-                // Tool-call trail entry — Claude Code / Gemini CLI style
+                // Tool-call trail entry — Claude Code / Gemini CLI style.
+                // Open a ┃ bracket for a fresh consecutive run.
+                if (!toolGroupActive) {
+                    log('  ' + colorize('┳', 'dim'));
+                    toolGroupActive = true;
+                }
                 if (msg.content && typeof msg.content === 'object') {
                     renderToolCall(msg.content);
                 }
                 lastWasSystem = true;
             } else if (msg.role === 'system') {
-                // System messages with subtle styling (ASCII-safe icon)
-                log(colorize('  [i] ', 'dim') + colorize(msg.content, 'dim'));
+                // System messages with subtle styling. Use gray (faintest
+                // ANSI standard color) to push them visually behind the
+                // foreground roles.
+                log(colorize('  [i] ', 'gray') + colorize(msg.content, 'gray'));
                 lastWasSystem = true;
             }
             prevRole = msg.role;
         }
+        closeToolGroup();
         log('');
     }
 
@@ -2275,14 +2384,36 @@ function displayStatusBar() {
     const leftParts = [];
     const rightParts = [];
 
-    // "koda" label acts as the left anchor — no mode concept anymore.
+    // Tool-in-flight indicator — alternates cyan/dim each render so it
+    // visually pulses as long as a skill is executing. Sits at the very
+    // left so the user always knows when the GPU is doing work for them.
+    if (global.__kodaToolInFlight === true) {
+        const pulseOn = (Math.floor(Date.now() / 500) % 2) === 0;
+        leftParts.push(colorize('●', pulseOn ? 'cyan' : 'dim'));
+    }
+
+    // "koda" label acts as the left anchor.
     leftParts.push(colorize('◆', 'cyan') + colorize(' koda', 'bright'));
+
+    // YOLO mode chip — bright red so it's impossible to miss.
+    if (global.__kodaAutoConfirm === true) {
+        leftParts.push(colorize('YOLO', 'red'));
+    }
 
     // Compact cwd label
     const cwdLabel = userWorkingDirectory.length > 38
         ? '…' + userWorkingDirectory.slice(-37)
         : userWorkingDirectory;
     leftParts.push(colorize(cwdLabel, 'dim'));
+
+    // Model id segment — once the AgentAPI has cached the served model.
+    // Truncated to 24 chars with leading … so long names don't crowd the bar.
+    const apiRef = global.__kodaApi;
+    const modelId = apiRef && apiRef._cachedModelId;
+    if (modelId) {
+        const m = modelId.length > 24 ? '…' + modelId.slice(-23) : modelId;
+        leftParts.push(colorize(m, 'magenta'));
+    }
 
     // Context window (compact)
     if (contextWindowLimit > 0) {
@@ -2293,7 +2424,7 @@ function displayStatusBar() {
 
     // Tokens/sec
     if (lastTokenUsage.total > 0 && lastTokensPerSecond > 0) {
-        rightParts.push(colorize(`${lastTokensPerSecond.toFixed(1)} tok/s`, 'dim'));
+        rightParts.push(colorize(`${lastTokensPerSecond.toFixed(1)} t/s`, 'dim'));
     }
 
     // Session tokens
@@ -2574,6 +2705,70 @@ function removePartialSkillCalls(text) {
 let lastRawCleanedContent = '';
 
 // Update streaming message without full screen refresh (reduces flicker)
+// Streaming code-block state machine.
+// Tracks whether we're inside an open fenced code block as tokens stream in,
+// holding any partial trailing line until a newline arrives so a fence run
+// (```) can never be mis-styled when split across chunk boundaries.
+let _streamLineBuf = '';
+let _streamFenceOpen = false;
+let _streamFenceLang = '';
+
+function _resetStreamFence() {
+    _streamLineBuf = '';
+    _streamFenceOpen = false;
+    _streamFenceLang = '';
+}
+
+// Transform a freshly-appended chunk of streamed text into framed output.
+// Append-only — never rewrites previously-emitted bytes — so it stays
+// flicker-free regardless of network jitter.
+function styleStreamingChunk(chunk) {
+    if (!chunk) return '';
+    const buf = _streamLineBuf + chunk;
+    const lastNl = buf.lastIndexOf('\n');
+    if (lastNl === -1) {
+        // No newline yet — defer everything; partial line might be a fence.
+        _streamLineBuf = buf;
+        return '';
+    }
+    const completePart = buf.slice(0, lastNl + 1);
+    _streamLineBuf = buf.slice(lastNl + 1);
+
+    const out = [];
+    const lines = completePart.split('\n');
+    // Last element after split is empty (trailing \n) — ignore it.
+    for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        const fenceMatch = line.trim().match(/^(```|~~~)(\w*)\s*$/);
+        if (fenceMatch) {
+            if (_streamFenceOpen) {
+                // Closing fence
+                const langLen = (_streamFenceLang || 'code').length;
+                out.push(colorize('╰' + '─'.repeat(Math.min(54, langLen + 6)) + '╯', 'dim'));
+                _streamFenceOpen = false;
+                _streamFenceLang = '';
+            } else {
+                // Opening fence
+                _streamFenceOpen = true;
+                _streamFenceLang = fenceMatch[2] || 'code';
+                const lang = _streamFenceLang;
+                out.push(
+                    colorize('╭─', 'dim') +
+                    colorize(` ${lang.toUpperCase()} `, 'yellow') +
+                    colorize('─'.repeat(Math.max(1, 50 - lang.length)), 'dim') +
+                    colorize('╮', 'dim')
+                );
+            }
+        } else if (_streamFenceOpen) {
+            const hl = highlightCode(line, _streamFenceLang);
+            out.push(colorize('│ ', 'dim') + hl);
+        } else {
+            out.push(line);
+        }
+    }
+    return out.join('\n') + '\n';
+}
+
 function updateStreamingMessage(message) {
     if (!isStreaming) return;
 
@@ -2587,15 +2782,15 @@ function updateStreamingMessage(message) {
 
     // On first message, write the prefix and content
     if (lastRawCleanedContent === '') {
-        const formattedContent = formatCodeBlocks(cleanedMessage);
         process.stdout.write(
             colorize('◆', 'cyan') + ' ' +
             colorize('Koda', 'bright') + ' '
         );
-        process.stdout.write(formattedContent);
+        const styled = styleStreamingChunk(cleanedMessage);
+        process.stdout.write(styled);
         lastStreamedMessage = message;
         lastRawCleanedContent = cleanedMessage;
-        lastCleanedMessage = formattedContent;
+        lastCleanedMessage = styled;
     } else {
         // Compare raw content to determine what's new
         // This avoids issues with formatting differences
@@ -2603,11 +2798,10 @@ function updateStreamingMessage(message) {
             // New content added - only write the new part
             const newRawContent = cleanedMessage.substring(lastRawCleanedContent.length);
             if (newRawContent) {
-                const formattedNewContent = formatCodeBlocks(newRawContent);
-                process.stdout.write(formattedNewContent);
+                const styled = styleStreamingChunk(newRawContent);
+                process.stdout.write(styled);
                 lastStreamedMessage = message;
                 lastRawCleanedContent = cleanedMessage;
-                lastCleanedMessage = formatCodeBlocks(cleanedMessage);
             }
         } else if (cleanedMessage === lastRawCleanedContent) {
             // Content unchanged - no action needed
@@ -2617,7 +2811,6 @@ function updateStreamingMessage(message) {
             // Don't rewrite the screen, the next content will append correctly
             lastStreamedMessage = message;
             lastRawCleanedContent = cleanedMessage;
-            lastCleanedMessage = formatCodeBlocks(cleanedMessage);
         } else {
             // Content diverged - find common prefix and append from there
             let commonLen = 0;
@@ -2629,15 +2822,15 @@ function updateStreamingMessage(message) {
             if (commonLen > 0 && commonLen === lastRawCleanedContent.length) {
                 // Old content is prefix of new - just append the new part
                 const newPart = cleanedMessage.substring(commonLen);
-                process.stdout.write(formatCodeBlocks(newPart));
+                process.stdout.write(styleStreamingChunk(newPart));
             } else {
-                // Content completely diverged - append on new line to avoid confusion
-                process.stdout.write('\n' + formatCodeBlocks(cleanedMessage));
+                // Content completely diverged - reset fence state and append on new line.
+                _resetStreamFence();
+                process.stdout.write('\n' + styleStreamingChunk(cleanedMessage));
             }
 
             lastStreamedMessage = message;
             lastRawCleanedContent = cleanedMessage;
-            lastCleanedMessage = formatCodeBlocks(cleanedMessage);
         }
     }
 }
@@ -2648,6 +2841,7 @@ function resetStreamingState() {
     lastStreamedMessage = '';
     lastCleanedMessage = '';
     lastRawCleanedContent = '';
+    _resetStreamFence();
 }
 
 // Encryption utilities
@@ -2735,6 +2929,10 @@ class AgentAPI {
         this.baseUrl = baseUrl;
         this.apiKey = apiKey;
         this.apiSecret = apiSecret;
+        // Latest-instance reference so the status bar (and any other
+        // module-scope helper) can reach _cachedModelId without threading
+        // the api through every call site.
+        global.__kodaApi = this;
     }
 
     async request(method, endpoint, data = null, timeout = 120000) {
@@ -8100,6 +8298,8 @@ async function handleHelp() {
     addToHistory('system', colorize('Session Management:', 'yellow'));
     addToHistory('system', '  /clear             Clear chat history');
     addToHistory('system', '  /clearsession      Clear session context (keeps history visible)');
+    addToHistory('system', '  /yolo              Toggle approval-free mode ' +
+        colorize('(also: --dangerously-skip-permissions / KODA_DANGEROUSLY_SKIP_PERMISSIONS=1)', 'dim'));
     addToHistory('system', '  /quit              Exit koda');
     addToHistory('system', '');
     addToHistory('system', colorize('Tips:', 'cyan'));
@@ -9836,6 +10036,7 @@ async function startShell() {
     // Command definitions with descriptions for live suggestions
     const commandDefs = [
         { cmd: '/auth', desc: 'authenticate with API' },
+        { cmd: '/yolo', desc: 'toggle approval-free mode' },
         { cmd: '/init', desc: 'analyze project' },
         { cmd: '/project', desc: 'create project' },
         { cmd: '/cwd', desc: 'show directory' },
@@ -10141,6 +10342,28 @@ async function startShell() {
                         await handleHelp();
                         break;
 
+                    case '/yolo':
+                    case '/dangerous':
+                    case '/dangerously-skip-permissions': {
+                        // Toggle "approve nothing" mode for the current session.
+                        // Equivalent to launching with --dangerously-skip-permissions
+                        // or setting KODA_DANGEROUSLY_SKIP_PERMISSIONS=1.
+                        global.__kodaAutoConfirm = !global.__kodaAutoConfirm;
+                        if (global.__kodaAutoConfirm) {
+                            addToHistory('system',
+                                colorize('⚠ ', 'yellow') +
+                                colorize('YOLO mode ON', 'red') +
+                                colorize(' — file writes, deletes, and shell commands will run without confirmation. Use /yolo again to disable.', 'dim'));
+                        } else {
+                            addToHistory('system',
+                                colorize('● ', 'green') +
+                                'YOLO mode ' + colorize('OFF', 'green') +
+                                colorize(' — confirmations restored.', 'dim'));
+                        }
+                        displayChatHistory();
+                        break;
+                    }
+
                     case '/clear':
                         handleClear();
                         break;
@@ -10307,6 +10530,16 @@ async function startShell() {
 // -----------------------------------------------------------------------------
 const _kodaArgv = process.argv.slice(2);
 const _kodaPromptIdx = _kodaArgv.findIndex(a => a === '-p' || a === '--prompt');
+
+// "Dangerously skip permissions" mode: bypass every confirmation prompt,
+// including the diff preview before file writes. Mirrors Claude Code's
+// flag of the same name. Toggleable in-session via /yolo.
+const _kodaDangerFlag = _kodaArgv.includes('--dangerously-skip-permissions') ||
+                        _kodaArgv.includes('--yolo') ||
+                        process.env.KODA_DANGEROUSLY_SKIP_PERMISSIONS === '1';
+if (_kodaDangerFlag) {
+    global.__kodaAutoConfirm = true;
+}
 
 async function runSingleShot(prompt) {
     // Single-shot mode is non-interactive by definition: auto-accept any
