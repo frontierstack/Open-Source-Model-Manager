@@ -11244,6 +11244,21 @@ async function runSingleShot(prompt) {
         // is the whole point of running it inside a project.
         autoLoadProjectContext();
 
+        // Honor --continue / --resume in single-shot mode too. Without this,
+        // `koda --continue -p "..."` silently starts a fresh session, which
+        // defeats the whole point of pairing the two flags.
+        if (_kodaResumeId && _kodaResumeId !== '__list__') {
+            const sess = loadSessionById(_kodaResumeId);
+            if (sess) restoreSession(sess);
+            else process.stderr.write(`(session not found: ${_kodaResumeId})\n`);
+        } else if (_kodaContinueFlag) {
+            const recent = findMostRecentSessionForCwd(userWorkingDirectory);
+            if (recent) {
+                const sess = loadSessionById(recent.id);
+                if (sess) restoreSession(sess);
+            }
+        }
+
         // handleChat does its own streaming output; we just wait for it and
         // then print the cleaned final assistant message once, so test
         // harnesses can grep for it reliably.
