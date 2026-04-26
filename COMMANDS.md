@@ -314,8 +314,20 @@ docker compose exec webapp cat /etc/os-release
 # Install Koda CLI
 curl -sk https://localhost:3001/api/cli/install | bash
 
-# Start Koda
+# Start Koda (interactive REPL)
 koda
+
+# Resume the most recent session for the current directory
+koda --continue                 # Same as: koda -c
+koda --continue --yolo          # Resume + skip confirmations (combinable)
+
+# Resume a specific session by id
+koda --resume <session-id>      # Same as: koda -r <id>
+koda --resume                   # No id → list candidates and exit
+
+# Single-shot prompt (CI / scripting): run one prompt, print, exit
+koda -p "summarize the failing test in tests/auth_test.js"
+koda --continue -p "what was the file we discussed last?"
 
 # Authenticate with API credentials
 /auth                           # Interactive setup (URL, key, secret)
@@ -331,6 +343,8 @@ koda
 # Show current working directory
 /cwd                            # Displays CWD and first 10 items
 ```
+
+**Project guidance auto-loading:** on every launch, Koda looks for `KODA.md`, `koda.md`, `CLAUDE.md`, or `AGENTS.md` (first match wins) in the current directory and injects the contents into the model's system prompt for every turn. The file is re-read each turn, so edits take effect immediately without restarting Koda. Capped at 64 KB.
 
 ### Mode & Web Search
 
@@ -400,10 +414,30 @@ koda
 # Clear context but keep history visible
 /clearsession                   # Resets session context, keeps history
 
+# Cross-session persistence (auto — every assistant turn is saved)
+/sessions                       # List saved sessions for the current directory
+/resume <id>                    # Restore a session in-place (REPL)
+                                # — also: relaunch with `koda --resume <id>`
+
+# Cross-session memory (~/.koda/memory.md, plain markdown)
+/memory                         # Show current memory file
+/memory add <note>              # Append a note Koda will read on every launch
+/memory clear                   # Wipe ~/.koda/memory.md
+/memory edit                    # Print the file path so you can edit directly
+
+# Approval-free mode (toggle in-session)
+/yolo                           # Skip every confirmation prompt for this session
+                                # — also: `koda --yolo` / `koda --dangerously-skip-permissions`
+                                # — combinable with --continue
+
 # Exit Koda
 /quit                           # Exit the CLI
 /exit                           # Alias for /quit
 ```
+
+**How sessions work:** every assistant turn auto-saves the conversation to `~/.koda/sessions/<id>.json`, with an index at `~/.koda/sessions/index.json` for fast listing. Sessions are scoped to the directory you launched `koda` from; `koda --continue` picks the most-recent one for that cwd. The 200 most recent sessions are kept; older ones are pruned automatically.
+
+**Confirmation-loop fix:** when the model's prior reply ended with a permission-seeking question (`Shall I…?`, `Would you like me to…?`, `proceed?`, etc.) and you reply with a short confirm phrase (`yes`, `continue`, `go ahead`, `do it`, `proceed`, `lgtm`, …), Koda prefixes the message with an explicit execution directive so the model stops re-asking and dispatches the proposed skill calls.
 
 ### Chat Features
 
@@ -417,18 +451,20 @@ koda
 - Color-coded warnings (yellow: 80%, red: 95%)
 
 **Autonomous Skill Execution:**
-- AI executes skills automatically when needed
-- Format: `[SKILL:skill_name(param="value")]`
+- AI executes skills automatically when needed (native tool calls; legacy `[SKILL:name(param="value")]` text fallback supported)
 - Works in standalone, agent, and collab modes
-- 74 default skills across 20 categories including:
+- 95+ default skills across 20+ categories including:
   - File operations (create, read, update, delete, list)
+  - **Code navigation & editing** — `grep_code` (recursive content search), `outline_file` (function/class signatures with line numbers, multi-language), `replace_lines` (surgical line-range edits), `search_replace_file` (find/replace by string), `diff_files`
   - Email parsing (.eml and .msg) with nested attachment extraction
   - PDF generation and reading
   - Web scraping with Scrapling (CAPTCHA evasion) and Playwright
   - OCR for images and scanned documents (Tesseract)
-  - Git operations (status, diff, log)
+  - Git operations (status, diff, log, blame, file_history, list_tree, show_commit)
   - System info and process management
   - And more...
+
+**Working with large code files:** the model is encouraged to use `grep_code` or `outline_file` to navigate first, then `read_file(startLine, endLine)` to drill into a specific region, then `replace_lines` or `search_replace_file` for surgical edits — much cheaper than reading and rewriting the whole file. `outline_file` handles 10k+ line files in under 50ms.
 
 **Web-Dependent Skills:**
 The following skills require `/web` mode to be enabled:

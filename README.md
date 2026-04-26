@@ -164,12 +164,21 @@ koda
 /auth    # Enter API key from Web UI
 /init    # Analyze project structure
 
+# Pick up where you left off
+koda --continue              # resume the most recent session for this directory
+koda --resume <session-id>   # resume a specific session (no id → list)
+koda --yolo                  # skip every confirmation (combinable with --continue)
+
 # Key commands
 /help              # Show all commands
 /mode agent        # Switch to agent mode
 /web               # Toggle web search
+/sessions          # List saved sessions
+/memory add <note> # Save a note Koda remembers across launches
 /quit              # Exit
 ```
+
+Koda also auto-loads a `KODA.md`, `koda.md`, `CLAUDE.md`, or `AGENTS.md` from the current directory and injects it into every prompt as project guidance — drop in your conventions and Koda picks them up without restarting.
 
 See [COMMANDS.md](COMMANDS.md) for complete command reference.
 

@@ -9832,6 +9832,20 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                             </Box>
                                         </Box>
 
+                                        {/* Launch flags */}
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Launch Flags</Typography>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableBody>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start interactive REPL (default)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda --continue, -c</TableCell><TableCell sx={{ color: 'text.secondary' }}>Resume the most recent session for this directory</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda --resume &lt;id&gt;, -r</TableCell><TableCell sx={{ color: 'text.secondary' }}>Resume a specific session by id (no id = list sessions)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda --yolo</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip every confirmation prompt (combinable with --continue)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda -p "question"</TableCell><TableCell sx={{ color: 'text.secondary' }}>Single-shot: run one prompt, print answer, exit (CI/scripts)</TableCell></TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </Box>
+
                                         {/* Commands - compact two-column layout */}
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={6}>
@@ -9865,6 +9879,39 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                             </Grid>
                                         </Grid>
 
+                                        {/* Persistence row */}
+                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Persistence — Sessions, Memory, Project Guidance</Typography>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableBody>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/sessions</TableCell><TableCell sx={{ color: 'text.secondary' }}>List saved sessions for the current directory</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/resume &lt;id&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Resume a specific session inside the running REPL</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/memory</TableCell><TableCell sx={{ color: 'text.secondary' }}>View cross-session notes (~/.koda/memory.md)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/memory add &lt;note&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Append a note Koda will read on every future launch</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/memory clear</TableCell><TableCell sx={{ color: 'text.secondary' }}>Wipe ~/.koda/memory.md</TableCell></TableRow>
+                                                </TableBody>
+                                            </Table>
+                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                Koda also auto-loads <code>KODA.md</code>, <code>koda.md</code>, <code>CLAUDE.md</code>, or <code>AGENTS.md</code> from the current directory at startup, injecting it into the system prompt every turn (re-read live so edits take effect immediately). Sessions are saved to <code>~/.koda/sessions/&lt;id&gt;.json</code> after every turn; the most recent 200 are kept.
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Code-navigation skills */}
+                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Code-Navigation Skills (model-invoked)</Typography>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableBody>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>grep_code</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recursive content search w/ regex, glob filter, context lines — much cheaper than reading whole files</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>outline_file</TableCell><TableCell sx={{ color: 'text.secondary' }}>Extract function/class signatures with line numbers (Python, JS/TS, Go, Rust, Java, C/C++)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>replace_lines</TableCell><TableCell sx={{ color: 'text.secondary' }}>Surgical line-range replace/insert — pair with grep_code or outline_file for targeted edits to large files</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>search_replace_file</TableCell><TableCell sx={{ color: 'text.secondary' }}>Find-and-replace text by string match (regex optional)</TableCell></TableRow>
+                                                </TableBody>
+                                            </Table>
+                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                These run server-side and are invoked by the model automatically — you don't call them as slash commands. Designed to scale to large code files: <code>outline_file</code> handles 10k+ line files in under 50ms.
+                                            </Typography>
+                                        </Box>
+
                                         {/* Features - compact chips */}
                                         <Box sx={{ mt: 2, display: 'flex', flexWrap: 'wrap', gap: 1 }}>
                                             <Chip label="Tab completion" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
@@ -9872,6 +9919,9 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                             <Chip label="Animated UI" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
                                             <Chip label="Context tracking" size="small" sx={{ bgcolor: 'rgba(251,191,36,0.15)', fontSize: '0.7rem' }} />
                                             <Chip label="Multi-line paste" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Session resume" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="Cross-session memory" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
+                                            <Chip label="KODA.md auto-load" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
                                         </Box>
                                     </AccordionDetails>
                                 </Accordion>
