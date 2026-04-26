@@ -565,6 +565,16 @@ function logInfo(message) {
 // MODERN ANIMATION SYSTEM
 // ============================================================================
 
+// Turn-level elapsed clock — set when a user-initiated chat turn begins, cleared
+// when it ends. Lets the spinner and "still working…" heartbeat reflect total
+// time the model has been active on this turn, not just time since the last
+// startAnimation() call (which used to reset to 0 on every iteration of the
+// skill loop, hiding the heartbeat from the user even on multi-minute turns).
+let currentTurnStartTime = null;
+function beginTurnClock() { currentTurnStartTime = Date.now(); }
+function endTurnClock() { currentTurnStartTime = null; }
+function turnElapsedMs() { return currentTurnStartTime ? Date.now() - currentTurnStartTime : 0; }
+
 // Spinner frames for different animation styles
 const spinnerFrames = {
     dots: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
@@ -651,8 +661,13 @@ function startAnimation(message, style = 'dots', options = {}) {
         // Clear the current line and rewrite
         process.stdout.write('\r\x1b[K'); // Clear line
 
-        const timeDisplay = showElapsed ? ` ${colorize(formatElapsed(elapsedMs), elapsedColor(elapsedMs))}` : '';
-        const heartbeat = longRunSuffix(elapsedMs, activeAnimation.message);
+        // Prefer turn-elapsed for the visible timer + heartbeat so the user
+        // sees TOTAL time the model has been active this turn, not just the
+        // time since this individual spinner started.
+        const turnMs = turnElapsedMs();
+        const displayMs = turnMs || elapsedMs;
+        const timeDisplay = showElapsed ? ` ${colorize(formatElapsed(displayMs), elapsedColor(displayMs))}` : '';
+        const heartbeat = longRunSuffix(displayMs, activeAnimation.message);
         activeAnimation.line = `${prefix}${colorize(frame, activeAnimation.color || color)} ${colorize(activeAnimation.message, 'white')}${heartbeat}${timeDisplay}`;
         process.stdout.write(activeAnimation.line);
     }, 80);
@@ -681,8 +696,10 @@ function updateAnimationMessage(newMessage, newColor = null) {
 
     const frame = activeAnimation.frames[animationFrameIndex];
     const elapsedMs = Date.now() - animationStartTime;
-    const timeDisplay = activeAnimation.showElapsed ? ` ${colorize(formatElapsed(elapsedMs), elapsedColor(elapsedMs))}` : '';
-    const heartbeat = longRunSuffix(elapsedMs, newMessage);
+    const turnMs = turnElapsedMs();
+    const displayMs = turnMs || elapsedMs;
+    const timeDisplay = activeAnimation.showElapsed ? ` ${colorize(formatElapsed(displayMs), elapsedColor(displayMs))}` : '';
+    const heartbeat = longRunSuffix(displayMs, newMessage);
 
     process.stdout.write('\r\x1b[K');
     activeAnimation.line = `${activeAnimation.prefix}${colorize(frame, activeAnimation.color)} ${colorize(newMessage, 'white')}${heartbeat}${timeDisplay}`;
@@ -1017,11 +1034,17 @@ function beginToolCall(skillName, params) {
     const frames = (spinnerFrames && spinnerFrames[spinChoice.style]) ||
                    ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
     let frame = 0;
+    const toolStart = Date.now();
     const drawFrame = () => {
         const f = frames[frame++ % frames.length];
+        const turnMs = turnElapsedMs();
+        const toolMs = Date.now() - toolStart;
+        const displayMs = turnMs || toolMs;
+        const timeStr = ` ${colorize(formatElapsed(displayMs), elapsedColor(displayMs))}`;
+        const beat = longRunSuffix(displayMs, action || 'working');
         process.stdout.write('\r\x1b[K' +
             '    ' + colorize('⎿ ', 'dim') +
-            colorize(f, spinChoice.color) + colorize(' working…', 'dim'));
+            colorize(f, spinChoice.color) + colorize(' working…', 'dim') + beat + timeStr);
     };
     drawFrame();
     const interval = setInterval(drawFrame, 80);
@@ -3678,8 +3701,13 @@ class AgentAPI {
 // SKILL CALLING FRAMEWORK
 // ============================================================================
 
-// Maximum iterations for skill execution loop (prevent infinite loops)
-const MAX_SKILL_ITERATIONS = 10;
+// Maximum iterations for skill execution loop (prevent infinite loops).
+// Multi-file edits ("touch 4 files, list 200 sprites, then patch each") routinely
+// burn 8–15 tool calls before the model writes its final summary, so 10 is too
+// tight. 25 still bounds runaway loops but lets real work finish. When the cap
+// IS hit we now send one final "wrap up" turn (see end of skill loop) instead
+// of stopping cold mid-task.
+const MAX_SKILL_ITERATIONS = 25;
 
 // Parse skill calls from AI response
 // Format: [SKILL:skill_name(param1="value1", param2="value2")]
@@ -4397,6 +4425,8 @@ function buildSkillSystemPrompt(skills, userMessage = '') {
     let prompt = `You are Koda, a helpful AI assistant. You can have normal conversations, answer questions, help with coding, math, explanations, and any other topics.
 
 You have access to ${enabledSkills.length} skills across multiple categories. Execute skills directly when the user's request matches a skill's purpose.
+
+WHEN YOU DON'T KNOW SOMETHING: If the task requires information you don't have — an unfamiliar API, a library quirk, a sprite-sheet naming convention, an error message you've never seen, the syntax of a config format — call \`web_search\` (and \`fetch_url\` on a relevant result) BEFORE guessing or telling the user it can't be done. Searching is preferred over guessing.
 
 IMPORTANT FILE PLACEMENT RULES:
 - User's current working directory: ${userWorkingDirectory}
@@ -7398,9 +7428,40 @@ async function executePlaywrightSkill(api, skillName, params) {
 }
 
 // Execute skills and return results
+// Per-turn read cache: keyed by `${skill}:${absPath}`, holds { mtimeMs, result }.
+// Lets us return identical read_file/list_directory results without hitting disk
+// when the model asks for the same path twice in one turn — saves tokens (re-reads
+// a 16KB file three times in one turn → cached to 1) and prevents the loop where
+// the model re-reads, sees the same content, and re-edits.
+const _readCache = new Map();
+function _cacheKey(skill, params) {
+    const p = params && (params.filePath || params.path || params.directory || params.dirPath || params.file_path);
+    if (!p) return null;
+    try {
+        const abs = path.isAbsolute(p) ? p : path.resolve(userWorkingDirectory || process.cwd(), p);
+        return `${skill}:${abs}`;
+    } catch { return null; }
+}
+function _statMtime(absPath) {
+    try { return fsSync.statSync(absPath).mtimeMs; } catch { return null; }
+}
+function clearReadCache() { _readCache.clear(); }
+function invalidateReadCacheFor(params) {
+    const p = params && (params.filePath || params.path || params.directory || params.dirPath || params.file_path);
+    if (!p) return;
+    let abs;
+    try { abs = path.isAbsolute(p) ? p : path.resolve(userWorkingDirectory || process.cwd(), p); }
+    catch { return; }
+    for (const k of Array.from(_readCache.keys())) {
+        if (k.endsWith(`:${abs}`) || k.endsWith(`:${path.dirname(abs)}`)) _readCache.delete(k);
+    }
+}
+
 async function executeSkillCalls(api, skillCalls, agentId = null) {
     const results = [];
     const fileModifyingSkills = ['create_file', 'update_file'];
+    const cacheableReadSkills = new Set(['read_file', 'list_directory', 'head_file', 'tail_file']);
+    const writeSkillsForInvalidation = new Set(['create_file', 'update_file', 'append_to_file', 'delete_file', 'move_file', 'search_replace_file', 'create_directory', 'delete_directory']);
 
     // Fetch enabled skills from API to verify before execution
     // If fetch fails, fall back to cached skills, then fail open (null = allow all)
@@ -7502,6 +7563,27 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
 
         let result;
 
+        // Per-turn read cache: short-circuit identical read_file/list_directory
+        // calls when the file's mtime hasn't changed since the cached result.
+        if (cacheableReadSkills.has(call.skillName)) {
+            const k = _cacheKey(call.skillName, call.params);
+            if (k) {
+                const absPath = k.split(':').slice(1).join(':');
+                const mt = _statMtime(absPath);
+                const cached = _readCache.get(k);
+                if (cached && mt !== null && cached.mtimeMs === mt) {
+                    result = { ...cached.result, cached: true };
+                    if (result.success && typeof result.message === 'string' && !result.message.includes('(cached)')) {
+                        result.message = `(cached) ${result.message}`;
+                    }
+                    toolHandle.finish(result);
+                    results.push({ skill: call.skillName, success: !!result.success, ...result });
+                    recordToolCall(call.skillName, call.params, result);
+                    continue;
+                }
+            }
+        }
+
         // ALL skills execute client-side - Koda is a standalone CLI tool like Claude Code
         const fileOperationSkills = ['create_file', 'update_file', 'read_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file', 'create_directory', 'append_to_file', 'tail_file', 'head_file'];
         const fileExtraSkills = ['copy_file', 'get_file_metadata', 'search_files', 'download_file', 'search_replace_file', 'diff_files'];
@@ -7584,6 +7666,24 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
         }
 
         toolHandle.finish(result);
+
+        // Cache successful reads; invalidate cache for any path-modifying write.
+        if (result && result.success) {
+            if (cacheableReadSkills.has(call.skillName)) {
+                const k = _cacheKey(call.skillName, call.params);
+                if (k) {
+                    const absPath = k.split(':').slice(1).join(':');
+                    const mt = _statMtime(absPath);
+                    if (mt !== null) {
+                        if (_readCache.size > 50) _readCache.delete(_readCache.keys().next().value);
+                        _readCache.set(k, { mtimeMs: mt, result: { ...result } });
+                    }
+                }
+            } else if (writeSkillsForInvalidation.has(call.skillName)) {
+                invalidateReadCacheFor(call.params);
+                if (call.params && call.params.destPath) invalidateReadCacheFor({ filePath: call.params.destPath });
+            }
+        }
 
         if (result.success) {
             results.push({
@@ -9232,6 +9332,16 @@ async function handleChat(api, message) {
     // Preserve original message for false completion detection
     const originalMessage = message;
 
+    // Reset per-turn read cache so files re-read on each new user message
+    // (mtime check inside still handles within-turn freshness).
+    clearReadCache();
+
+    // Start the turn-elapsed clock so all spinners show CUMULATIVE time the
+    // model has been working on this turn. Without this, each iteration's
+    // spinner restarts at 0s and the 30s "still working…" heartbeat never
+    // fires for users waiting through long multi-tool turns.
+    beginTurnClock();
+
     // Add user message to history
     addToHistory('user', message);
 
@@ -9535,6 +9645,7 @@ async function handleChat(api, message) {
         if (!result.success) {
             addToHistory('system', `Error: ${result.error}`);
             displayChatHistory();
+            endTurnClock();
             return;
         }
 
@@ -10056,7 +10167,42 @@ async function handleChat(api, message) {
     }
 
     if (iteration >= MAX_SKILL_ITERATIONS) {
-        addToHistory('system', `Warning: Maximum tool execution iterations (${MAX_SKILL_ITERATIONS}) reached`);
+        addToHistory('system', `Warning: Maximum tool execution iterations (${MAX_SKILL_ITERATIONS}) reached — asking model to wrap up.`);
+        // Wrap-up turn: give the model one last no-tools chance to summarize what
+        // it accomplished and what's still pending, instead of just ending mid-task.
+        try {
+            const wrapMsgs = [
+                ...currentMessages,
+                { role: 'user', content: 'You have hit the tool-call iteration cap for this turn. Do NOT call any more tools. In a few sentences, summarize what you accomplished, what files you changed, and what (if anything) is still left to do so the user can ask you to continue.' }
+            ];
+            startAnimation('Wrapping up', 'dots');
+            const wrap = await api.chatCompletionsRaw(
+                { messages: wrapMsgs, temperature: 0.5 },
+                {
+                    onToken: (token) => {
+                        const lastMsg = chatHistory[chatHistory.length - 1];
+                        if (lastMsg && lastMsg.role === 'assistant-streaming') {
+                            lastMsg.content += token;
+                        } else {
+                            stopAnimation(true);
+                            addToHistory('assistant-streaming', token);
+                        }
+                    }
+                }
+            );
+            stopAnimation(true);
+            const wrapText = wrap.success ? (wrap.data.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim() : '';
+            const lastMsg = chatHistory[chatHistory.length - 1];
+            if (lastMsg && lastMsg.role === 'assistant-streaming') {
+                lastMsg.role = 'assistant';
+                lastMsg.content = wrapText || lastMsg.content;
+            } else if (wrapText) {
+                addToHistory('assistant', wrapText);
+            }
+            if (wrapText) finalResponse = wrapText;
+        } catch (e) {
+            stopAnimation(true);
+        }
     }
 
     // Add assistant response to context
@@ -10071,6 +10217,7 @@ async function handleChat(api, message) {
     await updateApiKeyUsage(api);
 
     displayChatHistory();
+    endTurnClock();
 }
 
 // Main interactive shell
