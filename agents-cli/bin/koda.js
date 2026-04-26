@@ -4878,27 +4878,36 @@ async function executeFileOperationSkill(skillName, params) {
         switch (skillName) {
             case 'create_file':
             case 'update_file': {
-                const filePath = params.filePath;
+                let filePath = params.filePath;
                 const rawContent = params.content || '';
+
+                // Auto-recover when the model omits filePath but provides content:
+                // small models often drop the path on long edits. If the working
+                // set has a recently-touched file, infer it. update_file is the
+                // safer side (we're editing something the model already saw); for
+                // create_file we still infer but flag it more loudly.
+                let inferredFrom = null;
+                if (!filePath && rawContent) {
+                    let newest = 0;
+                    try {
+                        for (const [p, meta] of workingFiles.entries()) {
+                            if ((meta.lastModified || 0) > newest) { newest = meta.lastModified; filePath = p; }
+                        }
+                    } catch (_) {}
+                    if (filePath) inferredFrom = 'working-set';
+                }
+
                 const content = sanitizeContentForFile(filePath, rawContent);
 
                 if (!filePath) {
-                    // Suggest the most recently touched working-set file so the
-                    // model can copy-paste the path on retry instead of guessing.
-                    let hintPath = null;
-                    try {
-                        let newest = 0;
-                        for (const [p, meta] of workingFiles.entries()) {
-                            if ((meta.lastModified || 0) > newest) { newest = meta.lastModified; hintPath = p; }
-                        }
-                    } catch (_) {}
-                    const example = hintPath
-                        ? `[SKILL:${skillName}(filePath="${hintPath}", content="...")]`
-                        : `[SKILL:${skillName}(filePath="/absolute/path/to/file", content="...")]`;
                     return {
                         success: false,
-                        error: `Missing required parameter "filePath". You sent only "content". Retry with both params, e.g. ${example}`
+                        error: `Missing required parameter "filePath". You sent only "content". Retry with both params, e.g. [SKILL:${skillName}(filePath="/absolute/path/to/file", content="...")]`
                     };
+                }
+
+                if (inferredFrom) {
+                    try { showInfoFlash(`${skillName}: filePath omitted by model — inferring "${filePath}" from ${inferredFrom}`); } catch (_) {}
                 }
 
                 // Ensure directory exists
