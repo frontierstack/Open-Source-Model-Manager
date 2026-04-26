@@ -1276,14 +1276,33 @@ function beginToolCall(skillName, params) {
             colorize(f, spinChoice.color) + colorize(' working…', 'dim') + beat + timeStr);
     };
     drawFrame();
-    const interval = setInterval(drawFrame, 80);
+    let interval = setInterval(drawFrame, 80);
     global.__kodaToolInFlight = true;
 
-    return {
+    const handle = {
         skillName, params, action, target,
+        // Pause the spinner so something else (e.g. promptConfirmation) can
+        // own the line without getting repainted every 80ms. Idempotent.
+        pause() {
+            if (interval) {
+                clearInterval(interval);
+                interval = null;
+                process.stdout.write('\r\x1b[K');
+            }
+        },
+        // Resume the spinner after a pause. Rare — usually we just let the
+        // skill finish and finish() takes over.
+        resume() {
+            if (!interval) {
+                drawFrame();
+                interval = setInterval(drawFrame, 80);
+            }
+        },
         finish(result) {
-            clearInterval(interval);
+            if (interval) clearInterval(interval);
+            interval = null;
             global.__kodaToolInFlight = false;
+            global.__kodaActiveToolHandle = null;
             const entry = {
                 skillName,
                 action,
@@ -1297,6 +1316,8 @@ function beginToolCall(skillName, params) {
             if (chatHistory.length > MAX_HISTORY) chatHistory.shift();
         }
     };
+    global.__kodaActiveToolHandle = handle;
+    return handle;
 }
 
 // Push a tool-call entry to chatHistory AND render it immediately. The entry
@@ -2299,6 +2320,15 @@ function promptConfirmation(message, timeoutMs = 30000) {
     }
 
     return new Promise((resolve) => {
+        // CRITICAL: pause the per-tool spinner started by beginToolCall —
+        // it repaints the line every 80ms via its own setInterval and will
+        // overwrite this prompt entirely otherwise. (stopAnimation only
+        // touches the global animationInterval, not the tool-call one.)
+        const toolHandle = global.__kodaActiveToolHandle;
+        if (toolHandle && typeof toolHandle.pause === 'function') {
+            toolHandle.pause();
+        }
+
         const mainRl = global.__kodaMainRl;
         if (mainRl && typeof mainRl.pause === 'function') mainRl.pause();
 
