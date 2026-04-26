@@ -9772,7 +9772,21 @@ async function handleChat(api, message) {
     // chain across many iterations while a stuck "I'll now do X" narration
     // loop is still bounded.
     let intentWithoutActionRetries = 0;
-    const MAX_INTENT_RETRIES = 3;
+    // YOLO mode raises the cap because chatty models burn 3 retries
+    // easily on prose-only "I will now apply this…" turns, especially
+    // after a failed targeted edit when they pivot to dumping the whole
+    // file in a markdown block.
+    const MAX_INTENT_RETRIES = global.__kodaAutoConfirm === true ? 6 : 3;
+
+    // Track whether a write-style skill (search_replace_file / update_file /
+    // write_file / replace_lines) just failed. When that's the case AND the
+    // next model turn produces a code block + "I'll apply this" narration
+    // with no tool call, we get one bonus forced retry that doesn't consume
+    // the intent-retry counter — the model has clearly produced the new
+    // content, it just needs to actually emit the call.
+    let lastTurnHadWriteFailure = false;
+    let writeRecoveryBonusUsed = false;
+    const WRITE_SKILL_NAMES = new Set(['search_replace_file', 'update_file', 'write_file', 'replace_lines', 'create_file', 'append_to_file']);
 
     // Cap for the [SKILL SYNTAX ERROR] retry loop. Without a cap the
     // model can burn all 10 iterations emitting malformed calls back to
@@ -10030,6 +10044,9 @@ async function handleChat(api, message) {
                     if (fileOpSkillNames.includes(r.skill)) executedFileOpSkills.add(r.skill);
                 }
             }
+            // Flip the write-failure flag for the next iteration's
+            // intent-without-action recovery hook.
+            lastTurnHadWriteFailure = skillResults.some(r => !r.success && WRITE_SKILL_NAMES.has(r.skill));
 
             // User-visible summary in the chat transcript.
             const userVisibleResults = buildUserVisibleSkillResults(skillResults);
@@ -10288,6 +10305,43 @@ async function handleChat(api, message) {
                 /\b(which\s+file|could you (clarify|specify|confirm)|please (clarify|confirm|specify)|can you tell me|where (should|is)|what (do you mean|would you like))\b/i.test(response);
             const saidWillFix = (userRequestedAction || inheritsAction) && !responseAsksClarifyingQuestion;
 
+            // Write-failure recovery bonus: if a write-style skill failed
+            // last iteration AND the model now responded with a markdown
+            // code block + "I'll apply / let me overwrite this" narration,
+            // we know the new content exists — the model just needs to
+            // emit the call. Force one extra retry that doesn't burn the
+            // intent-retry counter, with a directive aimed straight at
+            // update_file (since search_replace clearly isn't going to
+            // work on a near-empty or freshly-rewritten file).
+            const hasFencedCodeBlock = /```[\s\S]{40,}```/.test(response);
+            const willApplyPhrase = /\b(i('ll| will)\s+(now\s+)?(apply|overwrite|rewrite|save|write)|let me (now\s+)?(apply|overwrite|rewrite|save|write)|going to (apply|overwrite|rewrite)|ready to (apply|overwrite|rewrite|save|write))\b/i.test(response);
+            const eligibleForWriteRecovery = saidWillFix
+                && lastTurnHadWriteFailure
+                && hasFencedCodeBlock
+                && willApplyPhrase
+                && !writeRecoveryBonusUsed;
+
+            if (eligibleForWriteRecovery) {
+                writeRecoveryBonusUsed = true;
+                lastTurnHadWriteFailure = false; // consume
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    chatHistory.pop();
+                }
+
+                let correctionFeedback = '\n\n[APPLY THE EDIT NOW — DO NOT NARRATE]\n';
+                correctionFeedback += 'Your previous targeted edit failed and you have now produced the full replacement content in a code block. Stop describing it and emit the tool call.\n';
+                correctionFeedback += 'Use update_file (or write_file) with the entire new file content as the `content` parameter — search_replace_file will not work on a file whose old content does not contain your search snippet.\n';
+                correctionFeedback += 'Format: [SKILL:update_file(filePath="<absolute path>", content="<full new file>")]\n';
+                correctionFeedback += 'Emit the call in this response. No preamble, no closing summary.\n';
+
+                addOrCoalesceSystem('Detected unapplied rewrite after a failed edit — forcing the model to emit the write...');
+                displayChatHistory();
+
+                currentMessages = buildFeedbackMessages(response, correctionFeedback);
+                continue;
+            }
+
             if (saidWillFix && intentWithoutActionRetries < MAX_INTENT_RETRIES) {
                 intentWithoutActionRetries++;
                 const lastMsg = chatHistory[chatHistory.length - 1];
@@ -10361,6 +10415,11 @@ async function handleChat(api, message) {
 
         // Execute the skills
         const skillResults = await executeSkillCalls(api, skillCalls);
+
+        // Mirror the native path: remember if a write-style skill failed,
+        // so the next iteration's intent-without-action handler can give
+        // the model one bonus forced retry without consuming the cap.
+        lastTurnHadWriteFailure = skillResults.some(r => !r.success && WRITE_SKILL_NAMES.has(r.skill));
 
         // Track successfully executed file operation skills to prevent false completion detection loops
         const fileOpSkillNames = ['delete_file', 'delete_directory', 'create_file', 'create_directory',
