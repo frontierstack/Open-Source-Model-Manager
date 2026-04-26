@@ -43,6 +43,104 @@ function colorize(text, color) {
     return `${colors[color] || ''}${text}${colors.reset}`;
 }
 
+// ── Tier-1/2/3 UI helpers ─────────────────────────────────────────────────
+// Format a byte count compactly (matches what humans expect to read in a chat
+// transcript: "14.2 KB" not "14546 bytes").
+function formatBytes(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n < 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+// Truncate a path while keeping the basename intact: turn
+// /mnt/c/users/tay/Downloads/test/td.html into …/Downloads/test/td.html.
+function shortPath(p, maxLen = 42) {
+    if (typeof p !== 'string' || p.length <= maxLen) return p || '';
+    const sep = p.includes('\\') ? '\\' : '/';
+    const parts = p.split(sep);
+    const base = parts[parts.length - 1];
+    if (base.length >= maxLen - 2) return '…' + base.slice(-(maxLen - 1));
+    let out = base;
+    for (let i = parts.length - 2; i >= 0; i--) {
+        const candidate = parts[i] + sep + out;
+        if (candidate.length > maxLen - 2) return '…' + sep + out;
+        out = candidate;
+    }
+    return out;
+}
+
+// Map file extension → language id used by the syntax highlighter.
+const EXT_TO_LANGUAGE = {
+    '.js': 'js', '.mjs': 'js', '.cjs': 'js',
+    '.ts': 'ts', '.tsx': 'tsx', '.jsx': 'jsx',
+    '.py': 'python', '.pyw': 'python',
+    '.html': 'html', '.htm': 'html', '.xml': 'xml', '.svg': 'xml',
+    '.css': 'css', '.scss': 'css',
+    '.json': 'json',
+    '.yaml': 'yaml', '.yml': 'yaml',
+    '.md': 'markdown', '.markdown': 'markdown',
+    '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash',
+    '.sql': 'sql'
+};
+function languageFromPath(p) {
+    if (!p) return null;
+    const m = String(p).match(/\.[^./\\]+$/);
+    if (!m) return null;
+    return EXT_TO_LANGUAGE[m[0].toLowerCase()] || null;
+}
+
+// Per-category spinner + color cues. Mapped from skill name.
+const SKILL_SPINNER = {
+    create_file: { style: 'pulse', color: 'green' },
+    update_file: { style: 'pulse', color: 'green' },
+    append_to_file: { style: 'pulse', color: 'green' },
+    write_file: { style: 'pulse', color: 'green' },
+    create_directory: { style: 'pulse', color: 'green' },
+    create_pdf: { style: 'pulse', color: 'green' },
+    html_to_pdf: { style: 'pulse', color: 'green' },
+    read_file: { style: 'bounce', color: 'blue' },
+    list_directory: { style: 'bounce', color: 'blue' },
+    head_file: { style: 'bounce', color: 'blue' },
+    tail_file: { style: 'bounce', color: 'blue' },
+    search_files: { style: 'bounce', color: 'blue' },
+    get_file_metadata: { style: 'bounce', color: 'blue' },
+    diff_files: { style: 'bounce', color: 'blue' },
+    read_pdf: { style: 'bounce', color: 'blue' },
+    run_bash: { style: 'blocks', color: 'yellow' },
+    run_python: { style: 'blocks', color: 'yellow' },
+    run_powershell: { style: 'blocks', color: 'yellow' },
+    run_cmd: { style: 'blocks', color: 'yellow' },
+    kill_process: { style: 'blocks', color: 'yellow' },
+    start_process: { style: 'blocks', color: 'yellow' },
+    web_search: { style: 'wave', color: 'magenta' },
+    fetch_url: { style: 'wave', color: 'magenta' },
+    playwright_fetch: { style: 'wave', color: 'magenta' },
+    playwright_interact: { style: 'wave', color: 'magenta' },
+    crawl_pages: { style: 'wave', color: 'magenta' },
+    dns_lookup: { style: 'wave', color: 'magenta' },
+    ping_host: { style: 'wave', color: 'magenta' },
+    check_port: { style: 'wave', color: 'magenta' },
+    http_request: { style: 'wave', color: 'magenta' },
+    curl_request: { style: 'wave', color: 'magenta' },
+    git_status: { style: 'arc', color: 'cyan' },
+    git_diff: { style: 'arc', color: 'cyan' },
+    git_log: { style: 'arc', color: 'cyan' },
+    git_branch: { style: 'arc', color: 'cyan' },
+    base64_decode: { style: 'dots', color: 'white' },
+    base64_encode: { style: 'dots', color: 'white' },
+    parse_json: { style: 'dots', color: 'white' },
+    parse_csv: { style: 'dots', color: 'white' },
+    hash_data: { style: 'dots', color: 'white' }
+};
+function getSpinnerForSkill(name) {
+    return SKILL_SPINNER[name] || { style: 'dots', color: 'yellow' };
+}
+function bulletColorForSkill(name) {
+    return (SKILL_SPINNER[name] || {}).color || 'cyan';
+}
+
 // Chat history for improved UI
 const chatHistory = [];
 const MAX_HISTORY = 50;
@@ -647,10 +745,14 @@ function skillActionLabel(skillName) {
 // Reduce the skill's params to a compact "(target)" string
 function summarizeSkillTarget(skillName, params) {
     params = params || {};
-    const rel = (p) => (p || '').replace(userWorkingDirectory, '.');
+    const rel = (p) => shortPath((p || '').replace(userWorkingDirectory, '.'));
     if (params.filePath) return rel(params.filePath);
     if (params.path) return rel(params.path);
-    if (params.source && params.destination) return `${rel(params.source)} → ${rel(params.destination)}`;
+    if ((params.source || params.sourcePath) && (params.destination || params.destPath)) {
+        const src = params.source || params.sourcePath;
+        const dst = params.destination || params.destPath;
+        return `${rel(src)} → ${rel(dst)}`;
+    }
     if (params.dirPath || params.directory) return rel(params.dirPath || params.directory);
     if (params.url) {
         try { return new URL(params.url).hostname; } catch { return String(params.url).slice(0, 60); }
@@ -659,7 +761,7 @@ function summarizeSkillTarget(skillName, params) {
         const q = String(params.query);
         return `"${q.slice(0, 40)}${q.length > 40 ? '…' : ''}"`;
     }
-    if (params.command) return String(params.command).split(/\s+/)[0];
+    if (params.command) return String(params.command).slice(0, 50);
     if (params.host || params.hostname) return params.host || params.hostname;
     if (params.domain) return params.domain;
     if (params.pattern) return `/${String(params.pattern).slice(0, 40)}/`;
@@ -670,7 +772,7 @@ function summarizeSkillTarget(skillName, params) {
 function summarizeSkillResult(skillName, params, result) {
     if (!result || result.success === false) {
         const err = (result && result.error) ? String(result.error) : 'failed';
-        return colorize('✗ ' + err.split('\n')[0].slice(0, 200), 'red');
+        return colorize('✗ ' + err.split('\n')[0].slice(0, 280), 'red');
     }
     const data = (result.data && typeof result.data === 'object') ? result.data : result;
     const rel = (p) => (p || '').replace(userWorkingDirectory, '.');
@@ -680,7 +782,8 @@ function summarizeSkillResult(skillName, params, result) {
             const content = data.content || '';
             const lineCount = content ? content.split('\n').length : 0;
             const fp = rel(data.filePath || params.filePath);
-            return `Read ${lineCount} lines from ${fp}`;
+            const sz = formatBytes(content.length);
+            return `Read ${lineCount} lines from ${fp}` + (sz ? ` (${sz})` : '');
         }
         case 'tail_file':
         case 'head_file': {
@@ -688,25 +791,43 @@ function summarizeSkillResult(skillName, params, result) {
             const lineCount = content ? content.split('\n').length : 0;
             return `Read ${lineCount} lines`;
         }
-        case 'create_file': {
-            const lines = (params.content || '').split('\n').length;
-            return `Created ${rel(data.filePath || params.filePath)} (${lines} lines)`;
+        case 'create_file':
+        case 'write_file': {
+            const c = params.content || '';
+            const lines = c.split('\n').length;
+            const sz = formatBytes(data.size || c.length);
+            return `Created ${rel(data.filePath || params.filePath)} · ${lines} lines · ${sz}`;
         }
-        case 'update_file':
-            return `Updated ${rel(data.filePath || params.filePath)}`;
+        case 'update_file': {
+            const c = params.content || '';
+            const lines = c.split('\n').length;
+            const sz = formatBytes(data.size || c.length);
+            return `Updated ${rel(data.filePath || params.filePath)} · ${lines} lines · ${sz}`;
+        }
         case 'append_to_file':
             return `Appended to ${rel(data.filePath || params.filePath)}`;
         case 'delete_file':
             return `Deleted ${rel(data.filePath || params.filePath)}`;
         case 'move_file':
-            return `Moved to ${rel(data.destination || params.destination || params.dest)}`;
+            return `Moved to ${rel(data.destination || params.destPath || params.destination || params.dest)}`;
         case 'copy_file':
-            return `Copied to ${rel(data.destination || params.destination || params.dest)}`;
+            return `Copied to ${rel(data.destination || params.destPath || params.destination || params.dest)}`;
         case 'list_directory': {
             const entries = data.entries || data.files || data.items || [];
-            const suffix = data.recursive ? ' (recursive)' : '';
-            const trunc = data.truncated ? ' (truncated)' : '';
-            return `Listed ${entries.length} entries${suffix}${trunc}`;
+            // Try to break down dirs vs files for a richer summary.
+            let dirCount = 0, fileCount = 0;
+            for (const e of entries) {
+                if (typeof e === 'object' && e !== null) {
+                    if (e.type === 'directory' || e.isDirectory || e.dir === true) dirCount++;
+                    else fileCount++;
+                } else if (typeof e === 'string' && e.endsWith('/')) dirCount++;
+                else fileCount++;
+            }
+            const breakdown = entries.length > 0
+                ? ` (${dirCount} dir${dirCount !== 1 ? 's' : ''}, ${fileCount} file${fileCount !== 1 ? 's' : ''})`
+                : '';
+            const trunc = data.truncated ? ' [truncated]' : '';
+            return `${entries.length} entries${breakdown}${trunc}`;
         }
         case 'create_directory':
             return `Created ${rel(data.dirPath || params.dirPath || params.directory)}`;
@@ -714,38 +835,75 @@ function summarizeSkillResult(skillName, params, result) {
             return `Removed ${rel(data.dirPath || params.dirPath || params.directory)}`;
         case 'search_files': {
             const matches = data.matches || data.results || [];
-            return `Found ${matches.length} matches`;
+            const fileCount = new Set(matches.map(m => m.file || m.filePath || m.path)).size;
+            return `${matches.length} matches across ${fileCount} file${fileCount !== 1 ? 's' : ''}`;
         }
         case 'web_search': {
-            const count = data.count || (data.results || []).length;
-            return `Found ${count} results`;
+            const results = data.results || [];
+            const count = data.count || results.length;
+            let topHost = '';
+            if (results[0] && results[0].url) {
+                try { topHost = new URL(results[0].url).hostname; } catch {}
+            }
+            return `${count} result${count !== 1 ? 's' : ''}` + (topHost ? ` · top: ${topHost}` : '');
         }
         case 'fetch_url':
         case 'playwright_fetch': {
-            const len = (data.content || data.html || '').length;
-            return `Fetched ${(len / 1024).toFixed(1)} KB`;
+            const text = data.content || data.html || data.text || '';
+            const sz = formatBytes(text.length);
+            const status = data.status || data.statusCode;
+            const ct = data.contentType || data.headers?.['content-type'] || '';
+            const ctShort = ct ? ` · ${ct.split(';')[0]}` : '';
+            return `${status ? status + ' · ' : ''}${sz}${ctShort}`;
         }
-        case 'git_status':
-            return `Branch ${data.branch || '?'}${data.dirty ? ' (dirty)' : ''}`;
-        case 'git_diff':
-        case 'git_log':
+        case 'git_status': {
+            const mod = data.modified?.length ?? 0;
+            const unt = data.untracked?.length ?? 0;
+            const stg = data.staged?.length ?? 0;
+            const branch = data.branch ? `${data.branch} · ` : '';
+            return `${branch}${mod} modified, ${unt} untracked${stg ? `, ${stg} staged` : ''}`;
+        }
+        case 'git_diff': {
+            const adds = data.additions ?? data.linesAdded;
+            const dels = data.deletions ?? data.linesRemoved;
+            const fileCount = data.files?.length ?? data.fileCount;
+            if (adds !== undefined && dels !== undefined) {
+                return `+${adds} −${dels}` + (fileCount ? ` across ${fileCount} file${fileCount !== 1 ? 's' : ''}` : '');
+            }
+            const len = (data.diff || '').length;
+            return len ? `${formatBytes(len)} of diff` : 'Done';
+        }
+        case 'git_log': {
+            const commits = data.commits || data.log || [];
+            return `${commits.length || 0} commits`;
+        }
         case 'git_branch':
-            return 'Done';
+            return data.branch ? `On ${data.branch}` : 'Done';
         case 'run_bash':
         case 'run_python':
         case 'run_powershell':
         case 'run_cmd': {
             const out = (data.stdout || data.output || '');
             const outLines = out ? out.split('\n').length : 0;
-            const code = data.exitCode !== undefined ? ` exit=${data.exitCode}` : '';
-            return `Ran command · ${outLines} output lines${code}`;
+            const code = data.exitCode !== undefined ? data.exitCode : (data.code !== undefined ? data.code : null);
+            if (code !== null && code !== 0) {
+                const errFirst = (data.stderr || '').split('\n')[0].slice(0, 80);
+                return `exit ${code}` + (errFirst ? ` · "${errFirst}"` : '');
+            }
+            return `exit ${code ?? 0} · ${outLines} line${outLines !== 1 ? 's' : ''} stdout`;
         }
-        case 'dns_lookup':
-            return (data.addresses || data.records || []).slice(0, 3).join(', ') || 'Done';
+        case 'dns_lookup': {
+            const addrs = data.addresses || data.records || [];
+            const formatted = addrs.slice(0, 3).map(a => {
+                if (typeof a === 'object') return `${a.value || a.address}${a.type ? ` (${a.type})` : ''}`;
+                return a;
+            });
+            return formatted.length ? `→ ${formatted.join(', ')}` : 'No records';
+        }
         case 'check_port':
-            return data.open ? 'Open' : 'Closed';
+            return data.open ? `Open · ${params.host || 'localhost'}:${params.port}` : 'Closed';
         case 'ping_host':
-            return data.reachable ? `Reachable (${data.avgTime || '?'}ms)` : 'Unreachable';
+            return data.reachable ? `Reachable · ${data.avgTime || '?'}ms avg` : 'Unreachable';
         case 'http_request':
         case 'curl_request':
             return `HTTP ${data.status || data.statusCode || '?'}`;
@@ -755,9 +913,21 @@ function summarizeSkillResult(skillName, params, result) {
         }
         case 'hash_data':
             return `${params.algorithm || 'sha256'}: ${(data.hash || '').slice(0, 16)}…`;
-        case 'base64_encode':
-        case 'base64_decode':
-            return `${(data.result || '').length} bytes`;
+        case 'base64_encode': {
+            const r = data.encoded || data.result || '';
+            return `Encoded ${r.length} chars`;
+        }
+        case 'base64_decode': {
+            // Server-side may return decoded text in `decoded`, `result`, or
+            // (scan mode) a `results: [{decoded}]` array.
+            let preview = data.decoded || data.result || '';
+            if (!preview && Array.isArray(data.results) && data.results[0]) {
+                preview = data.results[0].decoded || '';
+            }
+            const trunc = preview.length > 30 ? preview.slice(0, 30) + '…' : preview;
+            return `Decoded ${preview.length} char${preview.length !== 1 ? 's' : ''}` +
+                   (preview ? `: "${trunc}"` : '');
+        }
         case 'read_pdf': {
             const pages = data.pageCount || data.pages || '?';
             return `Read PDF · ${pages} pages`;
@@ -774,12 +944,13 @@ function summarizeSkillResult(skillName, params, result) {
 // Format and print a tool-call trail entry. Also returns the rendered
 // block so it can be replayed on redraw.
 function renderToolCall(entry) {
-    const bulletColor = entry.success ? 'cyan' : 'red';
+    const bulletColor = entry.success ? bulletColorForSkill(entry.skillName) : 'red';
     const targetStr = entry.target ? colorize(`(${entry.target})`, 'dim') : '';
-    // Clear any lingering animation cursor and write a persistent trail block
+    // On failure, dim the action+target so the red ⎿ summary reads first.
+    const actionStyle = entry.success ? 'bright' : 'dim';
     process.stdout.write('\r\x1b[K');
     log('  ' + colorize('●', bulletColor) + ' ' +
-        colorize(entry.action, 'bright') + targetStr);
+        colorize(entry.action, actionStyle) + targetStr);
     log('    ' + colorize('⎿ ', 'dim') + entry.summary);
 }
 
@@ -796,18 +967,23 @@ function beginToolCall(skillName, params) {
     // Clear any leftover animation artefact before we start writing.
     process.stdout.write('\r\x1b[K');
 
-    // Fixed header line — stays cyan regardless of outcome; failures show
-    // in red inside the ⎿ summary (via summarizeSkillResult).
-    log('  ' + colorize('●', 'cyan') + ' ' +
+    // Per-skill bullet color cue (green=write, blue=read, yellow=run,
+    // magenta=net, cyan=git, white=data, yellow=default). Failures recolor
+    // to red on finish via renderToolCall.
+    const bulletColor = bulletColorForSkill(skillName);
+    log('  ' + colorize('●', bulletColor) + ' ' +
         colorize(action, 'bright') + targetStr);
 
-    const spinner = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+    // Per-skill animation style (pulse/bounce/wave/blocks/arc/dots).
+    const spinChoice = getSpinnerForSkill(skillName);
+    const frames = (spinnerFrames && spinnerFrames[spinChoice.style]) ||
+                   ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
     let frame = 0;
     const drawFrame = () => {
-        const f = spinner[frame++ % spinner.length];
+        const f = frames[frame++ % frames.length];
         process.stdout.write('\r\x1b[K' +
             '    ' + colorize('⎿ ', 'dim') +
-            colorize(f, 'yellow') + colorize(' working…', 'dim'));
+            colorize(f, spinChoice.color) + colorize(' working…', 'dim'));
     };
     drawFrame();
     const interval = setInterval(drawFrame, 80);
@@ -823,7 +999,6 @@ function beginToolCall(skillName, params) {
                 success: !!(result && result.success !== false),
                 summary: summarizeSkillResult(skillName, params, result)
             };
-            // Overwrite the animated line in place with the final summary.
             process.stdout.write('\r\x1b[K' +
                 '    ' + colorize('⎿ ', 'dim') + entry.summary + '\n');
             chatHistory.push({ role: 'tool', content: entry });
@@ -970,6 +1145,24 @@ function addToHistory(role, content) {
     if (chatHistory.length > MAX_HISTORY) {
         chatHistory.shift();
     }
+}
+
+// Add a system message OR — if the previous chat-history entry is the same
+// system message — bump a `(×N)` counter on it. Used by the retry detectors
+// in handleChat so the user doesn't see the same "Model announced intent…"
+// line stacked three times when it fires three times in a row.
+function addOrCoalesceSystem(text) {
+    const last = chatHistory[chatHistory.length - 1];
+    if (last && last.role === 'system' && typeof last.content === 'string') {
+        const stripped = last.content.replace(/\s*\(×\d+\)\s*$/, '');
+        if (stripped === text) {
+            const m = last.content.match(/\(×(\d+)\)\s*$/);
+            const n = m ? parseInt(m[1], 10) + 1 : 2;
+            last.content = `${text} (×${n})`;
+            return;
+        }
+    }
+    addToHistory('system', text);
 }
 
 // ============================================================================
@@ -1146,6 +1339,160 @@ function formatSkillResult(skillName, result, elapsed = null) {
     }
 }
 
+// ── Syntax highlighter ────────────────────────────────────────────────────
+// Hand-rolled, line-by-line, regex-based. No external dependencies.
+// Returns the input ANSI-colored. Languages supported: js/ts/jsx/tsx, python,
+// html/xml, css, json, yaml, markdown, bash/sh, sql. Anything else passes
+// through unchanged. Capped at 200 KB to avoid pathological backtracking.
+const LANGUAGE_KEYWORDS = {
+    js: new Set(['function','const','let','var','if','else','for','while','do','return','class','extends','new','this','super','import','export','from','as','async','await','try','catch','finally','throw','typeof','instanceof','in','of','break','continue','switch','case','default','null','undefined','true','false','void','delete','yield','static']),
+    ts: new Set(['function','const','let','var','if','else','for','while','do','return','class','extends','new','this','super','import','export','from','as','async','await','try','catch','finally','throw','typeof','instanceof','in','of','break','continue','switch','case','default','null','undefined','true','false','void','delete','yield','static','interface','type','enum','public','private','protected','readonly','implements','keyof','infer','never','unknown','any']),
+    python: new Set(['def','class','if','elif','else','for','while','return','yield','lambda','import','from','as','try','except','finally','raise','with','pass','break','continue','None','True','False','and','or','not','is','in','global','nonlocal','async','await','match','case','self']),
+    html: new Set([]),
+    xml: new Set([]),
+    css: new Set([]),
+    json: new Set(['true','false','null']),
+    yaml: new Set([]),
+    markdown: new Set([]),
+    bash: new Set(['if','then','else','elif','fi','for','do','done','while','until','case','esac','function','return','break','continue','export','local','readonly','source','exit','echo','printf','read','test']),
+    sql: new Set(['SELECT','FROM','WHERE','INSERT','UPDATE','DELETE','CREATE','ALTER','DROP','TABLE','INDEX','VIEW','JOIN','INNER','LEFT','RIGHT','OUTER','ON','GROUP','BY','ORDER','HAVING','LIMIT','OFFSET','AS','AND','OR','NOT','NULL','IS','IN','LIKE','BETWEEN','VALUES','SET','INTO'])
+};
+LANGUAGE_KEYWORDS.jsx = LANGUAGE_KEYWORDS.js;
+LANGUAGE_KEYWORDS.tsx = LANGUAGE_KEYWORDS.ts;
+LANGUAGE_KEYWORDS.py = LANGUAGE_KEYWORDS.python;
+LANGUAGE_KEYWORDS.sh = LANGUAGE_KEYWORDS.bash;
+LANGUAGE_KEYWORDS.yml = LANGUAGE_KEYWORDS.yaml;
+LANGUAGE_KEYWORDS.md = LANGUAGE_KEYWORDS.markdown;
+
+function highlightCode(code, language) {
+    if (!code || typeof code !== 'string') return code || '';
+    if (code.length > 200000) return code; // anti-pathological guard
+    const lang = (language || '').toLowerCase().trim();
+    if (!LANGUAGE_KEYWORDS[lang]) return code;
+    const lines = code.split('\n');
+    return lines.map(line => highlightLine(line, lang)).join('\n');
+}
+
+function highlightLine(line, lang) {
+    if (lang === 'html' || lang === 'xml') return highlightHtmlLine(line);
+    if (lang === 'css') return highlightCssLine(line);
+    if (lang === 'json') return highlightJsonLine(line);
+    if (lang === 'yaml' || lang === 'yml') return highlightYamlLine(line);
+    if (lang === 'md' || lang === 'markdown') return line; // skip recursive markdown
+    return highlightGenericLine(line, lang);
+}
+
+// Tokenize a generic code line: comments, strings, numbers, keywords, calls.
+// Walks left-to-right consuming the longest match at each position so we
+// don't double-color (e.g. a keyword inside a string).
+function highlightGenericLine(line, lang) {
+    let out = '';
+    let i = 0;
+    const keywords = LANGUAGE_KEYWORDS[lang] || new Set();
+    const commentRe = (lang === 'python' || lang === 'bash' || lang === 'sh' || lang === 'yaml' || lang === 'yml') ? /^#/ : /^\/\//;
+    while (i < line.length) {
+        const rest = line.slice(i);
+        // Comment to end of line
+        if (commentRe.test(rest)) {
+            out += colorize(rest, 'gray');
+            break;
+        }
+        // Block comment for js/ts/css
+        if ((lang === 'js' || lang === 'ts' || lang === 'jsx' || lang === 'tsx' || lang === 'css') && rest.startsWith('/*')) {
+            const end = rest.indexOf('*/');
+            if (end >= 0) {
+                out += colorize(rest.slice(0, end + 2), 'gray');
+                i += end + 2;
+                continue;
+            }
+            out += colorize(rest, 'gray');
+            break;
+        }
+        // String literal
+        const ch = rest[0];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            let j = 1;
+            while (j < rest.length) {
+                if (rest[j] === '\\') { j += 2; continue; }
+                if (rest[j] === ch) { j++; break; }
+                j++;
+            }
+            out += colorize(rest.slice(0, j), 'green');
+            i += j;
+            continue;
+        }
+        // Number
+        const numMatch = rest.match(/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/i);
+        if (numMatch && (i === 0 || /[\s,([{=:+\-*/<>?!&|^]/.test(line[i - 1]))) {
+            out += colorize(numMatch[0], 'yellow');
+            i += numMatch[0].length;
+            continue;
+        }
+        // Identifier (keyword / function call / plain)
+        const idMatch = rest.match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
+        if (idMatch) {
+            const word = idMatch[0];
+            const next = rest[word.length];
+            if (keywords.has(word)) {
+                out += colorize(word, 'cyan') + colors.bright;
+                // The bright code stays applied — re-arm reset by adding reset+restart not necessary;
+                // simpler: just colorize cleanly
+                out = out.slice(0, -colors.bright.length); // undo, re-do cleanly
+                out += '\x1b[36;1m' + word + colors.reset;
+            } else if (next === '(') {
+                out += colorize(word, 'white');
+            } else {
+                out += word;
+            }
+            i += word.length;
+            continue;
+        }
+        // Plain char
+        out += line[i];
+        i++;
+    }
+    return out;
+}
+
+function highlightHtmlLine(line) {
+    // Tags + attributes + strings + comments
+    return line
+        .replace(/<!--[\s\S]*?-->/g, m => colorize(m, 'gray'))
+        .replace(/(<\/?)([a-zA-Z][\w-]*)/g, (_, lt, tag) => lt + colorize(tag, 'cyan'))
+        .replace(/(\s)([a-zA-Z-]+)(=)/g, (_, sp, a, eq) => sp + colorize(a, 'yellow') + eq)
+        .replace(/"([^"]*)"/g, (_, s) => colorize('"' + s + '"', 'green'))
+        .replace(/'([^']*)'/g, (_, s) => colorize("'" + s + "'", 'green'));
+}
+
+function highlightCssLine(line) {
+    if (/^\s*\/\*/.test(line) || /\*\/\s*$/.test(line)) return colorize(line, 'gray');
+    return line
+        .replace(/^([^{:]+)(?=[{,])/, m => colorize(m, 'cyan'))
+        .replace(/([a-zA-Z-]+)(\s*:)/g, (_, p, c) => colorize(p, 'yellow') + c)
+        .replace(/("[^"]*"|'[^']*')/g, m => colorize(m, 'green'))
+        .replace(/(#[0-9a-fA-F]{3,8}|\b\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|s|ms)?\b)/g, m => colorize(m, 'yellow'));
+}
+
+function highlightJsonLine(line) {
+    return line
+        .replace(/"([^"\\]|\\.)*"(\s*:)/g, m => {
+            const idx = m.lastIndexOf('"');
+            return colorize(m.slice(0, idx + 1), 'cyan') + m.slice(idx + 1);
+        })
+        .replace(/:\s*("([^"\\]|\\.)*")/g, (m, str) => m.replace(str, colorize(str, 'green')))
+        .replace(/:\s*(-?\d+(?:\.\d+)?)/g, (m, n) => m.replace(n, colorize(n, 'yellow')))
+        .replace(/:\s*(true|false|null)\b/g, (m, w) => m.replace(w, colorize(w, 'cyan')));
+}
+
+function highlightYamlLine(line) {
+    if (/^\s*#/.test(line)) return colorize(line, 'gray');
+    return line
+        .replace(/^(\s*-?\s*)([\w-]+)(\s*:)/, (_, lead, key, c) => lead + colorize(key, 'cyan') + c)
+        .replace(/("[^"]*"|'[^']*')/g, m => colorize(m, 'green'))
+        .replace(/:\s*(-?\d+(?:\.\d+)?)\s*$/, (m, n) => m.replace(n, colorize(n, 'yellow')))
+        .replace(/:\s*(true|false|null|~)\s*$/i, (m, w) => m.replace(w, colorize(w, 'cyan')));
+}
+
 // Format code blocks cleanly without borders for easy copying
 function formatCodeBlocks(content) {
     // Match code blocks with ```language or just ```
@@ -1153,17 +1500,17 @@ function formatCodeBlocks(content) {
 
     return content.replace(codeBlockRegex, (match, language, code) => {
         const lang = language || 'code';
-        const lines = code.trimEnd().split('\n');
+        // Apply syntax highlighting to the code body (no-op if lang unknown).
+        const highlighted = highlightCode(code.trimEnd(), lang);
+        const lines = highlighted.split('\n');
 
         // Modern header with language badge
         let formatted = '\n' + colorize('╭─', 'dim') + colorize(` ${lang.toUpperCase()} `, 'yellow') + colorize('─'.repeat(Math.max(1, 50 - lang.length)), 'dim') + colorize('╮', 'dim') + '\n';
 
-        // Code lines with subtle left border
         for (const line of lines) {
             formatted += colorize('│ ', 'dim') + line + '\n';
         }
 
-        // Footer
         formatted += colorize('╰' + '─'.repeat(Math.min(54, lang.length + 6)) + '╯', 'dim') + '\n';
         return formatted;
     });
@@ -1455,26 +1802,45 @@ function displayDiff(oldContent, newContent, filePath, options = {}) {
     const labelColor = isNew ? 'green' : isDelete ? 'red' : 'cyan';
     const stats = `${colorize('+' + added, 'green')} ${colorize('−' + removed, 'red')}`;
 
+    // Richer summary line: +/- counts · file · LANGUAGE · size
+    const lang = languageFromPath(relativePath);
+    const langChip = lang ? colorize(lang.toUpperCase(), 'magenta') : '';
+    const sizeStr = formatBytes((newText || oldText).length);
+    const sizeChip = sizeStr ? colorize(sizeStr, 'dim') : '';
+    const headerExtras = [langChip, sizeChip].filter(Boolean).join(colorize(' · ', 'dim'));
+
     log('');
     if (showHeader) {
         log('  ' + colorize('●', labelColor) + ' ' +
-            colorize(label, labelColor) + colorize(`(${relativePath})`, 'bright') +
-            '  ' + stats);
+            colorize(label, labelColor) + colorize(`(${shortPath(relativePath, 50)})`, 'bright') +
+            '  ' + stats +
+            (headerExtras ? colorize(' · ', 'dim') + headerExtras : ''));
     }
 
-    // For pure create / delete, show the content with a single marker column
+    // For pure create / delete, show the content with a single marker column.
+    // Create is now syntax-highlighted with a 30-line preview cap; longer
+    // files get a "(N lines total)" footer.
     if (isNew || isDelete) {
         const body = (isNew ? newText : oldText).split('\n');
+        const previewCap = isNew ? Math.min(30, maxLines) : maxLines;
         const gutterWidth = Math.max(2, String(body.length).length);
         const marker = isNew ? '+' : '-';
-        const color = isNew ? 'green' : 'red';
-        const shown = Math.min(body.length, maxLines);
+        const markerColor = isNew ? 'green' : 'red';
+        const shown = Math.min(body.length, previewCap);
+
+        // Highlight the visible slice if we know the language. Falls back to
+        // plain text for unknown languages — colorize() then paints +/-.
+        const visibleSrc = body.slice(0, shown).join('\n');
+        const visibleHL = lang ? highlightCode(visibleSrc, lang).split('\n') : body.slice(0, shown);
+
         for (let i = 0; i < shown; i++) {
             const gutter = colorize(String(i + 1).padStart(gutterWidth), 'dim');
-            log(indent + gutter + ' ' + colorize(marker + ' ' + body[i], color));
+            const lineBody = visibleHL[i] !== undefined ? visibleHL[i] : body[i];
+            // Marker stays colored; highlighted body keeps its inline ANSI.
+            log(indent + gutter + ' ' + colorize(marker + ' ', markerColor) + lineBody);
         }
         if (body.length > shown) {
-            log(indent + colorize(`… ${body.length - shown} more lines`, 'dim'));
+            log(indent + colorize(`… (${body.length} lines total)`, 'dim'));
         }
         log('');
         return;
@@ -1525,7 +1891,13 @@ function displayDiff(oldContent, newContent, filePath, options = {}) {
                 coloredBody = colorize('  ' + body, 'dim');
             } else {
                 gutterNum = String(newLn).padStart(gutterWidth);
-                coloredBody = colorize('  ' + body, 'gray');
+                // Context line: syntax-highlight if the file's language is
+                // known; otherwise dim. Keeps unchanged code legible while
+                // +/- lines still pop with full color.
+                const lit = lang ? highlightCode(body, lang) : null;
+                coloredBody = lit
+                    ? colorize('  ', 'dim') + lit
+                    : colorize('  ' + body, 'gray');
                 oldLn++;
                 newLn++;
             }
@@ -3385,6 +3757,38 @@ function detectMalformedSkillCalls(response) {
 
 // Detect when AI claims to have performed file operations without actually executing skills
 // Returns true if the AI likely hallucinated completion without skill execution
+// Diagnose hallucinated tool calls: the assistant claims it created/edited/
+// deleted/ran something but no tool of that category fired this iteration.
+// Used purely as a visual `(claim — no tool result on record)` annotation;
+// the existing detectFalseCompletionClaim still drives retry decisions.
+function detectClaimWithoutTool(text, executedSkillsThisIteration) {
+    if (!text || typeof text !== 'string') return { claimed: false };
+    const t = text.toLowerCase();
+
+    // Reject hedged / future tense / questions back to user
+    if (/\?\s*$/.test(t)) return { claimed: false };
+    if (/\b(i'?ll|i will|let me|going to|will now|would|could you|can you|shall i|should i|please (clarify|confirm|specify))\b/.test(t)) {
+        return { claimed: false };
+    }
+
+    const checks = [
+        { type: 'create', re: /\b(i (?:have |'ve )?(?:created|written|wrote|saved|generated|added|made|built)|saved (?:it )?to|written to|wrote to|file (?:has been|was) (?:created|written|saved)|successfully (?:created|wrote|written|saved|built|generated))\b/, skills: ['create_file','update_file','write_file','append_to_file','create_directory','create_pdf','html_to_pdf'] },
+        { type: 'edit',   re: /\b(i (?:have |'ve )?(?:updated|edited|modified|changed|patched|refactored|rewrote|fixed)|successfully (?:updated|edited|modified|patched|fixed))\b/, skills: ['update_file','write_file','search_replace_file','append_to_file'] },
+        { type: 'delete', re: /\b(i (?:have |'ve )?(?:deleted|removed|erased|cleared|wiped)|successfully (?:deleted|removed|erased)|(?:file|folder|directory) (?:has been|was) (?:deleted|removed))\b/, skills: ['delete_file','delete_directory'] },
+        { type: 'run',    re: /\b(i (?:have |'ve )?(?:ran|executed|started|launched|killed|terminated)|successfully (?:ran|executed|started|launched)|command (?:has been|was) (?:run|executed))\b/, skills: ['run_bash','run_python','run_powershell','run_cmd','start_process','kill_process'] }
+    ];
+    for (const c of checks) {
+        if (c.re.test(t)) {
+            const fired = c.skills.some(s => executedSkillsThisIteration.has(s));
+            if (!fired) {
+                const m = t.match(c.re);
+                return { claimed: true, type: c.type, summary: m ? m[0] : '' };
+            }
+        }
+    }
+    return { claimed: false };
+}
+
 function detectFalseCompletionClaim(response, userMessage) {
     if (!response || !userMessage) return false;
 
@@ -4144,7 +4548,12 @@ function sanitizeContentForFile(filePath, content) {
     if (content == null) return '';
     if (typeof content !== 'string') content = String(content);
 
-    const ext = (filePath.match(/\.[^./\\]+$/) || [''])[0].toLowerCase();
+    // filePath may be undefined when the model emitted a tool_call with a
+    // missing or aliased path argument. Treat that as "no extension hint";
+    // the caller (executeFileOperationSkill) still validates filePath and
+    // returns a clean error before writing.
+    const safePath = (typeof filePath === 'string') ? filePath : '';
+    const ext = (safePath.match(/\.[^./\\]+$/) || [''])[0].toLowerCase();
     if (MARKDOWN_DOC_EXTENSIONS.has(ext)) {
         return content;
     }
@@ -6868,9 +7277,29 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
             result = { success: false, error: `Unknown skill: ${call.skillName}. All skills must execute client-side.` };
         }
 
-        // Finalize the live tool-call entry (stops the spinner and rewrites
-        // the ⎿ line with the real summary). This also pushes the entry
-        // onto chatHistory so redraws replay it.
+        // Friendly-error wrap: make sure every failure carries the skill
+        // name and (when the model emitted unrecognized arguments) hints at
+        // what came in. This prevents bare messages like "filePath is
+        // required" from looking unattributed in the chat trail.
+        if (result && result.success === false) {
+            const raw = String(result.error || 'failed').trim();
+            if (!raw.toLowerCase().startsWith(call.skillName.toLowerCase())) {
+                let suffix = '';
+                // For "X is required" type errors, also include what params
+                // we DID receive — invaluable for diagnosing model schema drift.
+                if (/required|missing|undefined|null/i.test(raw) && call.params && typeof call.params === 'object') {
+                    const keys = Object.keys(call.params);
+                    if (keys.length > 0) {
+                        const peek = keys.slice(0, 6).join(', ');
+                        suffix = ` (model sent: ${peek}${keys.length > 6 ? ', …' : ''})`;
+                    } else {
+                        suffix = ' (model sent: <empty arguments>)';
+                    }
+                }
+                result.error = `${call.skillName}: ${raw}${suffix}`;
+            }
+        }
+
         toolHandle.finish(result);
 
         if (result.success) {
@@ -8714,12 +9143,15 @@ async function handleChat(api, message) {
         // parser still runs against `result.data.content` further down for
         // models whose chat template doesn't produce native tool_calls.
         let toolCallDeltaSeen = false;
+        // No max_tokens: per-instance limit comes from the model server's
+        // load config (VLLM_MAX_MODEL_LEN / contextSize set in the webapp
+        // model manager). Hardcoding here would override what the user
+        // configured and silently truncate tool_call arguments mid-string.
         const result = await api.chatCompletionsRaw(
             {
                 messages: currentMessages,
                 tools: toolsArray.length ? toolsArray : undefined,
-                temperature: 0.7,
-                maxTokens: 4000
+                temperature: 0.7
             },
             {
                 onToken: (token) => {
@@ -8868,11 +9300,29 @@ async function handleChat(api, message) {
             }
 
             // If every tool call had an unparseable arguments blob, surface
-            // it and bail rather than looping silently.
+            // it with a concrete actionable hint. This is almost always a
+            // truncation: the model started writing a big content string and
+            // hit its output token limit mid-JSON, leaving us with garbage.
             if (skillCalls.length === 0 && parseFailures.length > 0) {
-                addToHistory('system', `Tool call failed: model returned malformed JSON arguments (${parseFailures[0].error})`);
+                const f = parseFailures[0];
+                addToHistory('system',
+                    `${f.name}: malformed tool arguments (${f.error}). ` +
+                    `The model likely hit its output token limit mid-call. ` +
+                    `Try a smaller request, or load the model with a larger context size in the webapp model manager.`);
                 displayChatHistory();
                 break;
+            }
+
+            // Diagnostic for empty-args calls that DID parse but contain
+            // nothing actionable. Same root cause as the parse-failure case
+            // above (truncation) but harder to spot otherwise.
+            for (const c of skillCalls) {
+                if (c.params && typeof c.params === 'object' && Object.keys(c.params).length === 0) {
+                    addToHistory('system',
+                        `${c.skillName}: empty arguments — model likely hit its output token limit; ` +
+                        `the response was truncated mid-tool-call. ` +
+                        `Try a smaller request or load the model with a larger context size in the webapp.`);
+                }
             }
 
             const skillResults = await executeSkillCalls(api, skillCalls);
@@ -9028,7 +9478,7 @@ async function handleChat(api, message) {
                 errorFeedback += '\nRetry now. If your edit is large, prefer multiple small search_replace_file calls over one update_file.\n';
 
                 // Show error to user
-                addToHistory('system', `Tool syntax error detected - asking AI to retry (${syntaxErrorRetries}/${MAX_SYNTAX_RETRIES})...`);
+                addOrCoalesceSystem(`Tool syntax error detected - asking AI to retry (${syntaxErrorRetries}/${MAX_SYNTAX_RETRIES})...`);
                 displayChatHistory();
 
                 // Continue the conversation with error feedback
@@ -9086,7 +9536,7 @@ async function handleChat(api, message) {
                 correctionFeedback += `- To delete a file: [SKILL:delete_file(filePath="${userWorkingDirectory}/filename")]\n\n`;
                 correctionFeedback += 'Execute the appropriate skill NOW.\n';
 
-                addToHistory('system', 'No file operation executed - asking AI to actually save the file...');
+                addOrCoalesceSystem('No file operation executed - asking AI to actually save the file...');
                 displayChatHistory();
 
                 currentMessages = buildFeedbackMessages(response, correctionFeedback);
@@ -9116,7 +9566,7 @@ async function handleChat(api, message) {
                 correctionFeedback += `- [SKILL:list_directory(dirPath="${userWorkingDirectory}")]\n\n`;
                 correctionFeedback += 'Execute the skill NOW - do not explain, just call the skill.\n';
 
-                addToHistory('system', 'Redirecting to use tools instead of shell commands...');
+                addOrCoalesceSystem('Redirecting to use tools instead of shell commands...');
                 displayChatHistory();
 
                 currentMessages = buildFeedbackMessages(response, correctionFeedback);
@@ -9170,15 +9620,21 @@ async function handleChat(api, message) {
                 correctionFeedback += 'Do NOT claim "I have applied" or "fixes are in place" unless you actually emit a [SKILL:...] call in this same response.\n';
                 correctionFeedback += 'If the task is multi-step, chain the skill calls in this same response — do not wait to be prompted again.\n';
 
-                addToHistory('system', 'Model announced intent without acting — asking it to continue...');
+                addOrCoalesceSystem('Model announced intent without acting — asking it to continue...');
                 displayChatHistory();
 
                 currentMessages = buildFeedbackMessages(response, correctionFeedback);
                 continue;
             }
 
-            // No skill calls and no malformed attempts - we're done
-            // Display final response now that streaming is complete
+            // No skill calls and no malformed attempts - we're done.
+            // Surface a dim diagnostic if the assistant's text claims
+            // execution we never saw (purely visual, no retry).
+            const claim = detectClaimWithoutTool(response, executedSkillsThisTurn);
+            if (claim.claimed) {
+                addToHistory('system',
+                    colorize(`(claim — no ${claim.type} tool call ran this turn: "${claim.summary}")`, 'gray'));
+            }
             displayChatHistory();
             break;
         }
