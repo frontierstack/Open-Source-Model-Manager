@@ -346,22 +346,21 @@ koda --continue -p "what was the file we discussed last?"
 
 **Project guidance auto-loading:** on every launch, Koda looks for `KODA.md`, `koda.md`, `CLAUDE.md`, or `AGENTS.md` (first match wins) in the current directory and injects the contents into the model's system prompt for every turn. The file is re-read each turn, so edits take effect immediately without restarting Koda. Capped at 64 KB.
 
-### Mode & Web Search
+### Web Capabilities
+
+There is no longer a `/mode` system or `/web`/`/ws` toggle (removed in commit `e8f61f1`). The chat model invokes `web_search`, `fetch_url`, `crawl_pages`, `playwright_fetch`, and similar native tools on its own whenever the query warrants it.
+
+The following slash commands are still useful for one-shot, user-initiated lookups:
 
 ```bash
-# Switch modes
-/mode standalone                # Direct chat with AI (default)
-/mode agent                     # Agent-specific context mode
-/mode agent collab              # Multi-agent collaboration mode
+# One-shot web search (returns results inline; does not toggle anything)
+/search <query>                 # Search the web
+/search react hooks tutorial
+/websearch <query>              # Alias for /search
 
-# Combine mode with web search
-/mode standalone,websearch      # Chat mode with web search enabled
-/mode agent,websearch           # Agent mode with web search enabled
-
-# Toggle web search independently
-/web                            # Toggle web search on/off
-/websearch                      # Alias for /web
-/ws                             # Short alias for /web
+# One-shot documentation lookup
+/docs <topic>
+/docs express middleware
 ```
 
 ### Working Files & Focus
@@ -391,18 +390,6 @@ koda --continue -p "what was the file we discussed last?"
 /refactor extract <path>        # Extract code suggestions
 /refactor rename <path>         # Rename suggestions
 /refactor move <path>           # Move suggestions
-```
-
-### Search & Documentation
-
-```bash
-# Web search (requires /web enabled or ,websearch in mode)
-/search <query>                 # Search the web
-/search react hooks tutorial
-
-# Documentation lookup
-/docs <topic>                   # Fetch documentation
-/docs express middleware
 ```
 
 ### Session Management
@@ -444,7 +431,6 @@ koda --continue -p "what was the file we discussed last?"
 **Live Command Completion:**
 - Type `/` to see inline grayed suggestions
 - Press TAB to complete commands
-- Press TAB to cycle through mode options (`/mode ` + TAB)
 
 **Context Window Display:**
 - Status bar shows: `Context: used/limit`
@@ -452,7 +438,6 @@ koda --continue -p "what was the file we discussed last?"
 
 **Autonomous Skill Execution:**
 - AI executes skills automatically when needed (native tool calls; legacy `[SKILL:name(param="value")]` text fallback supported)
-- Works in standalone, agent, and collab modes
 - 95+ default skills across 20+ categories including:
   - File operations (create, read, update, delete, list)
   - **Code navigation & editing** — `grep_code` (recursive content search), `outline_file` (function/class signatures with line numbers, multi-language), `replace_lines` (surgical line-range edits), `search_replace_file` (find/replace by string), `diff_files`
@@ -466,12 +451,15 @@ koda --continue -p "what was the file we discussed last?"
 
 **Working with large code files:** the model is encouraged to use `grep_code` or `outline_file` to navigate first, then `read_file(startLine, endLine)` to drill into a specific region, then `replace_lines` or `search_replace_file` for surgical edits — much cheaper than reading and rewriting the whole file. `outline_file` handles 10k+ line files in under 50ms.
 
-**Web-Dependent Skills:**
-The following skills require `/web` mode to be enabled:
-- `threat_intel` - Query threat intelligence sources
+**Web-Capable Native Tools:**
+These are invoked by the model itself (no toggle, no mode); they're listed here so you know what Koda can reach when a question warrants it:
 - `web_search` - Search the web (uses Scrapling for CAPTCHA evasion)
+- `fetch_url` - Fetch a single URL (PDF/DOCX/HTML/text)
+- `crawl_pages` - Multi-page crawl with depth/limit
 - `playwright_fetch` - Fetch JS-rendered pages
 - `playwright_interact` - Interact with web pages
+- `scrapling_fetch` - CAPTCHA-evading fetch via StealthyFetcher
+- `dns_lookup`, `virustotal_lookup` - Resolution and reputation lookups
 
 **Web Search Fallback Chain:**
 When performing web searches, the system uses a multi-engine fallback:

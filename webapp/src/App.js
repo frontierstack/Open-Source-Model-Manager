@@ -9865,16 +9865,20 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                             </Grid>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Modes & Search</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Working Files & Web</Typography>
                                                     <Table size="small" sx={compactTableSx}>
                                                         <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/mode standalone</TableCell><TableCell sx={{ color: 'text.secondary' }}>Direct chat (default)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/mode agent</TableCell><TableCell sx={{ color: 'text.secondary' }}>Task-aware mode</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/mode agent collab</TableCell><TableCell sx={{ color: 'text.secondary' }}>Multi-agent</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/web</TableCell><TableCell sx={{ color: 'text.secondary' }}>Toggle web search</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/websearch, /ws</TableCell><TableCell sx={{ color: 'text.secondary' }}>Aliases for /web</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/files</TableCell><TableCell sx={{ color: 'text.secondary' }}>List files in the working set</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/add-file &lt;path&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Add a file to context (max 20)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/remove-file &lt;path&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Drop a file from context</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/focus &lt;path&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Restrict context to specific files</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/search &lt;query&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>One-shot web search (also: /websearch)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/docs &lt;topic&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch documentation</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
+                                                    <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                        No <code>/mode</code> or <code>/web</code> toggle: web search and URL fetch are invoked by the model itself as native tools whenever the query warrants it.
+                                                    </Typography>
                                                 </Box>
                                             </Grid>
                                         </Grid>

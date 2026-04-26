@@ -171,10 +171,10 @@ koda --yolo                  # skip every confirmation (combinable with --contin
 
 # Key commands
 /help              # Show all commands
-/mode agent        # Switch to agent mode
-/web               # Toggle web search
+/files             # Show files Koda has loaded into context
 /sessions          # List saved sessions
 /memory add <note> # Save a note Koda remembers across launches
+/yolo              # Skip every confirmation prompt this session
 /quit              # Exit
 ```
 
