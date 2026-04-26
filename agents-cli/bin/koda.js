@@ -9695,6 +9695,13 @@ async function handleChat(api, message) {
         }
 
         if (!result.success) {
+            // CRITICAL: stop the spinner before returning. If the API call
+            // failed before any content/tool_call streamed, hasStoppedAnimation
+            // is still false and the setInterval keeps redrawing "Continuing
+            // task · still continuing…" forever over the prompt. Reported by
+            // user: spinner stuck even though the response had clearly failed.
+            stopAnimation(true);
+            isStreaming = false;
             addToHistory('system', `Error: ${result.error}`);
             displayChatHistory();
             endTurnClock();
@@ -10218,6 +10225,14 @@ async function handleChat(api, message) {
         // Show animated processing indicator for next iteration (animation starts before next API call)
     }
 
+    // Defensive: skill loop may have exited via `break` while a spinner
+    // is still ticking on a setInterval. Without this, the user sees the
+    // animation redraw forever over the next prompt, even though the turn
+    // is logically done. (Matches the failure-path stopAnimation we just
+    // added inside the loop.)
+    stopAnimation(true);
+    isStreaming = false;
+
     if (iteration >= MAX_SKILL_ITERATIONS) {
         addToHistory('system', `Warning: Maximum tool execution iterations (${MAX_SKILL_ITERATIONS}) reached — asking model to wrap up.`);
         // Wrap-up turn: give the model one last no-tools chance to summarize what
@@ -10269,6 +10284,7 @@ async function handleChat(api, message) {
     await updateApiKeyUsage(api);
 
     displayChatHistory();
+    stopAnimation(true);  // belt-and-suspenders: never return with a live spinner
     endTurnClock();
 }
 
