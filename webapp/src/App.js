@@ -9649,8 +9649,8 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Models ───</MenuItem>
                                                             <MenuItem value="/api/models">GET /api/models - List Models</MenuItem>
                                                             <MenuItem value="/api/models/pull">POST /api/models/pull - Download Model</MenuItem>
-                                                            <MenuItem value="/api/models/:name/load">POST /api/models/:name/load - Load Model</MenuItem>
-                                                            <MenuItem value="/api/models/:name">DELETE /api/models/:name - Delete Model</MenuItem>
+                                                            <MenuItem value="/api/models/:name/load">POST /api/models/:modelName/load - Load Model</MenuItem>
+                                                            <MenuItem value="/api/models/:name">DELETE /api/models/:modelName - Delete Model</MenuItem>
                                                             <MenuItem value="/api/model-configs">GET /api/model-configs - List All Model Configs</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName">GET /api/model-configs/:name - Get Model Config</MenuItem>
                                                             <MenuItem value="/api/model-configs/:modelName/update">PUT /api/model-configs/:name - Update Model Config</MenuItem>
@@ -9661,11 +9661,11 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <MenuItem value="/api/downloads/:downloadId">DELETE /api/downloads/:id - Cancel Download</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Instances ───</MenuItem>
                                                             <MenuItem value="/api/vllm/instances">GET /api/vllm/instances - List vLLM Instances</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances/:name">DELETE /api/vllm/instances/:name - Stop vLLM Instance</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances/:name/slots">GET /api/vllm/instances/:name/slots - Get KV Cache Slots</MenuItem>
+                                                            <MenuItem value="/api/vllm/instances/:name">DELETE /api/vllm/instances/:modelName - Stop vLLM Instance</MenuItem>
+                                                            <MenuItem value="/api/vllm/instances/:name/slots">GET /api/vllm/instances/:modelName/slots - Get KV Cache Slots</MenuItem>
                                                             <MenuItem value="/api/vllm/instances/:name/slots/clear">POST /api/vllm/instances/:name/slots/clear - Clear KV Cache</MenuItem>
                                                             <MenuItem value="/api/llamacpp/instances">GET /api/llamacpp/instances - List llama.cpp Instances</MenuItem>
-                                                            <MenuItem value="/api/llamacpp/instances/:name">DELETE /api/llamacpp/instances/:name - Stop llama.cpp Instance</MenuItem>
+                                                            <MenuItem value="/api/llamacpp/instances/:name">DELETE /api/llamacpp/instances/:modelName - Stop llama.cpp Instance</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── System Prompts ───</MenuItem>
                                                             <MenuItem value="/api/system-prompts">GET /api/system-prompts - List System Prompts</MenuItem>
                                                             <MenuItem value="/api/system-prompts/:modelName">GET /api/system-prompts/:name - Get System Prompt</MenuItem>
@@ -9708,16 +9708,22 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <MenuItem value="/api/agents/:id/delete">DELETE /api/agents/:id - Delete Agent</MenuItem>
                                                             <MenuItem value="/api/agents/:id/regenerate-key">POST /api/agents/:id/regenerate-key - Regenerate Agent Key</MenuItem>
                                                             <MenuItem value="/api/agent-permissions">GET/PUT /api/agent-permissions - Manage Agent Permissions</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Tools ───</MenuItem>
-                                                            <MenuItem value="/api/tools">GET /api/tools - List Tools</MenuItem>
-                                                            <MenuItem value="/api/tools/create">POST /api/tools - Create Tool</MenuItem>
-                                                            <MenuItem value="/api/tools/:id">GET /api/tools/:id - Get Tool</MenuItem>
-                                                            <MenuItem value="/api/tools/:id/update">PUT /api/tools/:id - Update Tool</MenuItem>
-                                                            <MenuItem value="/api/tools/:id/delete">DELETE /api/tools/:id - Delete Tool</MenuItem>
-                                                            <MenuItem value="/api/tools/:toolName/execute">POST /api/tools/:name/execute - Execute Tool</MenuItem>
-                                                            <MenuItem value="/api/agents/tools/available">GET /api/agents/tools/available - Available Tools</MenuItem>
-                                                            <MenuItem value="/api/agents/tools/discover">GET /api/agents/tools/discover - Discover Tools</MenuItem>
-                                                            <MenuItem value="/api/agents/tools/recommend">POST /api/agents/tools/recommend - Recommend Tools</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Skills ───</MenuItem>
+                                                            <MenuItem value="/api/skills">GET /api/skills - List Skills</MenuItem>
+                                                            <MenuItem value="/api/skills/create">POST /api/skills - Create Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:id">GET /api/skills/:id - Get Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:id/update">PUT /api/skills/:id - Update Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:id/delete">DELETE /api/skills/:id - Delete Skill</MenuItem>
+                                                            <MenuItem value="/api/skills/:skillName/execute">POST /api/skills/:skillName/execute - Execute Skill</MenuItem>
+                                                            <MenuItem value="/api/agents/skills/available">GET /api/agents/skills/available - Available Skills</MenuItem>
+                                                            <MenuItem value="/api/agents/skills/discover">GET /api/agents/skills/discover - Discover Skills</MenuItem>
+                                                            <MenuItem value="/api/agents/skills/recommend">POST /api/agents/skills/recommend - Recommend Skills</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Markdown Skills ───</MenuItem>
+                                                            <MenuItem value="/api/markdown-skills">GET /api/markdown-skills - List Markdown Skills</MenuItem>
+                                                            <MenuItem value="/api/markdown-skills/create">POST /api/markdown-skills - Create Markdown Skill</MenuItem>
+                                                            <MenuItem value="/api/markdown-skills/:id">GET /api/markdown-skills/:id - Get Markdown Skill</MenuItem>
+                                                            <MenuItem value="/api/markdown-skills/:id/update">PUT /api/markdown-skills/:id - Update Markdown Skill</MenuItem>
+                                                            <MenuItem value="/api/markdown-skills/:id/delete">DELETE /api/markdown-skills/:id - Delete Markdown Skill</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Tasks ───</MenuItem>
                                                             <MenuItem value="/api/tasks">GET /api/tasks - List Tasks</MenuItem>
                                                             <MenuItem value="/api/tasks/create">POST /api/tasks - Create Task</MenuItem>
@@ -9944,7 +9950,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                     <AccordionDetails>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
                                             <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
-                                            <Typography sx={{ fontSize: '0.85rem' }}>Powered by DuckDuckGo, Scrapling (StealthyFetcher), Playwright, and Brave Search</Typography>
+                                            <Typography sx={{ fontSize: '0.85rem' }}>Native tools — model invokes web_search / fetch_url / crawl_pages / playwright_fetch / playwright_interact / scrapling_fetch automatically when the query warrants it. No UI toggle.</Typography>
                                         </Box>
 
                                         <Grid container spacing={2}>
@@ -9952,11 +9958,11 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How to Use</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Open the Chat interface (port 3002)</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Click the <strong>globe icon</strong> to enable web search</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Click the <strong>link icon</strong> to enable URL fetching</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>4.</strong> Ask questions — results are auto-injected into context</Typography>
-                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>5.</strong> Pasted URLs are automatically fetched when URL Fetch is on</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Open the Chat interface (port 3002).</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Just ask. The chat model decides when to search the web or fetch a URL — there's no globe or link button to toggle.</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Each tool invocation streams in as a chip with the tool name, arguments, and (on click) the full result.</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>4.</strong> URLs you paste are noticed by the model and fetched on demand via <code>fetch_url</code>.</Typography>
+                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>5.</strong> File URLs (PDF, DOCX, XLSX, CSV, JSON, …) are direct-downloaded and parsed; HTML pages go through the Scrapling/Playwright fallback chain.</Typography>
                                                     </Box>
                                                 </Box>
                                             </Grid>
@@ -9989,10 +9995,10 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL Fetch Feature</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'rgba(99,102,241,0.12)' }}>POST /api/url/fetch</code></Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Up to 3 URLs per request, 12k chars/URL</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'rgba(99,102,241,0.12)' }}>POST /api/url/fetch</code> (admin/debug)</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Up to 3 URLs per request, 50k chars/URL for files, 12k for HTML</Typography>
                                                         <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Smart truncation: 30% beginning + 70% end</Typography>
-                                                        <Typography variant="body2" sx={{ fontSize: '0.78rem' }}>Toggle via link icon in chat toolbar</Typography>
+                                                        <Typography variant="body2" sx={{ fontSize: '0.78rem' }}>In chat: model invokes <code>fetch_url</code> as a native tool — no toggle</Typography>
                                                     </Box>
                                                 </Box>
                                             </Grid>
@@ -10043,8 +10049,15 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>cacheTypeK/V</TableCell><TableCell sx={{ color: 'text.secondary' }}>f16</TableCell><TableCell sx={{ color: 'text.secondary' }}>KV cache (f16/q8_0/q4_0)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>threads</TableCell><TableCell sx={{ color: 'text.secondary' }}>0</TableCell><TableCell sx={{ color: 'text.secondary' }}>CPU threads (0=auto)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>parallelSlots</TableCell><TableCell sx={{ color: 'text.secondary' }}>1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Concurrent requests</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>batchSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>512</TableCell><TableCell sx={{ color: 'text.secondary' }}>Prompt batch size</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>repeatPenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>1.0</TableCell><TableCell sx={{ color: 'text.secondary' }}>Repetition penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>batchSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>2048</TableCell><TableCell sx={{ color: 'text.secondary' }}>Prompt batch size</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>ubatchSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>512</TableCell><TableCell sx={{ color: 'text.secondary' }}>Micro-batch size</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>repeatPenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>1.1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Repetition penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>repeatLastN</TableCell><TableCell sx={{ color: 'text.secondary' }}>64</TableCell><TableCell sx={{ color: 'text.secondary' }}>Repetition penalty window</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>presencePenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>0.0</TableCell><TableCell sx={{ color: 'text.secondary' }}>Presence penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>frequencyPenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>0.0</TableCell><TableCell sx={{ color: 'text.secondary' }}>Frequency penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>ctxCheckpoints</TableCell><TableCell sx={{ color: 'text.secondary' }}>2</TableCell><TableCell sx={{ color: 'text.secondary' }}>Context checkpoint count</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>contextShift</TableCell><TableCell sx={{ color: 'text.secondary' }}>true</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recycle context window when full</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>compressMemory</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>AIMem conversation compression</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>disableThinking</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip reasoning mode</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
@@ -10068,6 +10081,8 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'text.secondary' }}>auto</TableCell><TableCell sx={{ color: 'text.secondary' }}>Cache dtype (auto/fp8)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'text.secondary' }}>true</TableCell><TableCell sx={{ color: 'text.secondary' }}>Trust HF code</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>enforceEager</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Disable CUDA graphs</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>contextShift</TableCell><TableCell sx={{ color: 'text.secondary' }}>true</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recycle context window when full</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>compressMemory</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>AIMem conversation compression</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>disableThinking</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip reasoning mode</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
@@ -10149,6 +10164,10 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/complete</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Text completion</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create conversations</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage conversation</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id/messages</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Append a message</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id/streaming</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Background-stream status / cancel</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id/memories</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Per-conversation memory entries</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Chunked-content queue status</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Web search with content fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch URLs for chat context</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stealth browser fetch</TableCell></TableRow>
@@ -10176,6 +10195,10 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/downloads/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Cancel download</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/system/resources</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Hardware info</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/system/optimal-settings</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Calculate optimal settings</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/system/tools-catalog</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List native tools the chat model can invoke</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/system/egress-proxy</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Egress-proxy status / sandbox info</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/sandbox/run-code</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Execute code in the sandboxed runner</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/tool-artifacts/:runId/:filename</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Download artifacts produced by a tool run</TableCell></TableRow>
 
                                                     {/* Instances Permission */}
                                                     <TableRow>
@@ -10208,10 +10231,14 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage agent</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/:id/regenerate-key</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Regenerate agent key</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agent-permissions</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage permissions</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tools</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create tools</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tools/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage tool</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tools/:name/execute</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Execute tool</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/tools/discover</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Discover tools</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/skills</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/skills/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage skill</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/skills/:skillName/execute</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Execute skill</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/markdown-skills</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create markdown skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/markdown-skills/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage markdown skill</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/skills/available</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List skills available to an agent</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/skills/discover</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Discover skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agents/skills/recommend</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recommend skills for a task</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tasks</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create tasks</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/tasks/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage task</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/api/agent/file/read</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Read file</TableCell></TableRow>
@@ -10315,7 +10342,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>./build.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Build Docker images with parallel builds, auto-resume, and state tracking.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'text.secondary' }}>Rebuild and restart services without data loss. Options: webapp, all</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>./update.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Quick rebuild of webapp only (for code updates).</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Full system reset. Removes all data except downloaded models. Options: --rebuild</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Full system reset. Removes all data except downloaded models. Options: --force (skip confirmation), --rebuild (rebuild Docker images), --full (also delete models)</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -10340,6 +10367,8 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Linux/macOS. Creates ~/.local/bin/koda symlink.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.ps1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Windows PowerShell. Creates AppData shortcut.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>scripts/download_model.py</TableCell><TableCell sx={{ color: 'text.secondary' }}>Python script for downloading GGUF models from HuggingFace (used internally by webapp).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>scripts/download_model.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Shell wrapper for downloading models (delegates to the Python script).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>scripts/migrate-to-multiuser.js</TableCell><TableCell sx={{ color: 'text.secondary' }}>One-time migration: convert single-user data layout to per-user.</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -10382,7 +10411,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                     <AccordionDetails>
                                         <Box sx={{ p: 2, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.2)', mb: 2 }}>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
-                                                Stops all instances, deletes all models, and cleans up Docker resources. API keys and configuration are preserved.
+                                                Stops all instances and cleans up Docker resources. By default downloaded models, API keys, and configuration are preserved. The shell equivalent <code style={{ fontSize: '0.7rem' }}>./reset.sh --full</code> additionally wipes downloaded models for a true factory reset.
                                             </Typography>
                                         </Box>
                                         <Button
