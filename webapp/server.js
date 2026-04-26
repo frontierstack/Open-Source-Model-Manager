@@ -12401,6 +12401,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const allSkillsForPolicy = await loadSkills().catch(() => []);
                     const skillByName = new Map(allSkillsForPolicy.map(s => [s.name, s]));
                     const toolPolicy = (toolName) => {
+                        // Native handlers take precedence: if a tool is
+                        // registered in chatTools.toolRegistry, executeToolCall
+                        // dispatches to the in-process JS handler and never
+                        // touches the Python skill record — even when a
+                        // matching default-skill stub exists (e.g. fetch_url,
+                        // web_search, playwright_fetch all ship comment-only
+                        // Python stubs purely for catalog/system-prompt
+                        // purposes). Label by what actually executes.
+                        if (chatTools.toolRegistry?.has(toolName)) {
+                            return { sandboxed: false, source: 'native' };
+                        }
                         const s = skillByName.get(toolName);
                         if (!s) {
                             return { sandboxed: false, source: 'native' };
