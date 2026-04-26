@@ -829,6 +829,7 @@ function summarizeSkillResult(skillName, params, result) {
         const err = (result && result.error) ? String(result.error) : 'failed';
         return colorize('✗ ' + err.split('\n')[0].slice(0, 280), 'red');
     }
+    params = params || {};
     const data = (result.data && typeof result.data === 'object') ? result.data : result;
     const rel = (p) => (p || '').replace(userWorkingDirectory, '.');
 
@@ -7576,9 +7577,15 @@ async function executeSkillCalls(api, skillCalls, agentId = null) {
                     if (result.success && typeof result.message === 'string' && !result.message.includes('(cached)')) {
                         result.message = `(cached) ${result.message}`;
                     }
+                    // toolHandle.finish() already renders + pushes to chatHistory.
+                    // Don't also call recordToolCall — that'd double-render and can
+                    // throw inside summarize* helpers when params is sparse.
                     toolHandle.finish(result);
-                    results.push({ skill: call.skillName, success: !!result.success, ...result });
-                    recordToolCall(call.skillName, call.params, result);
+                    results.push({
+                        skill: call.skillName,
+                        success: !!result.success,
+                        result: result.data || result
+                    });
                     continue;
                 }
             }
