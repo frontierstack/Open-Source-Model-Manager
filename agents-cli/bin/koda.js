@@ -575,8 +575,45 @@ function beginTurnClock() { currentTurnStartTime = Date.now(); }
 function endTurnClock() { currentTurnStartTime = null; }
 function turnElapsedMs() { return currentTurnStartTime ? Date.now() - currentTurnStartTime : 0; }
 
-// Spinner frames for different animation styles
-const spinnerFrames = {
+// Detect terminals that can't render the braille / box-drawing glyphs we use
+// for spinners and the ⎿ tool-call corner. On Windows cmd.exe (no Windows
+// Terminal session), legacy consoles, or non-UTF-8 locales the glyphs all
+// collapse to "?". Honor an explicit KODA_ASCII=1 override too.
+const ASCII_ONLY = (() => {
+    if (process.env.KODA_ASCII === '1') return true;
+    if (process.env.KODA_UNICODE === '1') return false;
+    const enc = (process.stdout && process.stdout.getColorDepth ? '' : '');
+    const lang = (process.env.LANG || process.env.LC_ALL || process.env.LC_CTYPE || '').toLowerCase();
+    const isWin = process.platform === 'win32';
+    const inWT = !!process.env.WT_SESSION || !!process.env.WT_PROFILE_ID;
+    const inAlacritty = !!process.env.ALACRITTY_LOG;
+    const term = (process.env.TERM || '').toLowerCase();
+    const termProgram = (process.env.TERM_PROGRAM || '').toLowerCase();
+    if (isWin && !inWT && termProgram !== 'vscode') return true;
+    if (term === 'dumb') return true;
+    if (lang && !lang.includes('utf') && !lang.includes('UTF')) {
+        // Plain "C" or "POSIX" locales generally lack a UTF-8-capable font hookup
+        if (lang === 'c' || lang === 'posix' || lang === '') return true;
+    }
+    return false;
+})();
+
+// Spinner frames for different animation styles. ASCII fallback set is used
+// when the terminal can't render the Unicode variants.
+const spinnerFrames = ASCII_ONLY ? {
+    dots:    ['|', '/', '-', '\\'],
+    pulse:   ['.', 'o', 'O', 'o'],
+    bounce:  ['.', ':', '\'', ':'],
+    arc:     ['/', '-', '\\', '|'],
+    box:     ['[', '=', ']', '='],
+    arrows:  ['<', '^', '>', 'v'],
+    line:    ['|', '/', '-', '\\'],
+    circle:  ['o', 'O', '0', 'O'],
+    brain:   ['*', '.', 'o', '+'],
+    wave:    ['.', ':', '|', ':'],
+    glow:    ['.', 'o', 'O', 'o'],
+    blocks:  ['#', '=', '-', '=']
+} : {
     dots: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
     pulse: ['◐', '◓', '◑', '◒'],
     bounce: ['⠁', '⠂', '⠄', '⠂'],
@@ -589,6 +626,14 @@ const spinnerFrames = {
     wave: ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'],
     glow: ['◯', '◉', '●', '◉'],
     blocks: ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█', '▉', '▊', '▋', '▌', '▍', '▎']
+};
+
+// Glyphs used outside the spinner (tool-call corners, bullets). Swap to ASCII
+// when the terminal can't render the Unicode versions.
+const GLYPHS = ASCII_ONLY ? {
+    bullet: '*', corner: '|-', check: 'v', cross: 'x', arrow: '->', diamond: '*'
+} : {
+    bullet: '●', corner: '⎿', check: '✓', cross: '✗', arrow: '→', diamond: '◆'
 };
 
 // Thinking message variations for variety
@@ -1005,9 +1050,9 @@ function renderToolCall(entry) {
     // On failure, dim the action+target so the red ⎿ summary reads first.
     const actionStyle = entry.success ? 'bright' : 'dim';
     process.stdout.write('\r\x1b[K');
-    log('  ' + colorize('●', bulletColor) + ' ' +
+    log('  ' + colorize(GLYPHS.bullet, bulletColor) + ' ' +
         colorize(entry.action, actionStyle) + targetStr);
-    log('    ' + colorize('⎿ ', 'dim') + entry.summary);
+    log('    ' + colorize(GLYPHS.corner + ' ', 'dim') + entry.summary);
 }
 
 // Begin a live tool-call render. Writes the action header + an animated
@@ -1027,7 +1072,7 @@ function beginToolCall(skillName, params) {
     // magenta=net, cyan=git, white=data, yellow=default). Failures recolor
     // to red on finish via renderToolCall.
     const bulletColor = bulletColorForSkill(skillName);
-    log('  ' + colorize('●', bulletColor) + ' ' +
+    log('  ' + colorize(GLYPHS.bullet, bulletColor) + ' ' +
         colorize(action, 'bright') + targetStr);
 
     // Per-skill animation style (pulse/bounce/wave/blocks/arc/dots).
@@ -1044,7 +1089,7 @@ function beginToolCall(skillName, params) {
         const timeStr = ` ${colorize(formatElapsed(displayMs), elapsedColor(displayMs))}`;
         const beat = longRunSuffix(displayMs, action || 'working');
         process.stdout.write('\r\x1b[K' +
-            '    ' + colorize('⎿ ', 'dim') +
+            '    ' + colorize(GLYPHS.corner + ' ', 'dim') +
             colorize(f, spinChoice.color) + colorize(' working…', 'dim') + beat + timeStr);
     };
     drawFrame();
@@ -1064,7 +1109,7 @@ function beginToolCall(skillName, params) {
                 summary: summarizeSkillResult(skillName, params, result)
             };
             process.stdout.write('\r\x1b[K' +
-                '    ' + colorize('⎿ ', 'dim') + entry.summary + '\n');
+                '    ' + colorize(GLYPHS.corner + ' ', 'dim') + entry.summary + '\n');
             chatHistory.push({ role: 'tool', content: entry });
             if (chatHistory.length > MAX_HISTORY) chatHistory.shift();
         }
@@ -1940,7 +1985,7 @@ function displayDiff(oldContent, newContent, filePath, options = {}) {
 
     log('');
     if (showHeader) {
-        log('  ' + colorize('●', labelColor) + ' ' +
+        log('  ' + colorize(GLYPHS.bullet, labelColor) + ' ' +
             colorize(label, labelColor) + colorize(`(${shortPath(relativePath, 50)})`, 'bright') +
             '  ' + stats +
             (headerExtras ? colorize(' · ', 'dim') + headerExtras : ''));
@@ -2309,9 +2354,9 @@ function displayChatHistory() {
         const cwdLabel = userWorkingDirectory.length > 60
             ? '…' + userWorkingDirectory.slice(-59)
             : userWorkingDirectory;
-        log(' ' + colorize('●', 'cyan') + ' ' + colorize('Ready', 'bright') +
+        log(' ' + colorize(GLYPHS.bullet, 'cyan') + ' ' + colorize('Ready', 'bright') +
             colorize('  ' + cwdLabel, 'dim'));
-        log(' ' + colorize('⎿', 'dim') + ' ' +
+        log(' ' + colorize(GLYPHS.corner, 'dim') + ' ' +
             colorize('type a question or a file op — koda picks tools automatically', 'dim'));
         log('');
         log(' ' + colorize('tips', 'yellow') + colorize('  Tab', 'cyan') +
@@ -2451,7 +2496,7 @@ function displayStatusBar() {
     // left so the user always knows when the GPU is doing work for them.
     if (global.__kodaToolInFlight === true) {
         const pulseOn = (Math.floor(Date.now() / 500) % 2) === 0;
-        leftParts.push(colorize('●', pulseOn ? 'cyan' : 'dim'));
+        leftParts.push(colorize(GLYPHS.bullet, pulseOn ? 'cyan' : 'dim'));
     }
 
     // "koda" label acts as the left anchor.
