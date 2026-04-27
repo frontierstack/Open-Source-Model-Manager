@@ -4799,41 +4799,59 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         const totalMemory = os.totalmem();
         const cpuCount = os.cpus().length;
 
-        // Get GPU info — capture per-card free VRAM (not just total) so the
-        // recommendation accounts for whatever's already loaded on the GPU.
-        let totalGpuMemory = 0;
-        let totalGpuFree = 0;
-        let gpuCount = 0;
-        let smallestGpuFreeGB = Infinity;
+        // Get per-GPU info. llama.cpp's default tensor split is even across
+        // visible GPUs: each card gets the same fraction of weights and KV.
+        // That means the SMALLEST card bounds the per-card budget — having
+        // 30 GB total free across 2 cards but with a lopsided 4 / 26 split
+        // does NOT let you load a 20 GB model, because the small card can't
+        // hold its half. We capture both per-card detail and the symmetric
+        // effective budget below.
+        const gpuDetails = []; // [{ index, totalGB, freeGB, usedGB, name }]
         try {
             const { stdout } = await execPromise(
-                'nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits'
+                'nvidia-smi --query-gpu=index,name,memory.total,memory.free,memory.used --format=csv,noheader,nounits'
             );
             for (const line of stdout.trim().split('\n')) {
-                const [tot, free] = line.split(',').map(s => parseInt(s.trim(), 10));
+                const parts = line.split(',').map(s => s.trim());
+                if (parts.length < 5) continue;
+                const idx = parseInt(parts[0], 10);
+                const name = parts[1];
+                const tot = parseInt(parts[2], 10);
+                const free = parseInt(parts[3], 10);
+                const used = parseInt(parts[4], 10);
                 if (!isNaN(tot)) {
-                    totalGpuMemory += tot * 1024 * 1024;
-                    if (!isNaN(free)) {
-                        totalGpuFree += free * 1024 * 1024;
-                        smallestGpuFreeGB = Math.min(smallestGpuFreeGB, free / 1024);
-                    }
-                    gpuCount++;
+                    gpuDetails.push({
+                        index: idx,
+                        name,
+                        totalGB: tot / 1024,
+                        freeGB: isNaN(free) ? 0 : free / 1024,
+                        usedGB: isNaN(used) ? 0 : used / 1024,
+                    });
                 }
             }
         } catch (err) {
             // No GPU available
         }
 
-        const modelSizeGB = modelFileSize / (1024 * 1024 * 1024);
-        const gpuMemoryGB = totalGpuMemory / (1024 * 1024 * 1024);
-        const gpuFreeGB = totalGpuFree / (1024 * 1024 * 1024);
-        const ramGB = totalMemory / (1024 * 1024 * 1024);
+        const gpuCount = gpuDetails.length;
+        const totalGpuMemoryGB = gpuDetails.reduce((s, g) => s + g.totalGB, 0);
+        const totalGpuFreeGB = gpuDetails.reduce((s, g) => s + g.freeGB, 0);
+        const smallestGpuFreeGB = gpuCount ? Math.min(...gpuDetails.map(g => g.freeGB)) : 0;
+        const largestGpuFreeGB = gpuCount ? Math.max(...gpuDetails.map(g => g.freeGB)) : 0;
 
-        // For multi-GPU, total free is the bound; for single-GPU it's
-        // also the bound. The model is split across GPUs by tensor-split
-        // so per-card capacity matters too — surface the smaller value
-        // in notes when relevant.
-        if (smallestGpuFreeGB === Infinity) smallestGpuFreeGB = 0;
+        // Effective budget under llama.cpp's default even split:
+        //   = min(free_per_card) * gpuCount
+        // This is the largest model+KV size that can be loaded with NO
+        // explicit --tensor-split tweaking. A heavily-imbalanced setup
+        // surfaces a hint in notes so the user can flip on tensor-split.
+        const effectiveBudgetGB = smallestGpuFreeGB * gpuCount;
+        const imbalanced = gpuCount > 1 && (largestGpuFreeGB - smallestGpuFreeGB) > 1.5;
+
+        const modelSizeGB = modelFileSize / (1024 * 1024 * 1024);
+        const ramGB = totalMemory / (1024 * 1024 * 1024);
+        // Aliases for backwards-compat with the rest of this handler.
+        const gpuMemoryGB = totalGpuMemoryGB;
+        const gpuFreeGB = totalGpuFreeGB;
 
         let notes = [];
 
@@ -4913,11 +4931,18 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
             const MIN_HEADROOM_GB = 1.0;
             const KV_DTYPE_FACTOR = { f16: 1.0, q8_0: 0.5, q4_0: 0.25 };
 
-            // Use FREE VRAM as the budget — accounts for desktop, other models,
-            // OS overhead. Falls back to total*0.92 if /sys reporting glitched.
-            const availableGB = gpuFreeGB > 0 ? gpuFreeGB : gpuMemoryGB * 0.92;
-            // Reserve compute scratch + headroom up front.
-            const usableForModelAndKV = availableGB - COMPUTE_SCRATCH_GB - MIN_HEADROOM_GB;
+            // Use the EFFECTIVE budget under llama.cpp's even tensor split —
+            // smallest_free_per_card × gpuCount — not the raw sum, because a
+            // lopsided multi-GPU box (e.g. one card busy with a desktop
+            // session) can't safely fit a model whose half won't squeeze
+            // onto the smaller card. Per-card scratch + headroom reserve is
+            // applied symmetrically: subtract (scratch + headroom) per card.
+            const perCardReserveGB = COMPUTE_SCRATCH_GB + MIN_HEADROOM_GB;
+            const symmetricBudgetGB = effectiveBudgetGB > 0
+                ? effectiveBudgetGB
+                : (gpuMemoryGB * 0.92);
+            const availableGB = symmetricBudgetGB;
+            const usableForModelAndKV = symmetricBudgetGB - perCardReserveGB * Math.max(1, gpuCount);
 
             // Can the full model fit on GPU at all?
             const modelFits = modelSizeGB <= usableForModelAndKV;
@@ -4989,20 +5014,29 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 const predictedKvGB =
                     (chosenCtx * KV_PER_TOKEN_F16_SWAFULL * KV_DTYPE_FACTOR[chosenKv]) /
                     (1024 * 1024 * 1024);
-                const totalGB = modelSizeGB + predictedKvGB + COMPUTE_SCRATCH_GB;
-                notes.push(`Free VRAM: ${availableGB.toFixed(1)} GB across ${gpuCount} GPU(s)`);
-                notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV cache: ${predictedKvGB.toFixed(1)} GB · scratch: ${COMPUTE_SCRATCH_GB} GB`);
-                notes.push(`Predicted total: ${totalGB.toFixed(1)} / ${availableGB.toFixed(1)} GB used`);
+                const totalGB = modelSizeGB + predictedKvGB + COMPUTE_SCRATCH_GB * Math.max(1, gpuCount);
+                const perCardLoadGB = totalGB / Math.max(1, gpuCount);
+                notes.push(`Effective budget: ${symmetricBudgetGB.toFixed(1)} GB (smallest of ${gpuCount} GPU(s) × ${gpuCount}, even tensor split)`);
+                notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV cache: ${predictedKvGB.toFixed(1)} GB · scratch: ${(COMPUTE_SCRATCH_GB * Math.max(1, gpuCount)).toFixed(1)} GB`);
+                notes.push(`Predicted load per card: ${perCardLoadGB.toFixed(1)} GB · smallest card free: ${smallestGpuFreeGB.toFixed(1)} GB`);
                 notes.push(`Context: ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} · KV dtype: ${chosenKv} · SWA-full: ON (prompt cache reuses across turns)`);
                 if (chosenKv !== 'f16') {
                     notes.push(`f16 KV would need ${(predictedKvGB / KV_DTYPE_FACTOR[chosenKv]).toFixed(1)} GB at ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} ctx — ${chosenKv} chosen to fit`);
                 }
             }
 
-            // Multi-GPU note — llama.cpp splits weights across cards but the
-            // KV cache also spreads, so per-card free VRAM matters.
-            if (gpuCount > 1 && smallestGpuFreeGB > 0) {
-                notes.push(`${gpuCount} GPUs detected — split layout, smallest card has ${smallestGpuFreeGB.toFixed(1)} GB free`);
+            // Per-GPU breakdown — always surface for multi-GPU systems so
+            // the user can see exactly what each card has free.
+            if (gpuCount > 1) {
+                for (const g of gpuDetails) {
+                    notes.push(`  GPU ${g.index} (${g.name || 'unknown'}): ${g.freeGB.toFixed(1)} GB free / ${g.totalGB.toFixed(1)} GB total`);
+                }
+                if (imbalanced) {
+                    const ratio = gpuDetails
+                        .map(g => Math.round((g.freeGB / largestGpuFreeGB) * 100))
+                        .join(',');
+                    notes.push(`Cards are imbalanced (${(largestGpuFreeGB - smallestGpuFreeGB).toFixed(1)} GB spread). Even split would waste headroom on the larger card; consider --tensor-split ${ratio} via env var to bias more weight toward the freer card.`);
+                }
             }
 
             return res.json({
@@ -5012,6 +5046,16 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                     gpuCount,
                     gpuMemoryGB: gpuMemoryGB.toFixed(1),
                     gpuFreeGB: gpuFreeGB.toFixed(1),
+                    smallestGpuFreeGB: smallestGpuFreeGB.toFixed(1),
+                    effectiveBudgetGB: symmetricBudgetGB.toFixed(1),
+                    imbalanced,
+                    gpus: gpuDetails.map(g => ({
+                        index: g.index,
+                        name: g.name,
+                        totalGB: parseFloat(g.totalGB.toFixed(1)),
+                        freeGB: parseFloat(g.freeGB.toFixed(1)),
+                        usedGB: parseFloat(g.usedGB.toFixed(1)),
+                    })),
                     ramGB: ramGB.toFixed(1),
                     cpuCores: cpuCount
                 },

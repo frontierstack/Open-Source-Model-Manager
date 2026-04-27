@@ -6511,7 +6511,9 @@ fetch('${baseUrl}/api/cli/files/package.json')
 
             setOptimalSettingsNotes(data.notes || []);
 
-            const hardwareInfo = `${data.hardware.gpuCount} GPU(s) with ${data.hardware.gpuMemoryGB}GB VRAM, ${data.hardware.cpuCores} CPU cores`;
+            const hardwareInfo = data.hardware.gpuFreeGB
+                ? `${data.hardware.gpuCount} GPU(s) · ${data.hardware.gpuFreeGB}/${data.hardware.gpuMemoryGB}GB free, ${data.hardware.cpuCores} CPU cores`
+                : `${data.hardware.gpuCount} GPU(s) with ${data.hardware.gpuMemoryGB}GB VRAM, ${data.hardware.cpuCores} CPU cores`;
             showSnackbar(`Optimal ${selectedBackend} settings applied for ${model.name} (${hardwareInfo})`, 'success');
         } catch (error) {
             showSnackbar(error.message, 'error');
