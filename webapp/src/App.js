@@ -181,7 +181,8 @@ const LLAMACPP_TOOLTIPS = {
     threads: "Number of CPU threads to use. 0 = auto-detect (uses all available cores). Lower values leave more CPU for other tasks.",
     parallelSlots: "Number of parallel inference slots. Higher values allow more concurrent requests but use more memory.",
     batchSize: "Batch size for prompt processing. Larger values are faster but use more memory. Common values: 512, 1024, 2048.",
-    ubatchSize: "Micro-batch size for processing. Should be smaller than batch size. Common values: 256, 512.",
+    ubatchSize: "Micro-batch size for processing. Should be smaller than batch size. Common values: 256, 512, 1024. Larger values speed up prompt processing for long inputs.",
+    swaFull: "Allocate the full sliding-window-attention cache. Required for prompt-cache reuse across turns on SWA/hybrid models like Gemma 3/4 — without it, every turn re-evaluates the entire prompt from scratch. Costs more VRAM proportional to context size; only enable if VRAM headroom allows.",
     repeatPenalty: "Penalty for repeating tokens (1.0 = no penalty). Higher values (1.1-1.3) reduce repetition. Too high may affect coherence.",
     repeatLastN: "Number of recent tokens to consider for repetition penalty. 64-128 is usually sufficient.",
     presencePenalty: "Penalty for tokens that have appeared at all (0.0-1.0). Encourages the model to talk about new topics.",
@@ -413,7 +414,8 @@ const App = () => {
         presencePenalty: 0.0,
         frequencyPenalty: 0.0,
         disableThinking: false,
-        compressMemory: false
+        compressMemory: false,
+        swaFull: false
     });
 
     // Optimal settings state
@@ -6489,7 +6491,8 @@ fetch('${baseUrl}/api/cli/files/package.json')
                     repeatPenalty: data.settings.repeatPenalty,
                     repeatLastN: data.settings.repeatLastN,
                     presencePenalty: data.settings.presencePenalty,
-                    frequencyPenalty: data.settings.frequencyPenalty
+                    frequencyPenalty: data.settings.frequencyPenalty,
+                    swaFull: data.settings.swaFull === true
                 }));
             } else {
                 // Apply the optimal vLLM settings to modelConfig
@@ -7937,6 +7940,17 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                                                 />
                                                                                             </Tooltip>
                                                                                         )}
+                                                                                        {instance.config?.swaFull && (
+                                                                                            <Tooltip title="Full SWA cache — prompt cache reuses across turns">
+                                                                                                <Chip
+                                                                                                    label="SWA-Full"
+                                                                                                    size="small"
+                                                                                                    color="success"
+                                                                                                    variant="outlined"
+                                                                                                    sx={{ fontSize: '0.7rem' }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
                                                                                         {instance.config?.contextShift && (
                                                                                             <Tooltip title="Context shifting enabled">
                                                                                                 <Chip
@@ -8566,6 +8580,25 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                                         label={
                                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                                                                 <Typography variant="body2">Context Shift</Typography>
+                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                                                                            </Box>
+                                                                        }
+                                                                    />
+                                                                </Tooltip>
+                                                            </Grid>
+                                                            <Grid item xs={6}>
+                                                                <Tooltip title={LLAMACPP_TOOLTIPS.swaFull} arrow placement="top">
+                                                                    <FormControlLabel
+                                                                        control={
+                                                                            <Switch
+                                                                                checked={llamacppConfig.swaFull}
+                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, swaFull: e.target.checked})}
+                                                                                size="small"
+                                                                            />
+                                                                        }
+                                                                        label={
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                                                <Typography variant="body2">SWA Full Cache</Typography>
                                                                                 <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
                                                                             </Box>
                                                                         }

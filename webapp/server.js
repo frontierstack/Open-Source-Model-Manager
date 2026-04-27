@@ -1714,6 +1714,7 @@ async function syncModelInstances() {
                     presencePenalty: parseFloat(getEnvValue('LLAMA_PRESENCE_PENALTY') || '0.0'),
                     frequencyPenalty: parseFloat(getEnvValue('LLAMA_FREQUENCY_PENALTY') || '0.0'),
                     ctxCheckpoints: parseInt(getEnvValue('LLAMA_CTX_CHECKPOINTS') || '2'),
+                    swaFull: getEnvValue('LLAMA_SWA_FULL') === 'true',
                     // Reconstruct disableThinking from the llama.cpp --reasoning
                     // env var. Without this, the UI always shows the toggle as
                     // OFF for containers recovered on startup, even when the
@@ -3284,7 +3285,8 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 presencePenalty: req.body.presencePenalty ?? 0.0,
                 frequencyPenalty: req.body.frequencyPenalty ?? 0.0,
                 disableThinking: req.body.disableThinking ?? false,
-                compressMemory: req.body.compressMemory ?? false
+                compressMemory: req.body.compressMemory ?? false,
+                swaFull: req.body.swaFull === true
             };
 
             broadcast({ type: 'log', message: `Creating llama.cpp instance for ${modelName}...` });
@@ -3447,7 +3449,13 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             // llama.cpp accumulate >1 GiB/checkpoint in host RAM on large
             // contexts, which OOM-kills the container mid-request. Default 2
             // keeps some prefix-reuse benefit without unbounded growth.
-            `LLAMA_CTX_CHECKPOINTS=${config.ctxCheckpoints != null ? config.ctxCheckpoints : 2}`
+            `LLAMA_CTX_CHECKPOINTS=${config.ctxCheckpoints != null ? config.ctxCheckpoints : 2}`,
+            // Full-size SWA cache — required for prompt-cache reuse across
+            // turns on Gemma 3/4 and other SWA/hybrid models. Without it,
+            // every turn re-evaluates the entire prompt from scratch (the
+            // "forcing full prompt re-processing due to lack of cache data"
+            // log line). See llama.cpp PR #13194.
+            `LLAMA_SWA_FULL=${config.swaFull === true ? 'true' : 'false'}`
         ];
 
         // Only add threads if explicitly set (non-zero)
@@ -4791,27 +4799,41 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         const totalMemory = os.totalmem();
         const cpuCount = os.cpus().length;
 
-        // Get GPU info
+        // Get GPU info — capture per-card free VRAM (not just total) so the
+        // recommendation accounts for whatever's already loaded on the GPU.
         let totalGpuMemory = 0;
+        let totalGpuFree = 0;
         let gpuCount = 0;
+        let smallestGpuFreeGB = Infinity;
         try {
-            const { stdout } = await execPromise('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits');
-            const lines = stdout.trim().split('\n');
-            for (const line of lines) {
-                totalGpuMemory += parseInt(line.trim()) * 1024 * 1024; // MB to bytes
-                gpuCount++;
+            const { stdout } = await execPromise(
+                'nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits'
+            );
+            for (const line of stdout.trim().split('\n')) {
+                const [tot, free] = line.split(',').map(s => parseInt(s.trim(), 10));
+                if (!isNaN(tot)) {
+                    totalGpuMemory += tot * 1024 * 1024;
+                    if (!isNaN(free)) {
+                        totalGpuFree += free * 1024 * 1024;
+                        smallestGpuFreeGB = Math.min(smallestGpuFreeGB, free / 1024);
+                    }
+                    gpuCount++;
+                }
             }
         } catch (err) {
             // No GPU available
         }
 
-        // Calculate optimal settings
         const modelSizeGB = modelFileSize / (1024 * 1024 * 1024);
         const gpuMemoryGB = totalGpuMemory / (1024 * 1024 * 1024);
+        const gpuFreeGB = totalGpuFree / (1024 * 1024 * 1024);
         const ramGB = totalMemory / (1024 * 1024 * 1024);
 
-        // Estimate VRAM usage: model size + ~20% overhead for KV cache at 4K context
-        const estimatedBaseVRAM = modelSizeGB * 1.2;
+        // For multi-GPU, total free is the bound; for single-GPU it's
+        // also the bound. The model is split across GPUs by tensor-split
+        // so per-card capacity matters too — surface the smaller value
+        // in notes when relevant.
+        if (smallestGpuFreeGB === Infinity) smallestGpuFreeGB = 0;
 
         let notes = [];
 
@@ -4820,83 +4842,167 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         // ========================================================================
         if (backend === 'llamacpp') {
             let llamacppSettings = {
-                nGpuLayers: -1,           // -1 = all layers on GPU
-                contextSize: 4096,         // Context window
-                flashAttention: false,     // Flash attention (newer GPUs)
-                cacheTypeK: 'f16',         // KV cache key type
-                cacheTypeV: 'f16',         // KV cache value type
-                threads: Math.max(4, Math.floor(cpuCount * 0.75)),  // CPU threads
-                parallelSlots: 1,          // Concurrent requests
-                batchSize: 2048,           // Batch size for prompt processing
-                ubatchSize: 512,           // Micro-batch size
-                repeatPenalty: 1.1,        // Repetition penalty
-                repeatLastN: 64,           // Last N tokens for repetition
-                presencePenalty: 0.0,      // Presence penalty
-                frequencyPenalty: 0.0      // Frequency penalty
+                nGpuLayers: -1,
+                contextSize: 4096,
+                contextShift: true,
+                flashAttention: true,
+                cacheTypeK: 'f16',
+                cacheTypeV: 'f16',
+                threads: 4,                 // Default low — almost always GPU-bound
+                parallelSlots: 1,
+                batchSize: 2048,
+                ubatchSize: 1024,
+                repeatPenalty: 1.1,
+                repeatLastN: 64,
+                presencePenalty: 0.0,
+                frequencyPenalty: 0.0,
+                ctxCheckpoints: 2,
+                swaFull: true               // Eliminates the per-turn re-eval on SWA models
             };
 
             if (gpuCount === 0 || gpuMemoryGB === 0) {
                 // CPU-only mode
                 llamacppSettings.nGpuLayers = 0;
                 llamacppSettings.threads = Math.max(4, cpuCount - 2);
-                llamacppSettings.contextSize = 2048;
+                llamacppSettings.contextSize = 4096;
                 llamacppSettings.batchSize = 512;
                 llamacppSettings.ubatchSize = 256;
-                notes.push('No GPU detected - using CPU-only mode');
+                llamacppSettings.flashAttention = false;
+                llamacppSettings.swaFull = false; // Marginal benefit, can hurt CPU-bound runs
+                notes.push('No GPU detected — using CPU-only mode');
                 notes.push(`Using ${llamacppSettings.threads} CPU threads`);
-            } else if (estimatedBaseVRAM > gpuMemoryGB * 0.95) {
-                // Model too large - partial GPU offload
-                const layerFraction = (gpuMemoryGB * 0.85) / modelSizeGB;
-                const estimatedLayers = Math.floor(layerFraction * 40); // Assume ~40 layers typical
-                llamacppSettings.nGpuLayers = Math.max(1, estimatedLayers);
-                llamacppSettings.contextSize = 2048;
-                llamacppSettings.cacheTypeK = 'q8_0';
-                llamacppSettings.cacheTypeV = 'q8_0';
-                llamacppSettings.batchSize = 512;
-                llamacppSettings.ubatchSize = 256;
-                notes.push(`Model (${modelSizeGB.toFixed(1)}GB) exceeds GPU memory (${gpuMemoryGB.toFixed(1)}GB)`);
-                notes.push(`Partial GPU offload: ~${llamacppSettings.nGpuLayers} layers on GPU`);
-                notes.push('Using q8_0 KV cache for memory efficiency');
-            } else if (estimatedBaseVRAM > gpuMemoryGB * 0.7) {
-                // Tight fit - optimize memory
-                llamacppSettings.nGpuLayers = -1;
+                return res.json({
+                    settings: llamacppSettings,
+                    backend: 'llamacpp',
+                    hardware: { gpuCount, gpuMemoryGB: gpuMemoryGB.toFixed(1), ramGB: ramGB.toFixed(1), cpuCores: cpuCount },
+                    model: { sizeGB: modelSizeGB.toFixed(2), estimatedVRAM: modelSizeGB.toFixed(2) },
+                    notes
+                });
+            }
+
+            // ----------------------------------------------------------------
+            // VRAM accounting model
+            // ----------------------------------------------------------------
+            //
+            // Components that compete for VRAM:
+            //   1. Model weights        (≈ modelFileSize, GGUF maps ~1:1)
+            //   2. KV cache             (depends on ctx-size, KV dtype, layers, swa-full)
+            //   3. CUDA workspace       (compute scratch, CUDA graphs, ~1.0–2.0 GB)
+            //   4. Other GPU users      (already-loaded models, desktop, etc. — read live)
+            //
+            // We work in two passes:
+            //   Pass 1: pick KV dtype based on free-VRAM headroom after model load
+            //   Pass 2: pick the largest power-of-two ctx-size that still leaves
+            //           a safety margin (~1.5 GB) on the most-constrained card.
+            //
+            // KV per-token cost is estimated from a representative average that
+            // matches large-context dense and SWA models alike:
+            //   - dense path:  60 layers × (n_kv_heads ≈ 8) × (head_dim ≈ 128) × 2 (K+V)
+            //                  ≈ ~120 KB/tok at f16, 60 KB at q8_0, 30 KB at q4_0
+            //   - SWA path with --swa-full: per-token cost roughly doubles because
+            //                  every layer (full + SWA) holds a slot for every
+            //                  context position. We use a 1.7× multiplier as a
+            //                  conservative average across modern SWA models.
+            //
+            // These numbers are deliberately on the high side — we'd rather
+            // recommend a slightly smaller ctx than OOM on load.
+
+            const KV_PER_TOKEN_F16_DENSE = 120 * 1024;   // bytes/tok
+            const KV_PER_TOKEN_F16_SWAFULL = 200 * 1024; // bytes/tok with --swa-full
+            const COMPUTE_SCRATCH_GB = 1.5;
+            const MIN_HEADROOM_GB = 1.0;
+            const KV_DTYPE_FACTOR = { f16: 1.0, q8_0: 0.5, q4_0: 0.25 };
+
+            // Use FREE VRAM as the budget — accounts for desktop, other models,
+            // OS overhead. Falls back to total*0.92 if /sys reporting glitched.
+            const availableGB = gpuFreeGB > 0 ? gpuFreeGB : gpuMemoryGB * 0.92;
+            // Reserve compute scratch + headroom up front.
+            const usableForModelAndKV = availableGB - COMPUTE_SCRATCH_GB - MIN_HEADROOM_GB;
+
+            // Can the full model fit on GPU at all?
+            const modelFits = modelSizeGB <= usableForModelAndKV;
+
+            if (!modelFits) {
+                // Partial GPU offload. Estimate layer count by file size — most
+                // GGUFs in the 1B–70B range have 24–80 layers, average ~50.
+                // Without inspecting the GGUF metadata here we approximate by
+                // assuming uniform per-layer size (good enough for offload
+                // ratio, exact layer counts get refined at load time).
+                const guessedLayers = Math.max(24, Math.min(80, Math.round(modelSizeGB * 2.4)));
+                const fitFraction = Math.max(0.05, usableForModelAndKV / modelSizeGB);
+                const offloadLayers = Math.max(1, Math.floor(guessedLayers * fitFraction));
+                llamacppSettings.nGpuLayers = offloadLayers;
                 llamacppSettings.contextSize = 4096;
                 llamacppSettings.cacheTypeK = 'q8_0';
                 llamacppSettings.cacheTypeV = 'q8_0';
-                llamacppSettings.flashAttention = true;
+                llamacppSettings.swaFull = false; // Memory-bound — skip extra SWA cost
                 llamacppSettings.batchSize = 1024;
-                notes.push('Model fits in GPU with memory optimizations');
-                notes.push('Using q8_0 KV cache and flash attention');
-            } else if (estimatedBaseVRAM > gpuMemoryGB * 0.5) {
-                // Moderate fit
-                llamacppSettings.nGpuLayers = -1;
-                llamacppSettings.contextSize = 8192;
+                llamacppSettings.ubatchSize = 512;
+                llamacppSettings.threads = Math.max(4, Math.floor(cpuCount * 0.5));
+                notes.push(`Model (${modelSizeGB.toFixed(1)} GB) exceeds free VRAM (${availableGB.toFixed(1)} GB) — partial offload`);
+                notes.push(`Recommended: ${offloadLayers}/${guessedLayers} layers on GPU (estimate; refine after loading)`);
+                notes.push('Using q8_0 KV cache; SWA full disabled to conserve memory');
+            } else {
+                // Model fits — pick the best KV dtype + ctx.
+                const kvBudgetGB = usableForModelAndKV - modelSizeGB;
+
+                // Try f16 → q8_0 → q4_0, accepting the first that fits a
+                // reasonable target ctx (16K minimum). Use --swa-full math.
+                const TARGET_CTX_FLOOR = 16384;
+                const candidates = ['f16', 'q8_0', 'q4_0'];
+                let chosenKv = 'q4_0';
+                let maxCtxBytes = 0;
+                for (const kv of candidates) {
+                    const perTok = KV_PER_TOKEN_F16_SWAFULL * KV_DTYPE_FACTOR[kv];
+                    const ctxAtThisKv = Math.floor((kvBudgetGB * 1024 * 1024 * 1024) / perTok);
+                    if (ctxAtThisKv >= TARGET_CTX_FLOOR) {
+                        chosenKv = kv;
+                        maxCtxBytes = ctxAtThisKv;
+                        break;
+                    }
+                    // If even q4_0 can't make 16K, take the largest we can.
+                    if (kv === 'q4_0') {
+                        chosenKv = kv;
+                        maxCtxBytes = ctxAtThisKv;
+                    }
+                }
+
+                // Round down to power of two — llama.cpp aligns context to
+                // batch boundaries internally and the convention plays nice
+                // with the chunking math elsewhere.
+                let chosenCtx = 4096;
+                for (const c of [262144, 131072, 65536, 32768, 16384, 8192, 4096]) {
+                    if (c <= maxCtxBytes) { chosenCtx = c; break; }
+                }
+
+                llamacppSettings.cacheTypeK = chosenKv;
+                llamacppSettings.cacheTypeV = chosenKv;
+                llamacppSettings.contextSize = chosenCtx;
+                llamacppSettings.swaFull = true;
                 llamacppSettings.flashAttention = true;
                 llamacppSettings.batchSize = 2048;
-                notes.push('Model fits comfortably - using 8K context');
-            } else {
-                // Plenty of room
-                llamacppSettings.nGpuLayers = -1;
-                const availableForContext = (gpuMemoryGB - modelSizeGB) * 0.8;
-                if (availableForContext > 8) {
-                    llamacppSettings.contextSize = 32768;
-                    llamacppSettings.parallelSlots = Math.min(4, gpuCount * 2);
-                } else if (availableForContext > 4) {
-                    llamacppSettings.contextSize = 16384;
-                    llamacppSettings.parallelSlots = Math.min(2, gpuCount * 2);
-                } else {
-                    llamacppSettings.contextSize = 8192;
-                }
-                llamacppSettings.flashAttention = true;
-                llamacppSettings.batchSize = 4096;
                 llamacppSettings.ubatchSize = 1024;
-                notes.push(`Plenty of GPU memory - using ${llamacppSettings.contextSize} context`);
+                llamacppSettings.threads = 4;
+
+                // Predicted KV usage at the chosen ctx — surface in notes
+                // so the user can sanity-check.
+                const predictedKvGB =
+                    (chosenCtx * KV_PER_TOKEN_F16_SWAFULL * KV_DTYPE_FACTOR[chosenKv]) /
+                    (1024 * 1024 * 1024);
+                const totalGB = modelSizeGB + predictedKvGB + COMPUTE_SCRATCH_GB;
+                notes.push(`Free VRAM: ${availableGB.toFixed(1)} GB across ${gpuCount} GPU(s)`);
+                notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV cache: ${predictedKvGB.toFixed(1)} GB · scratch: ${COMPUTE_SCRATCH_GB} GB`);
+                notes.push(`Predicted total: ${totalGB.toFixed(1)} / ${availableGB.toFixed(1)} GB used`);
+                notes.push(`Context: ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} · KV dtype: ${chosenKv} · SWA-full: ON (prompt cache reuses across turns)`);
+                if (chosenKv !== 'f16') {
+                    notes.push(`f16 KV would need ${(predictedKvGB / KV_DTYPE_FACTOR[chosenKv]).toFixed(1)} GB at ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} ctx — ${chosenKv} chosen to fit`);
+                }
             }
 
-            // Multi-GPU support
-            if (gpuCount > 1) {
-                llamacppSettings.parallelSlots = Math.min(llamacppSettings.parallelSlots * gpuCount, 8);
-                notes.push(`${gpuCount} GPUs detected - increased parallel slots to ${llamacppSettings.parallelSlots}`);
+            // Multi-GPU note — llama.cpp splits weights across cards but the
+            // KV cache also spreads, so per-card free VRAM matters.
+            if (gpuCount > 1 && smallestGpuFreeGB > 0) {
+                notes.push(`${gpuCount} GPUs detected — split layout, smallest card has ${smallestGpuFreeGB.toFixed(1)} GB free`);
             }
 
             return res.json({
@@ -4905,12 +5011,13 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 hardware: {
                     gpuCount,
                     gpuMemoryGB: gpuMemoryGB.toFixed(1),
+                    gpuFreeGB: gpuFreeGB.toFixed(1),
                     ramGB: ramGB.toFixed(1),
                     cpuCores: cpuCount
                 },
                 model: {
                     sizeGB: modelSizeGB.toFixed(2),
-                    estimatedVRAM: estimatedBaseVRAM.toFixed(2)
+                    estimatedVRAM: modelSizeGB.toFixed(2)
                 },
                 notes
             });
@@ -4919,6 +5026,10 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         // ========================================================================
         // VLLM OPTIMAL SETTINGS (default)
         // ========================================================================
+        // Rough VRAM estimate for vLLM tier-selection (kept on the simple
+        // model-size × overhead heuristic since vLLM auto-tunes most of
+        // its own knobs based on `gpuMemoryUtilization`).
+        const estimatedBaseVRAM = modelSizeGB * 1.2;
         let settings = {
             // vLLM Core Settings
             maxModelLen: 4096,              // Context window size

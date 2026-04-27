@@ -27,6 +27,11 @@
 #   --ctx-size and SWA models like Gemma, can accumulate multi-GB of KV
 #   state in host RAM per slot and OOM-kill the container. A small cap
 #   preserves some prefix-reuse benefit without unbounded growth.
+# - LLAMA_SWA_FULL: Allocate full-size sliding-window-attention KV cache
+#   (default: false). Required for prompt-cache reuse across turns on
+#   SWA / hybrid models like Gemma 3/4 — without it, every turn forces a
+#   full prompt re-eval (see PR #13194). Costs more VRAM proportional to
+#   ctx-size × num_swa_layers, so only safe with adequate headroom.
 
 set -e
 
@@ -49,6 +54,7 @@ REPEAT_LAST_N=${LLAMA_REPEAT_LAST_N:-64}
 PRESENCE_PENALTY=${LLAMA_PRESENCE_PENALTY:-0.0}
 FREQUENCY_PENALTY=${LLAMA_FREQUENCY_PENALTY:-0.0}
 CTX_CHECKPOINTS=${LLAMA_CTX_CHECKPOINTS:-2}
+SWA_FULL=${LLAMA_SWA_FULL:-false}
 
 echo ">>> Starting llama.cpp server"
 echo "    Model: $MODEL_PATH"
@@ -68,6 +74,7 @@ echo "    Repeat Last N: $REPEAT_LAST_N"
 echo "    Presence Penalty: $PRESENCE_PENALTY"
 echo "    Frequency Penalty: $FREQUENCY_PENALTY"
 echo "    Context Checkpoints: $CTX_CHECKPOINTS"
+echo "    SWA Full: $SWA_FULL"
 
 # Build command arguments
 CMD_ARGS=(
@@ -123,6 +130,15 @@ case "$REASONING" in
 esac
 CMD_ARGS+=(--reasoning "$REASONING_MODE")
 echo "    [Reasoning: $REASONING_MODE]"
+
+# SWA full — flag-only switch in llama.cpp. Pass --swa-full only when
+# enabled so older binaries that lack the flag still launch cleanly.
+case "$SWA_FULL" in
+    true|on|1)
+        CMD_ARGS+=(--swa-full)
+        echo "    [SWA full cache: ENABLED — prompt cache reuses across turns]"
+        ;;
+esac
 
 echo ""
 echo ">>> Starting llama.cpp with OpenAI-compatible API"
