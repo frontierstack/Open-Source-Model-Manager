@@ -1570,10 +1570,11 @@ export default function ChatContainer({
             const nativeToolCallEntries = useChatStore.getState().streamingToolCalls || [];
             for (const tc of nativeToolCallEntries) {
                 let argPreview = '';
+                let parsedArgsForChip = null;
                 if (tc.arguments) {
                     try {
-                        const parsedArgs = JSON.parse(tc.arguments);
-                        const pairs = Object.entries(parsedArgs)
+                        parsedArgsForChip = JSON.parse(tc.arguments);
+                        const pairs = Object.entries(parsedArgsForChip)
                             .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`);
                         argPreview = pairs.join(', ');
                     } catch (_) {
@@ -1590,6 +1591,7 @@ export default function ChatContainer({
                     type: 'native_tool_call',
                     label: tc.name || 'tool',
                     query: argPreview,
+                    args: parsedArgsForChip,
                     durationMs: tc.durationMs,
                     status: tc.status === 'running' ? 'partial'
                         : tc.status === 'success' ? 'success'

@@ -2053,6 +2053,9 @@ body.font-size-large .markdown-content,
 .uppercase{
   text-transform: uppercase;
 }
+.lowercase{
+  text-transform: lowercase;
+}
 .normal-case{
   text-transform: none;
 }

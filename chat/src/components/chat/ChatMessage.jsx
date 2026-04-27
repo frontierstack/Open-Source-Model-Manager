@@ -391,7 +391,7 @@ export default React.memo(function ChatMessage({
                         const grouped = toolCalls.length >= TOOL_GROUP_THRESHOLD;
                         if (!grouped) {
                             return (
-                                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 6, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
                                     {toolCalls.map((tc, idx) => (
                                         <ToolCallBlock key={idx} tool={tc} />
                                     ))}
@@ -438,7 +438,7 @@ export default React.memo(function ChatMessage({
                                     <span style={{ opacity: 0.85 }}>{summary}</span>
                                 </button>
                                 {toolsExpanded && (
-                                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 6, marginTop: 8 }}>
                                         {toolCalls.map((tc, idx) => (
                                             <ToolCallBlock key={idx} tool={tc} />
                                         ))}
