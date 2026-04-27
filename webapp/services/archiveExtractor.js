@@ -120,7 +120,15 @@ async function rmrf(dir) {
  * Extract an archive provided as raw bytes.
  * @param {Buffer} buffer - archive bytes
  * @param {string} filename - used to pick extractor (extension-based)
- * @param {object} opts - { maxEntries, maxTextBytesPerEntry, maxTotalTextBytes }
+ * @param {object} opts - {
+ *     maxEntries, maxTextBytesPerEntry, maxTotalTextBytes,
+ *     extractTo,            // when set: extract into this directory and DO NOT clean up.
+ *                           //   Caller owns the lifecycle. Each entry's `path` is
+ *                           //   then expressed relative to `pathBase` (defaults to extractTo).
+ *     pathBase,             // root used to compute entries[].path. Defaults to extractTo.
+ *     inlineText,           // false (default when extractTo set) → only metadata + tiny preview;
+ *                           //   true → behave like the legacy temp-dir mode and inline UTF-8.
+ * }
  */
 async function extractArchive(buffer, filename, opts = {}) {
     if (!Buffer.isBuffer(buffer) || !buffer.length) {
@@ -153,14 +161,28 @@ async function extractArchive(buffer, filename, opts = {}) {
     }
 
     const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
-    const maxTextPerEntry = opts.maxTextBytesPerEntry ?? MAX_TEXT_BYTES_PER_ENTRY;
-    const maxTotalText = opts.maxTotalTextBytes ?? MAX_TOTAL_TEXT_BYTES;
+    // When extracting into a caller-owned dir we expect read_file to follow up
+    // per-entry, so default to NO inline text. Cap at 4KB / 32KB if the caller
+    // explicitly asks for previews. Legacy temp-dir mode keeps the old big caps.
+    const persistMode = !!opts.extractTo;
+    const inlineText = opts.inlineText ?? !persistMode;
+    const maxTextPerEntry = opts.maxTextBytesPerEntry ?? (persistMode ? 4_000 : MAX_TEXT_BYTES_PER_ENTRY);
+    const maxTotalText = opts.maxTotalTextBytes ?? (persistMode ? 32_000 : MAX_TOTAL_TEXT_BYTES);
 
-    const workRoot = path.join(os.tmpdir(), `archive-extract-${crypto.randomBytes(8).toString('hex')}`);
-    const extractDir = path.join(workRoot, 'out');
-    const archivePath = path.join(workRoot, path.basename(filename) || 'archive.bin');
+    const workRoot = persistMode
+        ? opts.extractTo
+        : path.join(os.tmpdir(), `archive-extract-${crypto.randomBytes(8).toString('hex')}`);
+    const extractDir = persistMode ? workRoot : path.join(workRoot, 'out');
+    // Persist mode: archive is written into a sibling tmp dir (deleted on
+    // return) so the extracted output dir stays clean of the source bytes.
+    const archiveStageDir = persistMode
+        ? path.join(os.tmpdir(), `archive-stage-${crypto.randomBytes(8).toString('hex')}`)
+        : workRoot;
+    const archivePath = path.join(archiveStageDir, path.basename(filename) || 'archive.bin');
     await fs.promises.mkdir(extractDir, { recursive: true });
+    if (persistMode) await fs.promises.mkdir(archiveStageDir, { recursive: true });
     await fs.promises.writeFile(archivePath, buffer);
+    const pathBase = opts.pathBase || extractDir;
 
     try {
         // Single-stream compressions (.gz / .bz2 / .xz of one file) — write
@@ -204,8 +226,14 @@ async function extractArchive(buffer, filename, opts = {}) {
         let totalTextBytes = 0;
         const entries = [];
         for (const f of selected) {
-            const entry = { path: f.path, size: f.size };
-            if (f.size <= maxTextPerEntry && totalTextBytes + f.size <= maxTotalText) {
+            // In persist mode, expose a path relative to pathBase so the caller
+            // can hand it directly to a sandboxed read_file (which is rooted at
+            // the workspace mount). The legacy mode kept relative-to-extractDir.
+            const relPath = persistMode
+                ? path.relative(pathBase, f.fullPath).split(path.sep).join('/')
+                : f.path;
+            const entry = { path: relPath, size: f.size };
+            if (inlineText && f.size <= maxTextPerEntry && totalTextBytes + f.size <= maxTotalText) {
                 try {
                     const data = await fs.promises.readFile(f.fullPath);
                     if (isPrintableUtf8(data)) {
@@ -213,6 +241,17 @@ async function extractArchive(buffer, filename, opts = {}) {
                         totalTextBytes += data.length;
                     }
                 } catch (_) { /* skip unreadable */ }
+            } else if (persistMode && f.size <= maxTextPerEntry && totalTextBytes + f.size <= maxTotalText) {
+                // Tiny preview only, so the model can sniff content type without
+                // a follow-up read_file call for trivial files.
+                try {
+                    const data = await fs.promises.readFile(f.fullPath);
+                    if (isPrintableUtf8(data)) {
+                        const preview = data.slice(0, 240).toString('utf8');
+                        if (preview.trim()) entry.preview = preview;
+                        totalTextBytes += Math.min(data.length, 240);
+                    }
+                } catch (_) { /* skip */ }
             }
             entries.push(entry);
         }
@@ -229,7 +268,13 @@ async function extractArchive(buffer, filename, opts = {}) {
                 : undefined,
         };
     } finally {
-        await rmrf(workRoot);
+        if (persistMode) {
+            // Caller owns extractDir; only the staging dir for the source
+            // bytes is ours to clean up.
+            await rmrf(archiveStageDir);
+        } else {
+            await rmrf(workRoot);
+        }
     }
 }
 

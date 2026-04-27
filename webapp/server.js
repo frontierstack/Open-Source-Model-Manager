@@ -12490,6 +12490,29 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         } else {
                             resultMsg = await chatTools.executeToolCall(call, toolCtx);
                         }
+                        // Per-tool-result size cap. Without this a single
+                        // archive extraction or large file read can dump
+                        // hundreds of KB of text into currentMessages, which
+                        // then re-ships to the backend on the next round and
+                        // overflows the model's context (observed: 243k tokens
+                        // vs 131k context after a tar.gz upload). 24k chars ≈
+                        // 8k tokens — generous enough for normal tool output,
+                        // tight enough that 5+ rounds still fit. The model can
+                        // always re-call the tool with a narrower scope (a
+                        // specific archive entry, a single line range) if the
+                        // truncated tail mattered.
+                        const TOOL_RESULT_CHAR_CAP = 24_000;
+                        if (typeof resultMsg.content === 'string' && resultMsg.content.length > TOOL_RESULT_CHAR_CAP) {
+                            const original = resultMsg.content.length;
+                            resultMsg = {
+                                ...resultMsg,
+                                content: resultMsg.content.slice(0, TOOL_RESULT_CHAR_CAP) +
+                                    `\n\n[Tool result truncated by server: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars. ` +
+                                    `If you need more, re-call ${call.function.name} with a narrower scope ` +
+                                    `(e.g. a specific entry path, a smaller line range, an entryPath / startLine+endLine arg).]`,
+                            };
+                            console.warn(`[Chat Stream] Capped ${call.function.name} result: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars`);
+                        }
                         // Record fingerprint + result hash for future loop checks.
                         try {
                             const rh = crypto.createHash('sha1')
@@ -16188,7 +16211,41 @@ app.use((req, res) => {
                 return { error: `Archive is ${buffer.length} bytes; 50MB max.` };
             }
             try {
-                return await archiveExtractor.extractArchive(buffer, filename);
+                // Persist extracted contents into the conversation's workspace
+                // bucket so subsequent read_file calls (sandboxed, rooted at
+                // /workspace) can read individual entries on demand. Without
+                // this the extractor would either inline ~2 MB of text into the
+                // tool result (overflowing the model's context — observed:
+                // 243k-token request against a 131k-token model after a tar.gz
+                // upload) or extract to a temp dir the sandboxed read_file
+                // can't see.
+                const sandboxRunner = require('./services/sandboxRunner');
+                let workspace;
+                try {
+                    workspace = await sandboxRunner.ensureWorkspace(
+                        ctx?.userId ?? null,
+                        ctx?.conversationId ?? null,
+                    );
+                } catch (wsErr) {
+                    // Fall back to legacy inline-extraction mode if no workspace
+                    // (e.g. /v1 passthrough callers without conv plumbing).
+                    return await archiveExtractor.extractArchive(buffer, filename);
+                }
+                const fsp = require('fs').promises;
+                const pathMod = require('path');
+                const extractRoot = pathMod.join(workspace.localInContainer, 'archives', archiveId || crypto.randomBytes(8).toString('hex'));
+                await fsp.mkdir(extractRoot, { recursive: true });
+                await fsp.chmod(extractRoot, 0o777);
+                const result = await archiveExtractor.extractArchive(buffer, filename, {
+                    extractTo: extractRoot,
+                    pathBase: workspace.localInContainer,
+                });
+                return {
+                    ...result,
+                    workspaceRoot: workspace.containerMount,
+                    note: (result.note ? result.note + ' ' : '') +
+                        `Files extracted into the conversation workspace. Each entry's \`path\` is workspace-relative — pass it to read_file to inspect contents (e.g. read_file(filePath="${result.entries?.[0]?.path || 'archives/.../foo'}")).`,
+                };
             } catch (e) {
                 return { error: e.message || String(e) };
             }
