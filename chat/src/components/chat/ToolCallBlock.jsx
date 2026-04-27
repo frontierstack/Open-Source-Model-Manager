@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Globe, Link as LinkIcon, Wrench, AlertCircle, ChevronDown, Check, Loader2, Shield } from 'lucide-react';
+import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield } from 'lucide-react';
 import SearchSources from './SearchSources';
 
 /**
@@ -34,9 +34,15 @@ export default function ToolCallBlock({ tool }) {
 
     const isRunning = status === 'partial';
     const isFailed = status === 'failed';
+    // load_skill is the only chip that's actually loading a SKILL — an
+    // instructional procedure body, not an executable operation. Mark it
+    // with a different icon so users can tell at a glance when the model
+    // is reading guidance vs. running a tool.
+    const isSkillLoad = type === 'native_tool_call' && label === 'load_skill';
     const IconComponent =
         type === 'web_search' ? Globe :
         type === 'url_fetch' ? LinkIcon :
+        isSkillLoad ? BookOpen :
         Wrench;
 
     const toolName =
@@ -48,7 +54,14 @@ export default function ToolCallBlock({ tool }) {
     const captionParts = [];
     const sourceList = Array.isArray(sources) ? sources : Array.isArray(results) ? results : null;
     const sourceCount = sourceList ? sourceList.length : null;
-    if (typeof resultCount === 'number') {
+    // For load_skill, surface which skill the model loaded so the user can
+    // see the instructional procedure that was applied without expanding.
+    const loadedSkillName = isSkillLoad
+        ? (args && typeof args === 'object' ? args.name : null)
+        : null;
+    if (loadedSkillName) {
+        captionParts.push(String(loadedSkillName));
+    } else if (typeof resultCount === 'number') {
         const noun = type === 'web_search' ? 'result' : type === 'url_fetch' ? 'page' : 'result';
         captionParts.push(`${resultCount} ${noun}${resultCount === 1 ? '' : 's'}`);
     } else if (sourceCount && (type === 'native_tool_call' || type === 'web_search' || type === 'url_fetch')) {
@@ -142,22 +155,6 @@ export default function ToolCallBlock({ tool }) {
                 </span>
                 <IconComponent style={{ width: 12, height: 12, color: 'var(--ink-3)', flexShrink: 0 }} strokeWidth={1.75} />
                 <code style={toolNameStyle}>{toolName}</code>
-                {sandboxSource === 'skill' && (
-                    <span
-                        title="Skill — user-defined Python or built-in skill (dispatched via the dynamic tool catalog)"
-                        style={badgeStyle('var(--accent, #6366f1)', 14, 32)}
-                    >
-                        skill
-                    </span>
-                )}
-                {sandboxSource === 'native' && (
-                    <span
-                        title="Native tool — built-in handler in the chat server (web_search, fetch_url, etc.)"
-                        style={badgeStyle('var(--ink-3, #94a3b8)', 12, 28)}
-                    >
-                        tool
-                    </span>
-                )}
                 {sandboxed === true && (
                     <span
                         title={
