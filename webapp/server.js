@@ -699,7 +699,27 @@ function buildChatRuntimePrelude() {
         `can verify. Do not present search-derived facts as if from your own knowledge.\n` +
         `- If the same tool returns an empty or identical result twice in a row, stop ` +
         `calling it and switch strategy (usually: call web_search with different terms) ` +
-        `or give the user a direct answer from what you already have.`
+        `or give the user a direct answer from what you already have.\n` +
+        `- TOOL CATALOG: you have a large catalog of tools attached to this request — ` +
+        `inspect the \`tools\` schemas, do not assume only web_search/fetch_url exist. ` +
+        `Categories you can rely on: file ops (read_file, create_file, update_file, ` +
+        `list_directory, search_files, grep_code, outline_file, replace_lines, ` +
+        `diff_files, tail_file, head_file); parsing (parse_html, parse_xml, parse_yaml, ` +
+        `parse_toml, parse_ini, parse_json, parse_csv, parse_url, parse_query_string, ` +
+        `parse_jwt, parse_cookie, parse_user_agent, parse_email, parse_diff, parse_ip, ` +
+        `parse_har, parse_pem, parse_sitemap, base64_decode); web (web_search, ` +
+        `fetch_url, scrapling_fetch, playwright_fetch, crawl_pages); system & data ` +
+        `(calculate, date_math, hash_data, ocr_image, system_info, dns_lookup, ` +
+        `csv_describe, spreadsheet_query, chart_plot); git (git_status, git_diff, ` +
+        `git_log, git_clone_shallow, git_show_commit, git_blame); plus many more. ` +
+        `If the user's request matches a tool by name or purpose, USE IT.\n` +
+        `- TOOL DISCIPLINE: when your reasoning concludes "I should use the X tool" ` +
+        `or "I'll call Y", you must EMIT the tool_call immediately — do not narrate ` +
+        `the call, do not say "I'll use calculate" and then answer from memory, do not ` +
+        `apologize that the task is "trivial" and skip the call. Trivial tasks still ` +
+        `get the tool call (calculate for "10+10", parse_url for any URL, base64_decode ` +
+        `for any base64 string). Tools are cheap; guessing is expensive when wrong. ` +
+        `Never write a tool name in prose as a substitute for invoking it.`
     );
 }
 
@@ -16249,11 +16269,18 @@ app.use((req, res) => {
                     .map(v => (typeof v === 'string' ? v.trim() : ''))
                     .filter(Boolean)
                     .join(' — ') || `${s.name} skill`;
+                // Cap at 400 chars (was 1024). The catalog now exceeds 100
+                // tools; the longer the catalog grows, the less per-tool
+                // verbosity helps and the more it crowds the model's context
+                // — selection accuracy degrades when each schema sprawls
+                // across two paragraphs. 400 keeps the description plus the
+                // first trigger-phrase sentence of systemPrompt for almost
+                // every tool while trimming the verbose offenders.
                 out.push({
                     type: 'function',
                     function: {
                         name,
-                        description: desc.slice(0, 1024),
+                        description: desc.slice(0, 400),
                         parameters: paramsToJsonSchema(s.parameters),
                     },
                 });
