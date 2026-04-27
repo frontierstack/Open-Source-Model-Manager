@@ -15683,21 +15683,9 @@ app.use((req, res) => {
                 function: {
                     name: 'web_search',
                     description:
-                        'Search the web via DuckDuckGo. Returns up to 5 results with title, url, and snippet.\n\n' +
-                        'CRITICAL: Treat the returned snippets as authoritative and MORE RECENT than your training data. ' +
-                        'When they contradict what you "know", the snippets are correct — your training is likely stale. ' +
-                        'Snippets are short (~200 chars) — they rarely contain the full answer. ' +
-                        'After web_search, you should almost always call fetch_url to read the actual page content.\n\n' +
-                        'How many URLs to fetch:\n' +
-                        '- Single-fact lookup ("when did X release?", "what is the capital of Y?"): fetch 1 top result.\n' +
-                        '- Lists, comparisons, "what\'s new", "all the X", patch notes, recent updates, multi-aspect questions: ' +
-                        'call fetch_url 2–3 times in parallel on the most relevant results. Cross-referencing several sources catches ' +
-                        'errors and gives a more complete picture. Issue the calls in the same tool-call round so they run concurrently.\n' +
-                        '- If the first fetch returns thin or off-topic content, fetch the next-best result from the same search ' +
-                        'rather than re-searching.\n\n' +
-                        'Never confidently answer a time-sensitive question from memory when web_search is available — call it. ' +
-                        'When you do answer, cite URLs from the results so the user can verify. ' +
-                        'After fetching, use search_string to pull specific data out of long pages instead of dumping them back to yourself.',
+                        'Search the web via DuckDuckGo; returns up to 5 results (title, url, snippet). Snippets are short — almost always follow up with fetch_url on top results. ' +
+                        'For single-fact lookups, fetch 1 result; for lists / comparisons / "what\'s new" / multi-aspect questions, fetch 2–3 in parallel in the same round. ' +
+                        'Trust the snippets over training when they conflict, and cite URLs in answers. Use search_string on long fetched pages instead of re-reading them.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -15825,14 +15813,10 @@ app.use((req, res) => {
                 function: {
                     name: 'fetch_url',
                     description:
-                        'Fetch a URL and return its readable text content. Rejects private/internal addresses. ' +
-                        'Reuses the same pipeline as /api/url/fetch (Scrapling → Playwright → axios).\n\n' +
-                        'CRITICAL: The returned content reflects the live page. When it contradicts what you "know" from ' +
-                        'training, trust the fetched content — it is current, your training is not. Cite the URL. ' +
-                        'If the result includes a `hint` mentioning bot protection or thin content, retry the same URL with scrapling_fetch before giving up or asking the user to paste.\n\n' +
-                        'AFTER FETCHING: if the page is long (>1000 chars) and the user asked for a specific fact, ' +
-                        'call search_string on the returned content (text=<the content>) instead of scanning the whole page. ' +
-                        'It is much faster, uses fewer tokens, and gives you exact line citations.',
+                        'Fetch a URL and return its readable text. Rejects private/internal addresses. Pipeline: Scrapling → Playwright → axios. ' +
+                        'Trust the fetched content over training when they conflict, and cite the URL. ' +
+                        'If the result includes a `hint` about bot protection or thin content, retry with scrapling_fetch. ' +
+                        'For long results (>1000 chars) where the user wants a specific fact, follow up with search_string on the returned text.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -15886,11 +15870,9 @@ app.use((req, res) => {
                 function: {
                     name: 'scrapling_fetch',
                     description:
-                        'Fetch a webpage using Scrapling stealth mode (StealthyFetcher + fingerprint evasion + curl_cffi). Strongest anti-bot tool available — use it when:\n' +
-                        '- a previous fetch_url or playwright_fetch returned a `hint` field mentioning bot protection / thin content\n' +
-                        '- the site is known to gate bots: abuse.ch (threatfox, urlhaus, malwarebazaar), Cloudflare-protected sites, PerimeterX, DataDome, Akamai, ticket sites, most threat-intel portals\n' +
-                        '- the page shows "Checking your browser", "Just a moment...", "Access denied", or any CAPTCHA\n' +
-                        'Do NOT fall back to asking the user to paste content before trying this tool. Slower than fetch_url, so only reach for it when evasion is actually needed. Rejects private/internal addresses.',
+                        'Fetch a webpage with Scrapling stealth (StealthyFetcher + curl_cffi). Strongest anti-bot tool — use when fetch_url/playwright_fetch returned a `hint` about bot protection or thin content, ' +
+                        'on Cloudflare/PerimeterX/DataDome/Akamai-gated sites, threat-intel portals (abuse.ch, threatfox, urlhaus), or pages showing "Checking your browser" / "Just a moment" / "Access denied" / CAPTCHA. ' +
+                        'Slower than fetch_url; reach for it only when evasion is needed, but try it before asking the user to paste. Rejects private addresses.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -16070,12 +16052,9 @@ app.use((req, res) => {
                 function: {
                     name: 'virustotal_lookup',
                     description:
-                        `Query VirusTotal for threat intel on an IP, domain, URL, or file hash (md5/sha1/sha256). ${keyNote}\n\n` +
-                        'Views:\n' +
-                        '- detection (default): last_analysis_stats (malicious/suspicious/harmless/undetected), list of flagging engines with verdicts, reputation, metadata (country/ASN/owner for IPs; registrar/categories for domains; size/names/tags for files).\n' +
-                        '- community: aggregated user votes (harmless vs malicious) and the 10 most recent comments.\n' +
-                        '- full: detection + community in one call (3 API calls; mind the rate limit).\n\n' +
-                        'Resource type is auto-detected from the input; pass resource_type explicitly for ambiguous cases. Use this tool before asking the user to paste VT screenshots.',
+                        `Query VirusTotal for an IP, domain, URL, or file hash (md5/sha1/sha256). ${keyNote} ` +
+                        'view=detection (default): stats + flagging engines + metadata; view=community: votes + comments; view=full: both. ' +
+                        'Resource type auto-detected; pass resource_type to override. Use before asking the user to paste VT screenshots.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -16122,13 +16101,9 @@ app.use((req, res) => {
                 function: {
                     name: 'crawl_pages',
                     description:
-                        'Walk a paginated listing and return content from multiple pages in one call. Use when the user asks for "the N most recent / top N" items from a site that shows results across multiple pages, or when a single fetch returned only the first page of a listing. Modes:\n' +
-                        '- auto (default): detects pagination pattern in the URL first, otherwise inspects the DOM for Next / Load more.\n' +
-                        '- url-pattern: increments ?page= / ?p= / ?offset= / /page/N/ in the URL (fastest).\n' +
-                        '- link-follow: clicks the page\'s Next link (pass nextSelector to override).\n' +
-                        '- load-more: repeatedly clicks a Load-more button (pass loadMoreSelector to override).\n' +
-                        '- infinite-scroll: scrolls to the bottom to trigger lazy loading.\n' +
-                        'Rejects private/internal addresses. Stops early when a page repeats content already seen.',
+                        'Walk a paginated listing across multiple pages in one call. Use for "top N / most recent N" requests or when a fetch returned only page 1. ' +
+                        'Modes: auto (default; URL pattern then DOM Next/Load-more), url-pattern (increments ?page=/?p=/?offset=//page/N/), link-follow (clicks Next; pass nextSelector to override), ' +
+                        'load-more (clicks button; pass loadMoreSelector), infinite-scroll. Rejects private addresses. Stops on duplicate content.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -16204,27 +16179,10 @@ app.use((req, res) => {
                 function: {
                     name: 'search_string',
                     description:
-                        'Search for a string or regex inside text content or a file, and return only matching lines with surrounding context. ' +
-                        'This is your default tool for pulling specific data out of any large blob of text — fetched web pages, file contents, log dumps, ' +
-                        'documents, archives, command output, prior tool results. Provide either `text` (raw content to search) OR `file` (path to a file ' +
-                        'to read and search) — not both.\n\n' +
-                        'WHEN TO USE (strong triggers — call this without asking):\n' +
-                        '- After fetch_url / scrapling_fetch / playwright_fetch / crawl_pages: if the user asked for specific data (a price, date, ' +
-                        'name, number, error code, IP, hash, version, status, etc.), call search_string on the returned content instead of re-reading ' +
-                        'the whole page. The page is already in your context — searching it is free; reasoning over the full body is expensive.\n' +
-                        '- Any time you have text content longer than ~1000 chars and the user wants something specific from it.\n' +
-                        '- Inside uploaded files (logs, CSVs, code, transcripts, PDFs already converted to text).\n' +
-                        '- Looking up a keyword across a large pasted block.\n' +
-                        '- Verifying whether a fact appears in fetched documentation before answering.\n\n' +
-                        'WHY IT MATTERS:\n' +
-                        '- Saves context tokens — only matching lines come back, not the full page.\n' +
-                        '- Faster responses — less text for you to re-read on the next iteration.\n' +
-                        '- More precise — line numbers + surrounding context let you cite exact locations.\n\n' +
-                        'TIPS:\n' +
-                        '- Use mode="regex" for patterns (IPs, dates, prices, hashes).\n' +
-                        '- Use case_sensitive=false (default) unless case actually matters.\n' +
-                        '- Bump context_lines to 3–5 when you need the surrounding paragraph.\n' +
-                        '- If the first query returns nothing, try a shorter / more lenient pattern before giving up.',
+                        'Search for a string or regex in text content or a file; return only matching lines with surrounding context. ' +
+                        'Provide exactly one of `text` (raw content) or `file` (path under /tmp, /models, or /app). ' +
+                        'Use after fetch_url / web_search / playwright_fetch / crawl_pages whenever the user asked for specific data (price, date, name, number, error code, IP, hash, version) — searching the returned body is far cheaper than re-reading it. ' +
+                        'mode="regex" for patterns; default mode is literal.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -16374,12 +16332,9 @@ app.use((req, res) => {
                 function: {
                     name: 'extract_archive',
                     description:
-                        'Extract an archive and list its contents. Supports .zip, .7z, .rar, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz. ' +
-                        'PREFERRED INPUT: when the user uploads an archive, the chat system persists it server-side and puts a marker in the user message like ' +
-                        '`[Archive uploaded: name.7z (archiveId=abc123..., size=N bytes). Call the extract_archive tool with ...]`. ' +
-                        'Pass that archiveId — do NOT try to paste the archive bytes yourself; base64 payloads get truncated through tool arguments and the extraction will fail. ' +
-                        'Fallback: for tiny archives given to you inline, you may pass `base64Data` + `filename` directly. ' +
-                        'Returns a list of entries with size plus inline UTF-8 text for files under ~200KB (total text capped at ~2MB).',
+                        'Extract an archive (.zip, .7z, .rar, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz). ' +
+                        'When the user uploads an archive, the chat puts an `[Archive uploaded: ... archiveId=... ]` marker in their message — pass that archiveId; do NOT paste archive bytes (base64 in tool args gets truncated). ' +
+                        'For tiny inline archives only, pass `base64Data` + `filename`. Returns entry list + inline UTF-8 text for files <200KB (total cap ~2MB).',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -16534,27 +16489,27 @@ app.use((req, res) => {
                 const name = safeToolName(s.name);
                 if (!name || taken.has(name)) continue;
                 taken.add(name);
-                // Concatenate description + systemPrompt so the hand-written
-                // tool-selection nudge reaches the model. With a 70+ tool
-                // catalog, a terse description like "Decode Base64 data"
-                // loses to inline guessing; the systemPrompt usually carries
-                // the trigger phrases the model needs to pick correctly.
-                const desc = [s.description, s.systemPrompt]
-                    .map(v => (typeof v === 'string' ? v.trim() : ''))
-                    .filter(Boolean)
-                    .join(' — ') || `${s.name} skill`;
-                // Cap at 400 chars (was 1024). The catalog now exceeds 100
-                // tools; the longer the catalog grows, the less per-tool
-                // verbosity helps and the more it crowds the model's context
-                // — selection accuracy degrades when each schema sprawls
-                // across two paragraphs. 400 keeps the description plus the
-                // first trigger-phrase sentence of systemPrompt for almost
-                // every tool while trimming the verbose offenders.
+                // Description is the primary selection signal — most skills
+                // have a clear, terse description (avg ~97 chars). When
+                // description is short and systemPrompt has a useful trigger
+                // sentence, append the first sentence of systemPrompt as
+                // hinting. Final cap at 150 chars (was 400): with 100
+                // tools the catalog can otherwise approach 30 KB, dominating
+                // the per-turn prompt eval. Beyond ~150 chars, additional
+                // verbosity actively hurts selection accuracy on small
+                // models because each schema sprawls.
+                let desc = (typeof s.description === 'string' ? s.description.trim() : '') || s.name;
+                if (desc.length < 80 && typeof s.systemPrompt === 'string' && s.systemPrompt.trim()) {
+                    // Pull the first sentence of systemPrompt — usually the
+                    // load-bearing trigger phrase ("Use this skill to ...").
+                    const firstSentence = s.systemPrompt.trim().split(/(?<=[.!?])\s+/)[0] || '';
+                    if (firstSentence) desc = (desc + ' — ' + firstSentence).slice(0, 150);
+                }
                 out.push({
                     type: 'function',
                     function: {
                         name,
-                        description: desc.slice(0, 400),
+                        description: desc.slice(0, 150),
                         parameters: paramsToJsonSchema(s.parameters),
                     },
                 });

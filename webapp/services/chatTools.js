@@ -48,35 +48,27 @@ registerTool({
     name: 'load_skill',
     async build(ctx) {
         const allSkills = await markdownSkills.listSkills(ctx.userId);
-        // Only expose enabled skills to the model. Disabled skills
-        // vanish from this catalog entirely — the model can't load
-        // them, same contract as the Tools toggle.
         const skills = allSkills.filter(s => s.enabled !== false);
-        // Surface the catalog inside the tool description so the model can
-        // choose `name` correctly without a parallel system-prompt section.
-        const catalog = skills.length
-            ? skills
-                  .map(s => {
-                      const trig = s.triggers ? ` — triggers: ${s.triggers}` : '';
-                      return `  - ${s.id}: ${s.description || s.name}${trig}`;
-                  })
-                  .join('\n')
-            : '  (no skills defined)';
+        // Compact catalog — IDs only, comma-separated. Removes ~5 KB of
+        // descriptions+triggers from every prompt. Detail is on demand:
+        // the model reads description / triggers when it actually loads
+        // a skill body. Same name-resolution contract — the model still
+        // picks the id from a known list.
+        const ids = skills.length ? skills.map(s => s.id).join(', ') : '(none)';
         return {
             type: 'function',
             function: {
                 name: 'load_skill',
                 description:
-                    'Load an instructional skill (markdown procedure) by its id. ' +
-                    'Use this BEFORE attempting a task that matches any of the skills below — ' +
-                    'the body contains the exact steps and tools to call.\n\n' +
-                    'Available skills:\n' + catalog,
+                    'Load an instructional skill (markdown procedure) by id. ' +
+                    'Call BEFORE a task that matches a skill name — the body has the exact steps. ' +
+                    `Available ids: ${ids}`,
                 parameters: {
                     type: 'object',
                     properties: {
                         name: {
                             type: 'string',
-                            description: 'Skill id as shown in the catalog (kebab-cased).',
+                            description: 'Skill id (kebab-case) from the available list.',
                         },
                     },
                     required: ['name'],

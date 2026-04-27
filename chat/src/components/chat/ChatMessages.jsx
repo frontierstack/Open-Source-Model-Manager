@@ -52,6 +52,9 @@ function StreamingMessage() {
             error: tc.error,
             preview: tc.preview,
             sources: sources && sources.length ? sources : undefined,
+            sandboxed: tc.sandboxed,
+            sandboxSource: tc.sandboxSource,
+            sandboxNetwork: tc.sandboxNetwork,
         };
     });
 

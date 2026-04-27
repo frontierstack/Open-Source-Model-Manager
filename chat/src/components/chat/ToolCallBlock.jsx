@@ -29,6 +29,7 @@ export default function ToolCallBlock({ tool }) {
         results,
         sandboxed,
         sandboxNetwork,
+        sandboxSource,
     } = tool;
 
     const isRunning = status === 'partial';
@@ -141,6 +142,22 @@ export default function ToolCallBlock({ tool }) {
                 </span>
                 <IconComponent style={{ width: 12, height: 12, color: 'var(--ink-3)', flexShrink: 0 }} strokeWidth={1.75} />
                 <code style={toolNameStyle}>{toolName}</code>
+                {sandboxSource === 'skill' && (
+                    <span
+                        title="Skill — user-defined Python or built-in skill (dispatched via the dynamic tool catalog)"
+                        style={badgeStyle('var(--accent, #6366f1)', 14, 32)}
+                    >
+                        skill
+                    </span>
+                )}
+                {sandboxSource === 'native' && (
+                    <span
+                        title="Native tool — built-in handler in the chat server (web_search, fetch_url, etc.)"
+                        style={badgeStyle('var(--ink-3, #94a3b8)', 12, 28)}
+                    >
+                        tool
+                    </span>
+                )}
                 {sandboxed === true && (
                     <span
                         title={
