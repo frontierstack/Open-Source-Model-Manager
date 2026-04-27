@@ -5005,9 +5005,27 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 llamacppSettings.contextSize = chosenCtx;
                 llamacppSettings.swaFull = true;
                 llamacppSettings.flashAttention = true;
-                llamacppSettings.batchSize = 2048;
-                llamacppSettings.ubatchSize = 1024;
                 llamacppSettings.threads = 4;
+
+                // Scale batch / ubatch with VRAM headroom remaining after
+                // model + KV. Larger batch + ubatch = faster prompt eval on
+                // long inputs but also larger compute scratch buffers.
+                const predictedKvForBatch =
+                    (chosenCtx * KV_PER_TOKEN_F16_SWAFULL * KV_DTYPE_FACTOR[chosenKv]) /
+                    (1024 * 1024 * 1024);
+                const headroomGB =
+                    symmetricBudgetGB - modelSizeGB - predictedKvForBatch -
+                    perCardReserveGB * Math.max(1, gpuCount);
+                if (headroomGB >= 4) {
+                    llamacppSettings.batchSize = 4096;
+                    llamacppSettings.ubatchSize = 2048;
+                } else if (headroomGB >= 1.5) {
+                    llamacppSettings.batchSize = 2048;
+                    llamacppSettings.ubatchSize = 1024;
+                } else {
+                    llamacppSettings.batchSize = 1024;
+                    llamacppSettings.ubatchSize = 512;
+                }
 
                 // Predicted KV usage at the chosen ctx — surface in notes
                 // so the user can sanity-check.
@@ -5068,94 +5086,127 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         }
 
         // ========================================================================
-        // VLLM OPTIMAL SETTINGS (default)
+        // VLLM OPTIMAL SETTINGS
         // ========================================================================
-        // Rough VRAM estimate for vLLM tier-selection (kept on the simple
-        // model-size × overhead heuristic since vLLM auto-tunes most of
-        // its own knobs based on `gpuMemoryUtilization`).
-        const estimatedBaseVRAM = modelSizeGB * 1.2;
+        //
+        // VRAM accounting differs from llama.cpp here in one important way:
+        // vLLM allocates a FIXED pool per GPU at startup, sized as
+        //   per_card_pool = total_per_card × gpu_memory_utilization
+        // and never grows it. If anything else on the card is using
+        // memory, the pool can OOM during init. So gpu_memory_utilization
+        // must be capped at (free_per_card / total_per_card) on the
+        // most-constrained card, never higher. After that, vLLM auto-tunes
+        // max_num_seqs from leftover KV cache space — we just pass a
+        // ceiling.
+        //
+        // Like llama.cpp, the effective per-card budget is bounded by the
+        // SMALLEST GPU's free memory; tensor_parallel_size = gpuCount
+        // splits the model evenly, so the smallest card decides whether
+        // each shard fits.
+
         let settings = {
-            // vLLM Core Settings
-            maxModelLen: 4096,              // Context window size
-            cpuOffloadGb: 0,                // GB to offload to CPU RAM
-            gpuMemoryUtilization: 0.9,      // Fraction of VRAM to use
-            tensorParallelSize: 1,          // Number of GPUs for tensor parallelism
-            maxNumSeqs: 256,                // Max concurrent sequences
-            kvCacheDtype: 'auto',           // KV cache data type (auto or fp8)
-            trustRemoteCode: true,          // Trust remote code from model
-            enforceEager: false             // Disable CUDA graphs (debug mode)
+            maxModelLen: 4096,
+            cpuOffloadGb: 0,
+            gpuMemoryUtilization: 0.9,
+            tensorParallelSize: 1,
+            maxNumSeqs: 256,
+            kvCacheDtype: 'auto',
+            trustRemoteCode: true,
+            enforceEager: false
         };
 
         if (gpuCount === 0 || gpuMemoryGB === 0) {
-            // vLLM requires GPU - cannot run in CPU-only mode
-            notes.push('ERROR: No GPU detected - vLLM requires a GPU to run');
+            notes.push('ERROR: No GPU detected — vLLM requires a GPU to run');
             notes.push('Please ensure NVIDIA drivers and CUDA are properly installed');
             return res.json({
                 settings,
                 backend: 'vllm',
-                hardware: {
-                    gpuCount,
-                    gpuMemoryGB: '0',
-                    ramGB: ramGB.toFixed(1),
-                    cpuCores: cpuCount
-                },
-                model: {
-                    sizeGB: modelSizeGB.toFixed(2),
-                    estimatedVRAM: estimatedBaseVRAM.toFixed(2)
-                },
+                hardware: { gpuCount, gpuMemoryGB: '0', ramGB: ramGB.toFixed(1), cpuCores: cpuCount },
+                model: { sizeGB: modelSizeGB.toFixed(2), estimatedVRAM: modelSizeGB.toFixed(2) },
                 notes,
                 error: 'GPU required for vLLM'
             });
         }
 
-        if (estimatedBaseVRAM > gpuMemoryGB * 0.9) {
-            // Model is too large for GPU - enable CPU offloading
-            // Calculate how much to offload: model size - (VRAM * 0.85) + 2GB buffer
-            const cpuOffload = Math.ceil(modelSizeGB - (gpuMemoryGB * 0.85) + 2);
-            settings.cpuOffloadGb = Math.max(0, cpuOffload);
-            settings.maxModelLen = 4096;  // Conservative context for large models
-            settings.gpuMemoryUtilization = 0.95;  // Use more VRAM since we're offloading
-            settings.maxNumSeqs = 64;  // Fewer sequences to manage memory
-            notes.push(`Model (${modelSizeGB.toFixed(1)}GB) exceeds GPU memory (${gpuMemoryGB.toFixed(1)}GB)`);
-            notes.push(`CPU offloading ${settings.cpuOffloadGb}GB to system RAM`);
-            notes.push('Note: GGUF + CPU offload may have issues (see vLLM GitHub #8757)');
-        } else if (estimatedBaseVRAM > gpuMemoryGB * 0.7) {
-            // Tight fit - optimize for memory
+        // ---- Per-GPU sizing ----------------------------------------------
+        const tp = gpuCount; // even split — assume all cards used
+        settings.tensorParallelSize = tp;
+
+        const smallestTotalGB = gpuCount ? Math.min(...gpuDetails.map(g => g.totalGB)) : 0;
+        // gpu_memory_utilization is a fraction of TOTAL per-card. Cap it
+        // at what's actually free on the most-constrained card so vLLM
+        // doesn't try to grab more than exists.
+        const liveUtilCap = smallestTotalGB > 0
+            ? Math.max(0.1, Math.min(0.95, (smallestGpuFreeGB / smallestTotalGB) - 0.02))
+            : 0.85;
+        settings.gpuMemoryUtilization = parseFloat(liveUtilCap.toFixed(2));
+
+        // Effective allocatable VRAM = per_card × util × count (matches what
+        // vLLM will actually grab at init).
+        const perCardAllocatedGB = smallestTotalGB * settings.gpuMemoryUtilization;
+        const effectiveAllocatedGB = perCardAllocatedGB * tp;
+
+        // KV-cache estimate per token at f16. vLLM uses an auto-paged KV
+        // cache; per-token cost is roughly the same as llama.cpp dense path.
+        const KV_PER_TOKEN_F16 = 120 * 1024;        // bytes/tok at f16
+        const KV_PER_TOKEN_FP8 = KV_PER_TOKEN_F16 / 2;
+        const VLLM_OVERHEAD_GB = 2.0;                // CUDA graphs, activations, profiler buffers
+
+        // Step 1: does the model + minimal overhead fit on GPU?
+        const usableForKvGB = effectiveAllocatedGB - modelSizeGB - VLLM_OVERHEAD_GB;
+
+        if (usableForKvGB < 1.0) {
+            // Doesn't fit — enable CPU offload (per-card amount).
+            const overflowGB = Math.max(0, modelSizeGB - effectiveAllocatedGB + VLLM_OVERHEAD_GB + 2);
+            settings.cpuOffloadGb = Math.ceil(overflowGB / tp);
             settings.maxModelLen = 4096;
-            settings.gpuMemoryUtilization = 0.85;
-            settings.maxNumSeqs = 128;
-            settings.kvCacheDtype = 'fp8';  // Use fp8 KV cache to save memory
-            notes.push('Model fits in GPU with memory optimizations');
-            notes.push('Using fp8 KV cache for memory efficiency');
-        } else if (estimatedBaseVRAM > gpuMemoryGB * 0.5) {
-            // Moderate fit
-            settings.maxModelLen = 8192;
-            settings.gpuMemoryUtilization = 0.9;
-            settings.maxNumSeqs = 256;
-            notes.push('Model fits comfortably with 8K context');
+            settings.maxNumSeqs = 64;
+            settings.kvCacheDtype = 'fp8';
+            notes.push(`Model (${modelSizeGB.toFixed(1)} GB) exceeds per-card allocation (${perCardAllocatedGB.toFixed(1)} GB × ${tp} = ${effectiveAllocatedGB.toFixed(1)} GB)`);
+            notes.push(`CPU offloading ${settings.cpuOffloadGb} GB per GPU (${(settings.cpuOffloadGb * tp).toFixed(0)} GB total to system RAM)`);
+            notes.push('Note: GGUF + CPU offload may have issues (vLLM GH #8757)');
         } else {
-            // Plenty of room - maximize context and performance
-            const availableForContext = (gpuMemoryGB - modelSizeGB) * 0.8;
-            if (availableForContext > 8) {
-                settings.maxModelLen = 32768;
-                settings.maxNumSeqs = 512;
-            } else if (availableForContext > 4) {
-                settings.maxModelLen = 16384;
-                settings.maxNumSeqs = 256;
-            } else if (availableForContext > 2) {
-                settings.maxModelLen = 8192;
-                settings.maxNumSeqs = 256;
+            // Step 2: pick KV dtype. Use fp8 only when budget is tight
+            // (< 4 GB headroom for KV) — fp8 hurts long-context quality
+            // slightly so prefer auto/f16 when there's room.
+            const kvDtype = usableForKvGB < 4.0 ? 'fp8' : 'auto';
+            settings.kvCacheDtype = kvDtype;
+            const perTok = kvDtype === 'fp8' ? KV_PER_TOKEN_FP8 : KV_PER_TOKEN_F16;
+
+            // Step 3: pick max model len. vLLM benefits from a power-of-two
+            // boundary similar to llama.cpp.
+            const maxCtx = Math.floor((usableForKvGB * 1024 * 1024 * 1024) / perTok);
+            let chosenCtx = 4096;
+            for (const c of [262144, 131072, 65536, 32768, 16384, 8192, 4096]) {
+                if (c <= maxCtx) { chosenCtx = c; break; }
             }
-            settings.gpuMemoryUtilization = 0.9;
-            notes.push(`Plenty of GPU memory - using ${settings.maxModelLen} context`);
+            settings.maxModelLen = chosenCtx;
+
+            // Step 4: max_num_seqs ceiling — vLLM auto-tunes inside this
+            // cap based on remaining KV space. Larger ceiling = more
+            // concurrent requests but only if KV pool can hold them.
+            settings.maxNumSeqs = usableForKvGB >= 8 ? 512 :
+                                  usableForKvGB >= 4 ? 256 :
+                                                       128;
+
+            const predictedKvGB = (chosenCtx * perTok) / (1024 * 1024 * 1024);
+            notes.push(`Effective allocation: ${perCardAllocatedGB.toFixed(1)} GB per card × ${tp} GPU(s) = ${effectiveAllocatedGB.toFixed(1)} GB`);
+            notes.push(`gpu_memory_utilization: ${settings.gpuMemoryUtilization} (capped to fit smallest card's free VRAM)`);
+            notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV: ${predictedKvGB.toFixed(1)} GB · vLLM overhead: ${VLLM_OVERHEAD_GB} GB`);
+            notes.push(`Context: ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} · KV dtype: ${kvDtype} · max concurrent seqs: ${settings.maxNumSeqs}`);
+            if (kvDtype === 'fp8') {
+                notes.push('fp8 KV chosen to fit at this context — slight quality hit on long contexts');
+            }
         }
 
-        // Tensor parallelism for multiple GPUs
         if (gpuCount > 1) {
-            settings.tensorParallelSize = gpuCount;
-            settings.maxNumSeqs = Math.min(settings.maxNumSeqs * gpuCount, 1024);
-            notes.push(`${gpuCount} GPUs detected - enabling tensor parallelism`);
-            notes.push(`Increased max sequences to ${settings.maxNumSeqs} for multi-GPU`);
+            notes.push(`tensor_parallel_size = ${tp} (model split across ${tp} GPUs)`);
+            for (const g of gpuDetails) {
+                notes.push(`  GPU ${g.index} (${g.name || 'unknown'}): ${g.freeGB.toFixed(1)} GB free / ${g.totalGB.toFixed(1)} GB total`);
+            }
+            if (imbalanced) {
+                notes.push(`Cards are imbalanced (${(largestGpuFreeGB - smallestGpuFreeGB).toFixed(1)} GB spread). vLLM uses an even split — gpu_memory_utilization was capped to fit the smallest card.`);
+            }
         }
 
         res.json({
@@ -5164,12 +5215,23 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
             hardware: {
                 gpuCount,
                 gpuMemoryGB: gpuMemoryGB.toFixed(1),
+                gpuFreeGB: gpuFreeGB.toFixed(1),
+                smallestGpuFreeGB: smallestGpuFreeGB.toFixed(1),
+                effectiveBudgetGB: effectiveAllocatedGB.toFixed(1),
+                imbalanced,
+                gpus: gpuDetails.map(g => ({
+                    index: g.index,
+                    name: g.name,
+                    totalGB: parseFloat(g.totalGB.toFixed(1)),
+                    freeGB: parseFloat(g.freeGB.toFixed(1)),
+                    usedGB: parseFloat(g.usedGB.toFixed(1)),
+                })),
                 ramGB: ramGB.toFixed(1),
                 cpuCores: cpuCount
             },
             model: {
                 sizeGB: modelSizeGB.toFixed(2),
-                estimatedVRAM: estimatedBaseVRAM.toFixed(2)
+                estimatedVRAM: modelSizeGB.toFixed(2)
             },
             notes
         });
