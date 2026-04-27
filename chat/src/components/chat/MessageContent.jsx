@@ -1,6 +1,9 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import CodeBlock from './CodeBlock';
 import CodePreviewBlock from './CodePreviewBlock';
 
@@ -130,7 +133,15 @@ const markdownComponents = {
     },
 };
 
-const remarkPlugins = [remarkGfm];
+// remark-math parses both inline ($...$) and block ($$...$$) math; rehype-katex
+// renders it via KaTeX. Models emit chemistry like $\text{C}_{16}\text{H}_8...$
+// and physics/units like $466.36 \text{ g/mol}$ — without these plugins the raw
+// `$...$` syntax leaks through and reads as gibberish.
+const remarkPlugins = [remarkGfm, remarkMath];
+// strict:false → ignore unknown LaTeX commands instead of dropping a hard
+// "ParseError" in red across the page; output:'html' keeps the DOM small
+// (no MathML twin tree we don't display).
+const rehypePlugins = [[rehypeKatex, { strict: false, output: 'html', throwOnError: false }]];
 
 export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
@@ -169,7 +180,11 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
     const processed = repairedTables.replace(/<br\s*\/?>/gi, '  \n');
     return (
         <div className="markdown-content">
-            <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+            <ReactMarkdown
+                remarkPlugins={remarkPlugins}
+                rehypePlugins={rehypePlugins}
+                components={markdownComponents}
+            >
                 {processed}
             </ReactMarkdown>
         </div>
