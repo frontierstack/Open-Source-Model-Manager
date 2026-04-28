@@ -197,6 +197,38 @@ function finalizeToolCalls(acc) {
 // Dispatch one tool call
 // ---------------------------------------------------------------------------
 
+// String-aware truncation closer for tool-call arguments. Walks the input
+// tracking JSON-string state so that brackets/braces/quotes inside string
+// values are ignored. At end-of-buffer, closes any unterminated string and
+// drains the bracket/brace stacks. Used as a second-stage repair after
+// jsonrepair gives up — jsonrepair's parser chokes on strings that contain
+// unbalanced JS-style brackets (e.g. `"const s = v => [...v]"`) because it
+// mistakes the bracket pair for a JSON array.
+function closeUnterminated(input) {
+    let inString = false;
+    let escape = false;
+    const stack = []; // values: '}' or ']' (the closer we still owe)
+    for (let i = 0; i < input.length; i++) {
+        const c = input[i];
+        if (escape) { escape = false; continue; }
+        if (inString) {
+            if (c === '\\') { escape = true; continue; }
+            if (c === '"') { inString = false; continue; }
+            continue;
+        }
+        if (c === '"') { inString = true; continue; }
+        if (c === '{') stack.push('}');
+        else if (c === '[') stack.push(']');
+        else if (c === '}' || c === ']') {
+            if (stack.length && stack[stack.length - 1] === c) stack.pop();
+        }
+    }
+    let out = input;
+    if (inString) out += '"';
+    while (stack.length) out += stack.pop();
+    return out;
+}
+
 async function executeToolCall(call, ctx) {
     const toolName = call.function.name;
     // Parse args once up-front — same error path whether we dispatch to
@@ -206,27 +238,50 @@ async function executeToolCall(call, ctx) {
     // arguments (unescaped quotes inside string values when the model writes
     // code into a `content` field; unquoted object keys; trailing commas;
     // smart quotes; mid-string truncation when the response hits the output
-    // token cap). One jsonrepair pass salvages those without false positives
-    // on actually-valid JSON. Only the original error is surfaced to the
-    // model when both passes fail; the repair attempt is logged for
-    // observability but doesn't pollute the tool error message.
+    // token cap). Two repair passes salvage those without false positives
+    // on actually-valid JSON:
+    //   1. jsonrepair — handles unescaped quotes, unquoted keys, smart
+    //      quotes, trailing commas, simple mid-stream truncation.
+    //   2. closeUnterminated — string-aware bracket-closer that fixes the
+    //      truncation cases jsonrepair chokes on (it misinterprets bracket
+    //      pairs *inside* string values as JSON arrays and bails).
+    // Only the original error is surfaced to the model when both passes
+    // fail; repairs are logged for observability without polluting the
+    // user-visible error message.
     let args = {};
     const rawArgs = call.function.arguments || '';
     if (rawArgs.trim()) {
         try {
             args = JSON.parse(rawArgs);
         } catch (firstErr) {
+            let repairedVia = null;
             try {
-                const repaired = jsonrepair(rawArgs);
-                args = JSON.parse(repaired);
-                console.warn(`[chatTools] Repaired malformed JSON args for ${toolName} (${firstErr.message})`);
-            } catch (repairErr) {
+                args = JSON.parse(jsonrepair(rawArgs));
+                repairedVia = 'jsonrepair';
+            } catch (_) {
+                try {
+                    args = JSON.parse(closeUnterminated(rawArgs));
+                    repairedVia = 'closeUnterminated';
+                } catch (_) { /* both passes failed */ }
+            }
+            if (repairedVia) {
+                console.warn(`[chatTools] Repaired malformed JSON args for ${toolName} via ${repairedVia} (${firstErr.message})`);
+            } else {
+                // Heuristic: if the buffer ends with no closing `}` and the
+                // brace stack is unbalanced, this was almost certainly a
+                // mid-stream truncation when the model hit its output token
+                // cap — make that explicit so the model gets a useful nudge
+                // instead of a generic "Invalid JSON" the next turn.
+                const looksTruncated = !rawArgs.trimEnd().endsWith('}') && rawArgs.length > 200;
+                const hint = looksTruncated
+                    ? ' Arguments appear to be truncated mid-stream — your previous response likely hit its output token limit. Retry with a smaller payload, or move large content to a follow-up call.'
+                    : '';
                 return {
                     tool_call_id: call.id,
                     role: 'tool',
                     name: toolName,
                     content: JSON.stringify({
-                        error: `Invalid JSON in tool arguments: ${firstErr.message}`,
+                        error: `Invalid JSON in tool arguments: ${firstErr.message}.${hint}`,
                         // Cap echo so a 50KB malformed blob doesn't ship back
                         // through the whole chat history; the head usually
                         // shows the model what its own emission looked like.
