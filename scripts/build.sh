@@ -414,13 +414,30 @@ if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null \
     _is_wsl=true
 fi
 
+# setup-sandbox.sh edits /etc/docker/daemon.json and bounces docker.service.
+# It only works when there's a real systemd-managed Docker daemon — meaning
+# systemd is PID 1 *and* docker.service exists as a unit. Both fail under
+# Docker Desktop on WSL (the daemon lives in a separate hidden distro and
+# isn't a systemctl unit). Detect the actual capability instead of guessing
+# from "are we on WSL", so native-Docker WSL setups install gVisor normally.
+_has_systemd_docker=false
+if [ -d /run/systemd/system ] \
+   && command -v systemctl >/dev/null 2>&1 \
+   && systemctl list-unit-files docker.service >/dev/null 2>&1; then
+    _has_systemd_docker=true
+fi
+
 if [ "${SKIP_SANDBOX_SETUP:-0}" = "1" ]; then
     log_warning "SKIP_SANDBOX_SETUP=1 set — skipping gVisor install (tools will run with the default runtime)"
 elif [ ! -f "$PROJECT_DIR/setup-sandbox.sh" ]; then
     log_warning "setup-sandbox.sh not found — skipping sandbox setup"
-elif [ "$_is_wsl" = true ]; then
-    log_warning "WSL detected — skipping gVisor install (Docker Desktop on WSL has no systemd-managed docker.service)"
-    log_info "Tool exec will use the default runtime; set SKIP_SANDBOX_SETUP=1 to silence on Linux hosts that also lack systemd"
+elif [ "$_has_systemd_docker" = false ]; then
+    log_warning "No systemd-managed docker.service — skipping gVisor install"
+    if [ "$_is_wsl" = true ]; then
+        log_info "On WSL: run ./wsl-setup.sh first to install native Docker (replaces Docker Desktop integration)"
+    else
+        log_info "gVisor needs systemd + a real docker.service. Set SKIP_SANDBOX_SETUP=1 to silence on hosts that lack both."
+    fi
 else
     if docker info 2>/dev/null | grep -qw runsc; then
         log_success "gVisor (runsc) runtime already registered"
