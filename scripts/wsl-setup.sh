@@ -156,7 +156,14 @@ if [ "$CLEANUP_MODE" = true ]; then
     # Custom networks only — never touch bridge/host/none
     user_networks=$(docker network ls --format '{{.Name}}' 2>/dev/null \
                       | grep -vE '^(bridge|host|none)$' || true)
-    network_count=$(echo "$user_networks" | grep -c . 2>/dev/null || echo 0)
+    # Don't pipe into `grep -c .` here: when user_networks is empty, grep
+    # outputs "0" + exits 1, the `|| echo 0` fallback fires, and BOTH stdouts
+    # get captured as "0\n0". That breaks every later [ -eq / -gt ] check.
+    if [ -z "$user_networks" ]; then
+        network_count=0
+    else
+        network_count=$(printf '%s\n' "$user_networks" | wc -l | tr -d ' ')
+    fi
 
     echo ""
     echo "  Current state:"

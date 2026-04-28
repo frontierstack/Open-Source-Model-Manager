@@ -140,6 +140,46 @@ echo "HUGGING_FACE_HUB_TOKEN=hf_xxx" > .env
 ./build.sh --no-cache --no-resume  # Force full rebuild
 ```
 
+### Windows + WSL2 Setup (no Docker Desktop)
+
+If you're running on Windows via WSL2 and don't want Docker Desktop, `wsl-setup.sh` installs a real systemd-managed Docker Engine inside the distro so `./build.sh` and the gVisor sandbox both work natively:
+
+```bash
+sudo ./wsl-setup.sh                 # Auto-detect GPU, install gVisor
+sudo ./wsl-setup.sh --no-gpu        # Skip nvidia-container-toolkit
+sudo ./wsl-setup.sh --no-gvisor     # Skip gVisor runtime
+sudo ./wsl-setup.sh --cleanup       # Wipe all containers/images/volumes (destructive)
+sudo ./wsl-setup.sh --cleanup -y    # Same, no confirmation prompt
+```
+
+The script is idempotent. If it needs to enable systemd in `/etc/wsl.conf`, it prints the exact `wsl --shutdown` command to run from PowerShell and exits — re-run after the distro restart and it picks up where it left off.
+
+**LAN access from other computers** (so other machines on the network can reach `https://<windows-ip>:3001`) requires WSL2 mirrored networking. On the Windows host, create `%UserProfile%\.wslconfig`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+firewall=true
+dnsTunneling=true
+autoProxy=true
+
+[experimental]
+hostAddressLoopback=true
+```
+
+Then from PowerShell:
+
+```powershell
+wsl --shutdown
+# After WSL restarts, open the firewall (Admin PowerShell):
+New-NetFirewallRule -DisplayName "ModelServer 3001" -Direction Inbound -LocalPort 3001 -Protocol TCP -Profile Any -Action Allow
+New-NetFirewallRule -DisplayName "ModelServer 3002" -Direction Inbound -LocalPort 3002 -Protocol TCP -Profile Any -Action Allow
+# If WSL's Hyper-V firewall is gating traffic too:
+Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow
+```
+
+Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows, use `netsh interface portproxy` rules instead.
+
 ---
 
 ## Usage

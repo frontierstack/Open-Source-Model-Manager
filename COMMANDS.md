@@ -8,6 +8,7 @@ Complete command reference for Open Source Model Manager utilities, management s
 
 - [Service Management](#service-management)
 - [Build System](#build-system)
+- [WSL2 Setup (Windows hosts without Docker Desktop)](#wsl2-setup-windows-hosts-without-docker-desktop)
 - [Model Instance Management](#model-instance-management)
 - [Monitoring & Debugging](#monitoring--debugging)
 - [Koda CLI Commands](#koda-cli-commands)
@@ -148,6 +149,91 @@ sudo ./build.sh --no-cache --no-resume
 # Resume interrupted build
 sudo ./build.sh                 # Automatically resumes
 ```
+
+---
+
+## WSL2 Setup (Windows hosts without Docker Desktop)
+
+`wsl-setup.sh` installs a real systemd-managed Docker Engine inside the WSL distro so `./build.sh` and the gVisor sandbox both work without Docker Desktop. It is idempotent — re-running picks up where it left off, including across the `wsl --shutdown` that's required after enabling systemd.
+
+### Setup
+
+```bash
+sudo ./wsl-setup.sh                  # Auto-detect GPU, install gVisor, run smoke tests
+sudo ./wsl-setup.sh --gpu            # Force nvidia-container-toolkit install
+sudo ./wsl-setup.sh --no-gpu         # Skip GPU container toolkit
+sudo ./wsl-setup.sh --no-gvisor      # Skip gVisor (runsc) runtime install
+sudo ./wsl-setup.sh --no-smoke       # Skip the GPU/Docker smoke test at the end
+sudo ./wsl-setup.sh --help           # Full option reference
+```
+
+The script is run from inside WSL. If systemd isn't enabled yet, the first invocation writes `/etc/wsl.conf`, prints the `wsl --shutdown` PowerShell command, and exits. Run that from PowerShell, reopen the WSL terminal, and re-run `sudo ./wsl-setup.sh`.
+
+### Cleanup Mode
+
+```bash
+sudo ./wsl-setup.sh --cleanup        # Wipe ALL containers/images/volumes/user networks/build cache
+sudo ./wsl-setup.sh --cleanup -y     # Same, no confirmation prompt
+```
+
+**Destructive** — named-volume data (Postgres dirs, model server data, etc.) is permanently lost. Asks for an explicit `yes` confirmation unless `-y`/`--yes` is passed. After cleanup, rebuild from scratch with `sudo ./build.sh --no-resume`.
+
+### LAN Access (other computers reaching the server)
+
+By default WSL2 runs in NAT mode — services bound to `0.0.0.0` inside WSL are reachable from the Windows host via `localhost` only, not from the LAN. To expose `:3001` and `:3002` to other machines on the network, switch WSL to mirrored networking mode.
+
+**Requires Windows 11 build 22621+ and WSL 2.0.0+.** Verify with `wsl --version` and `winver`.
+
+1. On the Windows host, create `%UserProfile%\.wslconfig` (PowerShell):
+
+   ```powershell
+   @"
+   [wsl2]
+   networkingMode=mirrored
+   firewall=true
+   dnsTunneling=true
+   autoProxy=true
+
+   [experimental]
+   hostAddressLoopback=true
+   "@ | Out-File -Encoding ASCII -NoNewline $env:USERPROFILE\.wslconfig
+   ```
+
+2. Restart WSL:
+
+   ```powershell
+   wsl --shutdown
+   Start-Sleep -Seconds 10
+   ```
+
+3. Verify mirrored mode is active. Inside WSL after restart:
+
+   ```bash
+   ip -4 addr | grep inet     # should show your Windows host's LAN IP, not just 172.x
+   ```
+
+4. Open the Windows firewall (Admin PowerShell):
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "ModelServer 3001" -Direction Inbound `
+     -LocalPort 3001 -Protocol TCP -Profile Any -Action Allow
+   New-NetFirewallRule -DisplayName "ModelServer 3002" -Direction Inbound `
+     -LocalPort 3002 -Protocol TCP -Profile Any -Action Allow
+   ```
+
+5. If LAN access still fails, the Hyper-V firewall (separate from Windows Defender) may be gating WSL traffic. Open it (Admin PowerShell):
+
+   ```powershell
+   Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow
+   ```
+
+6. Test from another LAN machine:
+
+   ```bash
+   curl -sk https://<windows-host-ip>:3001/api/has-users
+   ```
+
+**Older Windows fallback:** If mirrored mode isn't supported, use `netsh interface portproxy add v4tov4` rules instead. WSL's NAT IP changes on each restart, so the rules need to be rebuilt at boot via Task Scheduler.
 
 ---
 
