@@ -14070,6 +14070,12 @@ const REFRESH_STALE_SKILLS = new Set([
     // hex/bin/char output for integer results. Older installs have the
     // pre-bitwise code on disk and would still fail on `0xf1 ^ 0xff`.
     'calculate',
+    // base64_decode — widened the accepted parameter alias list from
+    // text/encodedData/data to also include input/string/value/content/
+    // payload/b64/encoded. Without this refresh, existing installs keep
+    // the narrow list and the model still fails when it guesses an
+    // unsupported parameter name (e.g. 'input').
+    'base64_decode',
 ]);
 
 async function refreshStaleDefaultSkills() {
