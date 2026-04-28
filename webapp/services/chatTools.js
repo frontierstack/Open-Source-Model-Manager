@@ -16,6 +16,7 @@
 // the UI can surface activity, but the loop itself runs entirely server-side.
 
 const markdownSkills = require('./markdownSkills');
+const { jsonrepair } = require('jsonrepair');
 
 // ---------------------------------------------------------------------------
 // Tool registry
@@ -200,19 +201,40 @@ async function executeToolCall(call, ctx) {
     const toolName = call.function.name;
     // Parse args once up-front — same error path whether we dispatch to
     // a registered tool or the dynamic fallback.
+    //
+    // Strict JSON.parse first. Local LLMs frequently emit lightly-malformed
+    // arguments (unescaped quotes inside string values when the model writes
+    // code into a `content` field; unquoted object keys; trailing commas;
+    // smart quotes; mid-string truncation when the response hits the output
+    // token cap). One jsonrepair pass salvages those without false positives
+    // on actually-valid JSON. Only the original error is surfaced to the
+    // model when both passes fail; the repair attempt is logged for
+    // observability but doesn't pollute the tool error message.
     let args = {};
-    try {
-        args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-    } catch (e) {
-        return {
-            tool_call_id: call.id,
-            role: 'tool',
-            name: toolName,
-            content: JSON.stringify({
-                error: `Invalid JSON in tool arguments: ${e.message}`,
-                received: call.function.arguments,
-            }),
-        };
+    const rawArgs = call.function.arguments || '';
+    if (rawArgs.trim()) {
+        try {
+            args = JSON.parse(rawArgs);
+        } catch (firstErr) {
+            try {
+                const repaired = jsonrepair(rawArgs);
+                args = JSON.parse(repaired);
+                console.warn(`[chatTools] Repaired malformed JSON args for ${toolName} (${firstErr.message})`);
+            } catch (repairErr) {
+                return {
+                    tool_call_id: call.id,
+                    role: 'tool',
+                    name: toolName,
+                    content: JSON.stringify({
+                        error: `Invalid JSON in tool arguments: ${firstErr.message}`,
+                        // Cap echo so a 50KB malformed blob doesn't ship back
+                        // through the whole chat history; the head usually
+                        // shows the model what its own emission looked like.
+                        received: rawArgs.length > 4000 ? rawArgs.slice(0, 4000) + '…[truncated]' : rawArgs,
+                    }),
+                };
+            }
+        }
     }
 
     const def = toolRegistry.get(toolName);
