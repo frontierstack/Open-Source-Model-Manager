@@ -187,28 +187,31 @@ function timingSafeCompare(a, b) {
     return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-// SSRF protection: validate URLs against private IP ranges
-function isPrivateUrl(urlString) {
-    try {
-        const parsed = new URL(urlString);
-        const hostname = parsed.hostname.toLowerCase();
-        // Block private/reserved hostnames
-        if (['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal'].includes(hostname)) return true;
-        // Block private IP ranges
-        const parts = hostname.split('.').map(Number);
-        if (parts.length === 4 && parts.every(p => !isNaN(p))) {
-            if (parts[0] === 10) return true; // 10.0.0.0/8
-            if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
-            if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
-            if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16 (link-local/AWS metadata)
-            if (parts[0] === 0) return true; // 0.0.0.0/8
-        }
-        // Block file:// and other dangerous protocols
-        if (!['http:', 'https:'].includes(parsed.protocol)) return true;
-        return false;
-    } catch {
-        return true; // Invalid URL = block
+// SSRF protection: validate URLs against private IP ranges and dangerous protocols.
+// Returns null if the URL is allowed, or a descriptive error string if it's blocked.
+const PRIVATE_URL_MSG = 'URL points to a private/internal address — blocked for safety.';
+function urlBlockReason(urlString) {
+    let parsed;
+    try { parsed = new URL(urlString); } catch { return 'Invalid URL.'; }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+        const proto = parsed.protocol.replace(/:$/, '');
+        return `Only http(s) URLs are accepted; got "${proto}://" — file://, javascript:, data:, etc. are not supported. To work with local files, use read_file / read_pdf instead of a fetch tool.`;
     }
+    const hostname = parsed.hostname.toLowerCase();
+    if (['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal'].includes(hostname)) return PRIVATE_URL_MSG;
+    const parts = hostname.split('.').map(Number);
+    if (parts.length === 4 && parts.every(p => !isNaN(p))) {
+        if (parts[0] === 10) return PRIVATE_URL_MSG; // 10.0.0.0/8
+        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return PRIVATE_URL_MSG; // 172.16.0.0/12
+        if (parts[0] === 192 && parts[1] === 168) return PRIVATE_URL_MSG; // 192.168.0.0/16
+        if (parts[0] === 169 && parts[1] === 254) return PRIVATE_URL_MSG; // 169.254.0.0/16 (link-local/AWS metadata)
+        if (parts[0] === 0) return PRIVATE_URL_MSG; // 0.0.0.0/8
+    }
+    return null;
+}
+
+function isPrivateUrl(urlString) {
+    return urlBlockReason(urlString) !== null;
 }
 
 // Validate model name to prevent path traversal (e.g. ../../etc/passwd)
@@ -14054,18 +14057,63 @@ async function addMissingDefaultSkills() {
     }
 }
 
+// Force-refresh the code (and a few sibling fields) of named built-in skills
+// from the current template, even if a skill with the same name already
+// exists on disk. Used to ship correctness/security fixes to skills the
+// user already has installed — addMissingDefaultSkills only ADDs missing
+// entries, so without this the patched code never reaches existing users.
+//
+// Only refreshes built-in skills (no userId). User-created skills with the
+// same name are left alone. Idempotent — safe to run every boot.
+const REFRESH_STALE_SKILLS = new Set([
+    // calculate — added BitXor/BitAnd/BitOr/LShift/RShift/Invert support and
+    // hex/bin/char output for integer results. Older installs have the
+    // pre-bitwise code on disk and would still fail on `0xf1 ^ 0xff`.
+    'calculate',
+]);
+
+async function refreshStaleDefaultSkills() {
+    try {
+        const defaultSkillsPath = path.join(__dirname, 'default-skills.json');
+        const template = JSON.parse(await fs.readFile(defaultSkillsPath, 'utf8'));
+        const templateByName = new Map(template.map(t => [t.name, t]));
+        const skills = await loadSkills();
+        let dirty = 0;
+        for (const s of skills) {
+            if (!s || !s.name || s.userId) continue;
+            if (!REFRESH_STALE_SKILLS.has(s.name)) continue;
+            const t = templateByName.get(s.name);
+            if (!t || !t.code) continue;
+            if (s.code === t.code) continue;
+            s.code = t.code;
+            if (t.description) s.description = t.description;
+            if (t.systemPrompt) s.systemPrompt = t.systemPrompt;
+            if (t.parameters) s.parameters = t.parameters;
+            s.updatedAt = new Date().toISOString();
+            dirty++;
+        }
+        if (dirty) {
+            await saveSkills(skills);
+            console.log(`[skill-migration] refreshed ${dirty} stale built-in skill(s) from template: ${[...REFRESH_STALE_SKILLS].join(', ')}`);
+        }
+    } catch (e) {
+        console.error('[skill-migration] refreshStaleDefaultSkills failed (non-fatal):', e.message);
+    }
+}
+
 async function initializeDefaultSkills() {
     try {
         await ensureDataDir();
         const skills = await loadSkills();
 
         // Existing install — opt in known defaults to sandbox/workspace,
-        // then sync any new defaults from the template that this install
-        // is missing. Harmless no-op when fully migrated. Runs BEFORE the
-        // early-return so both migrations reach older installs.
+        // sync any new defaults from the template, and refresh code for
+        // built-ins on the stale list. Harmless no-op when fully migrated.
+        // Runs BEFORE the early-return so all migrations reach older installs.
         if (skills.length > 0) {
             await migrateDefaultSkillsToSandbox();
             await addMissingDefaultSkills();
+            await refreshStaleDefaultSkills();
             return;
         }
 
@@ -15832,7 +15880,7 @@ app.use((req, res) => {
         async execute(args) {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
-            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
             const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 15000, 10)));
             try {
                 const result = await fetchUrlContent(url, { timeout: 20_000, maxLength, waitForJS: true });
@@ -15890,7 +15938,7 @@ app.use((req, res) => {
         async execute(args) {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
-            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
             if (!scraplingService) {
                 return { success: false, error: 'Scrapling service not available on this host' };
             }
@@ -15956,7 +16004,7 @@ app.use((req, res) => {
         async execute(args) {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
-            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
             const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 15000, 10)));
             const maxLength = Math.min(100_000, Math.max(100, parseInt(args?.maxLength || 8000, 10)));
             const waitForJS = args?.waitForJS !== false;
@@ -16017,7 +16065,7 @@ app.use((req, res) => {
         async execute(args) {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
-            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
             if (!playwrightEnabled || !playwrightService) {
                 return { success: false, error: 'Playwright not available — interaction requires browser automation' };
             }
@@ -16127,7 +16175,7 @@ app.use((req, res) => {
         async execute(args) {
             const url = String(args?.url || '').trim();
             if (!url) return { error: 'url is required' };
-            if (isPrivateUrl(url)) return { error: 'URL points to a private/internal address — blocked for safety.' };
+            { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
             const mode = args?.mode || 'auto';
             const maxPages = Math.min(20, Math.max(1, parseInt(args?.maxPages || 5, 10)));
             const timeout = Math.min(120_000, Math.max(1000, parseInt(args?.timeout || 20000, 10)));
