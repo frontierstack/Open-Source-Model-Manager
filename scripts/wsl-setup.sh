@@ -24,12 +24,20 @@ Usage: sudo $0 [OPTIONS]
 Sets up a native Docker Engine inside this WSL distro so the Model Server
 build can run without Docker Desktop and so the gVisor sandbox can install.
 
-Options:
+Setup options:
   --gpu           Force nvidia-container-toolkit install
   --no-gpu        Skip nvidia-container-toolkit install
                   (default: auto-detect from /dev/dxg or /dev/nvidia*)
   --no-gvisor     Skip gVisor (runsc) install
   --no-smoke      Skip the GPU/Docker smoke tests at the end
+
+Cleanup mode (does NOT run setup):
+  --cleanup       Remove ALL containers, images, volumes, user networks, and
+                  build cache, then exit. Asks for confirmation unless --yes
+                  is also passed. DESTRUCTIVE — named-volume data is lost.
+
+Other:
+  -y, --yes       Non-interactive: skip confirmation prompts
   -h, --help      Show this help
 
 The script is idempotent. If it needs a WSL distro restart (after enabling
@@ -93,6 +101,8 @@ section() {
 INSTALL_GPU=auto       # auto | yes | no
 INSTALL_GVISOR=true
 SKIP_SMOKE_TEST=false
+CLEANUP_MODE=false
+NON_INTERACTIVE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -100,6 +110,8 @@ while [[ $# -gt 0 ]]; do
         --gpu)         INSTALL_GPU=yes;       shift ;;
         --no-gvisor)   INSTALL_GVISOR=false;  shift ;;
         --no-smoke)    SKIP_SMOKE_TEST=true;  shift ;;
+        --cleanup)     CLEANUP_MODE=true;     shift ;;
+        -y|--yes)      NON_INTERACTIVE=true;  shift ;;
         -h|--help)     exit 0 ;;  # already handled before root check
         *)
             log_error "Unknown option: $1"
@@ -110,8 +122,124 @@ done
 
 # Banner
 echo ""
-echo -e "  ${BOLD}WSL Native-Docker Setup${NC}"
+if [ "$CLEANUP_MODE" = true ]; then
+    echo -e "  ${BOLD}WSL Docker Cleanup${NC}"
+else
+    echo -e "  ${BOLD}WSL Native-Docker Setup${NC}"
+fi
 echo -e "  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${NC}"
+
+# ============================================================================
+# CLEANUP MODE — wipe Docker state and exit (no setup runs after this)
+# ============================================================================
+
+if [ "$CLEANUP_MODE" = true ]; then
+    section "Docker Cleanup"
+
+    if ! command -v docker >/dev/null 2>&1; then
+        log_warning "docker CLI not found — nothing to clean"
+        echo ""
+        exit 0
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        log_warning "Docker daemon not reachable — nothing to clean"
+        log_info    "Start it with:  sudo systemctl start docker"
+        echo ""
+        exit 0
+    fi
+
+    # Inventory before nuking
+    running_count=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+    container_count=$(docker ps -aq 2>/dev/null | wc -l | tr -d ' ')
+    image_count=$(docker images -q 2>/dev/null | wc -l | tr -d ' ')
+    volume_count=$(docker volume ls -q 2>/dev/null | wc -l | tr -d ' ')
+    # Custom networks only — never touch bridge/host/none
+    user_networks=$(docker network ls --format '{{.Name}}' 2>/dev/null \
+                      | grep -vE '^(bridge|host|none)$' || true)
+    network_count=$(echo "$user_networks" | grep -c . 2>/dev/null || echo 0)
+
+    echo ""
+    echo "  Current state:"
+    echo "    running containers : $running_count"
+    echo "    total containers   : $container_count"
+    echo "    images             : $image_count"
+    echo "    volumes            : $volume_count"
+    echo "    user networks      : $network_count"
+    echo ""
+
+    if [ "$container_count" = 0 ] && [ "$image_count" = 0 ] \
+       && [ "$volume_count" = 0 ] && [ "$network_count" = 0 ]; then
+        log_success "Nothing to clean — Docker is already empty"
+        echo ""
+        exit 0
+    fi
+
+    if [ "$NON_INTERACTIVE" != true ]; then
+        echo -e "  ${BOLD}${RED}This will permanently DELETE all of the above.${NC}"
+        echo -e "  ${YELLOW}Named-volume data (Postgres dirs, model server data, etc.) will be LOST.${NC}"
+        echo ""
+        read -r -p "  Type 'yes' to confirm (anything else cancels): " ans
+        if [ "$ans" != "yes" ]; then
+            log_info "Cancelled — nothing was changed"
+            echo ""
+            exit 0
+        fi
+    else
+        log_warning "Non-interactive (--yes) — proceeding without confirmation"
+    fi
+
+    set +e   # best-effort; some objects may already be gone
+
+    if [ "$running_count" -gt 0 ]; then
+        log_step "Stopping running containers ($running_count)"
+        docker ps -q | xargs -r docker stop -t 5 >/dev/null 2>&1
+    fi
+
+    if [ "$container_count" -gt 0 ]; then
+        log_step "Removing containers ($container_count)"
+        docker ps -aq | xargs -r docker rm -f >/dev/null 2>&1
+    fi
+
+    if [ "$image_count" -gt 0 ]; then
+        log_step "Removing images ($image_count)"
+        docker images -q | xargs -r docker rmi -f >/dev/null 2>&1
+    fi
+
+    if [ "$volume_count" -gt 0 ]; then
+        log_step "Removing volumes ($volume_count)"
+        docker volume ls -q | xargs -r docker volume rm -f >/dev/null 2>&1
+    fi
+
+    if [ "$network_count" -gt 0 ]; then
+        log_step "Removing user networks ($network_count)"
+        echo "$user_networks" | xargs -r docker network rm >/dev/null 2>&1
+    fi
+
+    log_step "Pruning build cache"
+    docker builder prune -af >/dev/null 2>&1
+    docker system prune -af --volumes >/dev/null 2>&1
+
+    set -e
+
+    # Re-inventory to confirm
+    after_containers=$(docker ps -aq 2>/dev/null | wc -l | tr -d ' ')
+    after_images=$(docker images -q 2>/dev/null | wc -l | tr -d ' ')
+    after_volumes=$(docker volume ls -q 2>/dev/null | wc -l | tr -d ' ')
+
+    echo ""
+    log_success "Cleanup complete"
+    echo "    containers : $after_containers (was $container_count)"
+    echo "    images     : $after_images (was $image_count)"
+    echo "    volumes    : $after_volumes (was $volume_count)"
+    echo ""
+    if [ "$after_containers" != "0" ] || [ "$after_images" != "0" ] || [ "$after_volumes" != "0" ]; then
+        log_warning "Some objects survived — they may be in use by another process or marked undeletable"
+    fi
+    echo ""
+    log_info "To rebuild from scratch: cd $PROJECT_DIR && sudo ./build.sh --no-resume"
+    echo ""
+    exit 0
+fi
 
 # ============================================================================
 # PHASE 1: ENVIRONMENT CHECKS
@@ -325,29 +453,82 @@ if [ "$INSTALL_GPU" = auto ]; then
     fi
 fi
 
+GPU_INSTALL_OK=true   # tracks whether toolkit landed; controls smoke test
 if [ "$INSTALL_GPU_FINAL" = yes ]; then
-    if dpkg -l nvidia-container-toolkit >/dev/null 2>&1; then
+    if dpkg -l nvidia-container-toolkit 2>/dev/null | grep -q '^ii'; then
         log_success "nvidia-container-toolkit already installed"
     else
+        # GPU setup is best-effort. Don't let `set -e` kill the script if any
+        # step here fails — the user can re-run, install manually, or proceed
+        # without GPU. We surface the actual error with context instead.
+        set +e
+        gpu_setup_failed=false
+        gpu_setup_step=""
+        gpu_setup_log="/tmp/wsl-setup-gpu.log"
+        : > "$gpu_setup_log"
+
         log_step "Adding NVIDIA container-toolkit apt repo"
-        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-            | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-        distribution=$(. /etc/os-release; echo "${ID}${VERSION_ID}")
-        curl -fsSL "https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list" \
-            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-            > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        # Modern repo layout (distro-agnostic, single 'stable/deb' path).
+        # Old per-distro paths (libnvidia-container/ubuntu24.04/...) returned
+        # 404 on newer distros and are why "Unable to locate package" happens.
+        rm -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        if ! curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey 2>>"$gpu_setup_log" \
+              | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>>"$gpu_setup_log"; then
+            gpu_setup_failed=true
+            gpu_setup_step="downloading NVIDIA GPG key"
+        fi
 
-        log_step "Installing nvidia-container-toolkit"
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-container-toolkit
+        if [ "$gpu_setup_failed" = false ]; then
+            if ! curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list 2>>"$gpu_setup_log" \
+                  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+                  > /etc/apt/sources.list.d/nvidia-container-toolkit.list; then
+                gpu_setup_failed=true
+                gpu_setup_step="downloading NVIDIA repo list"
+            fi
+        fi
 
-        log_step "Configuring Docker to use the NVIDIA runtime"
-        nvidia-ctk runtime configure --runtime=docker
-        systemctl restart docker
-        log_success "NVIDIA runtime configured"
+        if [ "$gpu_setup_failed" = false ]; then
+            log_step "Installing nvidia-container-toolkit"
+            DEBIAN_FRONTEND=noninteractive apt-get update -qq >>"$gpu_setup_log" 2>&1
+            if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-container-toolkit >>"$gpu_setup_log" 2>&1; then
+                gpu_setup_failed=true
+                gpu_setup_step="apt-get install nvidia-container-toolkit"
+            fi
+        fi
+
+        if [ "$gpu_setup_failed" = false ]; then
+            log_step "Configuring Docker to use the NVIDIA runtime"
+            if ! nvidia-ctk runtime configure --runtime=docker >>"$gpu_setup_log" 2>&1; then
+                gpu_setup_failed=true
+                gpu_setup_step="nvidia-ctk runtime configure"
+            else
+                systemctl restart docker
+                log_success "NVIDIA runtime configured"
+            fi
+        fi
+
+        if [ "$gpu_setup_failed" = true ]; then
+            GPU_INSTALL_OK=false
+            log_warning "GPU setup failed during: ${gpu_setup_step}"
+            echo ""
+            echo -e "  ${DIM}── /tmp/wsl-setup-gpu.log (tail) ───────────────────────${NC}"
+            err_lines=$(grep -iE '(error|unable|fail|fatal|404|cannot|denied|not found)' \
+                          "$gpu_setup_log" 2>/dev/null | tail -8)
+            if [ -n "$err_lines" ]; then
+                echo "$err_lines" | sed 's/^/    /'
+            else
+                tail -15 "$gpu_setup_log" 2>/dev/null | sed 's/^/    /'
+            fi
+            echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
+            echo ""
+            log_info "Continuing without GPU container support — you can re-run with --gpu later"
+            log_info "Or install manually: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+        fi
+
+        set -e
     fi
 
-    if [ "$SKIP_SMOKE_TEST" = false ]; then
+    if [ "$GPU_INSTALL_OK" = true ] && [ "$SKIP_SMOKE_TEST" = false ]; then
         log_step "Smoke test: docker run --gpus all nvidia/cuda nvidia-smi"
         if docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
             log_success "GPU passthrough works"
