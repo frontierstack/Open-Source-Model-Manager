@@ -403,8 +403,21 @@ else
         if bash "$PROJECT_DIR/setup-sandbox.sh" >/tmp/setup-sandbox.log 2>&1; then
             log_success "gVisor installed — tool exec containers will use --runtime=runsc"
         else
-            log_warning "gVisor install failed; tool exec will fall back to the default runtime"
-            log_warning "See /tmp/setup-sandbox.log for details"
+            log_warning "gVisor install failed — tool exec will fall back to the default runtime"
+            echo ""
+            echo -e "  ${DIM}── setup-sandbox.sh output (tail) ──────────────────────${NC}"
+            # Prefer the last error/fatal lines if present; otherwise show the tail
+            err_lines=$(grep -iE '(error|fail|fatal|cannot|denied|not found|unable)' /tmp/setup-sandbox.log 2>/dev/null | tail -8)
+            if [ -n "$err_lines" ]; then
+                echo "$err_lines" | sed 's/^/    /'
+                echo -e "  ${DIM}── (last 5 log lines) ──${NC}"
+                tail -5 /tmp/setup-sandbox.log 2>/dev/null | sed 's/^/    /'
+            else
+                tail -15 /tmp/setup-sandbox.log 2>/dev/null | sed 's/^/    /'
+            fi
+            echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
+            echo ""
+            log_info "Continuing without sandbox — set SKIP_SANDBOX_SETUP=1 to silence this step"
         fi
     fi
 fi
@@ -454,9 +467,9 @@ detect_ssl_inspection() {
         exit_code=$?
 
         if [ $exit_code -ne 0 ]; then
-            ((failures++))
+            failures=$((failures + 1))
             if echo "$result" | grep -qiE "(certificate|ssl|tls|verify|self.signed|unable to get local issuer)"; then
-                ((inspection_indicators++))
+                inspection_indicators=$((inspection_indicators + 1))
                 log_warning "SSL issue with $url"
             fi
         fi
@@ -466,7 +479,7 @@ detect_ssl_inspection() {
     local cert_check
     cert_check=$(curl -sS --connect-timeout 3 -v https://google.com 2>&1 | grep -i "issuer:" | head -1) || true
     if echo "$cert_check" | grep -qiE "(zscaler|bluecoat|fortigate|paloalto|mcafee|symantec.*proxy|websense|barracuda|cisco.*umbrella|checkpoint)"; then
-        ((inspection_indicators++))
+        inspection_indicators=$((inspection_indicators + 1))
         log_warning "Corporate proxy certificate: $(echo "$cert_check" | sed 's/.*issuer: //')"
     fi
 
@@ -478,15 +491,15 @@ detect_ssl_inspection() {
     stop_spinner
 
     if [ $hf_exit -ne 0 ]; then
-        ((service_failures++))
+        service_failures=$((service_failures + 1))
         log_warning "HuggingFace API unreachable"
         if echo "$hf_result" | grep -qiE "(certificate|ssl|tls|verify)"; then
-            ((inspection_indicators++))
+            inspection_indicators=$((inspection_indicators + 1))
         fi
     elif echo "$hf_result" | grep -q '"id"'; then
         log_success "HuggingFace API OK"
     else
-        ((service_failures++))
+        service_failures=$((service_failures + 1))
         log_warning "HuggingFace API returned invalid response"
     fi
 
@@ -506,8 +519,8 @@ except Exception as e:
         print('FAILED: ' + str(e)[:50])
 " 2>&1) || true
         if echo "$py_result" | grep -q "SSL_ERROR"; then
-            ((service_failures++))
-            ((inspection_indicators++))
+            service_failures=$((service_failures + 1))
+            inspection_indicators=$((inspection_indicators + 1))
             log_warning "Python SSL verification failed"
         elif echo "$py_result" | grep -q "OK"; then
             log_success "Python SSL OK"
