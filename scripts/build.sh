@@ -213,21 +213,26 @@ mark_build_complete() {
 build_image() {
     local component=$1
     local image_name=$2
-    local profile_arg=""
 
+    local -a profile_args=()
     if [ "$component" = "llamacpp" ] || [ "$component" = "vllm" ]; then
-        profile_arg="--profile build-only"
+        profile_args=(--profile build-only)
     fi
 
-    # Build args for corporate proxy/SSL environments
-    local build_args=""
-    [ -n "$HTTP_PROXY" ] && build_args="$build_args --build-arg HTTP_PROXY=$HTTP_PROXY"
-    [ -n "$HTTPS_PROXY" ] && build_args="$build_args --build-arg HTTPS_PROXY=$HTTPS_PROXY"
-    [ -n "$NO_PROXY" ] && build_args="$build_args --build-arg NO_PROXY=$NO_PROXY"
-    [ -n "$NODE_TLS_REJECT_UNAUTHORIZED" ] && build_args="$build_args --build-arg NODE_TLS_REJECT_UNAUTHORIZED=$NODE_TLS_REJECT_UNAUTHORIZED"
-    [ -n "$GIT_SSL_NO_VERIFY" ] && build_args="$build_args --build-arg GIT_SSL_NO_VERIFY=$GIT_SSL_NO_VERIFY"
-    [ -n "$PIP_TRUSTED_HOST" ] && build_args="$build_args --build-arg PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST"
-    [ -n "$PIP_CERT" ] && build_args="$build_args --build-arg PIP_CERT=$PIP_CERT"
+    # Build args for corporate proxy/SSL environments. Use an array (not a
+    # string + eval) so values containing spaces — notably PIP_TRUSTED_HOST,
+    # which is naturally a space-separated host list — survive intact.
+    local -a build_args=()
+    [ -n "$HTTP_PROXY" ]                   && build_args+=(--build-arg "HTTP_PROXY=$HTTP_PROXY")
+    [ -n "$HTTPS_PROXY" ]                  && build_args+=(--build-arg "HTTPS_PROXY=$HTTPS_PROXY")
+    [ -n "$NO_PROXY" ]                     && build_args+=(--build-arg "NO_PROXY=$NO_PROXY")
+    [ -n "$NODE_TLS_REJECT_UNAUTHORIZED" ] && build_args+=(--build-arg "NODE_TLS_REJECT_UNAUTHORIZED=$NODE_TLS_REJECT_UNAUTHORIZED")
+    [ -n "$GIT_SSL_NO_VERIFY" ]            && build_args+=(--build-arg "GIT_SSL_NO_VERIFY=$GIT_SSL_NO_VERIFY")
+    [ -n "$PIP_TRUSTED_HOST" ]             && build_args+=(--build-arg "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST")
+    [ -n "$PIP_CERT" ]                     && build_args+=(--build-arg "PIP_CERT=$PIP_CERT")
+
+    local -a no_cache_args=()
+    [ "$NO_CACHE" = true ] && no_cache_args=(--no-cache)
 
     local attempt=1
     local max_attempts=$((RETRY_COUNT + 1))
@@ -238,10 +243,9 @@ build_image() {
         fi
 
         local start_time=$(date +%s)
-        local build_cmd="docker compose $profile_arg build $build_args $component"
-        [ "$NO_CACHE" = true ] && build_cmd="$build_cmd --no-cache"
 
-        if eval "$build_cmd" > "$BUILD_STATE_DIR/${component}.log" 2>&1; then
+        if docker compose "${profile_args[@]}" build "${build_args[@]}" "${no_cache_args[@]}" "$component" \
+                > "$BUILD_STATE_DIR/${component}.log" 2>&1; then
             local duration=$(( $(date +%s) - start_time ))
             mark_build_complete "$component"
             echo "$duration" > "$BUILD_STATE_DIR/${component}.duration"
@@ -387,14 +391,36 @@ else
     log_success "SSL certificates found"
 fi
 
+# .env file — Docker Compose warns on every invocation when a referenced
+# variable isn't defined ("HUGGING_FACE_HUB_TOKEN is not set"). Seed an
+# empty default if the user hasn't supplied one. Existing values are
+# preserved untouched.
+_env_file="$PROJECT_DIR/.env"
+if [ ! -f "$_env_file" ]; then
+    touch "$_env_file"
+fi
+if ! grep -q '^HUGGING_FACE_HUB_TOKEN=' "$_env_file" 2>/dev/null; then
+    echo "HUGGING_FACE_HUB_TOKEN=" >> "$_env_file"
+    log_success ".env seeded with empty HUGGING_FACE_HUB_TOKEN (silences Compose warning)"
+fi
+
 # gVisor / sandbox runtime — required for the tool-execution sandbox the
 # webapp uses to run skills and tool calls. Idempotent: no-ops when runsc is
 # already registered as a Docker runtime. Honors SKIP_SANDBOX_SETUP=1 for
 # environments that can't / don't want gVisor.
+_is_wsl=false
+if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null \
+   || grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+    _is_wsl=true
+fi
+
 if [ "${SKIP_SANDBOX_SETUP:-0}" = "1" ]; then
     log_warning "SKIP_SANDBOX_SETUP=1 set — skipping gVisor install (tools will run with the default runtime)"
 elif [ ! -f "$PROJECT_DIR/setup-sandbox.sh" ]; then
     log_warning "setup-sandbox.sh not found — skipping sandbox setup"
+elif [ "$_is_wsl" = true ]; then
+    log_warning "WSL detected — skipping gVisor install (Docker Desktop on WSL has no systemd-managed docker.service)"
+    log_info "Tool exec will use the default runtime; set SKIP_SANDBOX_SETUP=1 to silence on Linux hosts that also lack systemd"
 else
     if docker info 2>/dev/null | grep -qw runsc; then
         log_success "gVisor (runsc) runtime already registered"
