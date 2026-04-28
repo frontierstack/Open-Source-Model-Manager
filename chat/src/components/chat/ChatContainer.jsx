@@ -28,7 +28,11 @@ function useSlideTransition(isEmpty) {
 // Reasoning tag names emitted by various thinking models
 // (Qwen/DeepSeek use <think>; some llama.cpp templates and fine-tunes emit
 // <thinking>, <reasoning>, or <reasoning_engine>)
-const REASONING_TAG_NAMES = ['think', 'thinking', 'reasoning', 'reasoning_engine'];
+// Names are dropped into a regex alternation (REASONING_TAG_ALT below).
+// `antThinking` / `antml:thinking` cover Anthropic-style scratchpad tags
+// some open-source fine-tunes emit; `:` is literal in regex alternation
+// so the namespaced form works without further pattern changes.
+const REASONING_TAG_NAMES = ['think', 'thinking', 'reasoning', 'reasoning_engine', 'antThinking', 'antml:thinking', 'scratchpad'];
 const REASONING_TAG_ALT = REASONING_TAG_NAMES.join('|');
 
 /**
@@ -73,6 +77,21 @@ function parseThinkTags(content) {
             reasoning += partialReasoning;
             cleanContent = cleanContent.substring(0, lastOpen.index);
         }
+    }
+
+    // Streaming flicker guard: if cleanContent ends with a half-arrived
+    // open tag (`<thi`, `<think`, `<reasoning_eng`, …), the rest of
+    // the tag hasn't streamed yet. The completeRegex / openRegex above both
+    // need the closing `>` to fire, so without this the partial tag renders
+    // as literal text for one or more frames and pops away once `>` lands.
+    // That's the most visible flicker source during generation.
+    //
+    // Match conservatively — only `<` followed by tag-name characters at the
+    // very end of the buffer. Bare `<` (or `<3`, `<5`, `< `) is left alone
+    // so chat content like math comparisons doesn't get clipped.
+    const partialTagAtEnd = cleanContent.match(/<[a-zA-Z][a-zA-Z0-9_:]*$/);
+    if (partialTagAtEnd) {
+        cleanContent = cleanContent.slice(0, partialTagAtEnd.index);
     }
 
     // Clean up extra whitespace
