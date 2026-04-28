@@ -20,6 +20,12 @@ const parser = require('@babel/parser');
 const traverse = require('@babel/traverse').default;
 const generate = require('@babel/generator').default;
 
+// Optional. Older Koda installs predate this dep and won't have it on disk;
+// require() throws there. Degrade to strict-only parse rather than crashing
+// the whole CLI on startup. Re-running the install command picks it up.
+let jsonrepair = null;
+try { jsonrepair = require('jsonrepair').jsonrepair; } catch (_) { /* not installed */ }
+
 // Configuration
 const CONFIG_DIR = path.join(os.homedir(), '.koda');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -10025,9 +10031,26 @@ async function handleChat(api, message) {
                 if (argsStr.trim()) {
                     try {
                         params = JSON.parse(argsStr);
-                    } catch (e) {
-                        parseFailures.push({ id: tc.id, name, error: e.message, raw: argsStr });
-                        continue;
+                    } catch (firstErr) {
+                        // Local LLMs intermittently emit malformed JSON for
+                        // tool args (unescaped quotes inside content strings,
+                        // unquoted keys, trailing commas, smart quotes, mid-
+                        // string truncation). Try a single jsonrepair pass
+                        // before recording the failure — repair only fires
+                        // when the strict parse already failed, so passthrough
+                        // on valid JSON is unchanged.
+                        let repaired = false;
+                        if (jsonrepair) {
+                            try {
+                                params = JSON.parse(jsonrepair(argsStr));
+                                console.warn(`[koda] Repaired malformed JSON args for ${name} (${firstErr.message})`);
+                                repaired = true;
+                            } catch (_) { /* fall through to failure path */ }
+                        }
+                        if (!repaired) {
+                            parseFailures.push({ id: tc.id, name, error: firstErr.message, raw: argsStr });
+                            continue;
+                        }
                     }
                 }
                 skillCalls.push({ skillName: name, params, _toolCallId: tc.id, fullMatch: '' });
