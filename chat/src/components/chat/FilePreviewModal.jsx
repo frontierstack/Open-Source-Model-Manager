@@ -1,7 +1,24 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { X, FileText, Image as ImageIcon, FileCode, FileSpreadsheet, FileArchive, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { X, FileText, Image as ImageIcon, FileCode, FileSpreadsheet, FileArchive, Mail, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Highlight, themes } from 'prism-react-renderer';
 import MessageContent from './MessageContent';
+
+// Single source of truth for "is this attachment worth opening a modal
+// for?" — exported so the composer chips and persisted-message chips
+// agree. Archives are deliberately excluded: their `content` is a tool
+// instruction marker ("Call extract_archive with archiveId=…"), not
+// user-visible content. Any other type with text content (txt, md,
+// code, csv, json, email, etc.) qualifies.
+export function isAttachmentPreviewable(att) {
+    if (!att) return false;
+    if (att.type === 'archive') return false;
+    return !!(
+        att.content ||
+        att.dataUrl ||
+        att.attachmentId ||
+        (Array.isArray(att.sheets) && att.sheets.length > 0)
+    );
+}
 
 // Map common extensions to prism language ids. Falls back to 'markup' for
 // anything we don't recognise — readable, just no highlighting.
@@ -140,6 +157,7 @@ function PreviewIcon({ type, filename }) {
     if (type === 'spreadsheet') return wrap(<FileSpreadsheet style={sx} />, '#10b981');
     if (type === 'archive') return wrap(<FileArchive style={sx} />, '#f59e0b');
     if (type === 'pdf') return wrap(<FileText style={sx} />, '#ef4444');
+    if (type === 'email') return wrap(<Mail style={sx} />, '#06b6d4');
     if (isProbablyCode(filename)) return wrap(<FileCode style={sx} />, 'var(--accent)');
     return wrap(<FileText style={sx} />, 'var(--ink-3)');
 }
@@ -172,7 +190,18 @@ function PreviewBody({ attachment }) {
         if (attachmentId) return <SpreadsheetPreviewFromStore attachmentId={attachmentId} />;
     }
     if (type === 'archive') {
-        return <PlainText text={content || 'Archive uploaded.'} muted />;
+        // Defensive: normally the chip isn't clickable for archives
+        // (isAttachmentPreviewable returns false). If a stale chip
+        // somehow triggers the modal, explain instead of leaking the
+        // tool-call marker text.
+        return (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--ink-3)', fontSize: 13 }}>
+                Archives can't be previewed inline. Ask the model to extract this file — it'll use the <code style={{ fontFamily: 'var(--font-mono)' }}>extract_archive</code> tool.
+            </div>
+        );
+    }
+    if (type === 'email' && content) {
+        return <EmailPreview content={content} attachment={attachment} />;
     }
     if (isCsv(filename) && content) {
         return <CsvPreview text={content} />;
@@ -221,6 +250,131 @@ function PreviewBody({ attachment }) {
     return (
         <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--ink-3)' }}>
             Nothing to preview.
+        </div>
+    );
+}
+
+// Email preview — splits the server-emitted email content into a
+// header card (Subject/From/To/CC/Date + link list) and a body block.
+// The server's /api/chat/upload handler for .eml/.msg writes this
+// shape:
+//
+//   Subject: …
+//   From: …
+//   To: …
+//   Date: …
+//
+//   Links found: N
+//     1. https://…
+//
+//   ---
+//
+//   <body text>
+//
+//   ---
+//   Attachments:
+//   - …
+//
+// We parse leading "Key: value" lines as headers and treat everything
+// after the first `---` separator as the body. If parsing fails for
+// any reason we fall back to plain text — the raw server output is
+// already readable.
+function EmailPreview({ content }) {
+    const { headers, links, body, footer } = React.useMemo(() => {
+        const out = { headers: {}, links: [], body: '', footer: '' };
+        if (typeof content !== 'string') return out;
+        const sepIdx = content.indexOf('\n---\n');
+        const headerBlock = sepIdx >= 0 ? content.slice(0, sepIdx) : '';
+        const rest = sepIdx >= 0 ? content.slice(sepIdx + 5) : content;
+        // Split header block: leading "Key: value" lines, optional
+        // "Links found: N" + numbered list afterward.
+        const lines = headerBlock.split('\n');
+        let inLinks = false;
+        for (const line of lines) {
+            if (!line.trim()) { inLinks = false; continue; }
+            if (/^Links found:/i.test(line)) { inLinks = true; continue; }
+            if (inLinks) {
+                const m = line.match(/^\s*\d+\.\s*(?:(.+?):\s*)?(https?:\/\/\S+)\s*$/i);
+                if (m) {
+                    out.links.push({ text: m[1] || m[2], url: m[2] });
+                }
+                continue;
+            }
+            const m = line.match(/^([A-Z][a-zA-Z]+):\s*(.+)$/);
+            if (m) {
+                out.headers[m[1]] = m[2];
+            }
+        }
+        // Body may have a trailing `---\nAttachments:` footer or
+        // `--- Attachment Contents ---` block. Keep them visible but
+        // styled so the body text reads cleanly first.
+        const footerIdx = rest.search(/\n---\n(?:Attachments:|\s*--- Attachment Contents)/);
+        if (footerIdx >= 0) {
+            out.body = rest.slice(0, footerIdx).trim();
+            out.footer = rest.slice(footerIdx + 1).trim();
+        } else {
+            out.body = rest.trim();
+        }
+        return out;
+    }, [content]);
+
+    const headerEntries = Object.entries(headers);
+    const subject = headers.Subject;
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {(headerEntries.length > 0 || links.length > 0) && (
+                <div style={{
+                    padding: '12px 14px',
+                    borderRadius: 8,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--rule-2)',
+                }}>
+                    {subject && (
+                        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink)', marginBottom: headerEntries.length > 1 ? 10 : 0, lineHeight: 1.3 }}>
+                            {subject}
+                        </div>
+                    )}
+                    {headerEntries.length > (subject ? 1 : 0) && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 12, rowGap: 4, fontSize: 12.5 }}>
+                            {headerEntries.filter(([k]) => k !== 'Subject').map(([k, v]) => (
+                                <React.Fragment key={k}>
+                                    <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>{k}</span>
+                                    <span style={{ color: 'var(--ink-2)', wordBreak: 'break-word' }}>{v}</span>
+                                </React.Fragment>
+                            ))}
+                        </div>
+                    )}
+                    {links.length > 0 && (
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
+                            <div style={{ fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, marginBottom: 6 }}>
+                                {links.length} link{links.length === 1 ? '' : 's'}
+                            </div>
+                            <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                {links.slice(0, 25).map((l, i) => (
+                                    <li key={i} style={{ fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                                            {l.text}
+                                        </a>
+                                    </li>
+                                ))}
+                                {links.length > 25 && (
+                                    <li style={{ fontSize: 11, color: 'var(--ink-3)' }}>… and {links.length - 25} more</li>
+                                )}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            )}
+            <PlainText text={body || content} />
+            {footer && (
+                <details style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                    <summary style={{ cursor: 'pointer', padding: '4px 0' }}>Attachments / footer</summary>
+                    <div style={{ marginTop: 6 }}>
+                        <PlainText text={footer} muted />
+                    </div>
+                </details>
+            )}
         </div>
     );
 }

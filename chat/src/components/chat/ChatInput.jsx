@@ -19,7 +19,7 @@ import {
     Circle,
     Eye,
 } from 'lucide-react';
-import FilePreviewModal from './FilePreviewModal';
+import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 B';
@@ -537,32 +537,26 @@ export default function ChatInput({
                                     </span>
                                 </div>
                             ))}
-                            {attachments.map((att, index) => (
-                                <button
-                                    key={att.id || index}
-                                    type="button"
-                                    onClick={() => setPreviewAttachment(att)}
-                                    style={{
-                                        display: 'inline-flex', alignItems: 'center', gap: 6,
-                                        padding: '4px 8px', borderRadius: 6,
-                                        background: att.requiresChunking ? 'var(--accent-soft)' : 'var(--bg-2)',
-                                        border: `1px solid ${att.requiresChunking ? 'var(--accent)' : 'var(--rule)'}`,
-                                        fontSize: 11, color: 'var(--ink-2)',
-                                        cursor: 'pointer',
-                                        transition: 'border-color .1s, background .1s',
-                                    }}
-                                    role="listitem"
-                                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = att.requiresChunking ? 'var(--accent)' : 'var(--rule)'; }}
-                                    title={att.requiresChunking
+                            {attachments.map((att, index) => {
+                                const previewable = isAttachmentPreviewable(att);
+                                const baseStyle = {
+                                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                                    padding: '4px 8px', borderRadius: 6,
+                                    background: att.requiresChunking ? 'var(--accent-soft)' : 'var(--bg-2)',
+                                    border: `1px solid ${att.requiresChunking ? 'var(--accent)' : 'var(--rule)'}`,
+                                    fontSize: 11, color: 'var(--ink-2)',
+                                };
+                                const sizeHint = att.charCount
+                                    ? ` · ${att.charCount.toLocaleString()} chars (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)`
+                                    : '';
+                                const title = previewable
+                                    ? (att.requiresChunking
                                         ? `Click to preview · Large file: ~${att.estimatedTokens?.toLocaleString()} tokens (${att.totalChunks} chunks).`
-                                        : `Click to preview${att.charCount ? ` · ${att.charCount.toLocaleString()} chars (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)` : ''}`}
-                                >
-                                    {getFileIcon(att.filename, att.type)}
-                                    <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {att.filename}
-                                    </span>
-                                    <Eye style={{ width: 12, height: 12, opacity: 0.55, flexShrink: 0 }} strokeWidth={1.75} />
+                                        : `Click to preview${sizeHint}`)
+                                    : (att.type === 'archive'
+                                        ? `Archive — extracted by the model on demand${sizeHint}`
+                                        : `No inline preview${sizeHint}`);
+                                const removeButton = (
                                     <span
                                         onClick={(e) => { e.stopPropagation(); onRemoveAttachment(index); }}
                                         onMouseDown={(e) => e.stopPropagation()}
@@ -576,8 +570,38 @@ export default function ChatInput({
                                     >
                                         <X className="w-3.5 h-3.5" />
                                     </span>
-                                </button>
-                            ))}
+                                );
+                                if (!previewable) {
+                                    return (
+                                        <div key={att.id || index} style={baseStyle} role="listitem" title={title}>
+                                            {getFileIcon(att.filename, att.type)}
+                                            <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {att.filename}
+                                            </span>
+                                            {removeButton}
+                                        </div>
+                                    );
+                                }
+                                return (
+                                    <button
+                                        key={att.id || index}
+                                        type="button"
+                                        onClick={() => setPreviewAttachment(att)}
+                                        style={{ ...baseStyle, cursor: 'pointer', transition: 'border-color .1s, background .1s' }}
+                                        role="listitem"
+                                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = att.requiresChunking ? 'var(--accent)' : 'var(--rule)'; }}
+                                        title={title}
+                                    >
+                                        {getFileIcon(att.filename, att.type)}
+                                        <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {att.filename}
+                                        </span>
+                                        <Eye style={{ width: 12, height: 12, opacity: 0.55, flexShrink: 0 }} strokeWidth={1.75} />
+                                        {removeButton}
+                                    </button>
+                                );
+                            })}
                         </div>
                     </div>
                 )}

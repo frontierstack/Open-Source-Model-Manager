@@ -6,7 +6,7 @@ import StatusIndicator from './StatusIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import SearchSources from './SearchSources';
 import ProcessingLogFeed from './ProcessingLogFeed';
-import FilePreviewModal from './FilePreviewModal';
+import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
 import { useChatStore } from '../../stores/useChatStore';
 
@@ -176,7 +176,7 @@ export default React.memo(function ChatMessage({
             {isUser && attachments && attachments.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 2, maxWidth: '85%' }}>
                     {attachments.map((att, i) => {
-                        const previewable = !!(att && (att.content || att.dataUrl || att.attachmentId || (Array.isArray(att.sheets) && att.sheets.length > 0)));
+                        const previewable = isAttachmentPreviewable(att);
                         const baseStyle = {
                             display: 'inline-flex', alignItems: 'center', gap: 5,
                             padding: '2px 8px', borderRadius: 6,
