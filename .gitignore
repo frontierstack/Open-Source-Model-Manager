@@ -95,6 +95,13 @@ build/
 webapp/public/bundle.js
 webapp/public/bundle.js.map
 
+# Webpack-emitted font assets (chat UI bundles fonts via file-loader,
+# producing hash-named files that don't need to be checked in — the
+# container rebuilds them on every npm run build)
+chat/public/*.woff
+chat/public/*.woff2
+chat/public/*.ttf
+
 # ============================================================================
 # BACKUP AND TEMPORARY FILES
 # ============================================================================
