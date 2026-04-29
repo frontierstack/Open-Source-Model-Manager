@@ -12566,8 +12566,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                 finishReason = await streamOneRequest(currentMessages, initialMaxTokens);
 
-                // Auto-continuation loop: if model hit length limit, keep going
-                while (finishReason === 'length' && continuationCount < MAX_AUTO_CONTINUATIONS && clientConnected) {
+                // Auto-continuation loop: if model hit length limit, keep going.
+                // Skipped when tool calls are accumulated — the slim continuation
+                // request below drops the partial tool_calls context entirely
+                // (only system + truncated user + responseTail + "Continue"),
+                // which corrupts state when the cap was hit mid-arguments.
+                // Length-with-pending-tools is handled by the dispatch block
+                // below: the truncation guard in chatTools.executeToolCall
+                // surfaces a clean retry hint to the model on the next round.
+                while (finishReason === 'length'
+                       && continuationCount < MAX_AUTO_CONTINUATIONS
+                       && clientConnected
+                       && accumulatedToolCalls.length === 0) {
                 continuationCount++;
                 console.log(`[Chat Stream] Auto-continuing response (${continuationCount}/${MAX_AUTO_CONTINUATIONS}), accumulated ${fullResponse.length} chars so far`);
 
@@ -12647,7 +12657,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // If the model's turn ended with tool_calls, execute each
                 // tool, append the assistant+tool messages to the conversation,
                 // and loop back to let the model continue with tool results.
-                if (finishReason === 'tool_calls' && accumulatedToolCalls.length) {
+                //
+                // Also dispatch when finish_reason is 'length' and tool calls
+                // accumulated — the cap was hit mid-arguments JSON, so the
+                // last tool call is truncated. The truncation guard in
+                // chatTools.executeToolCall returns a clean retry hint for
+                // the damaged call; any other calls in the same turn that
+                // closed cleanly run normally. Without this, the partial
+                // tool_calls would silently be discarded when the outer
+                // loop breaks at the bottom.
+                if (accumulatedToolCalls.length
+                    && (finishReason === 'tool_calls' || finishReason === 'length')) {
                     const finalizedCalls = chatTools.finalizeToolCalls(accumulatedToolCalls);
                     if (!finalizedCalls.length) break; // no valid calls — bail
 
@@ -12802,12 +12822,34 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // message must carry ONLY this turn's generated content
                     // (not the cumulative stream) alongside its tool_calls.
                     const turnContent = fullResponse.slice(roundStart);
+                    // Sanitize tool_calls arguments before re-shipping. When
+                    // the model hit its output cap mid-arguments (handled
+                    // above by the truncation guard in executeToolCall),
+                    // the call's `arguments` string is incomplete JSON.
+                    // Some backends (vLLM in particular) return 500 when
+                    // they re-parse an assistant turn whose tool_calls
+                    // carry malformed JSON — which surfaces in the chat UI
+                    // as "Request failed with status code 500" / response
+                    // cut off. Replace any unparseable args with '{}'; the
+                    // matching tool result already conveys the truncation
+                    // error to the model so context isn't lost.
+                    const safeToolCalls = finalizedCalls.map(tc => {
+                        const a = tc?.function?.arguments;
+                        if (typeof a !== 'string') return tc;
+                        try { JSON.parse(a); return tc; }
+                        catch (_) {
+                            return {
+                                ...tc,
+                                function: { ...tc.function, arguments: '{}' },
+                            };
+                        }
+                    });
                     currentMessages = [
                         ...currentMessages,
                         {
                             role: 'assistant',
                             content: turnContent || null,
-                            tool_calls: finalizedCalls,
+                            tool_calls: safeToolCalls,
                         },
                         ...toolResultMessages,
                     ];
@@ -12839,7 +12881,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // fullResponse already carries the "loop detected" note that
             // the user needs to see, and forcing another round would
             // likely re-enter the same loop.
-            const hitIterationCap = toolCallRound > chatTools.MAX_TOOL_ITERATIONS && finishReason === 'tool_calls';
+            const hitIterationCap = toolCallRound > chatTools.MAX_TOOL_ITERATIONS
+                && (finishReason === 'tool_calls'
+                    || (finishReason === 'length' && accumulatedToolCalls.length > 0));
             const exitedEmptyAfterTools = toolCallRound > 0 && !fullResponse.trim() && !reasoningLoopAborted;
             if (hitIterationCap || exitedEmptyAfterTools) {
                 if (hitIterationCap) {

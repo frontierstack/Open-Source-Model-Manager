@@ -322,6 +322,7 @@ async function executeToolCall(call, ctx) {
     // fail; repairs are logged for observability without polluting the
     // user-visible error message.
     let args = {};
+    let argsRepairedVia = null;
     const rawArgs = call.function.arguments || '';
     if (rawArgs.trim()) {
         try {
@@ -346,6 +347,7 @@ async function executeToolCall(call, ctx) {
                 }
             }
             if (repairedVia) {
+                argsRepairedVia = repairedVia;
                 console.warn(`[chatTools] Repaired malformed JSON args for ${toolName} via ${repairedVia} (${firstErr.message})`);
             } else {
                 // Heuristic: if the buffer ends with no closing `}` and the
@@ -370,6 +372,50 @@ async function executeToolCall(call, ctx) {
                     }),
                 };
             }
+        }
+    }
+
+    // Truncation guard. Strict JSON.parse only succeeds on complete JSON,
+    // so when we needed a repair pass AND the raw stream didn't close with
+    // `}`, the model hit its output token cap mid-arguments. Any value the
+    // repair produced is suspect — the offending field is almost always a
+    // long string (file content, code blob, base64) that got chopped, so
+    // running the tool with the salvaged args creates a "successful" zero-
+    // size file or feeds the model a junk path that fails on the next
+    // call. Refuse to dispatch and surface a clear retry hint instead;
+    // without this, the model gets a misleading "success" or a downstream
+    // tool error and has no idea its previous emission was clipped.
+    //
+    // Gating on argsRepairedVia avoids false positives on valid tool calls
+    // that happened to emit a closing structure other than `}` (rare; not
+    // observed in practice, but cheap belt-and-braces).
+    if (argsRepairedVia) {
+        const trimmed = rawArgs.trimEnd();
+        if (trimmed.length > 30 && !trimmed.endsWith('}')) {
+            console.warn(
+                `[chatTools] ${toolName} args appear truncated (raw length ${rawArgs.length}, ` +
+                `repair via ${argsRepairedVia}, no trailing brace) — refusing dispatch`
+            );
+            return {
+                tool_call_id: call.id,
+                role: 'tool',
+                name: toolName,
+                content: JSON.stringify({
+                    error: 'arguments_truncated',
+                    message:
+                        `Your call to ${toolName} was truncated mid-stream — your previous ` +
+                        `response hit the output token limit before finishing the JSON ` +
+                        `arguments. The tool was NOT run. Retry with a smaller payload: ` +
+                        `split large content across multiple calls (e.g. create the file ` +
+                        `with a short stub via create_file, then append the rest in chunks ` +
+                        `via replace_lines), or move the long content to a follow-up call. ` +
+                        `Do not retry the same call with the same large content — it will ` +
+                        `truncate again.`,
+                    partial_args_preview: rawArgs.length > 500
+                        ? rawArgs.slice(0, 500) + '…[truncated]'
+                        : rawArgs,
+                }),
+            };
         }
     }
 
