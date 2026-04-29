@@ -6,6 +6,8 @@ import StatusIndicator from './StatusIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import SearchSources from './SearchSources';
 import ProcessingLogFeed from './ProcessingLogFeed';
+import FilePreviewModal from './FilePreviewModal';
+import ChartBlock from './ChartBlock';
 import { useChatStore } from '../../stores/useChatStore';
 
 export default React.memo(function ChatMessage({
@@ -35,22 +37,22 @@ export default React.memo(function ChatMessage({
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
     const [hovered, setHovered] = useState(false);
-    // Tool-call group collapse. When a turn fires many tool calls the
-    // chip strip gets visually crowded; we group them above a threshold
-    // and let the user collapse to a one-line summary. Default to
-    // expanded while streaming so in-flight chips stay visible, then
-    // auto-collapse once streaming ends for that message.
-    const TOOL_GROUP_THRESHOLD = 3;
-    const [toolsExpanded, setToolsExpanded] = useState(true);
+    const [previewAttachment, setPreviewAttachment] = useState(null);
+    // Tool-call group collapse. Always rendered as a collapsible
+    // summary — chips fold to a one-line "N tool calls · names"
+    // header by default. While streaming we keep them expanded so
+    // in-flight chips stay visible; once streaming ends (or for
+    // already-loaded messages) they collapse to the summary line.
+    // For chart calls the chart itself surfaces in the main bubble
+    // body anyway, so the chip strip is purely a transparency footer.
+    const [toolsExpanded, setToolsExpanded] = useState(!!isStreaming);
     const prevStreamingRef = useRef(isStreaming);
     React.useEffect(() => {
         if (prevStreamingRef.current && !isStreaming) {
-            if (Array.isArray(toolCalls) && toolCalls.length >= TOOL_GROUP_THRESHOLD) {
-                setToolsExpanded(false);
-            }
+            setToolsExpanded(false);
         }
         prevStreamingRef.current = isStreaming;
-    }, [isStreaming, toolCalls?.length]);
+    }, [isStreaming]);
     const reasoningRef = useRef(null);
 
     // Collapse state lives in the Zustand store so it survives remounts during streaming.
@@ -167,23 +169,41 @@ export default React.memo(function ChatMessage({
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
         >
-            {/* File attachments above user messages */}
+            {/* File attachments above user messages — clickable to open
+                FilePreviewModal. Only enable the click when the persisted
+                attachment carries previewable data (content / dataUrl /
+                sheets); old conversations may have only a filename stub. */}
             {isUser && attachments && attachments.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 2, maxWidth: '85%' }}>
-                    {attachments.map((att, i) => (
-                        <div
-                            key={i}
-                            style={{
-                                padding: '2px 8px', borderRadius: 6,
-                                background: 'var(--accent-soft)',
-                                border: '1px solid var(--accent)',
-                            }}
-                        >
-                            <span style={{ fontSize: 11, color: 'var(--accent)' }}>
-                                {att.filename || att.name}
-                            </span>
-                        </div>
-                    ))}
+                    {attachments.map((att, i) => {
+                        const previewable = !!(att && (att.content || att.dataUrl || att.attachmentId || (Array.isArray(att.sheets) && att.sheets.length > 0)));
+                        const baseStyle = {
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '2px 8px', borderRadius: 6,
+                            background: 'var(--accent-soft)',
+                            border: '1px solid var(--accent)',
+                            fontSize: 11, color: 'var(--accent)',
+                        };
+                        if (!previewable) {
+                            return (
+                                <div key={i} style={baseStyle}>
+                                    <span>{att.filename || att.name}</span>
+                                </div>
+                            );
+                        }
+                        return (
+                            <button
+                                key={i}
+                                type="button"
+                                onClick={() => setPreviewAttachment(att)}
+                                style={{ ...baseStyle, cursor: 'pointer' }}
+                                title="Click to preview"
+                            >
+                                <span>{att.filename || att.name}</span>
+                                <Eye style={{ width: 11, height: 11, opacity: 0.7 }} strokeWidth={1.75} />
+                            </button>
+                        );
+                    })}
                 </div>
             )}
 
@@ -321,6 +341,24 @@ export default React.memo(function ChatMessage({
                         <MessageContent content={displayContent} isStreaming={isStreaming} />
                     )}
 
+                    {/* Inline charts — surface render_chart results in the
+                        main response body so users don't have to expand the
+                        tool chip to see the visual. Charts also still render
+                        inside the chip dropdown for transparency, but this
+                        is where they belong as a first-class part of the
+                        assistant's reply. */}
+                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.some(tc => tc?.chartSpec) && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: displayContent ? 12 : 0 }}>
+                            {toolCalls.filter(tc => tc?.chartSpec).map((tc, idx) => (
+                                <ChartBlock
+                                    key={`bubble-chart-${idx}`}
+                                    spec={tc.chartSpec}
+                                    summary={tc.chartSummary || ''}
+                                />
+                            ))}
+                        </div>
+                    )}
+
                     {/* Inline artifact chip — shown when the assistant response
                         contains one or more fenced code blocks. Click opens the
                         right-rail Artifacts panel. */}
@@ -381,23 +419,13 @@ export default React.memo(function ChatMessage({
                         </div>
                     )}
 
-                    {/* Tool calls — also rendered during streaming so live
-                        chips show up for native tool invocations in flight.
-                        When the count hits TOOL_GROUP_THRESHOLD we wrap in
-                        a collapsible container and let the user fold to a
-                        one-line summary; otherwise the chips render inline
-                        as before. */}
+                    {/* Tool calls — always wrapped in a collapsible summary
+                        so the chip strip stays unobtrusive. Defaults to
+                        folded post-stream; expanded during streaming so
+                        users see live progress. Charts also surface in the
+                        main body above (see ChartBlock pass) — this strip
+                        is the transparency footer. */}
                     {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.length > 0 && (() => {
-                        const grouped = toolCalls.length >= TOOL_GROUP_THRESHOLD;
-                        if (!grouped) {
-                            return (
-                                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 6, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--rule-2)' }}>
-                                    {toolCalls.map((tc, idx) => (
-                                        <ToolCallBlock key={idx} tool={tc} />
-                                    ))}
-                                </div>
-                            );
-                        }
                         // Group header summary: count unique tool names so the user
                         // sees "web_search, fetch_url (x5)" rather than a raw count.
                         const counts = {};
@@ -515,6 +543,13 @@ export default React.memo(function ChatMessage({
                         )}
                     </span>
                 </div>
+            )}
+
+            {previewAttachment && (
+                <FilePreviewModal
+                    attachment={previewAttachment}
+                    onClose={() => setPreviewAttachment(null)}
+                />
             )}
         </div>
     );

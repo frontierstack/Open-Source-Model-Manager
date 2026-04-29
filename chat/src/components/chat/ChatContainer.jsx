@@ -1759,6 +1759,13 @@ export default function ChatContainer({
                 // clickable cards below the chip, matching the old
                 // client-side web-search UX.
                 const sources = extractSources(tc.name, tc.result);
+                // Lift the chartSpec / summary out of `tc.result` for
+                // render_chart calls so the chip carries just the chart
+                // payload — not the full tool result, which for other
+                // tools (fetch_url, web_search) would bloat the persisted
+                // message and SSE round-trips with redundant data.
+                const tcChartSpec = (tc.result && typeof tc.result === 'object' && tc.result.chartSpec) ? tc.result.chartSpec : null;
+                const tcChartSummary = (tc.result && typeof tc.result === 'object' && typeof tc.result.summary === 'string') ? tc.result.summary : '';
                 toolCalls.push({
                     type: 'native_tool_call',
                     label: tc.name || 'tool',
@@ -1771,6 +1778,8 @@ export default function ChatContainer({
                     error: tc.error,
                     preview: tc.preview,
                     sources: sources && sources.length ? sources : undefined,
+                    chartSpec: tcChartSpec || undefined,
+                    chartSummary: tcChartSummary || undefined,
                     // Sandbox metadata for the chip badge. Undefined when the
                     // server didn't supply it (older stream or native tool
                     // for which the policy couldn't be resolved).

@@ -27,6 +27,15 @@ module.exports = {
                     'postcss-loader',
                 ],
             },
+            // Emit the pdfjs worker as a separate asset so we can point
+            // GlobalWorkerOptions.workerSrc at it. Without this rule webpack
+            // tries to inline-bundle the worker into the main bundle and
+            // pdfjs's runtime check throws "fake worker" errors.
+            {
+                test: /pdf\.worker(\.min)?\.m?js$/,
+                type: 'asset/resource',
+                generator: { filename: 'pdf.worker.[contenthash].mjs' },
+            },
         ],
     },
     plugins: [

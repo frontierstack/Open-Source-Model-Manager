@@ -1341,6 +1341,9 @@ body.font-size-large .markdown-content,
 .max-w-2xl{
   max-width: 42rem;
 }
+.max-w-5xl{
+  max-width: 64rem;
+}
 .max-w-\[140px\]{
   max-width: 140px;
 }

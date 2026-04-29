@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield } from 'lucide-react';
+import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3 } from 'lucide-react';
 import SearchSources from './SearchSources';
+import ChartBlock from './ChartBlock';
 
 /**
  * ToolCallBlock — compact chip showing an assistant tool invocation.
@@ -10,9 +11,11 @@ import SearchSources from './SearchSources';
  * preview, error details, and any structured sources.
  */
 export default function ToolCallBlock({ tool }) {
-    // Auto-expand failed calls on first render so the user immediately sees
-    // why the call broke without an extra click. Still toggleable.
-    const [open, setOpen] = useState(tool?.status === 'failed');
+    // Auto-expand failed calls AND chart results on first render. Charts
+    // are the whole point of the call — the user shouldn't have to click
+    // the chip to see the rendered chart. Still toggleable to collapse.
+    const hasChart = !!tool?.chartSpec;
+    const [open, setOpen] = useState(tool?.status === 'failed' || hasChart);
     if (!tool) return null;
 
     const {
@@ -27,6 +30,8 @@ export default function ToolCallBlock({ tool }) {
         preview,
         sources,
         results,
+        chartSpec,
+        chartSummary,
         sandboxed,
         sandboxNetwork,
         sandboxSource,
@@ -39,10 +44,16 @@ export default function ToolCallBlock({ tool }) {
     // with a different icon so users can tell at a glance when the model
     // is reading guidance vs. running a tool.
     const isSkillLoad = type === 'native_tool_call' && label === 'load_skill';
+    // render_chart returns a structured chartSpec the UI renders inline
+    // as a real Recharts SVG. ChatContainer.jsx lifts the spec out of
+    // tool.result onto the chip so we don't have to keep the full
+    // tool_result payload on the persisted message.
+    const isChart = !!chartSpec || (type === 'native_tool_call' && label === 'render_chart');
     const IconComponent =
         type === 'web_search' ? Globe :
         type === 'url_fetch' ? LinkIcon :
         isSkillLoad ? BookOpen :
+        isChart ? BarChart3 :
         Wrench;
 
     const toolName =
@@ -77,7 +88,7 @@ export default function ToolCallBlock({ tool }) {
     // Show args panel when we have parsed args or the legacy single-string `query`.
     const argEntries = args && typeof args === 'object' ? Object.entries(args) : null;
     const hasArgs = (argEntries && argEntries.length > 0) || (!argEntries && query);
-    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs;
+    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec;
 
     const statusColor =
         isRunning ? 'var(--accent)'
@@ -86,10 +97,12 @@ export default function ToolCallBlock({ tool }) {
 
     // Tighter, content-sized chip. flex-direction column lets the header
     // stay compact while the expanded body stretches to the chip's natural
-    // (content-driven) width.
+    // (content-driven) width. Charts force the chip to take full width so
+    // the chart has room to breathe.
     const wrap = {
-        display: 'inline-flex',
+        display: isChart ? 'flex' : 'inline-flex',
         flexDirection: 'column',
+        width: isChart ? '100%' : undefined,
         maxWidth: '100%',
         border: `1px solid ${isFailed ? 'color-mix(in oklab, var(--danger) 45%, var(--rule))' : 'var(--rule)'}`,
         borderRadius: 8,
@@ -191,6 +204,9 @@ export default function ToolCallBlock({ tool }) {
             </button>
             {open && hasDetail && (
                 <div style={body}>
+                    {chartSpec && (
+                        <ChartBlock spec={chartSpec} summary={chartSummary || ''} />
+                    )}
                     {hasArgs && (
                         argEntries && argEntries.length > 0 ? (
                             <ArgsTable entries={argEntries} />
@@ -203,7 +219,7 @@ export default function ToolCallBlock({ tool }) {
                     )}
                     {isFailed && error && <ErrorBlock error={error} toolName={toolName} />}
                     {hasSources && <SearchSources sources={sourceList} />}
-                    {preview && !isFailed && !hasSources && (
+                    {preview && !isFailed && !hasSources && !chartSpec && (
                         <pre style={{
                             margin: 0,
                             fontFamily: 'var(--font-mono)', fontSize: 11.5,

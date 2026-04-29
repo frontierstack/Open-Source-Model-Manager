@@ -17,7 +17,9 @@ import {
     Link2,
     Sparkles,
     Circle,
+    Eye,
 } from 'lucide-react';
+import FilePreviewModal from './FilePreviewModal';
 
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 B';
@@ -66,6 +68,7 @@ export default function ChatInput({
     const [uploadingFiles, setUploadingFiles] = useState([]);
     const [promptDropdownOpen, setPromptDropdownOpen] = useState(false);
     const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+    const [previewAttachment, setPreviewAttachment] = useState(null);
     const fileInputRef = useRef(null);
     const textareaRef = useRef(null);
     const dragCounterRef = useRef(0);
@@ -237,8 +240,10 @@ export default function ChatInput({
                         type: data.type,
                         content: data.content,
                         dataUrl: data.dataUrl,
+                        attachmentId: data.attachmentId,
                         charCount: data.charCount,
                         pageCount: data.pageCount,
+                        sheetCount: data.sheetCount,
                         estimatedTokens: data.estimatedTokens,
                         requiresChunking: data.requiresChunking,
                         totalChunks: data.totalChunks,
@@ -304,6 +309,7 @@ export default function ChatInput({
                     size: pastedText.length,
                     type: data.type,
                     content: data.content,
+                    attachmentId: data.attachmentId,
                     charCount: data.charCount,
                     estimatedTokens: data.estimatedTokens,
                     requiresChunking: data.requiresChunking,
@@ -532,34 +538,45 @@ export default function ChatInput({
                                 </div>
                             ))}
                             {attachments.map((att, index) => (
-                                <div
+                                <button
                                     key={att.id || index}
+                                    type="button"
+                                    onClick={() => setPreviewAttachment(att)}
                                     style={{
                                         display: 'inline-flex', alignItems: 'center', gap: 6,
                                         padding: '4px 8px', borderRadius: 6,
                                         background: att.requiresChunking ? 'var(--accent-soft)' : 'var(--bg-2)',
                                         border: `1px solid ${att.requiresChunking ? 'var(--accent)' : 'var(--rule)'}`,
                                         fontSize: 11, color: 'var(--ink-2)',
+                                        cursor: 'pointer',
+                                        transition: 'border-color .1s, background .1s',
                                     }}
                                     role="listitem"
+                                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = att.requiresChunking ? 'var(--accent)' : 'var(--rule)'; }}
                                     title={att.requiresChunking
-                                        ? `Large file: ~${att.estimatedTokens?.toLocaleString()} tokens (${att.totalChunks} chunks). Processed automatically.`
-                                        : (att.charCount ? `${att.charCount.toLocaleString()} chars (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)` : att.filename)}
+                                        ? `Click to preview · Large file: ~${att.estimatedTokens?.toLocaleString()} tokens (${att.totalChunks} chunks).`
+                                        : `Click to preview${att.charCount ? ` · ${att.charCount.toLocaleString()} chars (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)` : ''}`}
                                 >
                                     {getFileIcon(att.filename, att.type)}
                                     <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                         {att.filename}
                                     </span>
-                                    <button
-                                        onClick={() => onRemoveAttachment(index)}
-                                        style={{ padding: 6, marginLeft: 2, borderRadius: 4, opacity: 0.6, background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 24, minHeight: 24 }}
+                                    <Eye style={{ width: 12, height: 12, opacity: 0.55, flexShrink: 0 }} strokeWidth={1.75} />
+                                    <span
+                                        onClick={(e) => { e.stopPropagation(); onRemoveAttachment(index); }}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        role="button"
+                                        tabIndex={0}
+                                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onRemoveAttachment(index); } }}
+                                        style={{ padding: 6, marginLeft: 2, borderRadius: 4, opacity: 0.6, background: 'transparent', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 24, minHeight: 24, cursor: 'pointer' }}
                                         onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
                                         onMouseLeave={(e) => e.currentTarget.style.opacity = 0.6}
                                         aria-label={`Remove ${att.filename}`}
                                     >
                                         <X className="w-3.5 h-3.5" />
-                                    </button>
-                                </div>
+                                    </span>
+                                </button>
                             ))}
                         </div>
                     </div>
@@ -868,6 +885,13 @@ export default function ChatInput({
                 .animate-fade-in { animation: fade-in 0.2s ease-out; }
                 .animate-slide-up { animation: slide-up 0.2s ease-out; }
             `}</style>
+
+            {previewAttachment && (
+                <FilePreviewModal
+                    attachment={previewAttachment}
+                    onClose={() => setPreviewAttachment(null)}
+                />
+            )}
         </>
     );
 }

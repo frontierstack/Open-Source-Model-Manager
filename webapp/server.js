@@ -83,6 +83,12 @@ try {
     console.log('AIMem service not available:', error.message);
 }
 
+// Persistent attachment store — keeps PDF bytes and structured xlsx
+// rows on disk so they don't bloat conversation messages or the SSE
+// stream. Loaded eagerly so upload + conversation-delete handlers can
+// require it once.
+const attachmentStore = require('./services/attachmentStore');
+
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
 let scraplingEnabled = false;
@@ -9615,13 +9621,40 @@ app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
         conversations.splice(index, 1);
         await saveConversationsIndex(userId, conversations);
 
-        // Delete messages file
+        // Load the messages BEFORE unlinking so we can walk their
+        // attachments and wipe matching entries from the persistent
+        // attachment store. Errors here are non-fatal — orphan-sweep at
+        // boot will catch anything we miss. Use loadConversationMessages
+        // so the base64 wrapper applied by encodeConversationData is
+        // transparently undone.
         const userDir = await ensureUserConversationsDir(userId);
         const messagesPath = path.join(userDir, `${id}.json`);
+        let convMessages = [];
+        try {
+            convMessages = await loadConversationMessages(userId, id);
+        } catch (_) { /* file may not exist */ }
+
         try {
             await fs.unlink(messagesPath);
         } catch (e) {
             // Ignore if file doesn't exist
+        }
+
+        // Wipe attachment-store entries for every PDF / xlsx / etc. the
+        // user uploaded into this conversation. Same broadcast pattern as
+        // the sandbox-workspace wipe below.
+        try {
+            const wipe = await attachmentStore.deleteForConversation(userId, convMessages);
+            if (wipe.count > 0) {
+                const kb = Math.round((wipe.byteSize || 0) / 1024);
+                const logMsg = `[Attachments] Wiped ${wipe.count} attachment(s) for deleted conversation ${id.slice(0, 8)}… — ${kb} KB`;
+                console.log(logMsg);
+                try {
+                    broadcast({ type: 'log', level: 'info', message: logMsg }, userId);
+                } catch (_) { /* broadcast best-effort */ }
+            }
+        } catch (e) {
+            console.warn('[Attachments] wipe on conv delete failed:', e.message);
         }
 
         // Delete per-conversation memory directory alongside the messages
@@ -10411,6 +10444,23 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const optimized = sanitizeForModel(maybeOptimize(finalText));
                 const prepared = prepareContent(optimized, originalLength);
 
+                // Save the raw PDF to the attachment store so the chat UI
+                // can fetch it on demand for inline rendering. Conversations
+                // only persist the small attachmentId, not 8 MB of base64.
+                let attachmentId = null;
+                try {
+                    const ownerId = req.user?.id || req.apiKeyData?.id || 'default';
+                    attachmentId = await attachmentStore.save(ownerId, {
+                        filename,
+                        mimeType: 'application/pdf',
+                        type: 'pdf',
+                        bytes: buffer,
+                        meta: { pageCount, charCount: prepared.content.length },
+                    });
+                } catch (storeErr) {
+                    console.warn('[Chat Upload] attachmentStore save failed (PDF):', storeErr.message);
+                }
+
                 return res.json({
                     type: 'pdf',
                     filename,
@@ -10422,7 +10472,8 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     estimatedTokens: prepared.estimatedTokens,
                     requiresChunking: prepared.requiresChunking,
                     totalChunks: prepared.totalChunks,
-                    ocrPerformed: ocrPerformed
+                    ocrPerformed: ocrPerformed,
+                    ...(attachmentId ? { attachmentId } : {}),
                 });
             } catch (e) {
                 console.error('PDF parsing error:', e);
@@ -10644,16 +10695,63 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             }
         }
 
-        // For Excel files (.xlsx) — parsed via exceljs
+        // For Excel files (.xlsx) — parsed via @e965/xlsx
         if (ext === 'xlsx' || ext === 'xls' || mimeType?.includes('spreadsheet')) {
             try {
                 const buffer = Buffer.from(content, 'base64');
-                const textContent = await xlsxBufferToCsv(buffer);
-                const sheetCount = (textContent.match(/^=== Sheet: /gm) || []).length;
+                const XLSX = require('@e965/xlsx');
+                const workbook = XLSX.read(buffer, { type: 'buffer' });
+                // Two views of the same data: a CSV blob (what the model sees;
+                // matches the legacy xlsxBufferToCsv format byte-for-byte) and
+                // a structured `sheets[]` payload that the chat UI's
+                // FilePreviewModal renders as a real HTML table. Cap rows
+                // per sheet so a 100k-row workbook doesn't bloat the upload
+                // response — the model still gets the full CSV in `content`.
+                const PREVIEW_ROWS_PER_SHEET = 1000;
+                const csvChunks = [];
+                const sheetsStructured = [];
+                for (const sheetName of workbook.SheetNames) {
+                    const ws = workbook.Sheets[sheetName];
+                    const csv = XLSX.utils.sheet_to_csv(ws).trim();
+                    if (csv) csvChunks.push(`=== Sheet: ${sheetName} ===\n${csv}`);
+                    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
+                    sheetsStructured.push({
+                        name: sheetName,
+                        rowCount: aoa.length,
+                        truncated: aoa.length > PREVIEW_ROWS_PER_SHEET,
+                        rows: aoa.slice(0, PREVIEW_ROWS_PER_SHEET).map(row =>
+                            Array.isArray(row) ? row.map(cell => cell == null ? '' : String(cell)) : []
+                        ),
+                    });
+                }
+                const textContent = csvChunks.join('\n\n');
 
                 const originalLength = textContent.length;
                 const optimized = sanitizeForModel(maybeOptimize(textContent));
                 const prepared = prepareContent(optimized, originalLength);
+
+                // Save the structured sheets to the attachment store.
+                // FilePreviewModal fetches them on demand via
+                // /api/attachments/:id/meta so conversations don't carry
+                // hundreds of KB of cell data per upload.
+                let attachmentId = null;
+                try {
+                    const ownerId = req.user?.id || req.apiKeyData?.id || 'default';
+                    attachmentId = await attachmentStore.save(ownerId, {
+                        filename,
+                        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        type: 'spreadsheet',
+                        // No raw bytes — sheets[] is the only thing the UI
+                        // needs and the model already has the CSV content.
+                        bytes: null,
+                        meta: {
+                            sheetCount: sheetsStructured.length,
+                            sheets: sheetsStructured,
+                        },
+                    });
+                } catch (storeErr) {
+                    console.warn('[Chat Upload] attachmentStore save failed (xlsx):', storeErr.message);
+                }
 
                 return res.json({
                     type: 'spreadsheet',
@@ -10662,10 +10760,11 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
                     saved: originalLength - prepared.content.length,
-                    sheets: sheetCount,
+                    sheetCount: sheetsStructured.length,
                     estimatedTokens: prepared.estimatedTokens,
                     requiresChunking: prepared.requiresChunking,
-                    totalChunks: prepared.totalChunks
+                    totalChunks: prepared.totalChunks,
+                    ...(attachmentId ? { attachmentId } : {}),
                 });
             } catch (e) {
                 console.error('Excel parsing error:', e);
@@ -10830,6 +10929,52 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         const detail = error.message || 'Unknown processing error';
         res.status(500).json({ error: `Failed to process file: ${detail}` });
     }
+});
+
+// ----- Attachment store endpoints --------------------------------------
+// PDFs and structured spreadsheet rows live under
+// /models/.modelserver/attachments/<userId>/<aid>/ (see attachmentStore.js).
+// FilePreviewModal fetches via these routes when the persisted attachment
+// has only an attachmentId, no inline dataUrl/sheets. Ownership is path-
+// scoped: a user's bucket is /attachments/<userIdSafe>/, derived from
+// auth — there's no cross-user lookup.
+app.get('/api/attachments/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'Query permission required' });
+    }
+    const { id } = req.params;
+    if (!attachmentStore.isValidId(id)) {
+        return res.status(400).json({ error: 'invalid attachment id' });
+    }
+    const ownerId = req.user?.id || req.apiKeyData?.id || 'default';
+    const loaded = await attachmentStore.loadBytes(ownerId, id);
+    if (!loaded) {
+        return res.status(404).json({ error: 'attachment not found' });
+    }
+    res.setHeader('Content-Type', loaded.meta.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', String(loaded.bytes.length));
+    // Allow inline rendering (the chat UI reads this as a Blob via fetch).
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    if (loaded.meta.filename) {
+        res.setHeader('Content-Disposition', `inline; filename="${loaded.meta.filename.replace(/"/g, '')}"`);
+    }
+    res.end(loaded.bytes);
+});
+
+app.get('/api/attachments/:id/meta', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'query')) {
+        return res.status(403).json({ error: 'Query permission required' });
+    }
+    const { id } = req.params;
+    if (!attachmentStore.isValidId(id)) {
+        return res.status(400).json({ error: 'invalid attachment id' });
+    }
+    const ownerId = req.user?.id || req.apiKeyData?.id || 'default';
+    const meta = await attachmentStore.loadMeta(ownerId, id);
+    if (!meta) {
+        return res.status(404).json({ error: 'attachment not found' });
+    }
+    res.json(meta);
 });
 
 // ============================================================================
@@ -15984,6 +16129,261 @@ app.use((req, res) => {
         },
     });
 
+    // ----- render_chart ----------------------------------------------------
+    // Lets the model emit a structured chart spec that the chat UI renders
+    // inline as a real Recharts SVG. The tool itself does no I/O — it just
+    // validates the spec and echoes it back inside `chartSpec`. The
+    // ToolCallBlock chip in chat/ detects this field and mounts ChartBlock
+    // instead of the text preview.
+    tools.registerTool({
+        name: 'render_chart',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'render_chart',
+                    description:
+                        'Render an inline chart in the chat UI. Use whenever the user asks to graph, plot, chart, or visualize data — either data they provided in the conversation or data you fetched via fetch_timeseries / fetch_url / web_search. ' +
+                        'Pick the chart type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (≤8 slices), scatter for correlations. ' +
+                        'For multi-series charts, pass each series as `{ name, color? }` in `series[]` and one `{ x, <seriesName>: y, ... }` object per x-value in `data[]`. For single-series charts, just use `{ x, y }`. ' +
+                        'Always include a clear `title` and axis labels — the user reads the chart, not your prose summary.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            type: {
+                                type: 'string',
+                                enum: ['line', 'bar', 'area', 'pie', 'scatter'],
+                                description: 'Chart type.',
+                            },
+                            title: { type: 'string', description: 'Chart title.' },
+                            xLabel: { type: 'string', description: 'X-axis label (omit for pie).' },
+                            yLabel: { type: 'string', description: 'Y-axis label (omit for pie).' },
+                            data: {
+                                type: 'array',
+                                description:
+                                    'Rows of data. Single-series: [{x, y}, ...]. Multi-series: [{x, seriesName1: y1, seriesName2: y2, ...}, ...]. ' +
+                                    'Pie: [{label, value}, ...].',
+                                items: { type: 'object' },
+                            },
+                            series: {
+                                type: 'array',
+                                description: 'Optional explicit series for multi-series charts.',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        name: { type: 'string', description: 'Series name — must match a key in each data row.' },
+                                        color: { type: 'string', description: 'CSS color (hex / rgb / named). Optional; auto-assigned if omitted.' },
+                                    },
+                                    required: ['name'],
+                                    additionalProperties: false,
+                                },
+                            },
+                            summary: {
+                                type: 'string',
+                                description: 'One-sentence takeaway shown above the chart (e.g. "S&P 500 rose 18% over the period").',
+                            },
+                        },
+                        required: ['type', 'data'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const type = String(args?.type || '').toLowerCase();
+            if (!['line', 'bar', 'area', 'pie', 'scatter'].includes(type)) {
+                return { error: `Unsupported chart type "${args?.type}". Use line, bar, area, pie, or scatter.` };
+            }
+            const data = Array.isArray(args?.data) ? args.data : null;
+            if (!data || data.length === 0) {
+                return { error: 'data must be a non-empty array of objects.' };
+            }
+            // Hard cap to keep the tool_result SSE event under the 32 KB
+            // serialization cap that gates structured payload shipping.
+            const MAX_POINTS = 1000;
+            const trimmed = data.length > MAX_POINTS ? data.slice(0, MAX_POINTS) : data;
+            const series = Array.isArray(args?.series)
+                ? args.series.filter(s => s && typeof s.name === 'string').map(s => ({
+                      name: s.name,
+                      ...(typeof s.color === 'string' ? { color: s.color } : {}),
+                  }))
+                : null;
+            const chartSpec = {
+                type,
+                title: typeof args?.title === 'string' ? args.title : '',
+                xLabel: typeof args?.xLabel === 'string' ? args.xLabel : '',
+                yLabel: typeof args?.yLabel === 'string' ? args.yLabel : '',
+                data: trimmed,
+                ...(series && series.length > 0 ? { series } : {}),
+            };
+            return {
+                chartSpec,
+                summary: typeof args?.summary === 'string' ? args.summary : '',
+                pointCount: trimmed.length,
+                truncated: data.length > MAX_POINTS,
+            };
+        },
+    });
+
+    // ----- fetch_timeseries ------------------------------------------------
+    // Pulls historical OHLC data from Yahoo Finance's v8 chart endpoint —
+    // free, no API key, JSON, broad coverage (stocks, indexes, FX, crypto).
+    // Stooq used to be the obvious choice but they moved their CSV endpoint
+    // behind an apikey gate in 2026, so any unauthenticated request now
+    // returns the apikey-instructions blurb instead of data.
+    //
+    // Symbol normalisation lets the model use its training-era instincts:
+    // `^spx`/`^ndq`/`^dji` get rewritten to Yahoo's `^GSPC`/`^IXIC`/`^DJI`,
+    // `aapl.us` strips to `AAPL`, `eurusd` becomes `EURUSD=X`. Anything
+    // else passes through verbatim.
+    const YF_INDEX_ALIASES = {
+        '^spx': '^GSPC', '^sp500': '^GSPC', '^sp': '^GSPC',
+        '^dji': '^DJI', '^dow': '^DJI',
+        '^ndq': '^IXIC', '^nasdaq': '^IXIC', '^ixic': '^IXIC',
+        '^rut': '^RUT', '^russell': '^RUT', '^russell2000': '^RUT',
+        '^vix': '^VIX', '^ftse': '^FTSE', '^dax': '^GDAXI',
+        '^nikkei': '^N225', '^n225': '^N225',
+    };
+    function normaliseYahooSymbol(raw) {
+        const s = String(raw || '').trim();
+        if (!s) return '';
+        const lower = s.toLowerCase();
+        if (YF_INDEX_ALIASES[lower]) return YF_INDEX_ALIASES[lower];
+        // US stock with .us suffix → strip
+        if (/^[a-z0-9.-]+\.us$/i.test(s)) return s.replace(/\.us$/i, '').toUpperCase();
+        // Six-letter forex pair with no =X → add =X
+        if (/^[a-z]{6}$/i.test(s)) return s.toUpperCase() + '=X';
+        // Index-style with caret → uppercase preserves Yahoo's convention
+        if (s.startsWith('^')) return '^' + s.slice(1).toUpperCase();
+        // Plain ticker → uppercase
+        if (/^[a-z]+$/i.test(s)) return s.toUpperCase();
+        return s;
+    }
+    tools.registerTool({
+        name: 'fetch_timeseries',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'fetch_timeseries',
+                    description:
+                        'Fetch historical OHLC time series from Yahoo Finance (free, no API key). Use for stock tickers (AAPL, MSFT), market indexes (^GSPC for S&P 500, ^DJI for Dow, ^IXIC for Nasdaq — also accepts ^spx/^dji/^ndq aliases), forex (EURUSD=X or just "eurusd"), crypto (BTC-USD), and commodities (GC=F gold, CL=F oil). ' +
+                        'After fetching, pass the rows into render_chart with type=line and a `close` series for a price chart. If a symbol returns no data, the model should suggest the user check the ticker — Yahoo uses different symbols than some other sources (e.g. ^GSPC not ^SPX).',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            symbol: {
+                                type: 'string',
+                                description: 'Yahoo Finance symbol. Stocks: bare ticker (AAPL, MSFT). Indexes: ^GSPC (S&P 500), ^DJI (Dow), ^IXIC (Nasdaq), ^RUT, ^VIX, ^FTSE, ^GDAXI, ^N225. FX: EURUSD=X, GBPUSD=X (or just "eurusd" — auto-suffixed). Crypto: BTC-USD, ETH-USD.',
+                            },
+                            period: {
+                                type: 'string',
+                                enum: ['1mo', '3mo', '6mo', '1y', '2y', '5y', 'ytd', 'max'],
+                                description: 'Lookback window (default 1y).',
+                            },
+                            interval: {
+                                type: 'string',
+                                enum: ['d', 'w', 'm'],
+                                description: 'Bar interval: d=daily, w=weekly, m=monthly (default d).',
+                            },
+                        },
+                        required: ['symbol'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const rawSymbol = String(args?.symbol || '').trim();
+            if (!rawSymbol) return { error: 'symbol is required' };
+            if (!/^[\^a-zA-Z0-9.=_-]{1,32}$/.test(rawSymbol)) {
+                return { error: 'symbol contains invalid characters' };
+            }
+            const symbol = normaliseYahooSymbol(rawSymbol);
+            const period = ['1mo', '3mo', '6mo', '1y', '2y', '5y', 'ytd', 'max'].includes(args?.period) ? args.period : '1y';
+            const interval = ['d', 'w', 'm'].includes(args?.interval) ? args.interval : 'd';
+            const yfInterval = interval === 'd' ? '1d' : interval === 'w' ? '1wk' : '1mo';
+            // Yahoo's chart endpoint accepts the period as `range` directly.
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${yfInterval}&range=${period}`;
+            try {
+                const resp = await axios.get(url, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'Accept': 'application/json,text/plain,*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    },
+                    timeout: 12000,
+                    // Surface non-2xx responses (e.g. 404 for unknown tickers)
+                    // without throwing so we can return a structured error.
+                    validateStatus: () => true,
+                });
+                const body = resp.data;
+                // Yahoo packages errors inside the chart envelope, e.g.
+                //   { chart: { result: null, error: { code: "Not Found", description: "..." } } }
+                if (body?.chart?.error) {
+                    return {
+                        symbol, normalisedSymbol: symbol, period, interval,
+                        error: `Yahoo error: ${body.chart.error.description || body.chart.error.code || 'unknown'} — check ticker (Yahoo uses ^GSPC for S&P 500, ^DJI for Dow, ^IXIC for Nasdaq)`,
+                    };
+                }
+                const result = body?.chart?.result?.[0];
+                if (!result || !Array.isArray(result.timestamp) || result.timestamp.length === 0) {
+                    return {
+                        symbol, normalisedSymbol: symbol, period, interval,
+                        error: 'no data returned — symbol may be wrong, delisted, or this period/interval combo is unsupported',
+                    };
+                }
+                const ts = result.timestamp;
+                const quote = result.indicators?.quote?.[0] || {};
+                const adjclose = result.indicators?.adjclose?.[0]?.adjclose;
+                const opens = quote.open || [];
+                const highs = quote.high || [];
+                const lows = quote.low || [];
+                const closes = quote.close || [];
+                const volumes = quote.volume || [];
+                const rows = [];
+                for (let i = 0; i < ts.length; i++) {
+                    const close = closes[i];
+                    if (close == null || !Number.isFinite(close)) continue;
+                    const d = new Date(ts[i] * 1000);
+                    const date = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+                    const row = { date, close };
+                    if (Number.isFinite(opens[i])) row.open = opens[i];
+                    if (Number.isFinite(highs[i])) row.high = highs[i];
+                    if (Number.isFinite(lows[i])) row.low = lows[i];
+                    if (Number.isFinite(volumes[i])) row.volume = volumes[i];
+                    if (adjclose && Number.isFinite(adjclose[i])) row.adjclose = adjclose[i];
+                    rows.push(row);
+                }
+                if (rows.length === 0) {
+                    return {
+                        symbol, normalisedSymbol: symbol, period, interval,
+                        error: 'data returned but every close is null (likely an off-market period or a non-trading symbol)',
+                    };
+                }
+                // Cap rows so a `period: max` request doesn't blow past the
+                // tool_result SSE size cap. 800 daily bars ≈ 3.2 years.
+                const MAX_ROWS = 800;
+                const truncated = rows.length > MAX_ROWS;
+                const data = truncated ? rows.slice(-MAX_ROWS) : rows;
+                return {
+                    symbol: rawSymbol,
+                    normalisedSymbol: symbol,
+                    period,
+                    interval,
+                    count: data.length,
+                    truncated,
+                    source: 'finance.yahoo.com',
+                    currency: result.meta?.currency,
+                    longName: result.meta?.longName || result.meta?.shortName,
+                    data,
+                };
+            } catch (e) {
+                return { symbol: rawSymbol, normalisedSymbol: symbol, period, interval, error: `fetch failed: ${e.message || e}` };
+            }
+        },
+    });
+
     // ----- scrapling_fetch -------------------------------------------------
     // Exposes Scrapling (StealthyFetcher + curl_cffi) as a first-class tool.
     // Today Scrapling only runs as a fallback inside fetch_url / web_search;
@@ -16750,6 +17150,68 @@ server.listen(PORT, async () => {
     } catch (e) {
         console.warn('[workspace-migration] failed (non-fatal):', e.message);
     }
+
+    // Attachment-store orphan sweep. Walks every user's conversations,
+    // collects every attachmentId still referenced, and deletes any
+    // attachment dir older than 14 days that no live message references.
+    // Catches:
+    //   - uploads that never made it into a sent message (browser closed
+    //     before send, conversation never persisted)
+    //   - persistence races where the message file was overwritten without
+    //     the attachment getting a chance to be referenced
+    // Runs once at boot and again every 12 hours so a long-running webapp
+    // doesn't grow attachments without bound.
+    async function sweepAttachmentOrphans() {
+        try {
+            const refsByUser = new Map();
+            let userEntries;
+            try {
+                userEntries = await fs.readdir(CONVERSATIONS_DIR, { withFileTypes: true });
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+                userEntries = [];
+            }
+            for (const userEnt of userEntries) {
+                if (!userEnt.isDirectory()) continue;
+                const userId = userEnt.name;
+                const userBucket = attachmentStore.userIdSafe(userId);
+                let refs = refsByUser.get(userBucket);
+                if (!refs) { refs = new Set(); refsByUser.set(userBucket, refs); }
+                let convFiles;
+                try {
+                    convFiles = await fs.readdir(path.join(CONVERSATIONS_DIR, userId));
+                } catch (_) { continue; }
+                for (const f of convFiles) {
+                    if (!f.endsWith('.json') || f === 'index.json') continue;
+                    const convId = f.replace(/\.json$/, '');
+                    if (!/^[a-zA-Z0-9_-]+$/.test(convId)) continue;
+                    let messages;
+                    try {
+                        messages = await loadConversationMessages(userId, convId);
+                    } catch (_) { continue; }
+                    for (const msg of messages) {
+                        const atts = Array.isArray(msg?.attachments) ? msg.attachments : [];
+                        for (const att of atts) {
+                            if (att && typeof att.attachmentId === 'string') {
+                                refs.add(att.attachmentId);
+                            }
+                        }
+                    }
+                }
+            }
+            const result = await attachmentStore.sweepOrphans(refsByUser);
+            if (result.swept > 0) {
+                const kb = Math.round((result.byteSize || 0) / 1024);
+                console.log(`[AttachmentSweeper] removed ${result.swept} orphan attachment(s), reclaimed ${kb} KB`);
+            }
+        } catch (e) {
+            console.warn('[AttachmentSweeper] failed:', e.message);
+        }
+    }
+    // Boot pass — fires after server is listening so it doesn't block.
+    sweepAttachmentOrphans();
+    const ATTACHMENT_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
+    setInterval(sweepAttachmentOrphans, ATTACHMENT_SWEEP_INTERVAL_MS).unref();
 
     // Sandbox scratch dir TTL sweeper — deletes run directories older than
     // ARTIFACT_TTL_MS so artifact files from sandboxed tool runs don't

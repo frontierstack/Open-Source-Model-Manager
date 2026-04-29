@@ -3735,7 +3735,12 @@ with open('/path/to/image.png', 'rb') as f:
     )
 
 result = response.json()
-print(f"Uploaded: {result['filename']}, Type: {result['type']}")`,
+print(f"Uploaded: {result['filename']}, Type: {result['type']}")
+# PDFs and spreadsheets also return an attachmentId — used to fetch
+# the raw bytes (PDF) or structured sheets (xlsx) on demand via
+# GET /api/attachments/:id and /api/attachments/:id/meta.
+if result.get('attachmentId'):
+    print(f"attachmentId: {result['attachmentId']}")`,
                 powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
@@ -3765,7 +3770,9 @@ $([System.Text.Encoding]::UTF8.GetString($fileBytes))
 "@
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/chat/upload" -Method Post -Headers $headers -ContentType $contentType -Body $body
-Write-Output "Uploaded: $($response.filename)"`,
+Write-Output "Uploaded: $($response.filename)"
+# PDFs and spreadsheets include an attachmentId for fetching bytes/meta later.
+if ($response.attachmentId) { Write-Output "attachmentId: $($response.attachmentId)" }`,
                 javascript: `// Bearer Token Authentication
 const formData = new FormData();
 formData.append('file', fileInput.files[0]);
@@ -3776,7 +3783,12 @@ fetch('${baseUrl}/api/chat/upload', {
   body: formData
 })
 .then(res => res.json())
-.then(data => console.log('Uploaded:', data.filename, 'Type:', data.type))
+.then(data => {
+  console.log('Uploaded:', data.filename, 'Type:', data.type);
+  // PDFs and spreadsheets include an attachmentId — fetch bytes/meta with
+  // GET /api/attachments/:id and /api/attachments/:id/meta.
+  if (data.attachmentId) console.log('attachmentId:', data.attachmentId);
+})
 .catch(err => console.error(err));
 
 // OR API Key + Secret Authentication
@@ -3790,6 +3802,179 @@ fetch('${baseUrl}/api/chat/upload', {
 })
 .then(res => res.json())
 .then(data => console.log('Uploaded:', data.filename))
+.catch(err => console.error(err));`
+            },
+            // ============================================================================
+            // ATTACHMENT STORE
+            // ============================================================================
+            // PDFs and structured spreadsheet rows uploaded via /api/chat/upload
+            // are kept in a per-user attachment store at
+            // /models/.modelserver/attachments/<userId>/<aid>/. The upload response
+            // returns an `attachmentId`; these endpoints fetch the bytes (PDF) or
+            // structured metadata (xlsx sheets[]) on demand. Owner-scoped — no
+            // cross-user access. Wiped when the parent conversation is deleted,
+            // plus a 14-day orphan sweep at boot + every 12h.
+            '/api/attachments/:id': {
+                curl: `# Fetch raw attachment bytes (PDF, etc.) — Content-Type comes from saved metadata.
+curl -k -X GET ${baseUrl}/api/attachments/abcd1234567890abcdef1234567890ab \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -o downloaded.pdf
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/attachments/abcd1234567890abcdef1234567890ab \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -o downloaded.pdf`,
+                python: `import requests
+
+attachment_id = "abcd1234567890abcdef1234567890ab"  # 32-hex-char id from /api/chat/upload
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/attachments/{attachment_id}',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/attachments/{attachment_id}',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+if response.ok:
+    with open('downloaded.pdf', 'wb') as f:
+        f.write(response.content)
+    print(f"Saved {len(response.content)} bytes")
+else:
+    print(f"Error: {response.status_code} {response.text}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$attachmentId = "abcd1234567890abcdef1234567890ab"
+Invoke-WebRequest -Uri "${baseUrl}/api/attachments/$attachmentId" -Headers $headers -OutFile "downloaded.pdf"
+Write-Output "Saved downloaded.pdf"`,
+                javascript: `// Bearer Token Authentication
+const attachmentId = 'abcd1234567890abcdef1234567890ab'; // from /api/chat/upload
+
+fetch(\`${baseUrl}/api/attachments/\${attachmentId}\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' },
+})
+.then(res => res.blob())
+.then(blob => {
+  // For inline rendering (e.g. <embed> or pdfjs), turn the blob into an
+  // object URL.
+  const url = URL.createObjectURL(blob);
+  console.log('Object URL:', url, 'Size:', blob.size);
+})
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch(\`${baseUrl}/api/attachments/\${attachmentId}\`, {
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  },
+})
+.then(res => res.blob())
+.then(blob => console.log('size:', blob.size))
+.catch(err => console.error(err));`
+            },
+            '/api/attachments/:id/meta': {
+                curl: `# Fetch attachment metadata (filename, mimeType, byteSize, etc.).
+# For spreadsheet uploads this also includes structured sheets[] data:
+#   { name, rowCount, truncated, rows: [[...], ...] }
+curl -k -X GET ${baseUrl}/api/attachments/abcd1234567890abcdef1234567890ab/meta \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/attachments/abcd1234567890abcdef1234567890ab/meta \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+attachment_id = "abcd1234567890abcdef1234567890ab"
+
+# Bearer Token Authentication
+response = requests.get(
+    f'${baseUrl}/api/attachments/{attachment_id}/meta',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    f'${baseUrl}/api/attachments/{attachment_id}/meta',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+
+meta = response.json()
+print(f"Filename: {meta.get('filename')}")
+print(f"Type: {meta.get('type')} ({meta.get('mimeType')})")
+print(f"Size: {meta.get('byteSize')} bytes")
+# Spreadsheet uploads include the parsed rows
+if meta.get('sheets'):
+    for s in meta['sheets']:
+        print(f"  Sheet '{s['name']}': {s['rowCount']} rows")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{
+    "Authorization" = "Bearer your_bearer_token"
+}
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+}
+
+$attachmentId = "abcd1234567890abcdef1234567890ab"
+$meta = Invoke-RestMethod -Uri "${baseUrl}/api/attachments/$attachmentId/meta" -Headers $headers
+Write-Output "Filename: $($meta.filename)"
+Write-Output "Size: $($meta.byteSize) bytes"
+if ($meta.sheets) { $meta.sheets | ForEach-Object { Write-Output "Sheet '$($_.name)': $($_.rowCount) rows" } }`,
+                javascript: `// Bearer Token Authentication
+const attachmentId = 'abcd1234567890abcdef1234567890ab';
+
+fetch(\`${baseUrl}/api/attachments/\${attachmentId}/meta\`, {
+  headers: { 'Authorization': 'Bearer your_bearer_token' },
+})
+.then(res => res.json())
+.then(meta => {
+  console.log('Filename:', meta.filename);
+  console.log('Type:', meta.type, '(' + meta.mimeType + ')');
+  console.log('Size:', meta.byteSize, 'bytes');
+  // Spreadsheet uploads include parsed rows for inline rendering.
+  if (meta.sheets) {
+    meta.sheets.forEach(s => console.log(\`Sheet '\${s.name}': \${s.rowCount} rows\`));
+  }
+})
+.catch(err => console.error(err));
+
+// OR API Key + Secret Authentication
+fetch(\`${baseUrl}/api/attachments/\${attachmentId}/meta\`, {
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  },
+})
+.then(res => res.json())
+.then(meta => console.log(meta))
 .catch(err => console.error(err));`
             },
             // ============================================================================
@@ -9671,6 +9856,8 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <MenuItem value="/api/chat">POST /api/chat - Simple Chat</MenuItem>
                                                             <MenuItem value="/api/chat/stream">POST /api/chat/stream - Streaming Chat (SSE)</MenuItem>
                                                             <MenuItem value="/api/chat/upload">POST /api/chat/upload - Upload File for Chat</MenuItem>
+                                                            <MenuItem value="/api/attachments/:id">GET /api/attachments/:id - Fetch Attachment Bytes</MenuItem>
+                                                            <MenuItem value="/api/attachments/:id/meta">GET /api/attachments/:id/meta - Fetch Attachment Metadata</MenuItem>
                                                             <MenuItem value="/api/complete">POST /api/complete - Text Completion</MenuItem>
                                                             <MenuItem value="/api/chat/continuation/:conversationId">GET /api/chat/continuation/:id - Get Continuation Queue</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Authentication ───</MenuItem>
@@ -9985,7 +10172,7 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                     <AccordionDetails>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
                                             <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
-                                            <Typography sx={{ fontSize: '0.85rem' }}>Native tools — model invokes web_search / fetch_url / crawl_pages / playwright_fetch / playwright_interact / scrapling_fetch automatically when the query warrants it. No UI toggle.</Typography>
+                                            <Typography sx={{ fontSize: '0.85rem' }}>Native tools — model invokes web_search / fetch_url / crawl_pages / playwright_fetch / playwright_interact / scrapling_fetch / fetch_timeseries / render_chart automatically when the query warrants it. No UI toggle. (render_chart returns a chartSpec the chat UI mounts inline as a real Recharts SVG; fetch_timeseries pulls free OHLC data from Yahoo Finance for stocks / indexes / forex / crypto.)</Typography>
                                         </Box>
 
                                         <Grid container spacing={2}>
@@ -10195,7 +10382,9 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                     </TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat</TableCell><TableCell sx={{ color: 'text.secondary', width: 50 }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Chat with streaming support</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/stream</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>SSE streaming chat</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/upload</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Upload files for chat</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/upload</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Upload files for chat (returns attachmentId for PDFs / xlsx)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/attachments/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch raw attachment bytes (PDF, etc.)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/attachments/:id/meta</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch attachment metadata (xlsx sheets[], etc.)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/complete</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Text completion</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create conversations</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage conversation</TableCell></TableRow>
