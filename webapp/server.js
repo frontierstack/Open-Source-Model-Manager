@@ -14295,6 +14295,17 @@ const REFRESH_STALE_SKILLS = new Set([
     // the narrow list and the model still fails when it guesses an
     // unsupported parameter name (e.g. 'input').
     'base64_decode',
+    // Disk-read skills — extended the "file not found" message to
+    // point the model at inline === FILE N === blocks when an upload
+    // was the actual source. Without this refresh, the model wastes
+    // turns calling search_files / list_directory after the first
+    // miss instead of reading the inline content already in context.
+    'read_file',
+    'read_email_file',
+    'get_file_metadata',
+    'hash_file',
+    'tail_file',
+    'head_file',
 ]);
 
 async function refreshStaleDefaultSkills() {

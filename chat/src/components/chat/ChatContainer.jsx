@@ -1074,7 +1074,18 @@ export default function ChatContainer({
                 });
 
             if (textParts.length > 0) {
-                const header = `The user has uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. Read and consider ALL files below:\n\n`;
+                // The header below is load-bearing: it tells the model the
+                // file content is ALREADY inline and is NOT on disk. Without
+                // this, the model sees a filename-looking header and reaches
+                // for read_email_file / read_pdf / read_file / search_files
+                // — those will fail because uploads never land in the
+                // sandbox workspace, only their parsed text is forwarded.
+                const header =
+                    `The user uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. ` +
+                    `Their FULL content is included inline in the === FILE N === blocks below. ` +
+                    `These files are NOT on disk — do NOT call read_email_file, read_pdf, read_file, ` +
+                    `search_files, list_directory, or any other "read from path" tool for them. ` +
+                    `Read and reason from the inline content directly.\n\n`;
                 fullContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
             }
         } else {
