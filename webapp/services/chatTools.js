@@ -229,6 +229,44 @@ function closeUnterminated(input) {
     return out;
 }
 
+// Last-resort salvage: regex out individual top-level "key": value pairs
+// when all three structured repair passes have failed. Used for the
+// pathological case where the model emits a long string value containing
+// unescaped JS source (quotes, brackets, comparison operators) — jsonrepair
+// loses track of string state and closeUnterminated also can't recover
+// because the corruption is mid-string, not at the tail.
+//
+// Recovers strings, numbers, booleans, and null. Skips array / nested object
+// values (no recovery contract for them — the regex would over-match). The
+// goal is to pull out at least the simple scalar args (path, line numbers,
+// flags) so a tool call that's mostly correct still runs instead of failing
+// the whole turn. False positives are bounded: we only run this AFTER all
+// three structured passes have rejected the input.
+function regexSalvageFields(input) {
+    const out = {};
+    let m;
+    // "key": "value" — non-greedy with escape-aware match. Trailing
+    // boundary allows EOL so a truncated final field can still be picked up.
+    const stringPattern = /"([a-zA-Z_][\w-]{0,63})"\s*:\s*"((?:[^"\\]|\\.)*)"(?=\s*[,}\]]|\s*$)/g;
+    while ((m = stringPattern.exec(input)) !== null) {
+        const key = m[1];
+        if (key in out) continue;
+        try { out[key] = JSON.parse(`"${m[2]}"`); }
+        catch { out[key] = m[2]; }
+    }
+    // "key": number
+    const numPattern = /"([a-zA-Z_][\w-]{0,63})"\s*:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=\s*[,}\]]|\s*$)/g;
+    while ((m = numPattern.exec(input)) !== null) {
+        if (!(m[1] in out)) out[m[1]] = Number(m[2]);
+    }
+    // "key": true / false / null
+    const litPattern = /"([a-zA-Z_][\w-]{0,63})"\s*:\s*(true|false|null)(?=\s*[,}\]]|\s*$)/g;
+    while ((m = litPattern.exec(input)) !== null) {
+        if (!(m[1] in out)) out[m[1]] = m[2] === 'null' ? null : m[2] === 'true';
+    }
+    return out;
+}
+
 async function executeToolCall(call, ctx) {
     const toolName = call.function.name;
     // Parse args once up-front — same error path whether we dispatch to
@@ -262,7 +300,15 @@ async function executeToolCall(call, ctx) {
                 try {
                     args = JSON.parse(closeUnterminated(rawArgs));
                     repairedVia = 'closeUnterminated';
-                } catch (_) { /* both passes failed */ }
+                } catch (_) {
+                    // Last resort: regex out individual top-level fields.
+                    // Better partial args than no call at all.
+                    const salvaged = regexSalvageFields(rawArgs);
+                    if (Object.keys(salvaged).length > 0) {
+                        args = salvaged;
+                        repairedVia = 'regexSalvage';
+                    }
+                }
             }
             if (repairedVia) {
                 console.warn(`[chatTools] Repaired malformed JSON args for ${toolName} via ${repairedVia} (${firstErr.message})`);
@@ -288,6 +334,33 @@ async function executeToolCall(call, ctx) {
                         received: rawArgs.length > 4000 ? rawArgs.slice(0, 4000) + '…[truncated]' : rawArgs,
                     }),
                 };
+            }
+        }
+    }
+
+    // base64_decode salvage: model sometimes invokes the tool with no
+    // string-typed args ({} or {"format":"utf-8"}). The skill's own alias
+    // list and "longest string value" fallback can't help when there's
+    // nothing to take. Scan the latest user message for base64 candidates
+    // and inject them as `text` so the call still produces a useful result
+    // instead of returning an unrecoverable parameter-required error that
+    // the model treats as terminal.
+    if (toolName === 'base64_decode') {
+        const hasUsableString = Object.values(args).some(
+            v => typeof v === 'string' && v.trim().length >= 16
+        );
+        if (!hasUsableString && typeof ctx?.latestUserText === 'string' && ctx.latestUserText) {
+            try {
+                const base64Detector = require('./base64Detector');
+                const found = base64Detector.findBase64InText(ctx.latestUserText);
+                if (found.length > 0) {
+                    args.text = found.map(f => f.encoded).join('\n');
+                    console.warn(
+                        `[chatTools] base64_decode called with empty args; salvaged ${found.length} candidate(s) from latest user message`
+                    );
+                }
+            } catch (e) {
+                console.warn('[chatTools] base64_decode salvage failed:', e.message);
             }
         }
     }

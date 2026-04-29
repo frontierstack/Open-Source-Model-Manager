@@ -12147,7 +12147,26 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // conversationId is plumbed through so per-conv workspace scoping
         // (see sandboxRunner.ensureWorkspace) buckets all skills fired in
         // this turn under `workspaces/<userId>/conv-<id>/`.
-        const toolCtx = { userId: req.userId, conversationId: conversationId || null };
+        // latestUserText is the last user message extracted to plain text;
+        // tools (e.g. base64_decode) can salvage from it when the model
+        // invokes them with empty/unusable args.
+        let latestUserText = '';
+        for (let i = chatMessages.length - 1; i >= 0; i--) {
+            if (chatMessages[i].role === 'user') {
+                const c = chatMessages[i].content;
+                if (typeof c === 'string') latestUserText = c;
+                else if (Array.isArray(c)) {
+                    latestUserText = c.filter(p => p?.type === 'text' && typeof p.text === 'string')
+                        .map(p => p.text).join('\n');
+                }
+                break;
+            }
+        }
+        const toolCtx = {
+            userId: req.userId,
+            conversationId: conversationId || null,
+            latestUserText,
+        };
         let toolCatalog = [];
         try {
             toolCatalog = await chatTools.buildToolCatalog(toolCtx);
