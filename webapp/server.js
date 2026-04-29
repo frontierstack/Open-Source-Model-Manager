@@ -12556,7 +12556,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             //   3. otherwise, break
             let currentMessages = chatMessages;
             let finishReason = 'stop';
-            while (toolCallRound <= chatTools.MAX_TOOL_ITERATIONS && clientConnected) {
+            // Don't gate this loop on clientConnected — when the user
+            // refreshes the page or switches conversations, the request
+            // closes and clientConnected flips false, but the streaming
+            // job is registered in activeStreamingJobs and the response
+            // must keep being generated in the background. Every
+            // res.write inside the loop already self-guards, so writes
+            // to a dead socket are safe.
+            while (toolCallRound <= chatTools.MAX_TOOL_ITERATIONS) {
                 // Reset per-round state. fullResponse is cumulative for the
                 // client stream; roundStart marks where THIS turn's text began
                 // so we can feed only this turn's content back as the assistant
@@ -12574,9 +12581,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // Length-with-pending-tools is handled by the dispatch block
                 // below: the truncation guard in chatTools.executeToolCall
                 // surfaces a clean retry hint to the model on the next round.
+                // Background-streaming: do NOT gate on clientConnected.
+                // The user may have refreshed or switched conversations
+                // mid-response; we still need to finish generating so
+                // the saved message contains the full continuation
+                // chain rather than the truncated first chunk.
                 while (finishReason === 'length'
                        && continuationCount < MAX_AUTO_CONTINUATIONS
-                       && clientConnected
                        && accumulatedToolCalls.length === 0) {
                 continuationCount++;
                 console.log(`[Chat Stream] Auto-continuing response (${continuationCount}/${MAX_AUTO_CONTINUATIONS}), accumulated ${fullResponse.length} chars so far`);
