@@ -147,6 +147,91 @@ function extractSources(toolName, result) {
     return null;
 }
 
+// Map a tool name to one of ProcessingLogFeed's icon keys.
+function pickToolIcon(name) {
+    if (!name) return 'cpu';
+    const n = String(name).toLowerCase();
+    if (n.includes('search')) return 'search';
+    if (n.includes('fetch') || n.includes('url') || n.includes('crawl') || n.includes('http')) return 'link';
+    if (n === 'load_skill') return 'paperclip';
+    if (n.includes('read') || n.includes('write') || n.includes('edit') || n.includes('file')) return 'edit';
+    if (n.includes('think') || n.includes('memory') || n.includes('recall')) return 'brain';
+    return 'cpu';
+}
+
+// Turn a snake_case tool id into a friendly verb phrase for the status row.
+function humanizeToolName(name) {
+    if (!name) return 'tool';
+    return String(name).replace(/_/g, ' ');
+}
+
+// One-line argument summary for the live progress feed. Picks the first
+// "interesting" string-typed arg by a known priority list, falls back to
+// the first string field, and truncates so a giant base64 / file body
+// doesn't blow up the row width.
+function summarizeToolArgs(rawArgs) {
+    if (rawArgs == null) return '';
+    let args = rawArgs;
+    if (typeof rawArgs === 'string') {
+        const trimmed = rawArgs.trim();
+        if (!trimmed) return '';
+        try { args = JSON.parse(trimmed); }
+        catch { return trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed; }
+    }
+    if (!args || typeof args !== 'object') return '';
+    const priority = ['query', 'q', 'url', 'urls', 'name', 'skill', 'domain', 'host',
+        'path', 'file', 'filepath', 'filename', 'command', 'cmd', 'text', 'input',
+        'pattern', 'regex', 'ip', 'hash'];
+    const pickValue = (v) => {
+        if (typeof v === 'string') return v;
+        if (Array.isArray(v)) return v.filter(x => typeof x === 'string').join(', ');
+        if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+        return '';
+    };
+    let key = null;
+    let val = '';
+    for (const p of priority) {
+        if (p in args) {
+            const candidate = pickValue(args[p]);
+            if (candidate) { key = p; val = candidate; break; }
+        }
+    }
+    if (!val) {
+        for (const [k, v] of Object.entries(args)) {
+            const candidate = pickValue(v);
+            if (candidate) { key = k; val = candidate; break; }
+        }
+    }
+    if (!val) return '';
+    val = val.replace(/\s+/g, ' ').trim();
+    if (val.length > 80) val = val.slice(0, 80) + '…';
+    return key ? `${key}: ${val}` : val;
+}
+
+// Compact summary of what a tool returned — shown after the call completes
+// so the feed reads "Calling X… → Got N results in Ys".
+function summarizeToolResult(toolName, result) {
+    if (!result || typeof result !== 'object') return '';
+    if (Array.isArray(result.results)) {
+        const n = result.results.length;
+        if (toolName === 'web_search') return `${n} result${n === 1 ? '' : 's'}`;
+        return `${n} item${n === 1 ? '' : 's'}`;
+    }
+    if (typeof result.content === 'string' && result.content.length) {
+        return `${result.content.length.toLocaleString()} chars`;
+    }
+    if (typeof result.body === 'string' && result.body.length) {
+        return `${result.body.length.toLocaleString()} chars`;
+    }
+    if (typeof result.decoded === 'string' && result.decoded.length) {
+        return `decoded ${result.decoded.length} chars`;
+    }
+    if (typeof result.id === 'string' && toolName === 'load_skill') {
+        return `loaded ${result.id}`;
+    }
+    return '';
+}
+
 /**
  * ChatContainer - Main chat interface container with Tailwind styling
  */
@@ -1209,6 +1294,10 @@ export default function ChatContainer({
             let tokenCount = 0;
             let inStreamError = null; // Track errors that occur mid-stream
             let lastFinishReason = null; // Track if response was cut off
+            // Tracks whether a tool fired this turn so we can flip the
+            // top-of-bubble status from "Reading … result" back to
+            // "Generating response" the moment real content resumes.
+            let sawToolEventThisTurn = false;
 
             // Wrap stream reading in try-catch to handle network errors
             try {
@@ -1292,6 +1381,23 @@ export default function ChatContainer({
                                     network: parsed.network,
                                     workspace: parsed.workspace,
                                 });
+                                // Surface the active tool in the rolling feed
+                                // and the top-of-bubble status so a long
+                                // multi-tool turn doesn't read as a silent
+                                // "Generating response" for minutes.
+                                {
+                                    const human = humanizeToolName(parsed.name);
+                                    const argSummary = summarizeToolArgs(parsed.arguments);
+                                    const text = argSummary
+                                        ? `Calling ${human} — ${argSummary}`
+                                        : `Calling ${human}`;
+                                    setProcessingStatus('processing', text);
+                                    pushProcessingLog({
+                                        icon: pickToolIcon(parsed.name),
+                                        text,
+                                        kind: `tool_call:${parsed.name}`,
+                                    });
+                                }
                                 continue;
                             }
                             if (parsed.type === 'tool_result') {
@@ -1315,6 +1421,44 @@ export default function ChatContainer({
                                     result,
                                     error,
                                 });
+                                // Close the active "Calling …" feed entry and
+                                // push a follow-up so the user sees the model
+                                // moving from tool execution back into
+                                // reasoning. Top-of-bubble status flips to
+                                // "thinking" until the next content delta or
+                                // tool call arrives.
+                                {
+                                    const human = humanizeToolName(parsed.name);
+                                    if (error) {
+                                        resolveProcessingLog('failed');
+                                        const msg = `${human} failed — ${String(error).slice(0, 80)}`;
+                                        setProcessingStatus('thinking', `Recovering from ${human} error…`);
+                                        pushProcessingLog({
+                                            icon: 'alert',
+                                            text: msg,
+                                            kind: `tool_failed:${parsed.name}`,
+                                        });
+                                        // Mark this synthetic follow-up done
+                                        // immediately — the next event (more
+                                        // tools, content, or another error)
+                                        // will become the active row.
+                                        resolveProcessingLog('failed');
+                                    } else {
+                                        resolveProcessingLog('done');
+                                        const summary = summarizeToolResult(parsed.name, result);
+                                        const text = summary
+                                            ? `${human} → ${summary}`
+                                            : `${human} done`;
+                                        setProcessingStatus('thinking', `Reading ${human} result…`);
+                                        pushProcessingLog({
+                                            icon: 'check',
+                                            text,
+                                            kind: `tool_done:${parsed.name}`,
+                                        });
+                                        resolveProcessingLog('done');
+                                    }
+                                    sawToolEventThisTurn = true;
+                                }
                                 continue;
                             }
                             if (parsed.type === 'tool_call_delta') {
@@ -1345,6 +1489,15 @@ export default function ChatContainer({
                             const delta = parsed.choices?.[0]?.delta;
 
                             if (delta?.content) {
+                                if (sawToolEventThisTurn) {
+                                    setProcessingStatus('generating', 'Generating response');
+                                    pushProcessingLog({
+                                        icon: 'sparkles',
+                                        text: 'Generating response',
+                                        kind: 'generating_after_tools',
+                                    });
+                                    sawToolEventThisTurn = false;
+                                }
                                 assistantContent += delta.content;
                                 // Parse <think> tags from content and separate reasoning
                                 const thinkParsed = parseThinkTags(assistantContent);

@@ -154,11 +154,41 @@ async function buildToolCatalog(ctx) {
 // arrives in pieces across chunks. Each delta entry has an `index` that
 // identifies which call we're appending to.
 
-/** Update the accumulator in place and return the slot that was touched. */
+/** Update the accumulator in place and return the slot that was touched.
+ *
+ * Slot routing for each delta, in priority order:
+ *
+ *   1. If the delta carries an `id` we've already seen, route to that slot
+ *      (regardless of `index`). Some backends keep `index=0` for every call
+ *      and only differentiate via `id`, which previously caused two distinct
+ *      calls to merge into slot 0 and their `function.name` strings to get
+ *      concatenated (e.g. "hex_convert" + "fetch_url" → "hex_convertfetch_url"
+ *      → "Unknown skill" at dispatch time).
+ *   2. Else, if the delta carries a *new* `id` not in any existing slot,
+ *      allocate the next free slot (acc.length). This is the new-call
+ *      boundary regardless of whether `index` is correct or omitted.
+ *   3. Else, if `tc.index` is a number, use it. Standard OpenAI behavior.
+ *   4. Else, this is a continuation fragment with no id and no index —
+ *      append to the most recently touched slot.
+ */
 function accumulateToolCallDelta(acc, deltaToolCalls) {
     const touched = [];
     for (const tc of deltaToolCalls || []) {
-        const idx = typeof tc.index === 'number' ? tc.index : 0;
+        let idx;
+        if (tc.id) {
+            const existingByIdIdx = acc.findIndex(s => s && s.id && s.id === tc.id);
+            if (existingByIdIdx >= 0) {
+                idx = existingByIdIdx;
+            } else {
+                idx = acc.length;
+            }
+        } else if (typeof tc.index === 'number') {
+            idx = tc.index;
+        } else if (typeof acc._lastIdx === 'number') {
+            idx = acc._lastIdx;
+        } else {
+            idx = 0;
+        }
         if (!acc[idx]) {
             acc[idx] = {
                 id: tc.id || '',
@@ -170,6 +200,11 @@ function accumulateToolCallDelta(acc, deltaToolCalls) {
         if (tc.type) acc[idx].type = tc.type;
         if (tc.function?.name) acc[idx].function.name += tc.function.name;
         if (tc.function?.arguments) acc[idx].function.arguments += tc.function.arguments;
+        // Non-enumerable bookkeeping so for...of iteration in finalizeToolCalls
+        // and JSON.stringify of `acc` don't pick this up as a tool call.
+        Object.defineProperty(acc, '_lastIdx', {
+            value: idx, writable: true, enumerable: false, configurable: true,
+        });
         touched.push(idx);
     }
     return touched;
