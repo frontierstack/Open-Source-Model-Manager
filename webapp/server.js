@@ -8965,29 +8965,127 @@ async function ensureUserConversationsDir(userId) {
     return userDir;
 }
 
-// Load conversations index for a user
+// Per-path write lock + atomic rename. Conversation indexes and message
+// files are read-modify-write hotspots — chat-stream save, memory
+// extraction, and explicit POST/PUT/DELETE routes can hit the same file
+// within milliseconds. Plain fs.writeFile is neither atomic nor serialized,
+// so two writes of different lengths can interleave at the byte level and
+// leave a valid prefix from the shorter write followed by stray tail bytes
+// from the longer one. The decoder then fails and the user's whole
+// conversation list "disappears." safeWriteFile gives every write its own
+// turn (per path) and only swaps the final file in via rename.
+const _fileLocks = new Map();
+function withFileLock(key, fn) {
+    const prev = _fileLocks.get(key) || Promise.resolve();
+    const next = prev.then(fn, fn);
+    _fileLocks.set(key, next.catch(() => {}));
+    return next;
+}
+async function atomicWriteFile(filePath, data) {
+    const tmp = `${filePath}.${process.pid}.${Date.now().toString(36)}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    try {
+        await fs.writeFile(tmp, data);
+        await fs.rename(tmp, filePath);
+    } catch (err) {
+        try { await fs.unlink(tmp); } catch {}
+        throw err;
+    }
+}
+async function safeWriteFile(filePath, data) {
+    return withFileLock(filePath, () => atomicWriteFile(filePath, data));
+}
+
+// Load conversations index for a user. If the file is missing, empty,
+// or corrupt, scan the user's directory for {uuid}.json conversation
+// files and rebuild the index from them in place rather than returning
+// an empty list (which would make every conversation appear "deleted").
 async function loadConversationsIndex(userId) {
     const userDir = await ensureUserConversationsDir(userId);
     const indexPath = path.join(userDir, 'index.json');
+    let parsed = null;
     try {
         const data = await fs.readFile(indexPath, 'utf8');
-        const parsed = decodeConversationData(data, null);
-        if (parsed === null) {
-            console.error(`Corrupted conversations index for user ${userId}, resetting to empty`);
-            return [];
-        }
-        return Array.isArray(parsed) ? parsed : [];
+        parsed = decodeConversationData(data, null);
     } catch (error) {
-        if (error.code === 'ENOENT') return [];
-        throw error;
+        if (error.code !== 'ENOENT') throw error;
     }
+    if (Array.isArray(parsed)) return parsed;
+    return await withFileLock(indexPath, async () => {
+        // Re-check inside the lock — a concurrent caller may have rebuilt.
+        try {
+            const fresh = await fs.readFile(indexPath, 'utf8');
+            const reparsed = decodeConversationData(fresh, null);
+            if (Array.isArray(reparsed) && reparsed.length > 0) return reparsed;
+        } catch (err) {
+            if (err.code !== 'ENOENT') throw err;
+        }
+        const rebuilt = await rebuildConversationsIndexFromDisk(userId, userDir);
+        if (rebuilt.length > 0) {
+            console.warn(`Rebuilt conversations index for user ${userId} from ${rebuilt.length} on-disk files`);
+            await atomicWriteFile(indexPath, encodeConversationData(rebuilt));
+        }
+        return rebuilt;
+    });
+}
+
+// Walk a user's conversations dir and reconstruct an index from the
+// {uuid}.json files actually on disk. Title comes from the first user
+// message; timestamps from file stat; memoryCount from the per-conversation
+// memory index when present. Sorted newest-first to match how new
+// conversations are unshifted onto the live index.
+async function rebuildConversationsIndexFromDisk(userId, userDir) {
+    let names;
+    try { names = await fs.readdir(userDir); }
+    catch { return []; }
+    const idRegex = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/i;
+    const entries = [];
+    for (const name of names) {
+        const m = name.match(idRegex);
+        if (!m) continue;
+        const id = m[1];
+        const filePath = path.join(userDir, name);
+        let stat;
+        try { stat = await fs.stat(filePath); }
+        catch { continue; }
+        let messages = [];
+        try { messages = await loadConversationMessages(userId, id); } catch {}
+        let title = 'New Conversation';
+        const firstUser = messages.find(msg => msg && msg.role === 'user');
+        if (firstUser) {
+            let txt = '';
+            if (typeof firstUser.content === 'string') {
+                txt = firstUser.content;
+            } else if (Array.isArray(firstUser.content)) {
+                const part = firstUser.content.find(p => p && p.type === 'text' && typeof p.text === 'string');
+                txt = part ? part.text : '';
+            }
+            const cleaned = txt.replace(/\s+/g, ' ').trim();
+            if (cleaned) title = cleaned.length > 60 ? cleaned.slice(0, 57) + '...' : cleaned;
+        }
+        let memoryCount = 0;
+        try {
+            const memIndex = await loadMemoryIndex(userId, id);
+            memoryCount = Array.isArray(memIndex.entries) ? memIndex.entries.length : 0;
+        } catch {}
+        const created = (stat.birthtime && stat.birthtime.getTime() > 0 ? stat.birthtime : stat.ctime).toISOString();
+        entries.push({
+            id,
+            title,
+            createdAt: created,
+            updatedAt: stat.mtime.toISOString(),
+            messageCount: messages.length,
+            memoryCount
+        });
+    }
+    entries.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    return entries;
 }
 
 // Save conversations index for a user
 async function saveConversationsIndex(userId, conversations) {
     const userDir = await ensureUserConversationsDir(userId);
     const indexPath = path.join(userDir, 'index.json');
-    await fs.writeFile(indexPath, encodeConversationData(conversations));
+    await safeWriteFile(indexPath, encodeConversationData(conversations));
 }
 
 // Load messages for a conversation
@@ -9020,7 +9118,7 @@ async function saveConversationMessages(userId, conversationId, messages) {
     }
     const userDir = await ensureUserConversationsDir(userId);
     const messagesPath = path.join(userDir, `${conversationId}.json`);
-    await fs.writeFile(messagesPath, encodeConversationData(messages));
+    await safeWriteFile(messagesPath, encodeConversationData(messages));
 
     // Update messageCount in conversations index
     try {
@@ -9096,7 +9194,7 @@ async function loadMemoryIndex(userId, conversationId) {
 async function saveMemoryIndex(userId, conversationId, index) {
     const dir = await ensureMemoryDir(userId, conversationId);
     const indexPath = path.join(dir, 'index.json');
-    await fs.writeFile(indexPath, encodeConversationData(index));
+    await safeWriteFile(indexPath, encodeConversationData(index));
 }
 
 async function loadMemoryEntry(userId, conversationId, memoryId) {
@@ -9120,7 +9218,7 @@ async function saveMemoryEntry(userId, conversationId, memoryId, entry) {
     }
     const dir = await ensureMemoryDir(userId, conversationId);
     const entryPath = path.join(dir, `${memoryId}.mem`);
-    await fs.writeFile(entryPath, encodeConversationData(entry));
+    await safeWriteFile(entryPath, encodeConversationData(entry));
 }
 
 async function deleteMemoryDir(userId, conversationId) {
