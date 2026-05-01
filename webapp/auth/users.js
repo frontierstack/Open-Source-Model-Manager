@@ -143,8 +143,11 @@ async function completeRegistration(email, username, password) {
         throw new Error('Account already activated');
     }
 
-    if (users[index].status === 'disabled') {
-        throw new Error('Account is disabled');
+    // Don't disclose disabled state — fold into the same error as
+    // "no invite found" so an attacker can't tell whether a given email
+    // was previously invited and then disabled.
+    if (users[index].status === 'disabled' || users[index].disabled === true) {
+        throw new Error('Email not found. Please contact an admin to be invited.');
     }
 
     // Check if username already exists
@@ -373,7 +376,21 @@ async function adminResetPassword(username, newPassword) {
  * @param {string} newPassword - New password
  * @returns {Promise<boolean>} True if password reset
  */
+// Decoy bcrypt hash used to equalize timing between "user not found" and
+// "wrong password". Must be a REAL bcrypt hash — malformed inputs make
+// bcrypt.compare return instantly, re-introducing the timing leak.
+// Generated via bcrypt.hashSync('decoy_for_timing_equalization', 10).
+const _DECOY_RESET_HASH = '$2a$10$uVs2O5O9SU0oHC/48Sl2Oebx/9OtPJp4BovEXTEyCTIpgrmfxmWLe';
+
 async function selfServicePasswordReset(username, email, currentPassword, newPassword) {
+    // Reject non-string inputs up front. We still run bcrypt to keep timing
+    // similar to the normal failure path.
+    if (typeof username !== 'string' || typeof email !== 'string' ||
+        typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+        await bcrypt.compare('decoy', _DECOY_RESET_HASH);
+        throw new Error('Invalid credentials');
+    }
+
     const users = await loadUsers();
     const index = users.findIndex(user =>
         user.username &&
@@ -381,18 +398,21 @@ async function selfServicePasswordReset(username, email, currentPassword, newPas
         user.email.toLowerCase() === email.toLowerCase()
     );
 
-    if (index === -1) {
-        throw new Error('Invalid username or email');
-    }
+    // Always run bcrypt — against the real hash if the (username,email) pair
+    // exists, against a decoy otherwise — so the response time does not
+    // reveal whether the user exists. The error message is also unified.
+    const hashToCompare = (index !== -1 && users[index].passwordHash) || _DECOY_RESET_HASH;
+    const isMatch = await bcrypt.compare(currentPassword, hashToCompare);
 
-    if (users[index].status === 'disabled') {
-        throw new Error('Account is disabled');
-    }
-
-    // Verify current password
-    const isMatch = await bcrypt.compare(currentPassword, users[index].passwordHash);
-    if (!isMatch) {
-        throw new Error('Current password is incorrect');
+    // All failure modes return the SAME generic message. Disclosing
+    // "account is disabled" or "user not found" lets an attacker confirm a
+    // username/email pair and shape a targeted brute-force.
+    if (index === -1 ||
+        users[index].status === 'disabled' ||
+        users[index].disabled === true ||
+        !isMatch ||
+        !users[index].passwordHash) {
+        throw new Error('Invalid credentials');
     }
 
     // Hash new password

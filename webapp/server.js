@@ -2166,6 +2166,11 @@ initializePassport(passport);
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Tight body limit on unauthenticated/auth endpoints — they only ever take
+// a small JSON object (username/email/password). Capping here prevents
+// anonymous clients from forcing the server to parse 50 MB of JSON before
+// auth runs. Mounted before the global 50 MB parser so it wins for /api/auth/*.
+app.use('/api/auth', express.json({ limit: '16kb' }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public'), {
     setHeaders: (res, filePath) => {
@@ -2329,9 +2334,29 @@ app.post('/api/auth/register', authRateLimiter, async (req, res) => {
             return res.status(400).json({ error: 'Username, email, and password are required' });
         }
 
+        // Reject non-string inputs (avoids TypeError downstream and prevents
+        // type-confusion attempts on toLowerCase()/length checks).
+        if (typeof username !== 'string' || typeof email !== 'string' || typeof password !== 'string') {
+            return res.status(400).json({ error: 'Username, email, and password must be strings' });
+        }
+
+        // Validate email format (matches /api/users/invite check)
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+
+        // Validate username characters (printable ASCII, no whitespace, no control)
+        if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) {
+            return res.status(400).json({ error: 'Username must be 1-64 chars, alphanumeric / dot / dash / underscore' });
+        }
+
         // Validate password strength
         if (password.length < 8) {
             return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+        }
+        if (password.length > 256) {
+            return res.status(400).json({ error: 'Password is too long (max 256 characters)' });
         }
 
         // Check if this is the first user (becomes admin)
@@ -5584,13 +5609,18 @@ async function optionalAuth(req, res, next) {
 async function requireAuth(req, res, next) {
     // Priority 1: Check for session authentication (Passport.js)
     if (req.isAuthenticated && req.isAuthenticated()) {
-        // Check if user account has been disabled
-        if (req.user.disabled === true) {
+        // Check if user account has been disabled. Two parallel disable
+        // mechanisms exist (legacy `disabled: true` field vs canonical
+        // `status: 'disabled'`) — accept either to avoid an auth bypass
+        // where a user disabled via the UI button can still hold a session.
+        // We do NOT disclose "account is disabled" — that confirms the
+        // username for an attacker. Return a generic 401 instead.
+        if (req.user.disabled === true || req.user.status === 'disabled') {
             // Destroy session and reject request
             req.logout((err) => {
                 if (err) console.error('Error during logout:', err);
             });
-            return res.status(403).json({ error: 'Account is disabled' });
+            return res.status(401).json({ error: 'Authentication required' });
         }
 
         req.userId = req.user.id;
@@ -15739,12 +15769,29 @@ function sanitizeHost(hostHeader) {
     return sanitized;
 }
 
+/**
+ * Resolve the base URL embedded in the CLI install scripts. Prefers an
+ * operator-configured PUBLIC_BASE_URL over the request's Host header — a
+ * crafted Host: would otherwise let an attacker (or any virtual-host
+ * misroute) point freshly-installed CLIs at an arbitrary URL.
+ *
+ * Falls back to req protocol + sanitized Host when no env var is set, which
+ * is the legacy behavior for self-hosted single-tenant deployments.
+ */
+function resolveInstallBaseUrl(req) {
+    const configured = process.env.PUBLIC_BASE_URL || process.env.KODA_API_URL;
+    if (configured && /^https?:\/\/[A-Za-z0-9.\-:[\]]+(\/.*)?$/.test(configured)) {
+        return configured.replace(/\/+$/, '');
+    }
+    const host = sanitizeHost(req.get('host'));
+    const protocol = (req.protocol === 'http' || req.protocol === 'https') ? req.protocol : 'https';
+    return `${protocol}://${host}`;
+}
+
 // Bash installer (Linux/macOS/WSL/Git Bash)
 app.get('/api/cli/install', apiRateLimiter, (req, res) => {
     const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.sh');
-    const host = sanitizeHost(req.get('host'));
-    const protocol = req.protocol || 'https';
-    const apiUrl = `${protocol}://${host}`;
+    const apiUrl = resolveInstallBaseUrl(req);
 
     fs.readFile(scriptPath, 'utf8')
         .then(content => {
@@ -15763,9 +15810,7 @@ app.get('/api/cli/install', apiRateLimiter, (req, res) => {
 // PowerShell installer (Windows)
 app.get('/api/cli/install.ps1', apiRateLimiter, (req, res) => {
     const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.ps1');
-    const host = sanitizeHost(req.get('host'));
-    const protocol = req.protocol || 'https';
-    const apiUrl = `${protocol}://${host}`;
+    const apiUrl = resolveInstallBaseUrl(req);
 
     fs.readFile(scriptPath, 'utf8')
         .then(content => {

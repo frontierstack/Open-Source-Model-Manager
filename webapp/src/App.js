@@ -6320,6 +6320,395 @@ fetch('${baseUrl}/api/cli/files/package.json')
   .then(res => res.json())
   .then(pkg => console.log(\`\${pkg.name} v\${pkg.version}\`))
   .catch(err => console.error(err));`
+            },
+            '/api/agent-permissions': {
+                curl: `# GET — fetch the current global agent file-operation permissions.
+curl -sk ${baseUrl}/api/agent-permissions \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# PUT — update the permissions (any field omitted keeps its previous value).
+curl -sk -X PUT ${baseUrl}/api/agent-permissions \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "allowFileRead": true,
+    "allowFileWrite": false,
+    "allowFileDelete": false,
+    "allowToolExecution": true,
+    "allowModelAccess": true,
+    "allowCollaboration": true
+  }'`,
+                python: `import requests
+H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'}
+# GET
+print(requests.get(f'${baseUrl}/api/agent-permissions', headers=H, verify=False).json())
+# PUT
+print(requests.put(f'${baseUrl}/api/agent-permissions', headers={**H, 'Content-Type': 'application/json'},
+                   json={'allowFileWrite': False, 'allowFileDelete': False}, verify=False).json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/agent-permissions" -Headers $h
+Invoke-RestMethod -Uri "${baseUrl}/api/agent-permissions" -Method Put -Headers $h \`
+  -ContentType 'application/json' \`
+  -Body (@{ allowFileWrite = $false; allowFileDelete = $false } | ConvertTo-Json)`,
+                javascript: `const h = { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' };
+fetch('${baseUrl}/api/agent-permissions', { headers: h }).then(r => r.json()).then(console.log);
+fetch('${baseUrl}/api/agent-permissions', {
+  method: 'PUT',
+  headers: { ...h, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ allowFileWrite: false, allowFileDelete: false })
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/agent/file/delete': {
+                curl: `# Deletes a file. Requires \`agents\` permission AND global allowFileDelete.
+curl -sk -X POST ${baseUrl}/api/agent/file/delete \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "filePath": "/models/.modelserver/agents/sandbox/temp.txt" }'`,
+                python: `import requests
+H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json'}
+r = requests.post(f'${baseUrl}/api/agent/file/delete', headers=H,
+                  json={'filePath': '/models/.modelserver/agents/sandbox/temp.txt'}, verify=False)
+print(r.json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/delete" -Method Post -Headers $h \`
+  -ContentType 'application/json' -Body (@{ filePath = '/models/.modelserver/agents/sandbox/temp.txt' } | ConvertTo-Json)`,
+                javascript: `fetch('${baseUrl}/api/agent/file/delete', {
+  method: 'POST',
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json' },
+  body: JSON.stringify({ filePath: '/models/.modelserver/agents/sandbox/temp.txt' })
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/agent/file/move': {
+                curl: `# Moves or renames a file. Requires \`agents\` permission.
+curl -sk -X POST ${baseUrl}/api/agent/file/move \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "sourcePath": "/models/.modelserver/agents/sandbox/old.txt",
+    "destPath":   "/models/.modelserver/agents/sandbox/new.txt"
+  }'`,
+                python: `import requests
+H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json'}
+r = requests.post(f'${baseUrl}/api/agent/file/move', headers=H,
+                  json={'sourcePath': 'sandbox/old.txt', 'destPath': 'sandbox/new.txt'}, verify=False)
+print(r.json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+$body = @{ sourcePath = 'sandbox/old.txt'; destPath = 'sandbox/new.txt' } | ConvertTo-Json
+Invoke-RestMethod -Uri "${baseUrl}/api/agent/file/move" -Method Post -Headers $h -ContentType 'application/json' -Body $body`,
+                javascript: `fetch('${baseUrl}/api/agent/file/move', {
+  method: 'POST',
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json' },
+  body: JSON.stringify({ sourcePath: 'sandbox/old.txt', destPath: 'sandbox/new.txt' })
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/agents/skills/available': {
+                curl: `# Lists every enabled skill (without source code) — used by agents to discover capabilities.
+curl -sk ${baseUrl}/api/agents/skills/available \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+r = requests.get(f'${baseUrl}/api/agents/skills/available',
+                 headers={'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'}, verify=False)
+for s in r.json(): print(s['name'], '-', s['description'])`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+(Invoke-RestMethod -Uri "${baseUrl}/api/agents/skills/available" -Headers $h) |
+  ForEach-Object { "$($_.name) - $($_.description)" }`,
+                javascript: `fetch('${baseUrl}/api/agents/skills/available', {
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' }
+}).then(r => r.json()).then(skills => skills.forEach(s => console.log(s.name, '-', s.description)));`
+            },
+            '/api/agents/skills/discover': {
+                curl: `# Filter the catalog by type or free-text query (matches name + description).
+curl -sk "${baseUrl}/api/agents/skills/discover?type=python&query=file" \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+r = requests.get(f'${baseUrl}/api/agents/skills/discover',
+                 params={'type': 'python', 'query': 'file'},
+                 headers={'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'}, verify=False)
+print(r.json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/agents/skills/discover?type=python&query=file" -Headers $h`,
+                javascript: `const u = new URL('${baseUrl}/api/agents/skills/discover');
+u.searchParams.set('type', 'python');
+u.searchParams.set('query', 'file');
+fetch(u, { headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' } })
+  .then(r => r.json()).then(console.log);`
+            },
+            '/api/agents/skills/recommend': {
+                curl: `# Keyword-rank skills against a free-text task description.
+curl -sk -X POST ${baseUrl}/api/agents/skills/recommend \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "taskDescription": "summarize a pdf and email me the result" }'`,
+                python: `import requests
+r = requests.post(f'${baseUrl}/api/agents/skills/recommend',
+                  headers={'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret',
+                           'Content-Type': 'application/json'},
+                  json={'taskDescription': 'summarize a pdf and email me the result'}, verify=False)
+print(r.json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/agents/skills/recommend" -Method Post -Headers $h \`
+  -ContentType 'application/json' \`
+  -Body (@{ taskDescription = 'summarize a pdf and email me the result' } | ConvertTo-Json)`,
+                javascript: `fetch('${baseUrl}/api/agents/skills/recommend', {
+  method: 'POST',
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json' },
+  body: JSON.stringify({ taskDescription: 'summarize a pdf and email me the result' })
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/markdown-skills': {
+                curl: `# GET — list markdown "how-to" skills the chat model can load via load_skill.
+curl -sk ${baseUrl}/api/markdown-skills \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# POST — create a new markdown skill.
+curl -sk -X POST ${baseUrl}/api/markdown-skills \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "research-github-repo",
+    "description": "Step-by-step guide to research a GitHub repository.",
+    "triggers": ["github", "repo research"],
+    "body": "# Steps\\n1. Fetch README\\n2. ...",
+    "enabled": true
+  }'`,
+                python: `import requests
+H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'}
+print(requests.get(f'${baseUrl}/api/markdown-skills', headers=H, verify=False).json())
+print(requests.post(f'${baseUrl}/api/markdown-skills',
+    headers={**H, 'Content-Type': 'application/json'},
+    json={'name': 'research-github-repo',
+          'description': 'Step-by-step guide to research a GitHub repository.',
+          'triggers': ['github', 'repo research'],
+          'body': '# Steps\\n1. Fetch README\\n2. ...',
+          'enabled': True}, verify=False).json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/markdown-skills" -Headers $h
+Invoke-RestMethod -Uri "${baseUrl}/api/markdown-skills" -Method Post -Headers $h \`
+  -ContentType 'application/json' \`
+  -Body (@{ name='research-github-repo'; description='Guide.'; triggers=@('github'); body='# Steps'; enabled=$true } | ConvertTo-Json)`,
+                javascript: `const h = { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' };
+fetch('${baseUrl}/api/markdown-skills', { headers: h }).then(r => r.json()).then(console.log);
+fetch('${baseUrl}/api/markdown-skills', {
+  method: 'POST',
+  headers: { ...h, 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    name: 'research-github-repo',
+    description: 'Step-by-step guide to research a GitHub repository.',
+    triggers: ['github', 'repo research'],
+    body: '# Steps\\n1. Fetch README\\n2. ...',
+    enabled: true
+  })
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/markdown-skills/:id': {
+                curl: `# GET, PUT, and DELETE a single markdown skill by id.
+curl -sk ${baseUrl}/api/markdown-skills/SKILL_ID \\
+  -H "X-API-Key: your_api_key" -H "X-API-Secret: your_api_secret"
+
+curl -sk -X PUT ${baseUrl}/api/markdown-skills/SKILL_ID \\
+  -H "X-API-Key: your_api_key" -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "enabled": false }'
+
+curl -sk -X DELETE ${baseUrl}/api/markdown-skills/SKILL_ID \\
+  -H "X-API-Key: your_api_key" -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'}
+sid = 'SKILL_ID'
+print(requests.get(f'${baseUrl}/api/markdown-skills/{sid}', headers=H, verify=False).json())
+print(requests.put(f'${baseUrl}/api/markdown-skills/{sid}',
+    headers={**H, 'Content-Type': 'application/json'},
+    json={'enabled': False}, verify=False).json())
+print(requests.delete(f'${baseUrl}/api/markdown-skills/{sid}', headers=H, verify=False).json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+$sid = 'SKILL_ID'
+Invoke-RestMethod -Uri "${baseUrl}/api/markdown-skills/$sid" -Headers $h
+Invoke-RestMethod -Uri "${baseUrl}/api/markdown-skills/$sid" -Method Put -Headers $h \`
+  -ContentType 'application/json' -Body (@{ enabled = $false } | ConvertTo-Json)
+Invoke-RestMethod -Uri "${baseUrl}/api/markdown-skills/$sid" -Method Delete -Headers $h`,
+                javascript: `const h = { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' };
+const id = 'SKILL_ID';
+fetch(\`${baseUrl}/api/markdown-skills/\${id}\`, { headers: h }).then(r => r.json()).then(console.log);
+fetch(\`${baseUrl}/api/markdown-skills/\${id}\`, {
+  method: 'PUT', headers: { ...h, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ enabled: false })
+}).then(r => r.json()).then(console.log);
+fetch(\`${baseUrl}/api/markdown-skills/\${id}\`, { method: 'DELETE', headers: h })
+  .then(r => r.json()).then(console.log);`
+            },
+            '/api/sandbox/run-code': {
+                curl: `# Run a Python snippet in a sandboxed container (no network, 30s default, 256m RAM).
+# Files saved to /artifacts/ become downloadable via /api/tool-artifacts/:runId/:filename.
+curl -sk -X POST ${baseUrl}/api/sandbox/run-code \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "language": "python",
+    "code": "import statistics\\nprint(statistics.mean([1,2,3,4,5]))",
+    "timeoutMs": 30000
+  }'`,
+                python: `import requests
+r = requests.post(f'${baseUrl}/api/sandbox/run-code',
+    headers={'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret',
+             'Content-Type': 'application/json'},
+    json={'language': 'python',
+          'code': 'import statistics\\nprint(statistics.mean([1,2,3,4,5]))',
+          'timeoutMs': 30000},
+    verify=False)
+res = r.json()
+print('stdout:', res.get('stdout')); print('artifacts:', res.get('artifacts'))`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+$body = @{ language='python'; code="print(2+2)"; timeoutMs=30000 } | ConvertTo-Json
+$r = Invoke-RestMethod -Uri "${baseUrl}/api/sandbox/run-code" -Method Post -Headers $h \`
+       -ContentType 'application/json' -Body $body
+$r.stdout`,
+                javascript: `fetch('${baseUrl}/api/sandbox/run-code', {
+  method: 'POST',
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret', 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    language: 'python',
+    code: 'import statistics\\nprint(statistics.mean([1,2,3,4,5]))',
+    timeoutMs: 30000
+  })
+}).then(r => r.json()).then(({ stdout, artifacts }) => console.log({ stdout, artifacts }));`
+            },
+            '/api/tool-artifacts/:runId/:filename': {
+                curl: `# Download a file produced by a sandboxed tool/skill run.
+# runId is the crypto-random hex id returned in the tool result; filename is path-validated.
+curl -sk ${baseUrl}/api/tool-artifacts/RUN_ID_HEX/frame.png \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -o frame.png`,
+                python: `import requests
+runId = 'RUN_ID_HEX'; name = 'frame.png'
+r = requests.get(f'${baseUrl}/api/tool-artifacts/{runId}/{name}',
+                 headers={'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'},
+                 verify=False)
+open(name, 'wb').write(r.content)`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-WebRequest -Uri "${baseUrl}/api/tool-artifacts/RUN_ID_HEX/frame.png" -Headers $h -OutFile frame.png`,
+                javascript: `const runId = 'RUN_ID_HEX', name = 'frame.png';
+fetch(\`${baseUrl}/api/tool-artifacts/\${runId}/\${name}\`, {
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' }
+}).then(r => r.blob()).then(b => console.log('size:', b.size));`
+            },
+            '/api/system/tools-catalog': {
+                curl: `# Lists every tool the chat model sees (native tools + per-user enabled skills).
+curl -sk ${baseUrl}/api/system/tools-catalog \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+r = requests.get(f'${baseUrl}/api/system/tools-catalog',
+                 headers={'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'},
+                 verify=False)
+print(r.json())  # { count, staticCount, tools: [...] }`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/system/tools-catalog" -Headers $h | Format-List`,
+                javascript: `fetch('${baseUrl}/api/system/tools-catalog', {
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' }
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/system/egress-proxy': {
+                curl: `# Admin-only: stats for the sandbox network egress allowlist.
+curl -sk ${baseUrl}/api/system/egress-proxy \\
+  -H "X-API-Key: your_admin_api_key" \\
+  -H "X-API-Secret: your_admin_api_secret"`,
+                python: `import requests
+r = requests.get(f'${baseUrl}/api/system/egress-proxy',
+                 headers={'X-API-Key': 'your_admin_api_key', 'X-API-Secret': 'your_admin_api_secret'},
+                 verify=False)
+print(r.json())  # grant counts, rejection reasons, listening state`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_admin_api_key'; 'X-API-Secret' = 'your_admin_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/system/egress-proxy" -Headers $h`,
+                javascript: `fetch('${baseUrl}/api/system/egress-proxy', {
+  headers: { 'X-API-Key': 'your_admin_api_key', 'X-API-Secret': 'your_admin_api_secret' }
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/docs': {
+                curl: `# Look up reference docs from DevDocs.io. Requires \`query\` permission.
+# Without ?query, returns the index for the library.
+curl -sk "${baseUrl}/api/docs?library=python" \\
+  -H "X-API-Key: your_api_key" -H "X-API-Secret: your_api_secret"
+
+# With ?query, returns matching entries.
+curl -sk "${baseUrl}/api/docs?library=javascript&query=Array.prototype.map" \\
+  -H "X-API-Key: your_api_key" -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+H = {'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'}
+print(requests.get(f'${baseUrl}/api/docs',
+                   params={'library': 'python'}, headers=H, verify=False).json())
+print(requests.get(f'${baseUrl}/api/docs',
+                   params={'library': 'javascript', 'query': 'Array.prototype.map'},
+                   headers=H, verify=False).json())`,
+                powershell: `$h = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+Invoke-RestMethod -Uri "${baseUrl}/api/docs?library=python" -Headers $h
+Invoke-RestMethod -Uri "${baseUrl}/api/docs?library=javascript&query=Array.prototype.map" -Headers $h`,
+                javascript: `const h = { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' };
+fetch(\`${baseUrl}/api/docs?library=python\`, { headers: h }).then(r => r.json()).then(console.log);
+fetch(\`${baseUrl}/api/docs?library=javascript&query=Array.prototype.map\`, { headers: h })
+  .then(r => r.json()).then(console.log);`
+            },
+            '/v1/chat/completions': {
+                curl: `# OpenAI-compatible passthrough — forwards to the first running model instance.
+# Honors client-supplied tools, tool_choice, stream. Server does NOT inject its
+# own tool catalog or run the tool loop on this path (use /api/chat/stream for that).
+# Requires the API key to have the \`query\` permission.
+curl -sk -X POST ${baseUrl}/v1/chat/completions \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "any",  // ignored — server picks the first running instance
+    "messages": [{ "role": "user", "content": "Hello!" }],
+    "stream": false
+  }'
+
+# Also reachable: /v1/models, /v1/completions, /v1/embeddings — anything the
+# underlying vLLM/llama.cpp instance exposes.
+curl -sk ${baseUrl}/v1/models \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `from openai import OpenAI
+# The OpenAI SDK works directly against the proxy.
+client = OpenAI(
+    base_url='${baseUrl}/v1',
+    api_key='your_bearer_token',  # passed as Authorization: Bearer
+    default_headers={},
+)
+resp = client.chat.completions.create(
+    model='any',  # ignored by the proxy
+    messages=[{'role': 'user', 'content': 'Hello!'}],
+)
+print(resp.choices[0].message.content)`,
+                powershell: `$h = @{ 'Authorization' = 'Bearer your_bearer_token'; 'Content-Type' = 'application/json' }
+$body = @{
+  model    = 'any'
+  messages = @(@{ role = 'user'; content = 'Hello!' })
+  stream   = $false
+} | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Uri "${baseUrl}/v1/chat/completions" -Method Post -Headers $h -ContentType 'application/json' -Body $body`,
+                javascript: `// Drop-in OpenAI SDK usage.
+const res = await fetch('${baseUrl}/v1/chat/completions', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    model: 'any',  // ignored — server picks the first running instance
+    messages: [{ role: 'user', content: 'Hello!' }],
+    stream: false
+  })
+});
+console.log(await res.json());`
             }
         };
 
@@ -9898,6 +10287,12 @@ fetch('${baseUrl}/api/cli/files/package.json')
                                                             <MenuItem value="/api/system/resources">GET /api/system/resources - System Hardware Info</MenuItem>
                                                             <MenuItem value="/api/system/optimal-settings">POST /api/system/optimal-settings - Calculate Settings</MenuItem>
                                                             <MenuItem value="/api/system/reset">POST /api/system/reset - System Reset (Admin)</MenuItem>
+                                                            <MenuItem value="/api/system/tools-catalog">GET /api/system/tools-catalog - Native Tools Catalog</MenuItem>
+                                                            <MenuItem value="/api/system/egress-proxy">GET /api/system/egress-proxy - Egress Proxy Stats (Admin)</MenuItem>
+                                                            <MenuItem value="/api/sandbox/run-code">POST /api/sandbox/run-code - Sandboxed Python Eval</MenuItem>
+                                                            <MenuItem value="/api/tool-artifacts/:runId/:filename">GET /api/tool-artifacts/:runId/:filename - Download Tool Artifact</MenuItem>
+                                                            <MenuItem value="/api/docs">GET /api/docs - DevDocs Reference Lookup</MenuItem>
+                                                            <MenuItem value="/v1/chat/completions">POST /v1/* - OpenAI-Compatible Passthrough</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Search & Web Scraping ───</MenuItem>
                                                             <MenuItem value="/api/search">GET /api/search - Web Search</MenuItem>
                                                             <MenuItem value="/api/url/fetch">POST /api/url/fetch - Fetch URLs (Chat Feature)</MenuItem>
