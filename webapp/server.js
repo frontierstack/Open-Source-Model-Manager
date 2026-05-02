@@ -4724,8 +4724,33 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
             mp3: 'audio/mpeg', wav: 'audio/wav',
             mp4: 'video/mp4', webm: 'video/webm',
         };
+        // Types the browser can render inline (PDF, images, plain text/markup).
+        // Everything else has no native viewer, so we send it as an attachment
+        // by default — Chrome's "Insecure download blocked" mitigation triggers
+        // when a binary is served `inline` with the HTML `download` attribute,
+        // and `attachment` sidesteps it entirely. The chat client can also
+        // explicitly opt into attachment via `?download=1` (used by the
+        // download icon button so the file always saves, regardless of whether
+        // the browser honors the `download` HTML attr — corporate Chrome /
+        // Edge policies sometimes silently drop it).
+        const INLINE_RENDERABLE = new Set([
+            'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg',
+            'txt', 'md', 'csv', 'json', 'html', 'xml',
+        ]);
+        const forceDownload =
+            req.query.download === '1' ||
+            req.query.download === 'true' ||
+            req.query.disposition === 'attachment';
+        const dispType = (forceDownload || !INLINE_RENDERABLE.has(ext)) ? 'attachment' : 'inline';
+        const safeForHeader = safeName.replace(/"/g, '');
+        const utf8FilenameStar = encodeURIComponent(safeName).replace(/['()]/g, escape);
         res.setHeader('Content-Type', ARTIFACT_MIME[ext] || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `inline; filename="${safeName.replace(/"/g, '')}"`);
+        res.setHeader(
+            'Content-Disposition',
+            `${dispType}; filename="${safeForHeader}"; filename*=UTF-8''${utf8FilenameStar}`,
+        );
+        // Match same-origin already, but X-Content-Type-Options is set globally
+        // by helmet so the declared Content-Type is honored without sniffing.
         res.setHeader('Content-Length', String(st.size));
         const stream = require('fs').createReadStream(filePath);
         stream.on('error', () => res.end());

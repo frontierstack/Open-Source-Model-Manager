@@ -22,14 +22,26 @@ function fmtSize(bytes) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Append `?download=1` to force the server to send
+// `Content-Disposition: attachment`. The HTML `download` attr alone is
+// advisory — Chrome / Edge silently drop it under corporate policies,
+// COOP-isolated contexts, and some self-signed-HTTPS edge cases. A
+// server-side attachment header is the only reliable way to make the
+// download actually save instead of navigating to the file.
+function withDownloadFlag(url) {
+    if (typeof url !== 'string' || !url) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'download=1';
+}
+
 /**
  * ArtifactList — vertical stack of clickable cards, one per file the
- * server staged in /artifacts during a tool call. Each card opens the
- * file in a new tab (the server endpoint sends `Content-Disposition:
- * inline`, so PDFs / images render in-browser; the user can right-click
- * to save). The accompanying download icon button forces a fresh GET
- * with the `download` attribute set so the browser saves instead of
- * navigating away.
+ * server staged in /artifacts during a tool call. The filename link
+ * opens in a new tab (server sends `inline` for renderable types like
+ * PDF / images, so they preview; binaries get `attachment` and download
+ * directly even from this link). The download icon always appends
+ * `?download=1` so the server forces `Content-Disposition: attachment`
+ * regardless of the file type — this is what guarantees a save dialog
+ * in browsers that ignore the HTML `download` attribute.
  */
 export default function ArtifactList({ artifacts }) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return null;
@@ -39,6 +51,7 @@ export default function ArtifactList({ artifacts }) {
                 if (!a || !a.url || !a.name) return null;
                 const Icon = iconFor(a.name);
                 const sizeText = fmtSize(a.size);
+                const dlUrl = withDownloadFlag(a.url);
                 return (
                     <div
                         key={(a.runId || '') + ':' + a.name + ':' + i}
@@ -74,7 +87,7 @@ export default function ArtifactList({ artifacts }) {
                             )}
                         </a>
                         <a
-                            href={a.url}
+                            href={dlUrl}
                             download={a.name}
                             title={`Download ${a.name}`}
                             style={{
