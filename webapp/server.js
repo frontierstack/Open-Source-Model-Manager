@@ -14460,6 +14460,11 @@ const REFRESH_STALE_SKILLS = new Set([
     'hash_file',
     'tail_file',
     'head_file',
+    // run_npm — initial version inherited $HOME from the sandbox user
+    // (/home/sandbox, doesn't exist) and crashed with ENOENT on the
+    // very first call. Refreshed code redirects HOME + npm cache /
+    // prefix / userconfig into /tmp so npm has a writable scratch dir.
+    'run_npm',
 ]);
 
 async function refreshStaleDefaultSkills() {
