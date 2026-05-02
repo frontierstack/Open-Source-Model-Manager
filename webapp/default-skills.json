@@ -215,6 +215,43 @@
     "network": "none"
   },
   {
+    "name": "run_node",
+    "description": "Execute Node.js (JavaScript) code",
+    "type": "command",
+    "parameters": {
+      "code": "string",
+      "timeout": "number"
+    },
+    "systemPrompt": "Use this skill to run a self-contained Node.js script when no specific skill exists for the task. Disabled by default for security. The sandbox has Node 20 + npm available; only built-in modules (fs, path, crypto, http, etc.) work out of the box — third-party packages must be installed first via run_npm in the same workspace. Network is blocked by default; if the script needs to fetch URLs, prefer the fetch_url skill instead.",
+    "code": "def execute(params):\n    \"\"\"Execute Node.js code.\"\"\"\n    import subprocess\n    import tempfile\n    import os\n\n    code = params.get('code')\n    if not code:\n        return {'success': False, 'error': 'code parameter is required'}\n\n    timeout = int(params.get('timeout') or 30)\n    cwd = params.get('cwd') or ('/workspace' if os.path.isdir('/workspace') else None)\n\n    temp_file = None\n    try:\n        with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as f:\n            f.write(code)\n            temp_file = f.name\n\n        result = subprocess.run(\n            ['node', temp_file],\n            cwd=cwd,\n            capture_output=True,\n            text=True,\n            timeout=timeout\n        )\n\n        return {\n            'success': result.returncode == 0,\n            'stdout': result.stdout,\n            'stderr': result.stderr,\n            'returncode': result.returncode\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'Code execution timed out after {timeout} seconds'}\n    except FileNotFoundError:\n        return {'success': False, 'error': 'node not found in this environment (sandbox image may be out of date — rebuild sandbox-runtime)'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}\n    finally:\n        if temp_file and os.path.exists(temp_file):\n            try:\n                os.remove(temp_file)\n            except OSError:\n                pass",
+    "enabled": false,
+    "sandbox": true,
+    "workspace": true,
+    "network": "none"
+  },
+  {
+    "name": "run_npm",
+    "description": "Run an npm command (install, run, list, ...) inside the workspace",
+    "type": "command",
+    "parameters": {
+      "command": "string",
+      "cwd": "string",
+      "timeout": "number"
+    },
+    "systemPrompt": "Use this skill to install dependencies or invoke npm scripts inside the conversation workspace. Pass `command` as the npm sub-command and its args (e.g. 'install lodash', 'install --save-dev jest', 'run build', 'list', 'view express version'). DO NOT include the leading 'npm'. `cwd` defaults to /workspace; pass a sub-path when working inside a cloned repo. Network is restricted to the npm registry only — cross-origin downloads from postinstall scripts will fail. Disabled by default for security.",
+    "code": "def execute(params):\n    \"\"\"Run an npm command in the workspace.\"\"\"\n    import subprocess\n    import shlex\n    import os\n\n    command = (params.get('command') or '').strip()\n    if not command:\n        return {'success': False, 'error': 'command parameter is required (e.g. \"install lodash\", \"run build\", \"list\")'}\n\n    # Reject shell metacharacters — args are passed directly to subprocess,\n    # so chaining (&&, |, ;, backticks, $()) is meaningless and almost\n    # always indicates the model meant to run two separate npm calls.\n    forbidden = ['&', '|', ';', '`', '$(', '>', '<']\n    for ch in forbidden:\n        if ch in command:\n            return {'success': False, 'error': f'shell metacharacter {ch!r} not allowed; pass npm args only'}\n\n    if command.lstrip().startswith('npm '):\n        command = command.split(None, 1)[1] if ' ' in command else ''\n\n    timeout = int(params.get('timeout') or 180)\n\n    cwd = params.get('cwd')\n    if not cwd:\n        cwd = '/workspace' if os.path.isdir('/workspace') else os.getcwd()\n    if not os.path.isdir(cwd):\n        return {'success': False, 'error': f'cwd does not exist: {cwd}'}\n\n    try:\n        args = shlex.split(command)\n    except ValueError as e:\n        return {'success': False, 'error': f'failed to parse command: {e}'}\n    if not args:\n        return {'success': False, 'error': 'command is empty after parsing'}\n\n    cmd = ['npm', '--no-fund', '--no-audit', '--prefer-offline=false'] + args\n\n    try:\n        result = subprocess.run(\n            cmd,\n            cwd=cwd,\n            capture_output=True,\n            text=True,\n            timeout=timeout,\n        )\n        # npm output can be massive (full dep tree, deprecation chatter).\n        # Return generous tails so the model sees the actionable bit.\n        stdout = result.stdout\n        stderr = result.stderr\n        if len(stdout) > 12000:\n            stdout = stdout[-12000:]\n        if len(stderr) > 4000:\n            stderr = stderr[-4000:]\n        return {\n            'success': result.returncode == 0,\n            'cwd': cwd,\n            'argv': cmd,\n            'stdout': stdout,\n            'stderr': stderr,\n            'returncode': result.returncode,\n        }\n    except subprocess.TimeoutExpired:\n        return {'success': False, 'error': f'npm timed out after {timeout} seconds'}\n    except FileNotFoundError:\n        return {'success': False, 'error': 'npm not found in this environment (sandbox image may be out of date — rebuild sandbox-runtime)'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}",
+    "enabled": false,
+    "sandbox": true,
+    "workspace": true,
+    "network": "allowlist",
+    "allowlist": [
+      "registry.npmjs.org",
+      "registry.npmjs.com",
+      "*.npmjs.org",
+      "*.npmjs.com"
+    ]
+  },
+  {
     "name": "system_info",
     "description": "Get system information (CPU, memory, disk)",
     "type": "command",

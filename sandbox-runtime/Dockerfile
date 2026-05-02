@@ -35,6 +35,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # to include unconditionally.
         git \
         ca-certificates \
+        # curl + gnupg for the NodeSource setup script just below. Removed
+        # again before the layer ends so they don't bloat the image.
+        curl \
+        gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get purge -y --auto-remove gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user for defense-in-depth (gVisor is already the primary
