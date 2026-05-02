@@ -12844,7 +12844,22 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 accumulatedToolCalls = [];
                 const roundStart = fullResponse.length;
 
-                finishReason = await streamOneRequest(currentMessages, initialMaxTokens);
+                // Recompute the per-round max_tokens budget from the *current*
+                // message list. initialMaxTokens was sized for the first
+                // round's input; after a chain of tool calls, currentMessages
+                // grows by up to TOOL_RESULT_CHAR_CAP per round (plus the
+                // assistant turn's content). Without this recomputation,
+                // currentInputTokens + initialMaxTokens eventually overshoots
+                // contextSize and llama.cpp rejects with HTTP 400.
+                const roundInputTokens = currentMessages.reduce(
+                    (sum, m) => sum + estimateTokens(m.content), 0
+                );
+                const roundMaxTokens = Math.max(
+                    512,
+                    Math.min(initialMaxTokens, contextSize - roundInputTokens - 200)
+                );
+
+                finishReason = await streamOneRequest(currentMessages, roundMaxTokens);
 
                 // Auto-continuation loop: if model hit length limit, keep going.
                 // Skipped when tool calls are accumulated — the slim continuation
@@ -13208,7 +13223,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         const savedCatalog = toolCatalog.slice();
                         toolCatalog.length = 0;
                         try {
-                            await streamOneRequest(synthesisMessages, initialMaxTokens);
+                            // Same per-round budget recomputation as the main
+                            // tool loop — synthesisMessages is currentMessages
+                            // plus a forcing user note, so its size has drifted
+                            // from initialMaxTokens' assumptions.
+                            const synthInputTokens = synthesisMessages.reduce(
+                                (sum, m) => sum + estimateTokens(m.content), 0
+                            );
+                            const synthMaxTokens = Math.max(
+                                512,
+                                Math.min(initialMaxTokens, contextSize - synthInputTokens - 200)
+                            );
+                            await streamOneRequest(synthesisMessages, synthMaxTokens);
                         } finally {
                             toolCatalog.length = 0;
                             toolCatalog.push(...savedCatalog);
