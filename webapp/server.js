@@ -4699,6 +4699,32 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
     try {
         const st = await fs.stat(filePath);
         if (!st.isFile()) return res.status(404).json({ error: 'not a file' });
+        // Set Content-Type from extension so the browser knows whether to
+        // render inline (PDF, image), prompt download (zip, exe), or hand
+        // off to a registered handler. Falls back to octet-stream which the
+        // <a download> attribute on the chat side still handles correctly.
+        const ext = (safeName.split('.').pop() || '').toLowerCase();
+        const ARTIFACT_MIME = {
+            pdf: 'application/pdf',
+            png: 'image/png',
+            jpg: 'image/jpeg', jpeg: 'image/jpeg',
+            gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+            txt: 'text/plain; charset=utf-8',
+            md: 'text/markdown; charset=utf-8',
+            csv: 'text/csv; charset=utf-8',
+            json: 'application/json; charset=utf-8',
+            html: 'text/html; charset=utf-8',
+            xml: 'application/xml; charset=utf-8',
+            docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            zip: 'application/zip',
+            gz: 'application/gzip',
+            tar: 'application/x-tar',
+            mp3: 'audio/mpeg', wav: 'audio/wav',
+            mp4: 'video/mp4', webm: 'video/webm',
+        };
+        res.setHeader('Content-Type', ARTIFACT_MIME[ext] || 'application/octet-stream');
         res.setHeader('Content-Disposition', `inline; filename="${safeName.replace(/"/g, '')}"`);
         res.setHeader('Content-Length', String(st.size));
         const stream = require('fs').createReadStream(filePath);
@@ -14465,6 +14491,14 @@ const REFRESH_STALE_SKILLS = new Set([
     // very first call. Refreshed code redirects HOME + npm cache /
     // prefix / userconfig into /tmp so npm has a writable scratch dir.
     'run_npm',
+    // create_pdf / create_docx / create_xlsx — original templates were
+    // stub-only (Koda CLI implementations only); the server-side code
+    // body was just comments. Refreshed code is real reportlab / docx /
+    // openpyxl implementations that write to /artifacts so the chat UI
+    // can surface a download button.
+    'create_pdf',
+    'create_docx',
+    'create_xlsx',
 ]);
 
 async function refreshStaleDefaultSkills() {

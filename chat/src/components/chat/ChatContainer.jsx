@@ -1788,6 +1788,18 @@ export default function ChatContainer({
                 // message and SSE round-trips with redundant data.
                 const tcChartSpec = (tc.result && typeof tc.result === 'object' && tc.result.chartSpec) ? tc.result.chartSpec : null;
                 const tcChartSummary = (tc.result && typeof tc.result === 'object' && typeof tc.result.summary === 'string') ? tc.result.summary : '';
+                // Lift the _artifacts list out of the tool result so the chip
+                // (and the inline links rendered below the bubble) can show
+                // download buttons. Same shape as chartSpec lifting — keeps
+                // the persisted message lean by carrying just the artifact
+                // metadata, not the full tool_result payload.
+                const tcArtifacts = (
+                    tc.result && typeof tc.result === 'object' && Array.isArray(tc.result._artifacts)
+                        ? tc.result._artifacts
+                            .filter(a => a && typeof a === 'object' && typeof a.url === 'string' && typeof a.name === 'string')
+                            .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
+                        : null
+                );
                 toolCalls.push({
                     type: 'native_tool_call',
                     label: tc.name || 'tool',
@@ -1802,6 +1814,7 @@ export default function ChatContainer({
                     sources: sources && sources.length ? sources : undefined,
                     chartSpec: tcChartSpec || undefined,
                     chartSummary: tcChartSummary || undefined,
+                    artifacts: tcArtifacts && tcArtifacts.length ? tcArtifacts : undefined,
                     // Sandbox metadata for the chip badge. Undefined when the
                     // server didn't supply it (older stream or native tool
                     // for which the policy couldn't be resolved).

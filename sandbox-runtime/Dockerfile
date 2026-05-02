@@ -70,6 +70,9 @@ RUN pip install --no-cache-dir \
         pillow==11.0.0 \
         sympy==1.13.3 \
         pygame==2.6.1 \
+        reportlab==4.4.4 \
+        python-docx==1.1.2 \
+        openpyxl==3.1.5 \
     && rm -rf /root/.cache
 
 # matplotlib headless default — prevents "no display name" errors when

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3 } from 'lucide-react';
+import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Download, FileText } from 'lucide-react';
 import SearchSources from './SearchSources';
 import ChartBlock from './ChartBlock';
+import ArtifactList from './ArtifactList';
 
 /**
  * ToolCallBlock — compact chip showing an assistant tool invocation.
@@ -15,7 +16,10 @@ export default function ToolCallBlock({ tool }) {
     // are the whole point of the call — the user shouldn't have to click
     // the chip to see the rendered chart. Still toggleable to collapse.
     const hasChart = !!tool?.chartSpec;
-    const [open, setOpen] = useState(tool?.status === 'failed' || hasChart);
+    const hasArtifactsOnTool = Array.isArray(tool?.artifacts) && tool.artifacts.length > 0;
+    // Auto-expand on artifacts too — when the model just produced a file the
+    // user wants the download button visible without having to click the chip.
+    const [open, setOpen] = useState(tool?.status === 'failed' || hasChart || hasArtifactsOnTool);
     if (!tool) return null;
 
     const {
@@ -32,6 +36,7 @@ export default function ToolCallBlock({ tool }) {
         results,
         chartSpec,
         chartSummary,
+        artifacts,
         sandboxed,
         sandboxNetwork,
         sandboxSource,
@@ -85,10 +90,11 @@ export default function ToolCallBlock({ tool }) {
     }
     const caption = captionParts.join(' · ');
     const hasSources = Array.isArray(sourceList) && sourceList.length > 0;
+    const hasArtifacts = Array.isArray(artifacts) && artifacts.length > 0;
     // Show args panel when we have parsed args or the legacy single-string `query`.
     const argEntries = args && typeof args === 'object' ? Object.entries(args) : null;
     const hasArgs = (argEntries && argEntries.length > 0) || (!argEntries && query);
-    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec;
+    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || hasArtifacts;
 
     const statusColor =
         isRunning ? 'var(--accent)'
@@ -206,6 +212,9 @@ export default function ToolCallBlock({ tool }) {
                 <div style={body}>
                     {chartSpec && (
                         <ChartBlock spec={chartSpec} summary={chartSummary || ''} />
+                    )}
+                    {hasArtifacts && (
+                        <ArtifactList artifacts={artifacts} />
                     )}
                     {hasArgs && (
                         argEntries && argEntries.length > 0 ? (

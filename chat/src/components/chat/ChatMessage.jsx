@@ -8,6 +8,7 @@ import SearchSources from './SearchSources';
 import ProcessingLogFeed from './ProcessingLogFeed';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
+import ArtifactList from './ArtifactList';
 import { useChatStore } from '../../stores/useChatStore';
 
 export default React.memo(function ChatMessage({
@@ -358,6 +359,29 @@ export default React.memo(function ChatMessage({
                             ))}
                         </div>
                     )}
+
+                    {/* Inline downloadable artifacts — surface every file the
+                        model produced (PDFs, docx, xlsx, anything written to
+                        /artifacts/) as a download card in the bubble itself,
+                        same pattern as charts. The chip dropdown still shows
+                        them for transparency, but the user shouldn't have to
+                        expand a tool chip to grab a file they just asked for. */}
+                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && (() => {
+                        const all = [];
+                        for (const tc of toolCalls) {
+                            if (Array.isArray(tc?.artifacts)) {
+                                for (const a of tc.artifacts) {
+                                    if (a && a.url && a.name) all.push(a);
+                                }
+                            }
+                        }
+                        if (all.length === 0) return null;
+                        return (
+                            <div style={{ marginTop: displayContent ? 12 : 0 }}>
+                                <ArtifactList artifacts={all} />
+                            </div>
+                        );
+                    })()}
 
                     {/* Inline artifact chip — shown when the assistant response
                         contains one or more fenced code blocks. Click opens the
