@@ -41,8 +41,12 @@ const REASONING_TAG_ALT = REASONING_TAG_NAMES.join('|');
  *
  * If the entire response is wrapped in reasoning tags with no content outside,
  * the thinking content is returned as the main content (not as reasoning).
+ * That promotion only fires when `streaming` is false — mid-stream, the
+ * window between `</think>` arriving and the first real content character
+ * would otherwise flash the entire thinking buffer into the bubble body
+ * and then snap it back into the collapsed dropdown.
  */
-function parseThinkTags(content) {
+function parseThinkTags(content, streaming = false) {
     if (!content) return { content: '', reasoning: '' };
 
     let reasoning = '';
@@ -100,8 +104,12 @@ function parseThinkTags(content) {
 
     // If content is empty but we have reasoning from COMPLETED blocks,
     // the model likely wrapped its entire response in reasoning tags.
-    // Only apply this when tags are closed (not during streaming).
-    if (!cleanContent && reasoning && hasCompletedThinkBlock && !hasUnclosedThink) {
+    // Only apply this on the final parse — mid-stream this same condition
+    // hits the moment </think> closes (before the first real content
+    // character arrives), which would briefly render the entire thinking
+    // buffer as the main bubble body and then flicker it back into the
+    // dropdown one frame later.
+    if (!streaming && !cleanContent && reasoning && hasCompletedThinkBlock && !hasUnclosedThink) {
         return { content: reasoning, reasoning: '' };
     }
 
@@ -1510,8 +1518,11 @@ export default function ChatContainer({
                                     sawToolEventThisTurn = false;
                                 }
                                 assistantContent += delta.content;
-                                // Parse <think> tags from content and separate reasoning
-                                const thinkParsed = parseThinkTags(assistantContent);
+                                // Parse <think> tags from content and separate reasoning.
+                                // streaming=true keeps the parser from briefly promoting
+                                // a closed <think> block to the bubble body before the
+                                // first real content character arrives.
+                                const thinkParsed = parseThinkTags(assistantContent, true);
                                 pendingContentRef.current = thinkParsed.content;
                                 if (thinkParsed.reasoning) {
                                     assistantReasoning = thinkParsed.reasoning;
@@ -2195,7 +2206,7 @@ export default function ChatContainer({
                                 const delta = parsed.choices?.[0]?.delta;
                                 if (delta?.content) {
                                     assistantContent += delta.content;
-                                    const thinkParsed = parseThinkTags(assistantContent);
+                                    const thinkParsed = parseThinkTags(assistantContent, true);
                                     // Show original content + continuation in the same streaming bubble
                                     const currentActiveId = useChatStore.getState().activeConversationId;
                                     if (currentActiveId === conversationId) {
