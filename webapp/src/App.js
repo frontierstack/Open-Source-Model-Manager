@@ -103,6 +103,7 @@ import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
 import Menu from '@mui/material/Menu';
+import useMediaQuery from '@mui/material/useMediaQuery';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
 
@@ -351,6 +352,8 @@ const App = () => {
             preferences.fontSize || 'medium'
         );
     }, [preferences.theme, preferences.fontFamily, preferences.fontSize]);
+
+    const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
     // UI state
     const [activeTab, setActiveTab] = useState(0);
@@ -7817,31 +7820,36 @@ console.log(await res.json());`
                 <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                     {/* Header */}
                     <Box sx={{
-                        px: 3,
-                        py: 3,
+                        px: { xs: 1.5, sm: 3 },
+                        py: { xs: 1.5, sm: 3 },
                         minHeight: '72px',
                         borderBottom: '1px solid',
                         borderColor: 'divider',
                         bgcolor: 'background.paper',
                     }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, minWidth: 0 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 0, flex: 1 }}>
                                 <Typography variant="h1" sx={{
                                     background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
                                     WebkitBackgroundClip: 'text',
                                     WebkitTextFillColor: 'transparent',
+                                    fontSize: { xs: '1.1rem', sm: 'inherit' },
+                                    whiteSpace: { xs: 'nowrap', sm: 'normal' },
+                                    overflow: { xs: 'hidden', sm: 'visible' },
+                                    textOverflow: { xs: 'ellipsis', sm: 'clip' },
+                                    minWidth: 0,
                                 }}>
                                     Open Source Model Manager
                                 </Typography>
                             </Box>
-                            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexShrink: 0 }}>
                                 <Chip
                                     icon={wsConnected ? <CheckCircleIcon sx={{ fontSize: 18 }} /> : <WarningIcon sx={{ fontSize: 18 }} />}
                                     label={wsConnected ? "Connected" : "Disconnected"}
                                     size="medium"
                                     color={wsConnected ? "success" : "error"}
                                     variant="outlined"
-                                    sx={{ height: 32, fontSize: '0.875rem', '& .MuiChip-icon': { ml: 0.5 } }}
+                                    sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', sm: 'inline-flex' }, '& .MuiChip-icon': { ml: 0.5 } }}
                                 />
                                 {instances.length > 0 && (
                                     <Chip
@@ -7850,7 +7858,7 @@ console.log(await res.json());`
                                         size="medium"
                                         color="secondary"
                                         variant="outlined"
-                                        sx={{ height: 32, fontSize: '0.875rem' }}
+                                        sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', sm: 'inline-flex' } }}
                                     />
                                 )}
                                 <Chip
@@ -7877,7 +7885,10 @@ console.log(await res.json());`
                             <Tabs
                                 value={activeTab}
                                 onChange={handleTabChange}
-                                sx={{ flex: 1 }}
+                                variant="scrollable"
+                                scrollButtons="auto"
+                                allowScrollButtonsMobile
+                                sx={{ flex: 1, minWidth: 0 }}
                             >
                                 {visibleTabOrder.map((tabId, index) => {
                                     const tab = tabDefinitions.find(t => t.id === tabId);
@@ -7909,7 +7920,7 @@ console.log(await res.json());`
                     </Box>
 
                     {/* Tab Panels */}
-                    <Box sx={{ flex: 1, overflow: 'auto', p: 3 }}>
+                    <Box sx={{ flex: 1, overflow: 'auto', p: { xs: 1.5, sm: 3 } }}>
                         {/* Discover Tab */}
                         {visibleTabOrder[activeTab] === 0 && (
                             <Grid container spacing={3}>
@@ -9023,7 +9034,7 @@ console.log(await res.json());`
                                                 <Grid item xs={12} md={6}>
                                                     <CollapsibleSection title="Model & Context" icon={<MemoryIcon />}>
                                                         <Grid container spacing={2}>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.maxModelLen} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Max Model Length</InputLabel>
@@ -9049,7 +9060,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.cpuOffloadGb} arrow placement="top">
                                                                     <TextField
                                                                         fullWidth
@@ -9085,7 +9096,7 @@ console.log(await res.json());`
 
                                                     <CollapsibleSection title="GPU Memory" icon={<TuneIcon />} defaultExpanded={false}>
                                                         <Grid container spacing={2}>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.gpuMemoryUtilization} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>GPU Memory %</InputLabel>
@@ -9105,7 +9116,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.kvCacheDtype} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>KV Cache Dtype</InputLabel>
@@ -9128,7 +9139,7 @@ console.log(await res.json());`
                                                 <Grid item xs={12} md={6}>
                                                     <CollapsibleSection title="Performance" icon={<SettingsIcon />} defaultExpanded={false}>
                                                         <Grid container spacing={2}>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.tensorParallelSize} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Tensor Parallel</InputLabel>
@@ -9145,7 +9156,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.maxNumSeqs} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Max Sequences</InputLabel>
@@ -9188,7 +9199,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.enforceEager} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9207,7 +9218,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.contextShift} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9226,7 +9237,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.disableThinking} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9248,7 +9259,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={SETTINGS_TOOLTIPS.compressMemory} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9280,7 +9291,7 @@ console.log(await res.json());`
                                                 <Grid item xs={12} md={6}>
                                                     <CollapsibleSection title="GPU & Context" icon={<MemoryIcon />}>
                                                         <Grid container spacing={2}>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.nGpuLayers} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>GPU Layers</InputLabel>
@@ -9302,7 +9313,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.contextSize} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Context Size</InputLabel>
@@ -9327,7 +9338,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.flashAttention} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9346,7 +9357,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.contextShift} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9365,7 +9376,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.swaFull} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9384,7 +9395,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.disableThinking} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9406,7 +9417,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.compressMemory} arrow placement="top">
                                                                     <FormControlLabel
                                                                         control={
@@ -9430,7 +9441,7 @@ console.log(await res.json());`
 
                                                     <CollapsibleSection title="KV Cache" icon={<TuneIcon />} defaultExpanded={false}>
                                                         <Grid container spacing={2}>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.cacheTypeK} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Cache Type K</InputLabel>
@@ -9446,7 +9457,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.cacheTypeV} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Cache Type V</InputLabel>
@@ -9483,7 +9494,7 @@ console.log(await res.json());`
                                                 <Grid item xs={12} md={6}>
                                                     <CollapsibleSection title="Performance" icon={<SettingsIcon />} defaultExpanded={false}>
                                                         <Grid container spacing={2}>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.threads} arrow placement="top">
                                                                     <TextField
                                                                         fullWidth
@@ -9497,7 +9508,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.parallelSlots} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Parallel Slots</InputLabel>
@@ -9514,7 +9525,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.batchSize} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Batch Size</InputLabel>
@@ -9534,7 +9545,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.ubatchSize} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Micro-batch</InputLabel>
@@ -9558,7 +9569,7 @@ console.log(await res.json());`
 
                                                     <CollapsibleSection title="Repetition Control" icon={<TuneIcon />} defaultExpanded={false}>
                                                         <Grid container spacing={2}>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.repeatPenalty} arrow placement="top">
                                                                     <TextField
                                                                         fullWidth
@@ -9571,7 +9582,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.repeatLastN} arrow placement="top">
                                                                     <FormControl fullWidth size="small">
                                                                         <InputLabel>Repeat Last N</InputLabel>
@@ -9589,7 +9600,7 @@ console.log(await res.json());`
                                                                     </FormControl>
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.presencePenalty} arrow placement="top">
                                                                     <TextField
                                                                         fullWidth
@@ -9602,7 +9613,7 @@ console.log(await res.json());`
                                                                     />
                                                                 </Tooltip>
                                                             </Grid>
-                                                            <Grid item xs={6}>
+                                                            <Grid item xs={12} sm={6}>
                                                                 <Tooltip title={LLAMACPP_TOOLTIPS.frequencyPenalty} arrow placement="top">
                                                                     <TextField
                                                                         fullWidth
@@ -9777,7 +9788,7 @@ console.log(await res.json());`
                         )}
 
                         {/* User Dialog */}
-                        <Dialog open={userDialogOpen} onClose={handleCloseUserDialog} maxWidth="sm" fullWidth>
+                        <Dialog open={userDialogOpen} onClose={handleCloseUserDialog} maxWidth="sm" fullWidth fullScreen={isMobile}>
                             <DialogTitle>
                                 {userDialogMode === 'create' ? 'Create New User' :
                                  userDialogMode === 'edit' ? `Edit User: ${selectedUser?.username}` :
@@ -11883,7 +11894,7 @@ console.log(await res.json());`
                                                         <Chip label="Integrated" size="small" color="success" />
                                                     </Box>
 
-                                                    <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
+                                                    <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
                                                         <Tab label="Tools" />
                                                         <Tab label="Skills" />
                                                         <Tab label="Permissions" />
@@ -12145,7 +12156,7 @@ console.log(await res.json());`
             </Box>
 
             {/* Agent Dialog */}
-            <Dialog open={agentDialogOpen} onClose={() => { setAgentDialogOpen(false); setEditingAgent(null); }} maxWidth="md" fullWidth>
+            <Dialog open={agentDialogOpen} onClose={() => { setAgentDialogOpen(false); setEditingAgent(null); }} maxWidth="md" fullWidth fullScreen={isMobile}>
                 <DialogTitle>{editingAgent ? 'Edit Agent' : 'Create Agent'}</DialogTitle>
                 <DialogContent>
                     <TextField
@@ -12256,7 +12267,7 @@ console.log(await res.json());`
             </Dialog>
 
             {/* Tool Dialog */}
-            <Dialog open={skillDialogOpen} onClose={() => { setSkillDialogOpen(false); setEditingSkill(null); }} maxWidth="md" fullWidth>
+            <Dialog open={skillDialogOpen} onClose={() => { setSkillDialogOpen(false); setEditingSkill(null); }} maxWidth="md" fullWidth fullScreen={isMobile}>
                 <DialogTitle>{editingSkill ? 'Edit Tool' : 'Create Tool'}</DialogTitle>
                 <DialogContent>
                     <TextField
@@ -12307,7 +12318,7 @@ console.log(await res.json());`
             </Dialog>
 
             {/* Task Dialog */}
-            <Dialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} maxWidth="sm" fullWidth>
+            <Dialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} maxWidth="sm" fullWidth fullScreen={isMobile}>
                 <DialogTitle>Create Task</DialogTitle>
                 <DialogContent>
                     <FormControl fullWidth sx={{ mt: 2, mb: 2 }}>
@@ -12351,7 +12362,7 @@ console.log(await res.json());`
             </Dialog>
 
             {/* Reset Confirmation Dialog */}
-            <Dialog open={resetDialogOpen} onClose={() => setResetDialogOpen(false)} maxWidth="sm" fullWidth>
+            <Dialog open={resetDialogOpen} onClose={() => setResetDialogOpen(false)} maxWidth="sm" fullWidth fullScreen={isMobile}>
                 <DialogTitle>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <WarningIcon color="error" />
