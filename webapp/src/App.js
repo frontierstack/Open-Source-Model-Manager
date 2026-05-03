@@ -15,7 +15,9 @@ import List from '@mui/material/List';
 import ListItem from '@mui/material/ListItem';
 import ListItemText from '@mui/material/ListItemText';
 import ListItemButton from '@mui/material/ListItemButton';
+import ListItemIcon from '@mui/material/ListItemIcon';
 import IconButton from '@mui/material/IconButton';
+import MenuIcon from '@mui/icons-material/Menu';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
@@ -359,6 +361,7 @@ const App = () => {
     // narrow — it leaves tablets and split-view layouts in the cramped
     // desktop layout.
     const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+    const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
     // UI state
     const [activeTab, setActiveTab] = useState(0);
@@ -7833,18 +7836,34 @@ console.log(await res.json());`
                         bgcolor: 'background.paper',
                     }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, minWidth: 0 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 0, flex: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, flex: 1 }}>
+                                <IconButton
+                                    aria-label="open navigation"
+                                    onClick={() => setMobileNavOpen(true)}
+                                    sx={{ display: { xs: 'inline-flex', md: 'none' }, mr: 0.5 }}
+                                    size="small"
+                                >
+                                    <MenuIcon />
+                                </IconButton>
                                 <Typography variant="h1" sx={{
                                     background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
                                     WebkitBackgroundClip: 'text',
                                     WebkitTextFillColor: 'transparent',
-                                    fontSize: { xs: '1.1rem', md: 'inherit' },
+                                    fontSize: { xs: '1.05rem', md: 'inherit' },
                                     whiteSpace: { xs: 'nowrap', md: 'normal' },
                                     overflow: { xs: 'hidden', md: 'visible' },
                                     textOverflow: { xs: 'ellipsis', md: 'clip' },
                                     minWidth: 0,
                                 }}>
-                                    Open Source Model Manager
+                                    {/* On mobile show the active tab name (more useful nav context
+                                        than the static product title); on desktop the product title
+                                        sits above the tab strip as before. */}
+                                    <Box component="span" sx={{ display: { xs: 'inline', md: 'none' } }}>
+                                        {tabDefinitions.find(t => t.id === visibleTabOrder[activeTab])?.label || 'Model Manager'}
+                                    </Box>
+                                    <Box component="span" sx={{ display: { xs: 'none', md: 'inline' } }}>
+                                        Open Source Model Manager
+                                    </Box>
                                 </Typography>
                             </Box>
                             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexShrink: 0 }}>
@@ -7885,8 +7904,8 @@ console.log(await res.json());`
                             </Box>
                         </Box>
 
-                        {/* Tabs */}
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 2 }}>
+                        {/* Tabs (desktop only — mobile uses the slide-in Drawer below) */}
+                        <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 1, mt: 2 }}>
                             <Tabs
                                 value={activeTab}
                                 onChange={handleTabChange}
@@ -7923,6 +7942,94 @@ console.log(await res.json());`
                             </Tabs>
                         </Box>
                     </Box>
+
+                    {/* Mobile navigation drawer — slides in from the left when
+                        the hamburger button is tapped. Lists the same tabs as
+                        the desktop tab strip, in vertical form with icon +
+                        label, for thumb-friendly navigation. Drag-reorder is
+                        intentionally not exposed here; that's a desktop power
+                        feature. */}
+                    <Drawer
+                        anchor="left"
+                        open={mobileNavOpen}
+                        onClose={() => setMobileNavOpen(false)}
+                        sx={{ display: { xs: 'block', md: 'none' } }}
+                        PaperProps={{ sx: { width: 280, bgcolor: 'background.paper' } }}
+                    >
+                        <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+                            <Typography variant="h6" sx={{
+                                background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
+                                WebkitBackgroundClip: 'text',
+                                WebkitTextFillColor: 'transparent',
+                                fontWeight: 700,
+                                fontSize: '1rem',
+                            }}>
+                                Open Source Model Manager
+                            </Typography>
+                        </Box>
+                        <List sx={{ pt: 1 }}>
+                            {visibleTabOrder.map((tabId, index) => {
+                                const tab = tabDefinitions.find(t => t.id === tabId);
+                                if (!tab) return null;
+                                const selected = activeTab === index;
+                                return (
+                                    <ListItemButton
+                                        key={tabId}
+                                        selected={selected}
+                                        onClick={() => {
+                                            setActiveTab(index);
+                                            setMobileNavOpen(false);
+                                        }}
+                                        sx={{
+                                            mx: 1, mb: 0.5, borderRadius: 1,
+                                            '&.Mui-selected': {
+                                                bgcolor: 'rgba(99, 102, 241, 0.18)',
+                                                '&:hover': { bgcolor: 'rgba(99, 102, 241, 0.24)' },
+                                            },
+                                        }}
+                                    >
+                                        <ListItemIcon sx={{ minWidth: 36, color: selected ? 'secondary.main' : 'text.secondary' }}>
+                                            {tab.icon}
+                                        </ListItemIcon>
+                                        <ListItemText
+                                            primary={tab.label}
+                                            primaryTypographyProps={{
+                                                fontWeight: selected ? 600 : 500,
+                                                color: selected ? 'text.primary' : 'text.secondary',
+                                            }}
+                                        />
+                                    </ListItemButton>
+                                );
+                            })}
+                        </List>
+                        <Divider sx={{ mt: 1 }} />
+                        <Box sx={{ p: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                                Signed in as
+                            </Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                {user?.username || 'User'}
+                            </Typography>
+                            <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'center' }}>
+                                <Chip
+                                    icon={wsConnected ? <CheckCircleIcon sx={{ fontSize: 16 }} /> : <WarningIcon sx={{ fontSize: 16 }} />}
+                                    label={wsConnected ? 'Connected' : 'Disconnected'}
+                                    size="small"
+                                    color={wsConnected ? 'success' : 'error'}
+                                    variant="outlined"
+                                />
+                                {instances.length > 0 && (
+                                    <Chip
+                                        icon={<MemoryIcon sx={{ fontSize: 16 }} />}
+                                        label={`${instances.length} active`}
+                                        size="small"
+                                        color="secondary"
+                                        variant="outlined"
+                                    />
+                                )}
+                            </Box>
+                        </Box>
+                    </Drawer>
 
                     {/* Tab Panels */}
                     <Box sx={{ flex: 1, overflow: 'auto', p: { xs: 1.5, md: 3 } }}>
