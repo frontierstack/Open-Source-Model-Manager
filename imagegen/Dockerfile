@@ -27,14 +27,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Torch first (large, cached separately so subsequent rebuilds are fast).
-RUN pip3 install --no-cache-dir --break-system-packages \
+# No --break-system-packages: the cuda:*-ubuntu22.04 base ships pip 22.x which
+# predates that flag (added in 23.0.1 for PEP 668), and 22.04 has no
+# EXTERNALLY-MANAGED marker so it's not needed anyway.
+RUN pip3 install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cu124 \
         torch==2.5.1
 
 # Diffusers + a tiny FastAPI server. Pin exact versions for build
 # reproducibility; bumping these requires retesting SDXL-Turbo's pipeline
 # class API (AutoPipelineForText2Image).
-RUN pip3 install --no-cache-dir --break-system-packages \
+RUN pip3 install --no-cache-dir \
         diffusers==0.31.0 \
         transformers==4.46.3 \
         accelerate==1.1.1 \
