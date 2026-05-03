@@ -195,16 +195,16 @@ const LLAMACPP_TOOLTIPS = {
 
 // Section Header Component
 const SectionHeader = ({ icon, title, subtitle, action }) => (
-    <Box sx={{ mb: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+    <Box sx={{ mb: { xs: 1.5, md: 2 } }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5, gap: 1, flexWrap: 'wrap' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
                 {icon && React.cloneElement(icon, { sx: { fontSize: 18, color: 'primary.main' } })}
-                <Typography variant="h5" sx={{ color: 'text.primary' }}>{title}</Typography>
+                <Typography variant="h5" sx={{ color: 'text.primary', fontSize: { xs: '1.15rem', md: '1.5rem' }, lineHeight: 1.2 }}>{title}</Typography>
             </Box>
             {action}
         </Box>
         {subtitle && (
-            <Typography variant="caption" sx={{ color: 'text.secondary', ml: icon ? 3.5 : 0 }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', ml: icon ? 3.5 : 0, display: 'block' }}>
                 {subtitle}
             </Typography>
         )}
@@ -8046,7 +8046,7 @@ console.log(await res.json());`
                                                 subtitle="Search and download GGUF models from HuggingFace"
                                             />
                                             {/* Search input */}
-                                            <Box sx={{ display: 'flex', gap: 1.5, mt: 2 }}>
+                                            <Box sx={{ display: 'flex', gap: 1.5, mt: 2, flexWrap: { xs: 'wrap', sm: 'nowrap' } }}>
                                                 <TextField
                                                     fullWidth
                                                     placeholder="Search models... (e.g., llama, mistral, qwen, deepseek)"
@@ -8072,7 +8072,7 @@ console.log(await res.json());`
                                                     variant="contained"
                                                     onClick={handleSearch}
                                                     disabled={searching}
-                                                    sx={{ minWidth: 100, borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
+                                                    sx={{ minWidth: { xs: 'auto', sm: 100 }, width: { xs: '100%', sm: 'auto' }, borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
                                                 >
                                                     {searching ? <CircularProgress size={20} /> : 'Search'}
                                                 </Button>
@@ -9062,7 +9062,7 @@ console.log(await res.json());`
                                             {/* Backend Selection */}
                                             <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                                                    <Typography variant="subtitle2" sx={{ minWidth: 100 }}>
+                                                    <Typography variant="subtitle2" sx={{ minWidth: { xs: 'auto', md: 100 } }}>
                                                         Backend:
                                                     </Typography>
                                                     <ToggleButtonGroup
@@ -9096,10 +9096,10 @@ console.log(await res.json());`
                                             <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                                                     <AutoAwesomeIcon color="primary" />
-                                                    <Typography variant="subtitle2" sx={{ minWidth: 120 }}>
+                                                    <Typography variant="subtitle2" sx={{ minWidth: { xs: 'auto', md: 120 } }}>
                                                         Optimal Settings
                                                     </Typography>
-                                                    <FormControl size="small" sx={{ minWidth: 200, flex: 1 }}>
+                                                    <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 200 }, flex: 1 }}>
                                                         <InputLabel>Select Model</InputLabel>
                                                         <Select
                                                             value={selectedModelForOptimal || ''}
@@ -11485,6 +11485,12 @@ console.log(await res.json());`
                             <Card sx={{
                                 display: 'flex', flexDirection: 'column',
                                 flex: { xs: 'none', md: 1 },
+                                // Mobile: cap the card height so the inner log Paper's
+                                // flex:1 resolves to a finite size and scrolls internally
+                                // instead of letting the card grow forever with each log
+                                // line. Without an explicit height the card has no
+                                // upper bound and the Paper's overflow:auto never engages.
+                                height: { xs: 480, md: 'auto' },
                                 minHeight: { xs: 480, md: 0 },
                                 overflow: 'hidden',
                             }}>
@@ -11498,7 +11504,13 @@ console.log(await res.json());`
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Real-time system, model, and operation logs</Typography>
                                             </Box>
                                         </Box>
-                                        <Button size="small" variant="outlined" onClick={() => setLogs([])} startIcon={<ClearIcon />}>Clear</Button>
+                                        {isMobile ? (
+                                            <IconButton size="small" onClick={() => setLogs([])} aria-label="Clear logs" sx={{ border: '1px solid', borderColor: 'divider' }}>
+                                                <ClearIcon fontSize="small" />
+                                            </IconButton>
+                                        ) : (
+                                            <Button size="small" variant="outlined" onClick={() => setLogs([])} startIcon={<ClearIcon />}>Clear</Button>
+                                        )}
                                     </Box>
 
                                     {/* Filter bar */}
@@ -11526,7 +11538,7 @@ console.log(await res.json());`
                                             />
                                         ))}
                                         {/* Search input */}
-                                        <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center', bgcolor: 'rgba(255,255,255,0.04)', borderRadius: 1, px: 1, py: 0.25, border: '1px solid', borderColor: 'divider', minWidth: 180 }}>
+                                        <Box sx={{ ml: { xs: 0, sm: 'auto' }, mt: { xs: 0.5, sm: 0 }, width: { xs: '100%', sm: 'auto' }, display: 'flex', alignItems: 'center', bgcolor: 'rgba(255,255,255,0.04)', borderRadius: 1, px: 1, py: 0.25, border: '1px solid', borderColor: 'divider', minWidth: { xs: 0, sm: 180 } }}>
                                             <SearchIcon sx={{ fontSize: 14, color: 'text.secondary', mr: 0.5 }} />
                                             <input
                                                 type="text"
