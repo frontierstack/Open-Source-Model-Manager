@@ -14387,6 +14387,10 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // pdf / docs generation + reading
     'create_pdf', 'html_to_pdf', 'markdown_to_html',
     'read_pdf', 'pdf_page_count', 'pdf_to_images',
+    // image manipulation (Pillow), spreadsheet read (openpyxl), SQL (sqlite3)
+    'transform_image', 'read_xlsx', 'query_sqlite',
+    // audio transcription (faster-whisper, tiny.en bundled in sandbox image)
+    'transcribe_audio',
 ]);
 
 // NETWORK-requiring default skills. These get sandboxed with an allowlist
@@ -14399,6 +14403,7 @@ const NETWORK_SANDBOX_DEFAULTS = {
     web_search:      { allowlist: ['duckduckgo.com', 'html.duckduckgo.com', 'www.bing.com'] },
     playwright_fetch: { allowlist: ['*'], note: 'user-supplied URLs; browser renders' },
     dns_lookup:      { allowlist: [] }, // doesn't use HTTP proxy; noop
+    generate_image:  { allowlist: ['imagegen'], note: 'on-cluster imagegen service' },
 };
 
 /** Walk existing skills and opt-in known defaults to sandbox + workspace /
@@ -14537,6 +14542,11 @@ const REFRESH_STALE_SKILLS = new Set([
     'copy_file',
     'run_python',
     'run_node',
+    // generate_image — initial template used urllib which doesn't
+    // auto-pick up Basic-auth from the HTTP_PROXY URL, so the egress
+    // proxy rejected calls with "no_token". Refreshed code uses the
+    // `requests` library which handles proxy basic-auth natively.
+    'generate_image',
 ]);
 
 async function refreshStaleDefaultSkills() {

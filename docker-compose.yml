@@ -68,6 +68,44 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Optional GPU image-generation service. Disabled by default — the chat
+  # `generate_image` skill is also disabled by default; flip both on
+  # together when you want diffusion image gen:
+  #   docker compose --profile imagegen up -d imagegen
+  # then enable the `generate_image` skill in the webapp Skills UI.
+  #
+  # Cold start downloads SDXL-Turbo (~5GB) into the imagegen-cache volume
+  # on first /generate request, then keeps the model warm in process
+  # memory. Subsequent requests are 3-8s on a typical GPU.
+  imagegen:
+    build: ./imagegen
+    image: modelserver-imagegen:latest
+    profiles:
+      - imagegen
+    expose:
+      - "5000"
+    volumes:
+      - imagegen_cache:/root/.cache/huggingface
+    environment:
+      - IMAGEGEN_MODEL=${IMAGEGEN_MODEL:-stabilityai/sdxl-turbo}
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
+
   # Chat interface - separate lightweight React app
   chat:
     build: ./chat
@@ -84,3 +122,7 @@ services:
 
 volumes:
   webapp_data:
+  # HF cache for the imagegen profile so SDXL-Turbo's ~5GB download
+  # survives container restarts. Only created when the imagegen profile
+  # is up — docker compose lazy-creates volumes referenced by services.
+  imagegen_cache:
