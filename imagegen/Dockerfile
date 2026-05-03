@@ -10,7 +10,11 @@
 # container restarts). The model is NOT baked into the image to keep
 # the build artifact under ~6GB instead of ~11GB.
 
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+# cu128 base — needed because the cards on the box are Blackwell (RTX 50xx,
+# sm_120) and PyTorch only ships sm_120 binaries in its cu128 wheels (torch
+# 2.7+). On a 12.4 base, `import torch` works but `tensor.to('cuda')` fails
+# at runtime with "no kernel image is available for execution on the device".
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -27,12 +31,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Torch first (large, cached separately so subsequent rebuilds are fast).
+# cu128 wheel: ships sm_50..sm_120, which is the only stock build with
+# Blackwell consumer (sm_120 / RTX 50xx) kernels baked in.
 # No --break-system-packages: the cuda:*-ubuntu22.04 base ships pip 22.x which
 # predates that flag (added in 23.0.1 for PEP 668), and 22.04 has no
 # EXTERNALLY-MANAGED marker so it's not needed anyway.
 RUN pip3 install --no-cache-dir \
-        --index-url https://download.pytorch.org/whl/cu124 \
-        torch==2.5.1
+        --index-url https://download.pytorch.org/whl/cu128 \
+        torch==2.7.0
 
 # Diffusers + a tiny FastAPI server. Pin exact versions for build
 # reproducibility; bumping these requires retesting SDXL-Turbo's pipeline
