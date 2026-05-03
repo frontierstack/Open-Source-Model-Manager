@@ -14380,6 +14380,8 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'move_file', 'copy_file', 'append_to_file',
     'tail_file', 'head_file', 'search_files', 'search_replace_file',
     'diff_files', 'grep_code', 'outline_file', 'replace_lines',
+    // make a workspace file downloadable — copies into /workspace/artifacts/
+    'make_downloadable',
     // archives
     'create_archive', 'extract_archive',
     // pdf / docs generation + reading
@@ -14524,6 +14526,17 @@ const REFRESH_STALE_SKILLS = new Set([
     'create_pdf',
     'create_docx',
     'create_xlsx',
+    // create_file / move_file / copy_file / run_python / run_node —
+    // systemPrompt updated to teach the /workspace/artifacts/ download
+    // convention. Code body is unchanged so the original refresh logic
+    // (which skipped when `s.code === t.code`) wouldn't have propagated
+    // the prompt fix; the refresh check now also fires on description /
+    // systemPrompt drift.
+    'create_file',
+    'move_file',
+    'copy_file',
+    'run_python',
+    'run_node',
 ]);
 
 async function refreshStaleDefaultSkills() {
@@ -14538,7 +14551,16 @@ async function refreshStaleDefaultSkills() {
             if (!REFRESH_STALE_SKILLS.has(s.name)) continue;
             const t = templateByName.get(s.name);
             if (!t || !t.code) continue;
-            if (s.code === t.code) continue;
+            // Refresh when ANY of code, description, systemPrompt, or
+            // parameters drift — description-only fixes (e.g. teaching
+            // the /workspace/artifacts/ download convention) won't reach
+            // existing installs if we only refresh on code change.
+            const codeDrift = s.code !== t.code;
+            const descDrift = !!t.description && s.description !== t.description;
+            const promptDrift = !!t.systemPrompt && s.systemPrompt !== t.systemPrompt;
+            const paramsDrift = !!t.parameters
+                && JSON.stringify(s.parameters || {}) !== JSON.stringify(t.parameters);
+            if (!codeDrift && !descDrift && !promptDrift && !paramsDrift) continue;
             s.code = t.code;
             if (t.description) s.description = t.description;
             if (t.systemPrompt) s.systemPrompt = t.systemPrompt;

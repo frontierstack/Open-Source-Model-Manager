@@ -378,6 +378,49 @@ except Exception as _e:
         }
     } catch (_) { /* no artifacts */ }
 
+    // 6b. Also promote files written to /workspace/artifacts/ during this
+    // run. The chat model's natural instinct when asked to "download" a
+    // file is to put it under /workspace/artifacts/ — but only the per-run
+    // /artifacts/ mount is what surfaces as a download. Without this
+    // promotion step, a file created by run_python and then copy_file'd
+    // into /workspace/artifacts/ silently never appears.
+    //
+    // We mtime-filter against `start` so files left over from prior turns
+    // don't re-surface every time, and skip names the artifact endpoint
+    // would reject (dotfiles / `..`) to avoid 400s on download.
+    if (workspaceInfo) {
+        const wsArtifactsDir = path.join(workspaceInfo.localInContainer, 'artifacts');
+        try {
+            const wsEntries = await fs.readdir(wsArtifactsDir, { withFileTypes: true });
+            const seen = new Set(artifacts.map(a => a.name));
+            for (const e of wsEntries) {
+                if (!e.isFile()) continue;
+                if (e.name.startsWith('.') || e.name.includes('..')) continue;
+                if (seen.has(e.name)) continue;
+                const srcPath = path.join(wsArtifactsDir, e.name);
+                let stat;
+                try { stat = await fs.stat(srcPath); } catch { continue; }
+                if (!stat.isFile() || stat.mtimeMs < start) continue;
+                const destPath = path.join(artifactsIn, e.name);
+                try {
+                    await fs.copyFile(srcPath, destPath);
+                } catch (copyErr) {
+                    console.warn(
+                        '[sandboxRunner] failed to promote workspace artifact:',
+                        e.name, copyErr.message,
+                    );
+                    continue;
+                }
+                seen.add(e.name);
+                artifacts.push({
+                    name: e.name,
+                    size: stat.size,
+                    containerPath: destPath,
+                });
+            }
+        } catch { /* no /workspace/artifacts/ — nothing to promote */ }
+    }
+
     return {
         runId,
         scratchDir: scratchIn,
