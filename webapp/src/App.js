@@ -11472,8 +11472,22 @@ console.log(await res.json());`
                                 return true;
                             });
                             return (
-                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, height: 'calc(100vh - 200px)', minHeight: 500 }}>
-                            <Card sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                            <Box sx={{
+                                display: 'flex', flexDirection: 'column', gap: 2,
+                                // Desktop: fixed-height column, Process Logs flex-fills above the
+                                // system monitor. Mobile: let the page scroll — clamping to 100vh
+                                // squeezed the flex:1 Process Logs card to ~0px because the
+                                // SystemResourceMonitor takes its natural height and wins the
+                                // remaining space first.
+                                height: { xs: 'auto', md: 'calc(100vh - 200px)' },
+                                minHeight: { xs: 0, md: 500 },
+                            }}>
+                            <Card sx={{
+                                display: 'flex', flexDirection: 'column',
+                                flex: { xs: 'none', md: 1 },
+                                minHeight: { xs: 480, md: 0 },
+                                overflow: 'hidden',
+                            }}>
                                 <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 2 }}>
                                     {/* Header */}
                                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
