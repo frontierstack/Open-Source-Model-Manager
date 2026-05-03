@@ -198,23 +198,6 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 5. **API Keys** — Generate access tokens
 6. **Docs** — API code builder with 70+ endpoints in 4 languages
 
-#### Optional: Image Generation Service
-
-The Models tab has an **Image Gen** toggle alongside the llamacpp / vLLM backend switches. Flip it on and the webapp will:
-
-1. Build `modelserver-imagegen:latest` on first run (~10-15 min, streamed live to the Logs tab)
-2. Spawn a GPU-backed SDXL-Turbo container (FastAPI + diffusers) on the `modelserver_default` network
-3. Cache the ~5GB model in the named volume `modelserver_imagegen_cache` so subsequent restarts are fast
-4. Auto-enable the `generate_image` skill in the chat tool catalog
-
-The service is defined in `docker-compose.yml` under `profiles: [imagegen]` so it doesn't autostart with `./start.sh`. To run it directly from compose without using the UI toggle:
-
-```bash
-docker compose --profile imagegen up -d imagegen
-```
-
-Admin endpoints: `GET /api/imagegen/status`, `POST /api/imagegen/start`, `POST /api/imagegen/stop`.
-
 ### Koda TUI
 
 ```bash
@@ -337,8 +320,6 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 ```
 
 **Data Persistence:** All user data stored in `./models/.modelserver/` as JSON files (agents, skills, conversations, API keys with AES-256-GCM encryption). Model containers mount `./models` read-only.
-
-**Optional services:** The `imagegen` service (SDXL-Turbo via diffusers + FastAPI) sits alongside the LLM backends on the same `modelserver_default` network. It's gated behind the `imagegen` compose profile, so it only starts when toggled on from the Models tab or launched explicitly with `docker compose --profile imagegen up -d imagegen`. The model weights live in the `modelserver_imagegen_cache` named volume.
 
 **Sandbox image:** Skills that run user-provided code (or any of the new media skills — `transform_image`, `transcribe_audio`, `read_xlsx`, `query_sqlite`, `make_downloadable`) execute inside a ~2.6GB gVisor-isolated sandbox image with `faster-whisper`, `ffmpeg`, Pillow, openpyxl, and a bundled `tiny.en` Whisper model preloaded.
 

@@ -297,31 +297,6 @@ curl http://localhost:8001/v1/completions \
   -d '{"prompt": "Hello", "max_tokens": 10}'
 ```
 
-### Image Generation Service (Optional)
-
-The imagegen service runs in parallel to the LLM backend (llamacpp + imagegen, vllm + imagegen, or both). The recommended path is the **Image Gen** toggle in the webapp Models tab — it builds the image, spawns the GPU container, and auto-enables the `generate_image` skill in one click. The commands below are for inspection or the manual escape hatch.
-
-```bash
-# Inspect / control via the webapp API
-curl -k https://localhost:3001/api/imagegen/status -H "Authorization: Bearer $API_KEY"
-curl -k -X POST https://localhost:3001/api/imagegen/start -H "Authorization: Bearer $API_KEY"  # admin
-curl -k -X POST https://localhost:3001/api/imagegen/stop  -H "Authorization: Bearer $API_KEY"  # admin
-
-# Inspect the running container directly
-docker logs -f modelserver-imagegen
-docker stats --no-stream modelserver-imagegen
-
-# Manual escape hatch (compose profile — bypasses the webapp activator)
-docker compose --profile imagegen up -d --build imagegen
-docker compose --profile imagegen down imagegen
-```
-
-First start downloads SDXL-Turbo (~5GB) into the `modelserver_imagegen_cache` named volume; subsequent starts reuse it. To purge the model cache:
-
-```bash
-docker volume rm modelserver_imagegen_cache
-```
-
 ---
 
 ## Monitoring & Debugging

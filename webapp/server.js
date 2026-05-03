@@ -4791,40 +4791,6 @@ app.get('/api/system/egress-proxy', requireAuth, (req, res) => {
     }
 });
 
-// ---------------------------------------------------------------------------
-// Imagegen activator — optional GPU image-generation service (parallel to
-// LLM model loading, not exclusive with it).
-// ---------------------------------------------------------------------------
-const imagegenService = require('./services/imagegenService');
-
-app.get('/api/imagegen/status', requireAuth, (req, res) => {
-    res.json(imagegenService.getStatus());
-});
-
-app.post('/api/imagegen/start', requireAdmin, async (req, res) => {
-    try {
-        // Don't await the full sequence — building the image takes
-        // 10-15 min on first start and the request would time out.
-        // Kick it off and return immediately; the UI polls /status
-        // and the Logs tab streams progress in real time.
-        imagegenService.start().catch(e => {
-            console.warn('[imagegen] start failed:', e.message);
-        });
-        res.json({ ...imagegenService.getStatus(), accepted: true });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post('/api/imagegen/stop', requireAdmin, async (req, res) => {
-    try {
-        const status = await imagegenService.stop();
-        res.json(status);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
 app.get('/api/system/resources', requireAuth, async (req, res) => {
 
     try {
@@ -14437,7 +14403,6 @@ const NETWORK_SANDBOX_DEFAULTS = {
     web_search:      { allowlist: ['duckduckgo.com', 'html.duckduckgo.com', 'www.bing.com'] },
     playwright_fetch: { allowlist: ['*'], note: 'user-supplied URLs; browser renders' },
     dns_lookup:      { allowlist: [] }, // doesn't use HTTP proxy; noop
-    generate_image:  { allowlist: ['imagegen'], note: 'on-cluster imagegen service' },
 };
 
 /** Walk existing skills and opt-in known defaults to sandbox + workspace /
@@ -14576,11 +14541,6 @@ const REFRESH_STALE_SKILLS = new Set([
     'copy_file',
     'run_python',
     'run_node',
-    // generate_image — initial template used urllib which doesn't
-    // auto-pick up Basic-auth from the HTTP_PROXY URL, so the egress
-    // proxy rejected calls with "no_token". Refreshed code uses the
-    // `requests` library which handles proxy basic-auth natively.
-    'generate_image',
 ]);
 
 async function refreshStaleDefaultSkills() {
@@ -17445,29 +17405,6 @@ server.listen(PORT, async () => {
         require('./services/egressProxy').start();
     } catch (e) {
         console.warn('[Startup] egressProxy failed to start:', e.message);
-    }
-
-    // Wire the imagegen activator. broadcast() goes to the Logs tab via
-    // the existing WebSocket pipe; enableSkill auto-flips generate_image
-    // on when the service comes up. reconcileOnBoot reattaches log
-    // streaming if the imagegen container survived a webapp restart.
-    try {
-        imagegenService.init({
-            broadcast,
-            enableSkill: async (skillName) => {
-                const skills = await loadSkills();
-                const s = skills.find(x => x && x.name === skillName);
-                if (!s) return;
-                if (s.enabled) return;
-                s.enabled = true;
-                s.updatedAt = new Date().toISOString();
-                await saveSkills(skills);
-                console.log(`[imagegen] auto-enabled skill: ${skillName}`);
-            },
-        });
-        await imagegenService.reconcileOnBoot();
-    } catch (e) {
-        console.warn('[Startup] imagegen init failed (non-fatal):', e.message);
     }
 
     // One-shot legacy-workspace migration: older installs kept per-user
