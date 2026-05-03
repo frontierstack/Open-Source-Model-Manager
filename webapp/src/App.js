@@ -8969,66 +8969,6 @@ console.log(await res.json());`
                                                 </Box>
                                             </Box>
 
-                                            {/* Imagegen activator — runs ALONGSIDE the LLM backend
-                                                (llamacpp + imagegen, vllm + imagegen, etc) so it's a
-                                                separate Switch, not part of the exclusive backend
-                                                ToggleButtonGroup above. Toggle ON builds the
-                                                imagegen image on first call (~10-15 min, streamed
-                                                to the Logs tab), starts the GPU container, and
-                                                auto-enables the `generate_image` skill. */}
-                                            <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                                                    <Typography variant="subtitle2" sx={{ minWidth: 100 }}>
-                                                        Image Gen:
-                                                    </Typography>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Switch
-                                                                checked={imagegenStatus.status === 'running' || imagegenStatus.status === 'starting' || imagegenStatus.status === 'building'}
-                                                                onChange={(e) => handleImagegenToggle(e.target.checked)}
-                                                                disabled={imagegenBusy || imagegenStatus.status === 'building' || imagegenStatus.status === 'starting'}
-                                                            />
-                                                        }
-                                                        label={
-                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <span>SDXL-Turbo</span>
-                                                                <Chip
-                                                                    label={
-                                                                        imagegenStatus.status === 'running' ? 'running' :
-                                                                        imagegenStatus.status === 'starting' ? 'starting…' :
-                                                                        imagegenStatus.status === 'building' ? 'building image…' :
-                                                                        imagegenStatus.status === 'error' ? 'error' :
-                                                                        'off'
-                                                                    }
-                                                                    size="small"
-                                                                    color={
-                                                                        imagegenStatus.status === 'running' ? 'success' :
-                                                                        imagegenStatus.status === 'building' || imagegenStatus.status === 'starting' ? 'warning' :
-                                                                        imagegenStatus.status === 'error' ? 'error' :
-                                                                        'default'
-                                                                    }
-                                                                    sx={{ height: 18, fontSize: '0.65rem' }}
-                                                                />
-                                                                {(imagegenStatus.status === 'building' || imagegenStatus.status === 'starting') && (
-                                                                    <CircularProgress size={14} sx={{ ml: 0.5 }} />
-                                                                )}
-                                                            </Box>
-                                                        }
-                                                    />
-                                                    <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
-                                                        {imagegenStatus.status === 'error'
-                                                            ? `Error: ${imagegenStatus.error || 'unknown'} — see Logs tab`
-                                                            : imagegenStatus.status === 'building'
-                                                            ? 'Building modelserver-imagegen:latest — first run takes 10-15 min on a typical GPU box. Live progress in the Logs tab.'
-                                                            : imagegenStatus.status === 'starting'
-                                                            ? 'Container starting — model downloads (~5GB) on first /generate call. Check Logs tab.'
-                                                            : imagegenStatus.status === 'running'
-                                                            ? 'GPU image-generation running. The generate_image skill is now enabled in the chat catalog.'
-                                                            : 'Optional GPU service for the generate_image skill. Runs in parallel to the LLM backend.'}
-                                                    </Typography>
-                                                </Box>
-                                            </Box>
-
                                             {/* Optimal Settings Section - shown for both backends */}
                                             <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
@@ -10948,7 +10888,7 @@ console.log(await res.json());`
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>generate_image <Chip label="disabled by default" size="small" sx={{ ml: 0.5, height: 16, fontSize: '0.6rem', bgcolor: 'rgba(251,191,36,0.2)' }} /></TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>SDXL-Turbo text-to-image via the optional imagegen service. Params: <code>prompt</code>, <code>width</code> / <code>height</code> (default 1024×1024), <code>steps</code> (default 4 — Turbo is calibrated for very few steps), <code>seed</code>, <code>negativePrompt</code>, <code>filename</code>. Output PNG written to <code>/workspace/artifacts/</code>. Auto-enabled when the imagegen activator (My Models tab) is flipped on.</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>SDXL-Turbo text-to-image via the optional imagegen service. Params: <code>prompt</code>, <code>width</code> / <code>height</code> (default 1024×1024), <code>steps</code> (default 4 — Turbo is calibrated for very few steps), <code>seed</code>, <code>negativePrompt</code>, <code>filename</code>. Output PNG written to <code>/workspace/artifacts/</code>. Auto-enabled when the imagegen activator (Apps tab) is flipped on.</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>
@@ -10971,7 +10911,7 @@ console.log(await res.json());`
                                         <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Imagegen activator (optional GPU service)</Typography>
                                             <Box sx={{ fontSize: '0.8rem', mb: 1 }}>
-                                                <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>SDXL-Turbo runs in a separate GPU container (<code>modelserver-imagegen</code>) <strong>in parallel</strong> with the LLM backend, not exclusive with it. Toggle from the <strong>My Models</strong> tab (Image Gen switch) or via the API endpoints below.</Typography>
+                                                <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>SDXL-Turbo runs in a separate GPU container (<code>modelserver-imagegen</code>) <strong>in parallel</strong> with the LLM backend, not exclusive with it. Toggle from the <strong>Apps</strong> tab (Image Generation card) or via the API endpoints below.</Typography>
                                                 <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>First start builds <code>modelserver-imagegen:latest</code> (~10-15 min on a typical GPU box; live progress in the Logs tab). Subsequent starts skip the build. The <code>generate_image</code> skill is automatically enabled in the chat catalog when the service comes up.</Typography>
                                             </Box>
                                             <Table size="small" sx={compactTableSx}>
@@ -11699,6 +11639,75 @@ console.log(await res.json());`
                                 />
 
                                 <Grid container spacing={3} sx={{ mt: 1 }}>
+                                    {/* Imagegen activator — runs ALONGSIDE the LLM backend
+                                        (llamacpp + imagegen, vllm + imagegen, etc). Toggle ON
+                                        builds the imagegen image on first call (~10-15 min,
+                                        streamed to the Logs tab), starts the GPU container,
+                                        and auto-enables the `generate_image` skill. */}
+                                    <Grid item xs={12}>
+                                        <Card>
+                                            <CardContent>
+                                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+                                                    <Box>
+                                                        <Typography variant="h6" sx={{ mb: 0.5 }}>
+                                                            Image Generation
+                                                        </Typography>
+                                                        <Typography variant="body2" color="text.secondary">
+                                                            SDXL-Turbo on GPU. Runs in parallel to the LLM backend; powers the <code>generate_image</code> chat skill.
+                                                        </Typography>
+                                                    </Box>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                        <Chip
+                                                            label={
+                                                                imagegenStatus.status === 'running' ? 'running' :
+                                                                imagegenStatus.status === 'starting' ? 'starting…' :
+                                                                imagegenStatus.status === 'building' ? 'building image…' :
+                                                                imagegenStatus.status === 'error' ? 'error' :
+                                                                'stopped'
+                                                            }
+                                                            size="small"
+                                                            color={
+                                                                imagegenStatus.status === 'running' ? 'success' :
+                                                                imagegenStatus.status === 'building' || imagegenStatus.status === 'starting' ? 'warning' :
+                                                                imagegenStatus.status === 'error' ? 'error' :
+                                                                'default'
+                                                            }
+                                                        />
+                                                        {(imagegenStatus.status === 'building' || imagegenStatus.status === 'starting') && (
+                                                            <CircularProgress size={14} />
+                                                        )}
+                                                    </Box>
+                                                </Box>
+
+                                                <Divider sx={{ my: 2 }} />
+
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={imagegenStatus.status === 'running' || imagegenStatus.status === 'starting' || imagegenStatus.status === 'building'}
+                                                                onChange={(e) => handleImagegenToggle(e.target.checked)}
+                                                                disabled={imagegenBusy || imagegenStatus.status === 'building' || imagegenStatus.status === 'starting'}
+                                                            />
+                                                        }
+                                                        label="SDXL-Turbo"
+                                                    />
+                                                    <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 240 }}>
+                                                        {imagegenStatus.status === 'error'
+                                                            ? `Error: ${imagegenStatus.error || 'unknown'} — see Logs tab`
+                                                            : imagegenStatus.status === 'building'
+                                                            ? 'Building modelserver-imagegen:latest — first run takes 10-15 min on a typical GPU box. Live progress in the Logs tab.'
+                                                            : imagegenStatus.status === 'starting'
+                                                            ? 'Container starting — model downloads (~5GB) on first /generate call. Check Logs tab.'
+                                                            : imagegenStatus.status === 'running'
+                                                            ? 'GPU image-generation running. The generate_image skill is now enabled in the chat catalog.'
+                                                            : 'Optional GPU service. Toggle on to build (first time only) and start the container.'}
+                                                    </Typography>
+                                                </Box>
+                                            </CardContent>
+                                        </Card>
+                                    </Grid>
+
                                     {apps.filter(app => !app.integrated).map(app => (
                                         <Grid item xs={12} md={6} key={app.name}>
                                             <Card>
