@@ -4791,6 +4791,40 @@ app.get('/api/system/egress-proxy', requireAuth, (req, res) => {
     }
 });
 
+// ---------------------------------------------------------------------------
+// Imagegen activator — optional GPU image-generation service (parallel to
+// LLM model loading, not exclusive with it).
+// ---------------------------------------------------------------------------
+const imagegenService = require('./services/imagegenService');
+
+app.get('/api/imagegen/status', requireAuth, (req, res) => {
+    res.json(imagegenService.getStatus());
+});
+
+app.post('/api/imagegen/start', requireAdmin, async (req, res) => {
+    try {
+        // Don't await the full sequence — building the image takes
+        // 10-15 min on first start and the request would time out.
+        // Kick it off and return immediately; the UI polls /status
+        // and the Logs tab streams progress in real time.
+        imagegenService.start().catch(e => {
+            console.warn('[imagegen] start failed:', e.message);
+        });
+        res.json({ ...imagegenService.getStatus(), accepted: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/imagegen/stop', requireAdmin, async (req, res) => {
+    try {
+        const status = await imagegenService.stop();
+        res.json(status);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/system/resources', requireAuth, async (req, res) => {
 
     try {
@@ -17411,6 +17445,29 @@ server.listen(PORT, async () => {
         require('./services/egressProxy').start();
     } catch (e) {
         console.warn('[Startup] egressProxy failed to start:', e.message);
+    }
+
+    // Wire the imagegen activator. broadcast() goes to the Logs tab via
+    // the existing WebSocket pipe; enableSkill auto-flips generate_image
+    // on when the service comes up. reconcileOnBoot reattaches log
+    // streaming if the imagegen container survived a webapp restart.
+    try {
+        imagegenService.init({
+            broadcast,
+            enableSkill: async (skillName) => {
+                const skills = await loadSkills();
+                const s = skills.find(x => x && x.name === skillName);
+                if (!s) return;
+                if (s.enabled) return;
+                s.enabled = true;
+                s.updatedAt = new Date().toISOString();
+                await saveSkills(skills);
+                console.log(`[imagegen] auto-enabled skill: ${skillName}`);
+            },
+        });
+        await imagegenService.reconcileOnBoot();
+    } catch (e) {
+        console.warn('[Startup] imagegen init failed (non-fatal):', e.message);
     }
 
     // One-shot legacy-workspace migration: older installs kept per-user

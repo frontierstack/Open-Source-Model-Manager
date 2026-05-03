@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 // Use native WebSocket (W3C-compliant in all modern browsers)
 import { useAuthStore } from './stores/useAuthStore';
 import { useAppStore } from './stores/useAppStore';
@@ -382,6 +382,15 @@ const App = () => {
     // Backend selection (llamacpp works with older GPUs like Maxwell 5.2+)
     const [selectedBackend, setSelectedBackend] = useState('llamacpp');
 
+    // Imagegen service activator state. The imagegen container runs *in
+    // parallel* to the LLM backend (llamacpp/vllm) — flipping it on does
+    // not unload your model. State shape mirrors what the server's
+    // /api/imagegen/status endpoint returns.
+    const [imagegenStatus, setImagegenStatus] = useState({
+        status: 'stopped', containerId: null, startedAt: null, error: null, imageBuilt: null,
+    });
+    const [imagegenBusy, setImagegenBusy] = useState(false);
+
     // Model configuration state for vLLM
     const [modelConfig, setModelConfig] = useState({
         maxModelLen: 4096,
@@ -637,6 +646,7 @@ const App = () => {
     useEffect(() => {
         fetchModels();
         fetchInstances();
+        fetchImagegenStatus();
         fetchApiKeys();
         fetchDownloads();
         fetchApps();
@@ -645,6 +655,23 @@ const App = () => {
         fetchMdSkills();
         fetchTasks();
         fetchAgentPermissions();
+
+        // Imagegen status polling. We poll fast (3s) while the service
+        // is in a transitional state so the UI reflects building →
+        // starting → running quickly; once steady (running or stopped)
+        // back off to 30s. Logs tab gets per-line updates via the
+        // existing WebSocket pipe so the user has live feedback even
+        // between status polls.
+        let imagegenPollTimer = null;
+        const scheduleImagegenPoll = () => {
+            const transitional = imagegenStatus.status === 'building' || imagegenStatus.status === 'starting';
+            const delay = transitional ? 3000 : 30000;
+            imagegenPollTimer = setTimeout(async () => {
+                await fetchImagegenStatus();
+                scheduleImagegenPoll();
+            }, delay);
+        };
+        scheduleImagegenPoll();
 
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = window.location.hostname;
@@ -779,6 +806,7 @@ const App = () => {
         return () => {
             intentionalClose = true;
             if (reconnectTimeout) clearTimeout(reconnectTimeout);
+            if (imagegenPollTimer) clearTimeout(imagegenPollTimer);
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 wsRef.current.close();
             }
@@ -827,6 +855,46 @@ const App = () => {
             .then(res => res.json())
             .then(data => setApiKeys(data))
             .catch(error => console.error('Error fetching API keys:', error));
+    };
+
+    const fetchImagegenStatus = useCallback(async () => {
+        try {
+            const res = await fetch('/api/imagegen/status', { credentials: 'include' });
+            if (!res.ok) return;
+            const data = await res.json();
+            setImagegenStatus(prev => {
+                // Avoid re-rendering on no-op updates so the polling
+                // interval doesn't churn the React tree.
+                if (prev.status === data.status
+                    && prev.error === data.error
+                    && prev.imageBuilt === data.imageBuilt
+                    && prev.containerId === data.containerId) return prev;
+                return data;
+            });
+        } catch (_) { /* webapp restart, network blip — next tick will retry */ }
+    }, []);
+
+    const handleImagegenToggle = async (next) => {
+        // next = true to start, false to stop. Fire-and-forget the slow
+        // `start` (image build is 10-15 min on first call); the polling
+        // effect updates UI as state transitions through building →
+        // starting → running. Stop is fast (<10s).
+        setImagegenBusy(true);
+        try {
+            if (next) {
+                await fetch('/api/imagegen/start', { method: 'POST', credentials: 'include' });
+                showSnackbar('Image generation service starting — watch the Logs tab for progress', 'info');
+            } else {
+                await fetch('/api/imagegen/stop', { method: 'POST', credentials: 'include' });
+                showSnackbar('Image generation service stopped', 'info');
+            }
+            // Pull status immediately so the UI reflects the transition.
+            await fetchImagegenStatus();
+        } catch (e) {
+            showSnackbar(`Imagegen toggle failed: ${e.message}`, 'error');
+        } finally {
+            setImagegenBusy(false);
+        }
     };
 
     const fetchDownloads = () => {
@@ -6634,6 +6702,141 @@ Invoke-RestMethod -Uri "${baseUrl}/api/system/egress-proxy" -Headers $h`,
   headers: { 'X-API-Key': 'your_admin_api_key', 'X-API-Secret': 'your_admin_api_secret' }
 }).then(r => r.json()).then(console.log);`
             },
+            '/api/imagegen/status': {
+                curl: `# Bearer Token Authentication
+# Status of the optional GPU image-generation service (SDXL-Turbo). Any authenticated
+# user may read this. Returns: { status, containerId, containerName, startedAt, error, imageBuilt }
+# where status is one of: stopped | building | starting | running | error.
+curl -sk ${baseUrl}/api/imagegen/status \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -sk ${baseUrl}/api/imagegen/status \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+r = requests.get(f'${baseUrl}/api/imagegen/status',
+                 headers={'Authorization': 'Bearer your_bearer_token'},
+                 verify=False)
+print(r.json())  # { status, containerId, containerName, startedAt, error, imageBuilt }
+
+# OR API Key + Secret Authentication
+r = requests.get(f'${baseUrl}/api/imagegen/status',
+                 headers={'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret'},
+                 verify=False)
+print(r.json())`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ 'Authorization' = 'Bearer your_bearer_token' }
+
+# OR API Key + Secret Authentication
+$headers = @{ 'X-API-Key' = 'your_api_key'; 'X-API-Secret' = 'your_api_secret' }
+
+Invoke-RestMethod -Uri "${baseUrl}/api/imagegen/status" -Headers $headers | Format-List`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/imagegen/status', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+}).then(r => r.json()).then(console.log);
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/imagegen/status', {
+  headers: { 'X-API-Key': 'your_api_key', 'X-API-Secret': 'your_api_secret' }
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/imagegen/start': {
+                curl: `# Bearer Token Authentication
+# Admin-only. Starts the optional GPU image-generation service (SDXL-Turbo) in
+# parallel to the LLM backend. No body required. Returns immediately with
+# { ...status, accepted: true } — the build (~10-15 min on first run) and
+# container start happen in the background. Watch progress in the Logs tab,
+# or poll /api/imagegen/status. Side effects: builds modelserver-imagegen:latest
+# if missing, creates+starts a GPU container named 'modelserver-imagegen' on
+# the modelserver_default network, and auto-enables the 'generate_image' skill.
+curl -sk -X POST ${baseUrl}/api/imagegen/start \\
+  -H "Authorization: Bearer your_admin_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -sk -X POST ${baseUrl}/api/imagegen/start \\
+  -H "X-API-Key: your_admin_api_key" \\
+  -H "X-API-Secret: your_admin_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication — admin only.
+r = requests.post(f'${baseUrl}/api/imagegen/start',
+                  headers={'Authorization': 'Bearer your_admin_bearer_token'},
+                  verify=False)
+print(r.json())  # { status: 'building'|'starting'|'running', accepted: True, ... }
+
+# OR API Key + Secret Authentication
+r = requests.post(f'${baseUrl}/api/imagegen/start',
+                  headers={'X-API-Key': 'your_admin_api_key',
+                           'X-API-Secret': 'your_admin_api_secret'},
+                  verify=False)
+print(r.json())`,
+                powershell: `# Bearer Token Authentication — admin only.
+$headers = @{ 'Authorization' = 'Bearer your_admin_bearer_token' }
+
+# OR API Key + Secret Authentication
+$headers = @{ 'X-API-Key' = 'your_admin_api_key'; 'X-API-Secret' = 'your_admin_api_secret' }
+
+Invoke-RestMethod -Uri "${baseUrl}/api/imagegen/start" -Method Post -Headers $headers | Format-List`,
+                javascript: `// Bearer Token Authentication — admin only.
+fetch('${baseUrl}/api/imagegen/start', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_admin_bearer_token' }
+}).then(r => r.json()).then(console.log);
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/imagegen/start', {
+  method: 'POST',
+  headers: { 'X-API-Key': 'your_admin_api_key', 'X-API-Secret': 'your_admin_api_secret' }
+}).then(r => r.json()).then(console.log);`
+            },
+            '/api/imagegen/stop': {
+                curl: `# Bearer Token Authentication
+# Admin-only. Stops and removes the imagegen container. No body. Returns the
+# final status snapshot.
+curl -sk -X POST ${baseUrl}/api/imagegen/stop \\
+  -H "Authorization: Bearer your_admin_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -sk -X POST ${baseUrl}/api/imagegen/stop \\
+  -H "X-API-Key: your_admin_api_key" \\
+  -H "X-API-Secret: your_admin_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication — admin only.
+r = requests.post(f'${baseUrl}/api/imagegen/stop',
+                  headers={'Authorization': 'Bearer your_admin_bearer_token'},
+                  verify=False)
+print(r.json())  # final status: { status: 'stopped', ... }
+
+# OR API Key + Secret Authentication
+r = requests.post(f'${baseUrl}/api/imagegen/stop',
+                  headers={'X-API-Key': 'your_admin_api_key',
+                           'X-API-Secret': 'your_admin_api_secret'},
+                  verify=False)
+print(r.json())`,
+                powershell: `# Bearer Token Authentication — admin only.
+$headers = @{ 'Authorization' = 'Bearer your_admin_bearer_token' }
+
+# OR API Key + Secret Authentication
+$headers = @{ 'X-API-Key' = 'your_admin_api_key'; 'X-API-Secret' = 'your_admin_api_secret' }
+
+Invoke-RestMethod -Uri "${baseUrl}/api/imagegen/stop" -Method Post -Headers $headers | Format-List`,
+                javascript: `// Bearer Token Authentication — admin only.
+fetch('${baseUrl}/api/imagegen/stop', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer your_admin_bearer_token' }
+}).then(r => r.json()).then(console.log);
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/imagegen/stop', {
+  method: 'POST',
+  headers: { 'X-API-Key': 'your_admin_api_key', 'X-API-Secret': 'your_admin_api_secret' }
+}).then(r => r.json()).then(console.log);`
+            },
             '/api/docs': {
                 curl: `# Look up reference docs from DevDocs.io. Requires \`query\` permission.
 # Without ?query, returns the index for the library.
@@ -8766,6 +8969,66 @@ console.log(await res.json());`
                                                 </Box>
                                             </Box>
 
+                                            {/* Imagegen activator — runs ALONGSIDE the LLM backend
+                                                (llamacpp + imagegen, vllm + imagegen, etc) so it's a
+                                                separate Switch, not part of the exclusive backend
+                                                ToggleButtonGroup above. Toggle ON builds the
+                                                imagegen image on first call (~10-15 min, streamed
+                                                to the Logs tab), starts the GPU container, and
+                                                auto-enables the `generate_image` skill. */}
+                                            <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+                                                    <Typography variant="subtitle2" sx={{ minWidth: 100 }}>
+                                                        Image Gen:
+                                                    </Typography>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={imagegenStatus.status === 'running' || imagegenStatus.status === 'starting' || imagegenStatus.status === 'building'}
+                                                                onChange={(e) => handleImagegenToggle(e.target.checked)}
+                                                                disabled={imagegenBusy || imagegenStatus.status === 'building' || imagegenStatus.status === 'starting'}
+                                                            />
+                                                        }
+                                                        label={
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <span>SDXL-Turbo</span>
+                                                                <Chip
+                                                                    label={
+                                                                        imagegenStatus.status === 'running' ? 'running' :
+                                                                        imagegenStatus.status === 'starting' ? 'starting…' :
+                                                                        imagegenStatus.status === 'building' ? 'building image…' :
+                                                                        imagegenStatus.status === 'error' ? 'error' :
+                                                                        'off'
+                                                                    }
+                                                                    size="small"
+                                                                    color={
+                                                                        imagegenStatus.status === 'running' ? 'success' :
+                                                                        imagegenStatus.status === 'building' || imagegenStatus.status === 'starting' ? 'warning' :
+                                                                        imagegenStatus.status === 'error' ? 'error' :
+                                                                        'default'
+                                                                    }
+                                                                    sx={{ height: 18, fontSize: '0.65rem' }}
+                                                                />
+                                                                {(imagegenStatus.status === 'building' || imagegenStatus.status === 'starting') && (
+                                                                    <CircularProgress size={14} sx={{ ml: 0.5 }} />
+                                                                )}
+                                                            </Box>
+                                                        }
+                                                    />
+                                                    <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                                                        {imagegenStatus.status === 'error'
+                                                            ? `Error: ${imagegenStatus.error || 'unknown'} — see Logs tab`
+                                                            : imagegenStatus.status === 'building'
+                                                            ? 'Building modelserver-imagegen:latest — first run takes 10-15 min on a typical GPU box. Live progress in the Logs tab.'
+                                                            : imagegenStatus.status === 'starting'
+                                                            ? 'Container starting — model downloads (~5GB) on first /generate call. Check Logs tab.'
+                                                            : imagegenStatus.status === 'running'
+                                                            ? 'GPU image-generation running. The generate_image skill is now enabled in the chat catalog.'
+                                                            : 'Optional GPU service for the generate_image skill. Runs in parallel to the LLM backend.'}
+                                                    </Typography>
+                                                </Box>
+                                            </Box>
+
                                             {/* Optimal Settings Section - shown for both backends */}
                                             <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
@@ -10291,6 +10554,9 @@ console.log(await res.json());`
                                                             <MenuItem value="/api/system/egress-proxy">GET /api/system/egress-proxy - Egress Proxy Stats (Admin)</MenuItem>
                                                             <MenuItem value="/api/sandbox/run-code">POST /api/sandbox/run-code - Sandboxed Python Eval</MenuItem>
                                                             <MenuItem value="/api/tool-artifacts/:runId/:filename">GET /api/tool-artifacts/:runId/:filename - Download Tool Artifact</MenuItem>
+                                                            <MenuItem value="/api/imagegen/status">GET /api/imagegen/status - Imagegen Service Status</MenuItem>
+                                                            <MenuItem value="/api/imagegen/start">POST /api/imagegen/start - Start Imagegen (Admin)</MenuItem>
+                                                            <MenuItem value="/api/imagegen/stop">POST /api/imagegen/stop - Stop Imagegen (Admin)</MenuItem>
                                                             <MenuItem value="/api/docs">GET /api/docs - DevDocs Reference Lookup</MenuItem>
                                                             <MenuItem value="/v1/chat/completions">POST /v1/* - OpenAI-Compatible Passthrough</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Search & Web Scraping ───</MenuItem>
@@ -10635,6 +10901,90 @@ console.log(await res.json());`
                                                 </Box>
                                             </Grid>
                                         </Grid>
+                                    </AccordionDetails>
+                                </Accordion>
+
+                                {/* Sandbox Skills & Artifacts */}
+                                <Accordion sx={docAccordionSx}>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <DocIcon icon={<AutoAwesomeIcon />} color="success" />
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Sandbox Skills &amp; Artifacts</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Workspace-scoped Python skills, artifact downloads, optional GPU image generation</Typography>
+                                            </Box>
+                                        </Box>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
+                                            <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
+                                            <Typography sx={{ fontSize: '0.85rem' }}>The skills below run inside the sandbox container with a per-conversation <code>/workspace</code> mount. Anything they write to <code>/workspace/artifacts/</code> is auto-promoted by <code>sandboxRunner.runPythonSkill</code> to a downloadable chip on the tool result (mtime-filtered so prior-turn files don't re-surface).</Typography>
+                                        </Box>
+
+                                        {/* Sandbox skill catalog */}
+                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Sandbox-Executed Skills (model-invoked)</Typography>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableBody>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>make_downloadable</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>Copy any file in <code>/workspace</code> into <code>/workspace/artifacts/</code> so the chat UI surfaces it as a download chip. Params: <code>sourcePath</code>, <code>filename</code>. Use after <code>run_python</code>/<code>create_file</code> when the user asks to download.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>transform_image</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>Pillow-backed image transforms. Params: <code>sourcePath</code>, <code>operation</code> (resize | crop | thumbnail | rotate | convert | grayscale), plus op-specific <code>width</code> / <code>height</code> / <code>x</code> / <code>y</code> / <code>angle</code> / <code>maxWidth</code> / <code>maxHeight</code> / <code>format</code> / <code>quality</code> / <code>outputName</code>. Output written to <code>/workspace/artifacts/</code>.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>read_xlsx</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>openpyxl reader — returns <code>{`{ headers, rows, sheetNames, rowCount, truncated }`}</code> with rows as dicts keyed by header. Params: <code>path</code>, <code>sheet</code> (name or 0-based index), <code>maxRows</code> (default 1000), <code>header</code> (default <code>true</code>), <code>formulas</code> (raw formula text vs cached values; default <code>false</code>). Counterpart to <code>create_xlsx</code>.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>query_sqlite</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>Run SQL against a workspace SQLite DB. Params: <code>path</code>, <code>query</code>, <code>params</code> (bind list for <code>?</code> placeholders), <code>maxRows</code> (default 500), <code>readonly</code> (default <code>true</code> — opens with <code>mode=ro</code> URI; pass <code>false</code> to mutate). Returns <code>{`{ columns, rows, rowCount, truncated, affectedRows }`}</code> with rows as dicts.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>transcribe_audio</TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>faster-whisper transcription. Bundled <code>tiny.en</code> model (CPU, int8) under <code>/opt/whisper-models/</code>. Params: <code>path</code>, <code>model</code> (default <code>tiny.en</code>), <code>language</code>, <code>wordTimestamps</code>, <code>beamSize</code> (default 1 = greedy). Returns <code>{`{ text, segments, language, durationSec }`}</code>. ~5-15s for a 1-min clip.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>generate_image <Chip label="disabled by default" size="small" sx={{ ml: 0.5, height: 16, fontSize: '0.6rem', bgcolor: 'rgba(251,191,36,0.2)' }} /></TableCell>
+                                                        <TableCell sx={{ color: 'text.secondary' }}>SDXL-Turbo text-to-image via the optional imagegen service. Params: <code>prompt</code>, <code>width</code> / <code>height</code> (default 1024×1024), <code>steps</code> (default 4 — Turbo is calibrated for very few steps), <code>seed</code>, <code>negativePrompt</code>, <code>filename</code>. Output PNG written to <code>/workspace/artifacts/</code>. Auto-enabled when the imagegen activator (My Models tab) is flipped on.</TableCell>
+                                                    </TableRow>
+                                                </TableBody>
+                                            </Table>
+                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                Defined in <code>webapp/default-skills.json</code>. All six run with <code>sandbox: true</code>, <code>workspace: true</code>; <code>generate_image</code> uses <code>network: "allowlist"</code> (egress proxy → <code>imagegen</code> only), the others run with <code>network: "none"</code>.
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Auto-download surface */}
+                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How auto-downloads work</Typography>
+                                            <Box sx={{ fontSize: '0.8rem' }}>
+                                                <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>Any file a sandbox skill writes to <code>/workspace/artifacts/</code> during a run is picked up automatically. The runner attaches an <code>_artifacts</code> array to the tool result and the chat UI renders one download chip per file.</Typography>
+                                                <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>Files are <strong>mtime-filtered</strong> — only files modified during the current skill invocation are surfaced, so previous-turn artifacts won't re-appear. If a user asks to download a file from an earlier turn, call <code>make_downloadable</code> again (it touches the mtime so the file re-qualifies).</Typography>
+                                                <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>Filenames are sanitized: anything outside <code>[A-Za-z0-9._-]</code> becomes <code>_</code>, length is capped at 120 chars, and leading dots are stripped. Bytes are streamed via <code>GET /api/tool-artifacts/:runId/:filename</code>.</Typography>
+                                            </Box>
+                                        </Box>
+
+                                        {/* Imagegen activator */}
+                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Imagegen activator (optional GPU service)</Typography>
+                                            <Box sx={{ fontSize: '0.8rem', mb: 1 }}>
+                                                <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>SDXL-Turbo runs in a separate GPU container (<code>modelserver-imagegen</code>) <strong>in parallel</strong> with the LLM backend, not exclusive with it. Toggle from the <strong>My Models</strong> tab (Image Gen switch) or via the API endpoints below.</Typography>
+                                                <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>First start builds <code>modelserver-imagegen:latest</code> (~10-15 min on a typical GPU box; live progress in the Logs tab). Subsequent starts skip the build. The <code>generate_image</code> skill is automatically enabled in the chat catalog when the service comes up.</Typography>
+                                            </Box>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableBody>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main', whiteSpace: 'nowrap' }}>GET /api/imagegen/status</TableCell><TableCell sx={{ color: 'text.secondary' }}>Any auth — returns <code>{`{ status, containerId, containerName, startedAt, error, imageBuilt }`}</code> where <code>status ∈ stopped | building | starting | running | error</code>.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main', whiteSpace: 'nowrap' }}>POST /api/imagegen/start</TableCell><TableCell sx={{ color: 'text.secondary' }}>Admin only — kicks off build + container start in the background, returns <code>{`{ ...status, accepted: true }`}</code> immediately. Auto-enables the <code>generate_image</code> skill on success.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main', whiteSpace: 'nowrap' }}>POST /api/imagegen/stop</TableCell><TableCell sx={{ color: 'text.secondary' }}>Admin only — stops and removes the container; returns the final status snapshot.</TableCell></TableRow>
+                                                </TableBody>
+                                            </Table>
+                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                Snippets for these endpoints are available in the <strong>API Code Builder</strong> above (Backend &amp; System group).
+                                            </Typography>
+                                        </Box>
                                     </AccordionDetails>
                                 </Accordion>
 

@@ -158,6 +158,12 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Example:"
             echo "  HTTP_PROXY=http://proxy:8080 ./build.sh"
+            echo ""
+            echo "Note: the optional imagegen service (modelserver-imagegen:latest, ~5GB"
+            echo "  image + ~5GB model cache) is NOT built here. It builds on demand the"
+            echo "  first time the user flips the 'Image Gen' toggle in the webapp Models"
+            echo "  tab — that build (~10-15 min) streams to the Logs tab. To pre-build"
+            echo "  manually instead: docker compose --profile imagegen build imagegen"
             exit 0
             ;;
         *)

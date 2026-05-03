@@ -32,6 +32,11 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **OpenAI-Compatible API** — Drop-in replacement for OpenAI endpoints
 - **Vision Models** — Send images to vision-capable models (LLaVA, Qwen-VL) with OCR fallback for non-vision models
 - **Thinking Models** — Parse and display reasoning from models like DeepSeek R1 and Qwen QwQ
+- **Image Generation** *(optional)* — Toggle on a GPU-backed SDXL-Turbo service from the Models tab; chat gets a `generate_image` skill that produces PNGs inline
+- **Audio Transcription** — Built-in `transcribe_audio` skill (faster-whisper, bundled `tiny.en` model, CPU-only, runs in the sandbox)
+- **Spreadsheets & SQL in chat** — `read_xlsx` (openpyxl) and `query_sqlite` skills let the model read XLSX files and run SELECTs (or DDL with `readonly=false`) against SQLite databases in the workspace
+- **Image Editing** — `transform_image` skill (Pillow) for resize, crop, thumbnail, rotate, format-convert, and grayscale operations
+- **Auto-Download Chips** — Any file a sandboxed skill writes to `/workspace/artifacts/` is auto-promoted into a download chip in the chat (mtime-filtered so prior turns don't re-surface); `make_downloadable` promotes existing workspace files explicitly
 - **Map-Reduce Chunking** — Automatically splits large content across multiple model calls and synthesizes results
 - **AIMem Memory Compression** — Compresses older conversation history to reduce token usage, speeding up inference and lowering VRAM consumption during long conversations
 - **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
@@ -193,6 +198,23 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 5. **API Keys** — Generate access tokens
 6. **Docs** — API code builder with 70+ endpoints in 4 languages
 
+#### Optional: Image Generation Service
+
+The Models tab has an **Image Gen** toggle alongside the llamacpp / vLLM backend switches. Flip it on and the webapp will:
+
+1. Build `modelserver-imagegen:latest` on first run (~10-15 min, streamed live to the Logs tab)
+2. Spawn a GPU-backed SDXL-Turbo container (FastAPI + diffusers) on the `modelserver_default` network
+3. Cache the ~5GB model in the named volume `modelserver_imagegen_cache` so subsequent restarts are fast
+4. Auto-enable the `generate_image` skill in the chat tool catalog
+
+The service is defined in `docker-compose.yml` under `profiles: [imagegen]` so it doesn't autostart with `./start.sh`. To run it directly from compose without using the UI toggle:
+
+```bash
+docker compose --profile imagegen up -d imagegen
+```
+
+Admin endpoints: `GET /api/imagegen/status`, `POST /api/imagegen/start`, `POST /api/imagegen/stop`.
+
 ### Koda TUI
 
 ```bash
@@ -315,6 +337,10 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 ```
 
 **Data Persistence:** All user data stored in `./models/.modelserver/` as JSON files (agents, skills, conversations, API keys with AES-256-GCM encryption). Model containers mount `./models` read-only.
+
+**Optional services:** The `imagegen` service (SDXL-Turbo via diffusers + FastAPI) sits alongside the LLM backends on the same `modelserver_default` network. It's gated behind the `imagegen` compose profile, so it only starts when toggled on from the Models tab or launched explicitly with `docker compose --profile imagegen up -d imagegen`. The model weights live in the `modelserver_imagegen_cache` named volume.
+
+**Sandbox image:** Skills that run user-provided code (or any of the new media skills — `transform_image`, `transcribe_audio`, `read_xlsx`, `query_sqlite`, `make_downloadable`) execute inside a ~2.6GB gVisor-isolated sandbox image with `faster-whisper`, `ffmpeg`, Pillow, openpyxl, and a bundled `tiny.en` Whisper model preloaded.
 
 ---
 
