@@ -353,7 +353,12 @@ const App = () => {
         );
     }, [preferences.theme, preferences.fontFamily, preferences.fontSize]);
 
-    const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+    // 'md' (<900px) so phone-landscape (~812px), iPad mini portrait (768px),
+    // and any narrow desktop window also flip to mobile-friendly behavior
+    // (full-screen dialogs, condensed header). 'sm' alone (<600px) is too
+    // narrow — it leaves tablets and split-view layouts in the cramped
+    // desktop layout.
+    const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
     // UI state
     const [activeTab, setActiveTab] = useState(0);
@@ -7820,8 +7825,8 @@ console.log(await res.json());`
                 <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                     {/* Header */}
                     <Box sx={{
-                        px: { xs: 1.5, sm: 3 },
-                        py: { xs: 1.5, sm: 3 },
+                        px: { xs: 1.5, md: 3 },
+                        py: { xs: 1.5, md: 3 },
                         minHeight: '72px',
                         borderBottom: '1px solid',
                         borderColor: 'divider',
@@ -7833,10 +7838,10 @@ console.log(await res.json());`
                                     background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
                                     WebkitBackgroundClip: 'text',
                                     WebkitTextFillColor: 'transparent',
-                                    fontSize: { xs: '1.1rem', sm: 'inherit' },
-                                    whiteSpace: { xs: 'nowrap', sm: 'normal' },
-                                    overflow: { xs: 'hidden', sm: 'visible' },
-                                    textOverflow: { xs: 'ellipsis', sm: 'clip' },
+                                    fontSize: { xs: '1.1rem', md: 'inherit' },
+                                    whiteSpace: { xs: 'nowrap', md: 'normal' },
+                                    overflow: { xs: 'hidden', md: 'visible' },
+                                    textOverflow: { xs: 'ellipsis', md: 'clip' },
                                     minWidth: 0,
                                 }}>
                                     Open Source Model Manager
@@ -7849,7 +7854,7 @@ console.log(await res.json());`
                                     size="medium"
                                     color={wsConnected ? "success" : "error"}
                                     variant="outlined"
-                                    sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', sm: 'inline-flex' }, '& .MuiChip-icon': { ml: 0.5 } }}
+                                    sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', md: 'inline-flex' }, '& .MuiChip-icon': { ml: 0.5 } }}
                                 />
                                 {instances.length > 0 && (
                                     <Chip
@@ -7858,7 +7863,7 @@ console.log(await res.json());`
                                         size="medium"
                                         color="secondary"
                                         variant="outlined"
-                                        sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', sm: 'inline-flex' } }}
+                                        sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', md: 'inline-flex' } }}
                                     />
                                 )}
                                 <Chip
@@ -7920,7 +7925,7 @@ console.log(await res.json());`
                     </Box>
 
                     {/* Tab Panels */}
-                    <Box sx={{ flex: 1, overflow: 'auto', p: { xs: 1.5, sm: 3 } }}>
+                    <Box sx={{ flex: 1, overflow: 'auto', p: { xs: 1.5, md: 3 } }}>
                         {/* Discover Tab */}
                         {visibleTabOrder[activeTab] === 0 && (
                             <Grid container spacing={3}>
