@@ -4597,6 +4597,29 @@ function getSkillsInCategory(category) {
     return SKILL_CATEGORIES[category] || [];
 }
 
+// Strip chat-only systemPrompt fragments from skills before they reach the
+// model. Skills like create_file, copy_file, move_file, run_python, run_node
+// include "**Downloads:** ... write under `/workspace/artifacts/` ... the chat
+// UI auto-surfaces..." advice that is meaningful only inside the chat
+// conversation sandbox. Koda runs file ops on the user's local FS via
+// executeFileOperationSkill / executeFileExtraSkill — that advice causes the
+// model to write to a literal `/workspace/` directory which doesn't exist
+// (or which lives outside the user's project), then copy_file fails with
+// ENOENT. Drop those fragments before they're inlined into the tool catalog.
+function sanitizeSkillPromptForKoda(text) {
+    if (!text) return '';
+    let s = String(text);
+    // Cut from "**Downloads:**" or "**To make a workspace file downloadable**"
+    // onward — these headings start the chat-only block in every skill that
+    // has one. Everything after them is chat-specific.
+    s = s.replace(/\s*\*\*Downloads?:\*\*[\s\S]*$/i, '');
+    s = s.replace(/\s*\*\*To make a workspace file downloadable\*\*[\s\S]*$/i, '');
+    // Drop any remaining sentence that mentions /workspace/ or the chat UI's
+    // auto-download convention. Sentence boundary = `. ` or end-of-string.
+    s = s.replace(/[^.]*?(\/workspace\/|chat UI|download chip|auto-surface)[^.]*?\.\s*/gi, '');
+    return s.trim();
+}
+
 // ============================================================================
 // Query classification
 // ============================================================================
@@ -4871,8 +4894,9 @@ IMPORTANT FILE PLACEMENT RULES:
             const isTopCategory = relevantCategories[0] === category;
             const obviousNames = new Set(['create_file', 'read_file', 'update_file', 'delete_file', 'delete_directory', 'list_directory', 'create_directory', 'move_file', 'copy_file', 'append_to_file']);
             if (isTopCategory && skill.systemPrompt && !obviousNames.has(skill.name)) {
+                const cleaned = sanitizeSkillPromptForKoda(skill.systemPrompt);
                 prompt += `  • ${skill.name}(${paramList}) - ${skill.description || ''}\n`;
-                prompt += `    Usage: ${skill.systemPrompt.substring(0, 120)}${skill.systemPrompt.length > 120 ? '…' : ''}\n`;
+                prompt += `    Usage: ${cleaned.substring(0, 120)}${cleaned.length > 120 ? '…' : ''}\n`;
             } else {
                 prompt += `  • ${skill.name}(${paramList}) - ${skill.description || ''}\n`;
             }
@@ -5139,7 +5163,8 @@ function buildToolsArray(skills, userMessage = '') {
         // chars to keep the tools payload small.
         let desc = skill.description || '';
         if (skill.systemPrompt) {
-            const hint = String(skill.systemPrompt).split('\n')[0].trim();
+            const cleaned = sanitizeSkillPromptForKoda(skill.systemPrompt);
+            const hint = cleaned.split('\n')[0].trim();
             if (hint && !desc.includes(hint)) {
                 desc = desc ? `${desc}. ${hint}` : hint;
             }
