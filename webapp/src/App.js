@@ -389,11 +389,10 @@ const App = () => {
         tensorParallelSize: 1,
         kvCacheDtype: 'auto',
         trustRemoteCode: true,
-        // Default ON: vLLM 0.19's CUDA-graph PTX fails to load on some
-        // current driver/arch combos (e.g. Blackwell sm_120 + driver 570).
-        // Eager mode bypasses graph capture. Turn off for ~10-30% throughput
-        // gain once your driver supports the compiled graphs.
-        enforceEager: true
+        // CUDA graphs are a noticeable throughput win on driver 580+ /
+        // Blackwell-open. Flip on per-load if a driver/arch combo emits
+        // cudaErrorUnsupportedPtxVersion at warmup.
+        enforceEager: false
     });
     const [hfLoading, setHfLoading] = useState(false);
     // Cached HF repos previously pulled by vLLM (lives in modelserver_hf_cache volume)
@@ -12574,7 +12573,7 @@ console.log(await res.json());`
                             label="Enforce eager (disable CUDA graphs)"
                         />
                         <Typography variant="caption" sx={{ color: 'text.secondary', mt: -1.5, ml: 5 }}>
-                            Recommended ON for early Blackwell (sm_120) + driver &lt; 580. Off can be ~10-30% faster but may hit cudaErrorUnsupportedPtxVersion. AWQ/GPTQ-Marlin quants currently fail on Blackwell regardless — use plain safetensors or FP8 for now.
+                            Off (default) uses CUDA graphs for ~10-30% more throughput. Flip ON only if you hit cudaErrorUnsupportedPtxVersion (older driver / arch).
                         </Typography>
                     </Box>
                 </DialogContent>

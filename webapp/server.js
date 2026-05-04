@@ -3444,11 +3444,10 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'gpuMemoryUtilization must be between 0.1 and 1.0' });
         }
     }
-    // enforceEager defaults to true on the HF path: vLLM 0.19.x emits CUDA-
-    // graph PTX that some current NVIDIA drivers can't load on newer arches
-    // (e.g. Blackwell sm_120 + driver 570 → cudaErrorUnsupportedPtxVersion).
-    // Eager bypasses graph capture; the user can flip it off when their
-    // driver / vLLM combo supports compiled graphs.
+    // enforceEager defaults to false: CUDA graphs give a meaningful throughput
+    // win and work on driver 580+ with the open kernel modules (required for
+    // Blackwell sm_120 anyway). Older driver/arch combos that hit
+    // cudaErrorUnsupportedPtxVersion can flip this on per-load via the dialog.
     const config = {
         maxModelLen: req.body.maxModelLen || 4096,
         cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
@@ -3457,7 +3456,7 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
         maxNumSeqs: req.body.maxNumSeqs || 256,
         kvCacheDtype: req.body.kvCacheDtype || 'auto',
         trustRemoteCode: req.body.trustRemoteCode ?? true,
-        enforceEager: req.body.enforceEager ?? true,
+        enforceEager: req.body.enforceEager ?? false,
         contextSize: req.body.maxModelLen || 4096,
         compressMemory: req.body.compressMemory ?? false
     };
