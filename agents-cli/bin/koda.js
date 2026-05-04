@@ -4823,10 +4823,11 @@ You have access to ${enabledSkills.length} skills across multiple categories. Ex
 WHEN YOU DON'T KNOW SOMETHING: If the task requires information you don't have — an unfamiliar API, a library quirk, a sprite-sheet naming convention, an error message you've never seen, the syntax of a config format — call \`web_search\` (and \`fetch_url\` on a relevant result) BEFORE guessing or telling the user it can't be done. Searching is preferred over guessing.
 
 IMPORTANT FILE PLACEMENT RULES:
-- User's current working directory: ${userWorkingDirectory}
-- When creating project files, ALWAYS organize them in a descriptive subdirectory based on the project type
-- Use absolute paths starting with ${userWorkingDirectory}/
-- NEVER use container-internal paths like /usr/src/app/ or /var/lib/
+- User's current working directory (CWD): ${userWorkingDirectory}
+- EVERY filePath you emit MUST be an absolute path starting with: ${userWorkingDirectory}/
+- For multi-file projects, create a subdirectory inside CWD, e.g. ${userWorkingDirectory}/tower-defense/index.html
+- NEVER write to /home/user/, /home/USER/, /home/<your-username>/, /Users/USER/, /workspace/, /tmp/, /etc/, /usr/, /var/, or any path outside CWD — those are training-data placeholders, not real locations on this user's machine. The CWD shown above IS the real path; use it verbatim.
+- Example, given CWD = ${userWorkingDirectory}: a request like "create a tower defense game" → filePath="${userWorkingDirectory}/tower-defense.html", NOT "/home/user/tower-defense.html".
 
 === COMPLETE SKILL CATALOG ===
 `;
@@ -5299,6 +5300,30 @@ function sanitizeContentForFile(filePath, content) {
     return out;
 }
 
+// Rewrite placeholder paths the model commonly hallucinates (e.g.
+// /home/user/foo.html when the actual CWD is /mnt/c/Users/Tay/Test) onto the
+// user's real cwd. Small models routinely emit these training-data
+// placeholders despite an explicit CWD in the system prompt; without this
+// safety net, files end up at /home/user/, /Users/USER/, /workspace/ etc.
+// where the user can't find them. Returns the original path when nothing
+// looks like a placeholder, so legitimate writes (/etc/foo, /opt/bar) pass
+// through untouched.
+const PLACEHOLDER_PREFIX_RE = /^\/(?:home\/(?:user|USER|<[^>]+>)|Users\/USER|workspace)(\/|$)/;
+function rewritePlaceholderPath(filePath) {
+    if (!filePath || typeof filePath !== 'string') return { filePath, rewritten: false };
+    // Already lives under the user's cwd? Pass through.
+    if (filePath.startsWith(userWorkingDirectory + path.sep) || filePath === userWorkingDirectory) {
+        return { filePath, rewritten: false };
+    }
+    const m = filePath.match(PLACEHOLDER_PREFIX_RE);
+    if (!m) return { filePath, rewritten: false };
+    // Keep the structure under the placeholder: /home/user/sub/foo.html
+    // becomes <cwd>/sub/foo.html.
+    const tail = filePath.slice(m[0].length).replace(/^\/+/, '');
+    const rewritten = tail ? path.join(userWorkingDirectory, tail) : userWorkingDirectory;
+    return { filePath: rewritten, rewritten: true, original: filePath };
+}
+
 async function executeFileOperationSkill(skillName, params) {
     try {
         switch (skillName) {
@@ -5334,6 +5359,15 @@ async function executeFileOperationSkill(skillName, params) {
 
                 if (inferredFrom) {
                     try { showInfoFlash(`${skillName}: filePath omitted by model — inferring "${filePath}" from ${inferredFrom}`); } catch (_) {}
+                }
+
+                // Rewrite placeholder paths (/home/user/..., /workspace/...) onto the user's real cwd.
+                {
+                    const r = rewritePlaceholderPath(filePath);
+                    if (r.rewritten) {
+                        try { showInfoFlash(`${skillName}: rewrote placeholder path "${r.original}" -> "${r.filePath}" (cwd)`); } catch (_) {}
+                        filePath = r.filePath;
+                    }
                 }
 
                 // Ensure directory exists
@@ -5507,10 +5541,18 @@ async function executeFileOperationSkill(skillName, params) {
             }
 
             case 'create_directory': {
-                const dirPath = params.dirPath;
+                let dirPath = params.dirPath;
 
                 if (!dirPath) {
                     return { success: false, error: 'dirPath is required' };
+                }
+
+                {
+                    const r = rewritePlaceholderPath(dirPath);
+                    if (r.rewritten) {
+                        try { showInfoFlash(`create_directory: rewrote placeholder path "${r.original}" -> "${r.filePath}" (cwd)`); } catch (_) {}
+                        dirPath = r.filePath;
+                    }
                 }
 
                 // Create directory recursively
@@ -5654,11 +5696,21 @@ async function executeFileOperationSkill(skillName, params) {
             }
 
             case 'move_file': {
-                const sourcePath = params.sourcePath;
-                const destPath = params.destPath;
+                let sourcePath = params.sourcePath;
+                let destPath = params.destPath;
 
                 if (!sourcePath || !destPath) {
                     return { success: false, error: 'sourcePath and destPath are required' };
+                }
+
+                {
+                    const rs = rewritePlaceholderPath(sourcePath);
+                    const rd = rewritePlaceholderPath(destPath);
+                    if (rs.rewritten || rd.rewritten) {
+                        try { showInfoFlash(`move_file: rewrote placeholder path(s) onto cwd`); } catch (_) {}
+                        sourcePath = rs.filePath;
+                        destPath = rd.filePath;
+                    }
                 }
 
                 // Ensure destination directory exists
@@ -5677,13 +5729,22 @@ async function executeFileOperationSkill(skillName, params) {
             }
 
             case 'append_to_file': {
-                const filePath = params.filePath;
+                let filePath = params.filePath;
                 const rawContent = params.content || '';
-                const content = sanitizeContentForFile(filePath, rawContent);
 
                 if (!filePath) {
                     return { success: false, error: 'filePath is required' };
                 }
+
+                {
+                    const r = rewritePlaceholderPath(filePath);
+                    if (r.rewritten) {
+                        try { showInfoFlash(`append_to_file: rewrote placeholder path "${r.original}" -> "${r.filePath}" (cwd)`); } catch (_) {}
+                        filePath = r.filePath;
+                    }
+                }
+
+                const content = sanitizeContentForFile(filePath, rawContent);
 
                 // Append to file
                 await fs.appendFile(filePath, content, 'utf8');
@@ -7072,9 +7133,20 @@ async function executeFileExtraSkill(skillName, params) {
     try {
         switch (skillName) {
             case 'copy_file': {
-                const sourcePath = params.sourcePath || params.source;
-                const destPath = params.destPath || params.destination;
+                let sourcePath = params.sourcePath || params.source;
+                let destPath = params.destPath || params.destination;
                 if (!sourcePath || !destPath) return { success: false, error: 'sourcePath and destPath parameters are required' };
+                {
+                    const rs = rewritePlaceholderPath(sourcePath);
+                    const rd = rewritePlaceholderPath(destPath);
+                    if (rs.rewritten || rd.rewritten) {
+                        try { showInfoFlash(`copy_file: rewrote placeholder path(s) onto cwd`); } catch (_) {}
+                        sourcePath = rs.filePath;
+                        destPath = rd.filePath;
+                    }
+                }
+                // Ensure destination directory exists (Node's copyFile doesn't auto-mkdir)
+                await fs.mkdir(path.dirname(destPath), { recursive: true });
                 await fs.copyFile(sourcePath, destPath);
                 return { success: true, sourcePath, destPath };
             }
