@@ -1591,11 +1591,23 @@ export default function ChatContainer({
 
                             // Handle map-reduce chunking progress events
                             if (parsed.type === 'chunking_progress') {
-                                const { phase, totalChunks, totalTokens, completedChunks = 0, failedChunks = 0, elapsedMs = 0, retrying, condensation, chunkTokens } = parsed;
+                                const { phase, totalChunks, totalTokens, totalChars, completedChunks = 0, failedChunks = 0, elapsedMs = 0, retrying, condensation, chunkTokens } = parsed;
                                 const elapsed = elapsedMs > 0 ? `${Math.round(elapsedMs / 1000)}s` : '';
                                 const tokenStr = totalTokens ? `${totalTokens.toLocaleString()} tokens` : '';
                                 const chunkWord = (n) => n === 1 ? 'chunk' : 'chunks';
 
+                                if (phase === 'agentic_indexed') {
+                                    // Agentic flow took over — server stashed the
+                                    // oversized content into an indexed attachment
+                                    // and the model will walk it via query_document
+                                    // / read_document_chunk tool calls. Subsequent
+                                    // status comes from native_tool_call events.
+                                    const charsStr = totalChars ? `${totalChars.toLocaleString()} chars` : '';
+                                    const msg = `Indexed ${charsStr} into ${totalChunks} ${chunkWord(totalChunks)} — model will query/read via tools`;
+                                    setProcessingStatus('processing', msg);
+                                    pushProcessingLog({ icon: 'layers', text: msg, kind: 'agentic_indexed' });
+                                    continue;
+                                }
                                 if (phase === 'starting') {
                                     let msg = 'Preparing content for parallel processing...';
                                     if (tokenStr) msg = `Preparing ${tokenStr} for parallel processing...`;

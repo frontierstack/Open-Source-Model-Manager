@@ -295,7 +295,14 @@ const CHUNKING_CONFIG = {
     // Target compression ratio for condensation (0.3 = keep 30% of content)
     condensationRatio: 0.4,
     // Minimum sentences to keep even with condensation
-    minSentencesToKeep: 50
+    minSentencesToKeep: 50,
+    // Enable the agentic flow as the default for `chunkingStrategy: 'auto'`.
+    // When true, oversized content is stashed as an indexed attachment and
+    // the model walks it via query_document / read_document_chunk inside the
+    // native tool loop. When false, 'auto' falls through to map-reduce as
+    // before. `chunkingStrategy: 'map-reduce' | 'agentic' | 'truncate'`
+    // explicit settings always override this.
+    enableAgentic: true
 };
 
 // Default chat-completion stop strings. Needed for vLLM + GGUF chat models
@@ -12159,6 +12166,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // like any other system context, so injection can't blow up the
         // context budget.
         let pendingMemoryNotice = null;
+        // Held until SSE headers are flushed below; emits a chunking_progress
+        // event so the UI knows the agentic flow took over.
+        let pendingAgenticNotice = null;
         try {
             const chatUserId = req.user?.id || req.apiKeyData?.id || 'default';
             const chatConvId = conversationId || req.body.conversationId;
@@ -12258,6 +12268,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let mapReduceContent = null;
         let mapReduceQuery = null;
         let mapReduceCondensationInfo = null;
+        // Agentic chunking — content is stashed in the attachment store
+        // with a TF-IDF index, the user message is rewritten with a small
+        // documentId handle, and the model walks the doc via the native
+        // query_document / read_document_chunk tools. Tracked here so the
+        // map-reduce branch below can be skipped when this path runs.
+        let useAgentic = false;
+        let agenticInfo = null;
 
         console.log(`[Chat Stream] Context check: totalInputTokens=${totalInputTokens}, contextSize=${contextSize}, responseReserve=${responseReserve}, desiredResponse=${desiredResponseTokens}, availableForInput=${availableContextForInput}, needsChunking=${totalInputTokens > availableContextForInput}`);
 
@@ -12407,8 +12424,100 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             });
                         }
 
+                        // Agentic flow: prefer this over map-reduce when enabled.
+                        // We stash the full content in the attachment store with a
+                        // TF-IDF index, replace the user-message text with a small
+                        // documentId handle + tool-usage hint, and let the native
+                        // tool loop run as normal. The model decides which chunks
+                        // to read (or queries by relevance) instead of being fed a
+                        // single condensed synthesis-of-summaries. Map-reduce
+                        // remains the explicit-strategy fallback below.
+                        const shouldUseAgentic = CHUNKING_CONFIG.enabled &&
+                            CHUNKING_CONFIG.enableAgentic &&
+                            (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'agentic') &&
+                            contentTokens >= CHUNKING_CONFIG.minTokensForChunking;
+
+                        if (shouldUseAgentic) {
+                            try {
+                                // Pull the user's actual question off the end of
+                                // the blob the same way map-reduce does, so the
+                                // rewritten message keeps it visible to the model.
+                                const lines = textContent.split('\n');
+                                let queryPart = '';
+                                let contentPart = textContent;
+                                for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
+                                    const line = lines[j].trim();
+                                    if (line.endsWith('?') || line.match(/^(please|can you|what|how|why|summarize|analyze|explain|describe|list|find|search)/i)) {
+                                        queryPart = lines.slice(j).join('\n');
+                                        contentPart = lines.slice(0, j).join('\n');
+                                        break;
+                                    }
+                                }
+                                if (!queryPart) queryPart = 'Please analyze and summarize this content using query_document and read_document_chunk.';
+
+                                const documentIndex = require('./services/documentIndex');
+                                const indexed = await documentIndex.saveAndIndex(req.userId || userId, {
+                                    text: contentPart,
+                                    filename: `large-input-${Date.now()}.txt`,
+                                    mimeType: 'text/plain; charset=utf-8',
+                                    conversationId: streamingConversationId || null,
+                                });
+
+                                const handleNotice =
+                                    `[A large document (${indexed.totalChars.toLocaleString()} chars, ${indexed.totalChunks} chunks) was indexed for retrieval.\n` +
+                                    `documentId="${indexed.id}"\n\n` +
+                                    `You CANNOT see the document body in your context. To answer the question below, walk the document with these tools:\n` +
+                                    `  • query_document(documentId="${indexed.id}", query="...") — top-K relevant chunks (use first for targeted questions)\n` +
+                                    `  • read_document_chunk(documentId="${indexed.id}", chunkIndex=N, count=1..5) — sequential read\n\n` +
+                                    `Strategy: for "find/extract/compare X" questions, call query_document with each aspect as a separate query; ` +
+                                    `for "summarize the whole document", call read_document_chunk linearly from chunkIndex=0 and accumulate facts. ` +
+                                    `Cite line ranges from the tool results when answering. Do NOT fabricate content the tools didn't return.]\n\n`;
+
+                                const rewritten = handleNotice + queryPart;
+                                if (isArrayFormat && textPartIdx !== -1) {
+                                    chatMessages[i].content[textPartIdx].text = rewritten;
+                                } else {
+                                    chatMessages[i].content = rewritten;
+                                }
+
+                                useAgentic = true;
+                                agenticInfo = {
+                                    documentId: indexed.id,
+                                    totalChunks: indexed.totalChunks,
+                                    totalChars: indexed.totalChars,
+                                };
+                                pendingAgenticNotice = {
+                                    type: 'chunking_progress',
+                                    phase: 'agentic_indexed',
+                                    mode: 'agentic',
+                                    documentId: indexed.id,
+                                    totalChunks: indexed.totalChunks,
+                                    totalChars: indexed.totalChars,
+                                    message: `Indexed ${indexed.totalChars.toLocaleString()} chars into ${indexed.totalChunks} chunks. Model will query/read via tools.`,
+                                };
+                                broadcast({
+                                    type: 'log',
+                                    level: 'info',
+                                    message: `Agentic chunking: indexed ${indexed.totalChars.toLocaleString()} chars into ${indexed.totalChunks} chunks (documentId=${indexed.id})`
+                                });
+
+                                // Recalculate tokens — the rewritten message is tiny.
+                                totalInputTokens = 0;
+                                for (const msg of chatMessages) {
+                                    totalInputTokens += estimateTokens(msg.content);
+                                }
+                                console.log(`[Chat Stream] Agentic chunking: indexed ${indexed.totalChars} chars into ${indexed.totalChunks} chunks (documentId=${indexed.id}); user message rewritten to handle. New totalInputTokens=${totalInputTokens}`);
+                                break;
+                            } catch (agenticErr) {
+                                console.warn(`[Chat Stream] Agentic chunking failed (${agenticErr.message}) — falling back to map-reduce`);
+                                useAgentic = false;
+                                agenticInfo = null;
+                                // Fall through to the map-reduce decision below.
+                            }
+                        }
+
                         // Determine if we should use map-reduce or simple truncation
-                        const shouldUseMapReduce = CHUNKING_CONFIG.enabled &&
+                        const shouldUseMapReduce = !useAgentic && CHUNKING_CONFIG.enabled &&
                             (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce') &&
                             contentTokens >= CHUNKING_CONFIG.minTokensForChunking;
 
@@ -12534,8 +12643,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 }
             }
 
-            // If still over limit after processing and not using map-reduce
-            if (!useMapReduce && totalInputTokens > availableContextForInput) {
+            // If still over limit after processing and not using map-reduce/agentic
+            if (!useMapReduce && !useAgentic && totalInputTokens > availableContextForInput) {
                 // Safety fallback: if chunking should have triggered but didn't (e.g. condensation
                 // thought it fit but recalculation disagrees), fall back to map-reduce for the
                 // last user message rather than returning a hard 400 error
@@ -12662,6 +12771,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (pendingMemoryNotice) {
             try { res.write(`data: ${JSON.stringify(pendingMemoryNotice)}\n\n`); } catch {}
             pendingMemoryNotice = null;
+        }
+        if (pendingAgenticNotice) {
+            try { res.write(`data: ${JSON.stringify(pendingAgenticNotice)}\n\n`); } catch {}
+            pendingAgenticNotice = null;
         }
         if (req.socket) req.socket.setTimeout(0);
 
@@ -14105,6 +14218,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         compressed: true,
                         tokensSaved: aimemStats?.tokens_saved || 0,
                         reductionPct: aimemStats?.reduction_pct || 0
+                    }
+                }),
+                // Include agentic indexing info if applied
+                ...(useAgentic && agenticInfo && {
+                    agentic: {
+                        documentId: agenticInfo.documentId,
+                        totalChunks: agenticInfo.totalChunks,
+                        totalChars: agenticInfo.totalChars,
                     }
                 })
             };
@@ -17802,6 +17923,117 @@ app.use((req, res) => {
         } catch (e) {
             return { success: false, error: e.message || String(e) };
         }
+    });
+
+    // ----- query_document / read_document_chunk ---------------------------
+    // Agentic alternative to map-reduce: when input exceeds the model's
+    // context, the chat-stream handler stashes the content via
+    // documentIndex.saveAndIndex and rewrites the user message with a
+    // small handle. These two tools let the model walk the indexed
+    // document inside its normal tool loop instead of receiving a
+    // single condensed synthesis of pre-summarised chunks. See
+    // services/documentIndex.js for the index format.
+    const documentIndex = require('./services/documentIndex');
+
+    tools.registerTool({
+        name: 'query_document',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'query_document',
+                    description:
+                        'Search a large indexed document (one whose `documentId` was provided in your most recent user message) for the chunks most relevant to a query. ' +
+                        'Use this FIRST on any large content — it returns the top-matching chunks ranked by TF-IDF cosine similarity, with line ranges so you can cite. ' +
+                        'Each match includes ~1500 chars of chunk text; if you need the full chunk, follow up with read_document_chunk(documentId, chunkIndex). ' +
+                        'For multi-aspect questions ("compare X and Y"), call this multiple times in parallel with different queries — once per aspect.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            documentId: {
+                                type: 'string',
+                                description: '32-hex documentId from the user message handle.',
+                            },
+                            query: {
+                                type: 'string',
+                                description: 'Search terms — entities, phrases, or keywords. Stopwords are stripped automatically.',
+                            },
+                            topK: {
+                                type: 'integer',
+                                minimum: 1,
+                                maximum: 10,
+                                description: 'Number of top-ranked chunks to return (default 3).',
+                            },
+                        },
+                        required: ['documentId', 'query'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const documentId = String(args?.documentId || '').trim();
+            const query = String(args?.query || '').trim();
+            if (!documentId) return { error: 'documentId is required' };
+            if (!query) return { error: 'query is required' };
+            const topK = args?.topK ? parseInt(args.topK, 10) : 3;
+            try {
+                return await documentIndex.queryDocument(ctx?.userId, documentId, query, { topK });
+            } catch (e) {
+                return { error: `query_document failed: ${e.message || String(e)}` };
+            }
+        },
+    });
+
+    tools.registerTool({
+        name: 'read_document_chunk',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'read_document_chunk',
+                    description:
+                        'Read one or more sequential chunks of an indexed document by chunkIndex. Use after query_document when you need a chunk in full, or to walk the document linearly (e.g. chunkIndex 0, 1, 2…). ' +
+                        'Each chunk is ~3500 chars; the response includes line ranges and a `nextChunkIndex` you can pass back on the next call to continue reading. Cap a single call to `count` ≤ 5.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            documentId: {
+                                type: 'string',
+                                description: '32-hex documentId from the user message handle.',
+                            },
+                            chunkIndex: {
+                                type: 'integer',
+                                minimum: 0,
+                                description: 'Zero-based chunk index to start at.',
+                            },
+                            count: {
+                                type: 'integer',
+                                minimum: 1,
+                                maximum: 5,
+                                description: 'How many sequential chunks to return (default 1, max 5). Bounded by a 12000-char total.',
+                            },
+                        },
+                        required: ['documentId', 'chunkIndex'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const documentId = String(args?.documentId || '').trim();
+            if (!documentId) return { error: 'documentId is required' };
+            const chunkIndex = parseInt(args?.chunkIndex, 10);
+            if (!Number.isFinite(chunkIndex) || chunkIndex < 0) {
+                return { error: 'chunkIndex must be a non-negative integer' };
+            }
+            const count = args?.count ? parseInt(args.count, 10) : 1;
+            try {
+                return await documentIndex.readChunk(ctx?.userId, documentId, chunkIndex, { count });
+            } catch (e) {
+                return { error: `read_document_chunk failed: ${e.message || String(e)}` };
+            }
+        },
     });
 
     console.log(`[chatTools] registered ${tools.toolRegistry.size} static native tools:`,
