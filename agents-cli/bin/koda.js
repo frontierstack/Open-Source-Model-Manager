@@ -10204,6 +10204,16 @@ async function handleChat(api, message) {
         response = response.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/g, '').replace(/<\/think>/g, '').trim();
         finalResponse = response;
 
+        // finish_reason === 'length' means the model hit its output token cap
+        // mid-response. Without consulting this, the legacy text path below
+        // misreads "truncated output" as "stalled model" and triggers the
+        // false-completion / shell-command / intent-without-action retries —
+        // which restart the model fresh and often emit a partial file write
+        // that overwrites the user's project file. Native path already has
+        // its own truncation guard at the tool-call dispatch site.
+        const finishReason = result.data.finishReason || null;
+        const outputTruncatedByLength = finishReason === 'length';
+
         // ── Native tool_calls branch ──────────────────────────────────────
         // If the model emitted structured tool calls, run them and append
         // OpenAI-format `assistant` (with tool_calls) + `tool` (with results)
@@ -10387,6 +10397,25 @@ async function handleChat(api, message) {
         if (skillCalls.length === 0) {
             // No valid skill calls found - check if there were malformed attempts
             const malformedCalls = detectMalformedSkillCalls(response);
+
+            // Output was truncated by the model's max_tokens / context cap and
+            // the model never even started a [SKILL:...] block (no malformed
+            // attempts to repair). The retries below will misread this as a
+            // stalled model and re-prompt the model to "continue" — which
+            // restarts it and produces a partial file write the next iteration.
+            // Bail out cleanly with an actionable message instead.
+            if (outputTruncatedByLength && malformedCalls.length === 0) {
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    lastMsg.content = response + colorize('\n\n[…response truncated by model output token limit]', 'dim');
+                }
+                addToHistory('system',
+                    'Response was truncated — the model hit its output token limit before finishing.\n' +
+                    '  No skill call was emitted, so nothing was applied to your project files.\n' +
+                    '  Fix: (a) break the request into smaller pieces (one file or one function at a time), or (b) raise the model\'s max_tokens / context size in the webapp model manager and reload.');
+                displayChatHistory();
+                break;
+            }
 
             if (malformedCalls.length > 0) {
                 // Was the truncated call specifically a full-file rewrite?
