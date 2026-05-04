@@ -414,6 +414,12 @@ const App = () => {
         toolCallParser: '' // empty = server auto-picks from repo name
     });
     const [hfLoading, setHfLoading] = useState(false);
+    // llama.cpp load dialog mirror — clicking Load on a downloaded GGUF model
+    // opens this with the model name pre-filled, so config is per-launch
+    // (matches the vLLM flow). Replaces the old standalone Launch Settings
+    // panel that applied a single global config to every load.
+    const [llamacppLoadDialog, setLlamacppLoadDialog] = useState({ open: false, modelName: '' });
+    const [llamacppLoading, setLlamacppLoading] = useState(false);
     // Cached HF repos previously pulled by vLLM (lives in modelserver_hf_cache volume)
     const [hfCacheEntries, setHfCacheEntries] = useState([]);
     const [hfCacheTotalBytes, setHfCacheTotalBytes] = useState(0);
@@ -7108,11 +7114,17 @@ console.log(await res.json());`
         // Local /models/<name> directories are always GGUF (the only path
         // that produces them is the HF GGUF pull flow), so they always go
         // to llama.cpp. Non-GGUF models use the Load-via-vLLM dialog from
-        // the search results.
-        showSnackbar(`Starting ${modelName}...`, 'info');
+        // the search results — this opens the matching llama.cpp dialog.
+        setLlamacppLoadDialog({ open: true, modelName });
+    };
+
+    const handleLoadLlamacppFromDialog = () => {
+        const modelName = llamacppLoadDialog.modelName;
+        if (!modelName) return;
+        setLlamacppLoading(true);
         const config = { backend: 'llamacpp', ...llamacppConfig };
 
-        fetch(`/api/models/${modelName}/load`, {
+        fetch(`/api/models/${encodeURIComponent(modelName)}/load`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(config),
@@ -7127,8 +7139,10 @@ console.log(await res.json());`
             showSnackbar(`Instance running on port ${data.port} (${data.backend})`, 'success');
             fetchModels();
             fetchInstances();
+            setLlamacppLoadDialog({ open: false, modelName: '' });
         })
-        .catch(error => showSnackbar(error.message, 'error'));
+        .catch(error => showSnackbar(error.message, 'error'))
+        .finally(() => setLlamacppLoading(false));
     };
 
     // Fetch optimal settings based on hardware and model size
@@ -8951,10 +8965,39 @@ console.log(await res.json());`
                                                                 borderColor: entry.loaded ? 'success.dark' : 'rgba(99,102,241,0.3)'
                                                             }}>
                                                                 <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                                                                    <Typography sx={{ fontFamily: 'monospace', fontSize: '0.85rem', mb: 0.5, wordBreak: 'break-all' }}>
-                                                                        {entry.repoId}
-                                                                    </Typography>
-                                                                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 1.5 }}>
+                                                                    {/* Header row mirrors GGUF Available Models card:
+                                                                        name + Load/Delete IconButtons on the right. */}
+                                                                    <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 0.75 }}>
+                                                                        <Typography sx={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem', wordBreak: 'break-all', mr: 1 }}>
+                                                                            {entry.repoId}
+                                                                        </Typography>
+                                                                        <Box sx={{ display: 'flex', gap: 0.5 }}>
+                                                                            {!entry.loaded && (
+                                                                                <Tooltip title="Load Model">
+                                                                                    <IconButton
+                                                                                        size="small"
+                                                                                        onClick={() => handleReloadHfCache(entry)}
+                                                                                        sx={{ color: 'primary.main' }}
+                                                                                    >
+                                                                                        <PlayArrowIcon fontSize="small" />
+                                                                                    </IconButton>
+                                                                                </Tooltip>
+                                                                            )}
+                                                                            <Tooltip title={entry.loaded ? 'Stop instance first' : 'Delete from cache (frees disk; next load re-downloads)'}>
+                                                                                <span>
+                                                                                    <IconButton
+                                                                                        size="small"
+                                                                                        disabled={entry.loaded}
+                                                                                        onClick={() => handleDeleteHfCache(entry)}
+                                                                                        sx={{ color: 'error.main' }}
+                                                                                    >
+                                                                                        <DeleteIcon fontSize="small" />
+                                                                                    </IconButton>
+                                                                                </span>
+                                                                            </Tooltip>
+                                                                        </Box>
+                                                                    </Box>
+                                                                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
                                                                         <Chip label={formatBytes(entry.sizeBytes)} size="small" sx={{ height: 20, fontSize: '0.7rem' }} />
                                                                         {entry.loaded && (
                                                                             <Chip label="Loaded" size="small" color="success" sx={{ height: 20, fontSize: '0.7rem' }} />
@@ -8964,30 +9007,6 @@ console.log(await res.json());`
                                                                                 {new Date(entry.lastModified).toLocaleDateString()}
                                                                             </Typography>
                                                                         )}
-                                                                    </Box>
-                                                                    <Box sx={{ display: 'flex', gap: 1 }}>
-                                                                        <Button
-                                                                            size="small"
-                                                                            variant="outlined"
-                                                                            startIcon={<PlayArrowIcon />}
-                                                                            disabled={entry.loaded}
-                                                                            onClick={() => handleReloadHfCache(entry)}
-                                                                            sx={{ textTransform: 'none', flex: 1 }}
-                                                                        >
-                                                                            {entry.loaded ? 'Running' : 'Load'}
-                                                                        </Button>
-                                                                        <Tooltip title={entry.loaded ? 'Stop instance first' : 'Delete from cache (frees disk; next load re-downloads)'}>
-                                                                            <span>
-                                                                                <IconButton
-                                                                                    size="small"
-                                                                                    color="error"
-                                                                                    disabled={entry.loaded}
-                                                                                    onClick={() => handleDeleteHfCache(entry)}
-                                                                                >
-                                                                                    <DeleteIcon fontSize="small" />
-                                                                                </IconButton>
-                                                                            </span>
-                                                                        </Tooltip>
                                                                     </Box>
                                                                 </CardContent>
                                                             </Card>
@@ -9139,412 +9158,6 @@ console.log(await res.json());`
                                     </Card>
                                 </Grid>
 
-                                {/* Launch Settings Panel */}
-                                <Grid item xs={12}>
-                                    <Card>
-                                        <CardContent>
-                                            <SectionHeader
-                                                icon={<SettingsIcon />}
-                                                title="Launch Settings"
-                                                subtitle="Configure model instance parameters (applied when loading models)"
-                                            />
-
-                                            {/* Optimal Settings Section */}
-                                            <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                                                    <AutoAwesomeIcon color="primary" />
-                                                    <Typography variant="subtitle2" sx={{ minWidth: { xs: 'auto', md: 120 } }}>
-                                                        Optimal Settings
-                                                    </Typography>
-                                                    <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 200 }, flex: 1 }}>
-                                                        <InputLabel>Select Model</InputLabel>
-                                                        <Select
-                                                            value={selectedModelForOptimal || ''}
-                                                            onChange={(e) => setSelectedModelForOptimal(e.target.value)}
-                                                            label="Select Model"
-                                                        >
-                                                            {models.filter(m => m.fileSize).map(model => (
-                                                                <MenuItem key={model.name} value={model.name}>
-                                                                    {model.name} ({(model.fileSize / 1024 / 1024 / 1024).toFixed(1)}GB)
-                                                                </MenuItem>
-                                                            ))}
-                                                        </Select>
-                                                    </FormControl>
-                                                    <Tooltip title="Calculate optimal llama.cpp settings based on your hardware and the selected model size">
-                                                        <Button
-                                                            variant="contained"
-                                                            size="small"
-                                                            startIcon={loadingOptimalSettings ? <CircularProgress size={16} color="inherit" /> : <AutoAwesomeIcon />}
-                                                            onClick={() => {
-                                                                const model = models.find(m => m.name === selectedModelForOptimal);
-                                                                if (model) fetchOptimalSettings(model);
-                                                            }}
-                                                            disabled={!selectedModelForOptimal || loadingOptimalSettings}
-                                                        >
-                                                            Apply Optimal
-                                                        </Button>
-                                                    </Tooltip>
-                                                </Box>
-                                                {optimalSettingsNotes.length > 0 && (
-                                                    <Box sx={{ mt: 1.5 }}>
-                                                        {optimalSettingsNotes.map((note, idx) => (
-                                                            <Alert key={idx} severity="info" sx={{ py: 0, mb: 0.5, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>
-                                                                {note}
-                                                            </Alert>
-                                                        ))}
-                                                    </Box>
-                                                )}
-                                            </Box>
-
-
-                                            {/* llama.cpp Settings */}
-                                            <Grid container spacing={3}>
-                                                {/* GPU & Context Section */}
-                                                <Grid item xs={12} md={6}>
-                                                    <CollapsibleSection title="GPU & Context" icon={<MemoryIcon />}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.nGpuLayers} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>GPU Layers</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.nGpuLayers}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, nGpuLayers: e.target.value})}
-                                                                            label="GPU Layers"
-                                                                        >
-                                                                            <MenuItem value={-1}>All (-1)</MenuItem>
-                                                                            <MenuItem value={0}>None (CPU)</MenuItem>
-                                                                            <MenuItem value={10}>10</MenuItem>
-                                                                            <MenuItem value={20}>20</MenuItem>
-                                                                            <MenuItem value={30}>30</MenuItem>
-                                                                            <MenuItem value={40}>40</MenuItem>
-                                                                            <MenuItem value={50}>50</MenuItem>
-                                                                            <MenuItem value={80}>80</MenuItem>
-                                                                            <MenuItem value={100}>100</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.contextSize} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Context Size</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.contextSize}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, contextSize: e.target.value})}
-                                                                            label="Context Size"
-                                                                        >
-                                                                            <MenuItem value={512}>512</MenuItem>
-                                                                            <MenuItem value={1024}>1024</MenuItem>
-                                                                            <MenuItem value={2048}>2048</MenuItem>
-                                                                            <MenuItem value={4096}>4096</MenuItem>
-                                                                            <MenuItem value={8192}>8192</MenuItem>
-                                                                            <MenuItem value={16384}>16K</MenuItem>
-                                                                            <MenuItem value={32768}>32K</MenuItem>
-                                                                            <MenuItem value={65536}>64K</MenuItem>
-                                                                            <MenuItem value={131072}>128K</MenuItem>
-                                                                            <MenuItem value={262144}>256K</MenuItem>
-                                                                            <MenuItem value={524288}>512K</MenuItem>
-                                                                            <MenuItem value={1048576}>1M</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.flashAttention} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={llamacppConfig.flashAttention}
-                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, flashAttention: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Flash Attention</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.contextShift} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={llamacppConfig.contextShift}
-                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, contextShift: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Context Shift</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.swaFull} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={llamacppConfig.swaFull}
-                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, swaFull: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">SWA Full Cache</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.disableThinking} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={!llamacppConfig.disableThinking}
-                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, disableThinking: !e.target.checked})}
-                                                                                color="success"
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2" sx={{ fontWeight: 600, color: llamacppConfig.disableThinking ? 'text.secondary' : 'success.main' }}>
-                                                                                    {llamacppConfig.disableThinking ? 'Reasoning Disabled' : 'Reasoning Enabled'}
-                                                                                </Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.compressMemory} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={llamacppConfig.compressMemory}
-                                                                                onChange={(e) => setLlamacppConfig({...llamacppConfig, compressMemory: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Compress Memory</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                        </Grid>
-                                                    </CollapsibleSection>
-
-                                                    <CollapsibleSection title="KV Cache" icon={<TuneIcon />} defaultExpanded={false}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.cacheTypeK} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Cache Type K</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.cacheTypeK}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, cacheTypeK: e.target.value})}
-                                                                            label="Cache Type K"
-                                                                        >
-                                                                            <MenuItem value="f16">f16 (default)</MenuItem>
-                                                                            <MenuItem value="q8_0">q8_0 (saves memory)</MenuItem>
-                                                                            <MenuItem value="q4_0">q4_0 (max savings)</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.cacheTypeV} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Cache Type V</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.cacheTypeV}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, cacheTypeV: e.target.value})}
-                                                                            label="Cache Type V"
-                                                                        >
-                                                                            <MenuItem value="f16">f16 (default)</MenuItem>
-                                                                            <MenuItem value="q8_0">q8_0 (saves memory)</MenuItem>
-                                                                            <MenuItem value="q4_0">q4_0 (max savings)</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            {/* Non-blocking warning when the user picks quantized KV cache
-                                                                without Flash Attention. llama.cpp refuses to start this
-                                                                combo ("V cache quantization requires flash_attn"), but
-                                                                the rejection happens at container init time as a segfault
-                                                                with exit 139 — surfaced here so the mistake is visible
-                                                                before the user clicks Load. */}
-                                                            {((llamacppConfig.cacheTypeK !== 'f16' || llamacppConfig.cacheTypeV !== 'f16') && !llamacppConfig.flashAttention) && (
-                                                                <Grid item xs={12}>
-                                                                    <Alert severity="warning" sx={{ fontSize: '0.8rem', py: 0.5, '& .MuiAlert-message': { py: 0.5 } }}>
-                                                                        <strong>Quantized KV cache requires Flash Attention.</strong> llama.cpp will reject this combo at load time with a segfault. Either set both cache types back to <code>f16</code>, or enable the Flash Attention toggle below. On Maxwell GPUs (compute 5.2) the FA flag is accepted but falls back to non-FA kernels at inference time — performance is reduced but the model will load.
-                                                                    </Alert>
-                                                                </Grid>
-                                                            )}
-                                                        </Grid>
-                                                    </CollapsibleSection>
-                                                </Grid>
-
-                                                {/* Performance Section */}
-                                                <Grid item xs={12} md={6}>
-                                                    <CollapsibleSection title="Performance" icon={<SettingsIcon />} defaultExpanded={false}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.threads} arrow placement="top">
-                                                                    <TextField
-                                                                        fullWidth
-                                                                        label="Threads"
-                                                                        type="number"
-                                                                        size="small"
-                                                                        value={llamacppConfig.threads}
-                                                                        onChange={(e) => setLlamacppConfig({...llamacppConfig, threads: parseInt(e.target.value) || 0})}
-                                                                        helperText="0 = auto"
-                                                                        InputProps={{ inputProps: { min: 0 } }}
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.parallelSlots} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Parallel Slots</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.parallelSlots}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, parallelSlots: e.target.value})}
-                                                                            label="Parallel Slots"
-                                                                        >
-                                                                            <MenuItem value={1}>1</MenuItem>
-                                                                            <MenuItem value={2}>2</MenuItem>
-                                                                            <MenuItem value={4}>4</MenuItem>
-                                                                            <MenuItem value={8}>8</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.batchSize} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Batch Size</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.batchSize}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, batchSize: e.target.value})}
-                                                                            label="Batch Size"
-                                                                        >
-                                                                            <MenuItem value={256}>256</MenuItem>
-                                                                            <MenuItem value={512}>512</MenuItem>
-                                                                            <MenuItem value={1024}>1024</MenuItem>
-                                                                            <MenuItem value={2048}>2048</MenuItem>
-                                                                            <MenuItem value={4096}>4096</MenuItem>
-                                                                            <MenuItem value={8192}>8192</MenuItem>
-                                                                            <MenuItem value={16384}>16384</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.ubatchSize} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Micro-batch</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.ubatchSize}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, ubatchSize: e.target.value})}
-                                                                            label="Micro-batch"
-                                                                        >
-                                                                            <MenuItem value={128}>128</MenuItem>
-                                                                            <MenuItem value={256}>256</MenuItem>
-                                                                            <MenuItem value={512}>512</MenuItem>
-                                                                            <MenuItem value={1024}>1024</MenuItem>
-                                                                            <MenuItem value={2048}>2048</MenuItem>
-                                                                            <MenuItem value={4096}>4096</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                        </Grid>
-                                                    </CollapsibleSection>
-
-                                                    <CollapsibleSection title="Repetition Control" icon={<TuneIcon />} defaultExpanded={false}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.repeatPenalty} arrow placement="top">
-                                                                    <TextField
-                                                                        fullWidth
-                                                                        label="Repeat Penalty"
-                                                                        type="number"
-                                                                        size="small"
-                                                                        value={llamacppConfig.repeatPenalty}
-                                                                        onChange={(e) => setLlamacppConfig({...llamacppConfig, repeatPenalty: parseFloat(e.target.value) || 1.0})}
-                                                                        InputProps={{ inputProps: { min: 1.0, max: 2.0, step: 0.05 } }}
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.repeatLastN} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Repeat Last N</InputLabel>
-                                                                        <Select
-                                                                            value={llamacppConfig.repeatLastN}
-                                                                            onChange={(e) => setLlamacppConfig({...llamacppConfig, repeatLastN: e.target.value})}
-                                                                            label="Repeat Last N"
-                                                                        >
-                                                                            <MenuItem value={32}>32</MenuItem>
-                                                                            <MenuItem value={64}>64</MenuItem>
-                                                                            <MenuItem value={128}>128</MenuItem>
-                                                                            <MenuItem value={256}>256</MenuItem>
-                                                                            <MenuItem value={512}>512</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.presencePenalty} arrow placement="top">
-                                                                    <TextField
-                                                                        fullWidth
-                                                                        label="Presence Penalty"
-                                                                        type="number"
-                                                                        size="small"
-                                                                        value={llamacppConfig.presencePenalty}
-                                                                        onChange={(e) => setLlamacppConfig({...llamacppConfig, presencePenalty: parseFloat(e.target.value) || 0})}
-                                                                        InputProps={{ inputProps: { min: 0, max: 1.0, step: 0.1 } }}
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={LLAMACPP_TOOLTIPS.frequencyPenalty} arrow placement="top">
-                                                                    <TextField
-                                                                        fullWidth
-                                                                        label="Frequency Penalty"
-                                                                        type="number"
-                                                                        size="small"
-                                                                        value={llamacppConfig.frequencyPenalty}
-                                                                        onChange={(e) => setLlamacppConfig({...llamacppConfig, frequencyPenalty: parseFloat(e.target.value) || 0})}
-                                                                        InputProps={{ inputProps: { min: 0, max: 1.0, step: 0.1 } }}
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                        </Grid>
-                                                    </CollapsibleSection>
-                                                </Grid>
-                                            </Grid>
-                                        </CardContent>
-                                    </Card>
-                                </Grid>
                             </Grid>
                         )}
 
@@ -12314,6 +11927,218 @@ console.log(await res.json());`
                     </Button>
                     <Button onClick={handleLoadHf} variant="contained" disabled={hfLoading}>
                         {hfLoading ? <CircularProgress size={18} /> : 'Load with vLLM'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* llama.cpp Load Dialog — opened by clicking Load on a downloaded
+                GGUF model. Mirrors the HF vLLM dialog so the user gets the same
+                "configure and launch" pattern for both backends. */}
+            <Dialog
+                open={llamacppLoadDialog.open}
+                onClose={() => !llamacppLoading && setLlamacppLoadDialog({ open: false, modelName: '' })}
+                maxWidth="sm"
+                fullWidth
+            >
+                <DialogTitle sx={{ pb: 1 }}>
+                    Load with llama.cpp
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
+                        GGUF · Configure GPU offload, context, and KV cache before launching
+                    </Typography>
+                </DialogTitle>
+                <DialogContent>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+                        <TextField
+                            label="Model"
+                            value={llamacppLoadDialog.modelName}
+                            disabled
+                            size="small"
+                            InputProps={{ sx: { fontFamily: 'monospace' } }}
+                        />
+
+                        {/* Optimal Settings — moved from the old Launch Settings
+                            panel into the dialog so the user can apply them per
+                            launch, not as a global default. */}
+                        {(() => {
+                            const matchedModel = models.find(m => m.name === llamacppLoadDialog.modelName);
+                            return matchedModel?.fileSize ? (
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                                    <AutoAwesomeIcon sx={{ fontSize: 16, color: 'primary.main' }} />
+                                    <Typography variant="caption" sx={{ flex: 1, color: 'text.secondary' }}>
+                                        {(matchedModel.fileSize / 1024 / 1024 / 1024).toFixed(1)} GB on disk
+                                    </Typography>
+                                    <Button
+                                        size="small"
+                                        variant="outlined"
+                                        startIcon={loadingOptimalSettings ? <CircularProgress size={14} color="inherit" /> : <AutoAwesomeIcon sx={{ fontSize: 14 }} />}
+                                        onClick={() => fetchOptimalSettings(matchedModel)}
+                                        disabled={loadingOptimalSettings}
+                                    >
+                                        Apply Optimal
+                                    </Button>
+                                </Box>
+                            ) : null;
+                        })()}
+                        {optimalSettingsNotes.length > 0 && (
+                            <Box>
+                                {optimalSettingsNotes.map((note, idx) => (
+                                    <Alert key={idx} severity="info" sx={{ py: 0, mb: 0.5, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>
+                                        {note}
+                                    </Alert>
+                                ))}
+                            </Box>
+                        )}
+
+                        <FormControl size="small">
+                            <InputLabel>GPU Layers</InputLabel>
+                            <Select
+                                label="GPU Layers"
+                                value={llamacppConfig.nGpuLayers}
+                                onChange={e => setLlamacppConfig({ ...llamacppConfig, nGpuLayers: e.target.value })}
+                            >
+                                <MenuItem value={-1}>All (-1)</MenuItem>
+                                <MenuItem value={0}>None (CPU)</MenuItem>
+                                <MenuItem value={10}>10</MenuItem>
+                                <MenuItem value={20}>20</MenuItem>
+                                <MenuItem value={30}>30</MenuItem>
+                                <MenuItem value={40}>40</MenuItem>
+                                <MenuItem value={50}>50</MenuItem>
+                                <MenuItem value={80}>80</MenuItem>
+                                <MenuItem value={100}>100</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <FormControl size="small">
+                            <InputLabel>Context Size</InputLabel>
+                            <Select
+                                label="Context Size"
+                                value={llamacppConfig.contextSize}
+                                onChange={e => setLlamacppConfig({ ...llamacppConfig, contextSize: e.target.value })}
+                            >
+                                <MenuItem value={2048}>2048</MenuItem>
+                                <MenuItem value={4096}>4096</MenuItem>
+                                <MenuItem value={8192}>8192</MenuItem>
+                                <MenuItem value={16384}>16K</MenuItem>
+                                <MenuItem value={32768}>32K</MenuItem>
+                                <MenuItem value={65536}>64K</MenuItem>
+                                <MenuItem value={131072}>128K</MenuItem>
+                                <MenuItem value={262144}>256K</MenuItem>
+                                <MenuItem value={524288}>512K</MenuItem>
+                                <MenuItem value={1048576}>1M</MenuItem>
+                            </Select>
+                        </FormControl>
+
+                        <FormControl size="small">
+                            <InputLabel>KV cache K</InputLabel>
+                            <Select
+                                label="KV cache K"
+                                value={llamacppConfig.cacheTypeK}
+                                onChange={e => setLlamacppConfig({ ...llamacppConfig, cacheTypeK: e.target.value })}
+                            >
+                                <MenuItem value="f16">f16 (default)</MenuItem>
+                                <MenuItem value="q8_0">q8_0 (saves memory)</MenuItem>
+                                <MenuItem value="q4_0">q4_0 (max savings)</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <FormControl size="small">
+                            <InputLabel>KV cache V</InputLabel>
+                            <Select
+                                label="KV cache V"
+                                value={llamacppConfig.cacheTypeV}
+                                onChange={e => setLlamacppConfig({ ...llamacppConfig, cacheTypeV: e.target.value })}
+                            >
+                                <MenuItem value="f16">f16 (default)</MenuItem>
+                                <MenuItem value="q8_0">q8_0 (saves memory)</MenuItem>
+                                <MenuItem value="q4_0">q4_0 (max savings)</MenuItem>
+                            </Select>
+                        </FormControl>
+                        {((llamacppConfig.cacheTypeK !== 'f16' || llamacppConfig.cacheTypeV !== 'f16') && !llamacppConfig.flashAttention) && (
+                            <Alert severity="warning" sx={{ fontSize: '0.78rem', py: 0.5, '& .MuiAlert-message': { py: 0.5 } }}>
+                                Quantized KV cache requires Flash Attention. llama.cpp will reject this combo at load. Enable the Flash Attention toggle below or revert KV cache to f16.
+                            </Alert>
+                        )}
+
+                        <TextField
+                            label="Threads"
+                            type="number"
+                            value={llamacppConfig.threads}
+                            onChange={e => setLlamacppConfig({ ...llamacppConfig, threads: parseInt(e.target.value) || 0 })}
+                            inputProps={{ min: 0, step: 1 }}
+                            size="small"
+                            helperText="0 = auto"
+                        />
+                        <FormControl size="small">
+                            <InputLabel>Parallel Slots</InputLabel>
+                            <Select
+                                label="Parallel Slots"
+                                value={llamacppConfig.parallelSlots}
+                                onChange={e => setLlamacppConfig({ ...llamacppConfig, parallelSlots: e.target.value })}
+                            >
+                                <MenuItem value={1}>1</MenuItem>
+                                <MenuItem value={2}>2</MenuItem>
+                                <MenuItem value={4}>4</MenuItem>
+                                <MenuItem value={8}>8</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <FormControl size="small">
+                            <InputLabel>Batch Size</InputLabel>
+                            <Select
+                                label="Batch Size"
+                                value={llamacppConfig.batchSize}
+                                onChange={e => setLlamacppConfig({ ...llamacppConfig, batchSize: e.target.value })}
+                            >
+                                <MenuItem value={256}>256</MenuItem>
+                                <MenuItem value={512}>512</MenuItem>
+                                <MenuItem value={1024}>1024</MenuItem>
+                                <MenuItem value={2048}>2048</MenuItem>
+                                <MenuItem value={4096}>4096</MenuItem>
+                                <MenuItem value={8192}>8192</MenuItem>
+                                <MenuItem value={16384}>16384</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <FormControl size="small">
+                            <InputLabel>Micro-batch</InputLabel>
+                            <Select
+                                label="Micro-batch"
+                                value={llamacppConfig.ubatchSize}
+                                onChange={e => setLlamacppConfig({ ...llamacppConfig, ubatchSize: e.target.value })}
+                            >
+                                <MenuItem value={128}>128</MenuItem>
+                                <MenuItem value={256}>256</MenuItem>
+                                <MenuItem value={512}>512</MenuItem>
+                                <MenuItem value={1024}>1024</MenuItem>
+                                <MenuItem value={2048}>2048</MenuItem>
+                                <MenuItem value={4096}>4096</MenuItem>
+                            </Select>
+                        </FormControl>
+
+                        <FormControlLabel
+                            control={<Switch checked={llamacppConfig.flashAttention} onChange={e => setLlamacppConfig({ ...llamacppConfig, flashAttention: e.target.checked })} />}
+                            label="Flash Attention"
+                        />
+                        <FormControlLabel
+                            control={<Switch checked={llamacppConfig.contextShift} onChange={e => setLlamacppConfig({ ...llamacppConfig, contextShift: e.target.checked })} />}
+                            label="Context shift (auto-truncate to fit context window)"
+                        />
+                        <FormControlLabel
+                            control={<Switch checked={llamacppConfig.swaFull} onChange={e => setLlamacppConfig({ ...llamacppConfig, swaFull: e.target.checked })} />}
+                            label="SWA full cache (sliding-window attention)"
+                        />
+                        <FormControlLabel
+                            control={<Switch checked={!llamacppConfig.disableThinking} onChange={e => setLlamacppConfig({ ...llamacppConfig, disableThinking: !e.target.checked })} />}
+                            label="Reasoning enabled (allow <think> blocks)"
+                        />
+                        <FormControlLabel
+                            control={<Switch checked={llamacppConfig.compressMemory} onChange={e => setLlamacppConfig({ ...llamacppConfig, compressMemory: e.target.checked })} />}
+                            label="AIMem (compress older conversation messages)"
+                        />
+                    </Box>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setLlamacppLoadDialog({ open: false, modelName: '' })} disabled={llamacppLoading}>
+                        Cancel
+                    </Button>
+                    <Button onClick={handleLoadLlamacppFromDialog} variant="contained" disabled={llamacppLoading}>
+                        {llamacppLoading ? <CircularProgress size={18} /> : 'Load with llama.cpp'}
                     </Button>
                 </DialogActions>
             </Dialog>
