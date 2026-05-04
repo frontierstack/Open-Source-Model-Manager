@@ -35,6 +35,10 @@ services:
       - ./models:/models
       - ./certs:/certs:ro
       - webapp_data:/usr/src/app/data
+      # Read/list/delete the HF cache used by vLLM HF-repo loads from the
+      # webapp UI. Same named volume the vLLM HF instances mount under
+      # /root/.cache/huggingface — exposed here at /hf-cache for inspection.
+      - hf_cache:/hf-cache
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
       - HOST_IP=${HOST_IP:-}
@@ -84,3 +88,7 @@ services:
 
 volumes:
   webapp_data:
+  # HuggingFace cache for vLLM HF-repo loads (safetensors / AWQ / GPTQ /
+  # FP8 / NVFP4 / BnB). Survives model-instance container restarts so big
+  # weights aren't redownloaded each time.
+  hf_cache:

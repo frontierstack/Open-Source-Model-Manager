@@ -3338,6 +3338,141 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
     }
 });
 
+// List HuggingFace repos cached on disk by prior vLLM HF loads. Reads the
+// shared `hf_cache` named volume mounted at /hf-cache. Each cached repo is
+// stored under hub/models--<owner>--<name>/{blobs,refs,snapshots}.
+app.get('/api/models/hf-cache', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'models')) {
+        return res.status(403).json({ error: 'Models permission required' });
+    }
+    const HF_CACHE_DIR = '/hf-cache/hub';
+    try {
+        let entries;
+        try {
+            entries = await fs.readdir(HF_CACHE_DIR, { withFileTypes: true });
+        } catch (e) {
+            if (e.code === 'ENOENT') return res.json({ entries: [], totalBytes: 0 });
+            throw e;
+        }
+        const items = [];
+        let totalBytes = 0;
+        for (const e of entries) {
+            if (!e.isDirectory() || !e.name.startsWith('models--')) continue;
+            const dirName = e.name; // models--Qwen--Qwen2.5-1.5B-Instruct-AWQ
+            const repoId = dirName.slice('models--'.length).replace(/--/g, '/');
+            const fullPath = path.join(HF_CACHE_DIR, dirName);
+            // Walk to sum byte size; symlink-following so blob storage is counted.
+            let sizeBytes = 0;
+            let lastModified = 0;
+            try {
+                const walk = async (p) => {
+                    const st = await fs.stat(p).catch(() => null);
+                    if (!st) return;
+                    if (st.isDirectory()) {
+                        const kids = await fs.readdir(p);
+                        for (const k of kids) await walk(path.join(p, k));
+                    } else {
+                        sizeBytes += st.size;
+                        if (st.mtimeMs > lastModified) lastModified = st.mtimeMs;
+                    }
+                };
+                await walk(fullPath);
+            } catch { /* size best-effort */ }
+            const loaded = modelInstances.has(repoId);
+            items.push({ repoId, dirName, sizeBytes, lastModified, loaded });
+            totalBytes += sizeBytes;
+        }
+        items.sort((a, b) => b.sizeBytes - a.sizeBytes);
+        res.json({ entries: items, totalBytes });
+    } catch (error) {
+        console.error('hf-cache list error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete a single cached HF repo to reclaim disk. Refuses if the repo is
+// currently loaded (must stop the instance first).
+app.delete('/api/models/hf-cache/:dirName', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'models')) {
+        return res.status(403).json({ error: 'Models permission required' });
+    }
+    const { dirName } = req.params;
+    if (!/^models--[A-Za-z0-9._-]+--[A-Za-z0-9._-]+$/.test(dirName)) {
+        return res.status(400).json({ error: 'Invalid cache directory name' });
+    }
+    const repoId = dirName.slice('models--'.length).replace(/--/g, '/');
+    if (modelInstances.has(repoId)) {
+        return res.status(400).json({ error: `Repo ${repoId} is currently loaded — stop the instance first` });
+    }
+    const target = path.join('/hf-cache/hub', dirName);
+    const resolved = path.resolve(target);
+    if (!resolved.startsWith('/hf-cache/hub/')) {
+        return res.status(400).json({ error: 'Refusing to delete outside HF cache' });
+    }
+    try {
+        await fs.rm(resolved, { recursive: true, force: true });
+        broadcast({ type: 'log', message: `[hf-cache] deleted ${repoId}` });
+        res.json({ ok: true, repoId });
+    } catch (error) {
+        console.error('hf-cache delete error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Load a HuggingFace repo directly via vLLM (non-GGUF formats: safetensors,
+// AWQ, GPTQ, FP8, NVFP4, BnB, compressed-tensors). vLLM handles the download.
+app.post('/api/models/load-hf', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'models')) {
+        return res.status(403).json({ error: 'Models permission required' });
+    }
+    const { repoId, format } = req.body || {};
+    if (!isValidHfRepoId(repoId)) {
+        return res.status(400).json({ error: 'Invalid HuggingFace repo id (expected "owner/name")' });
+    }
+    if (modelInstances.has(repoId)) {
+        return res.status(400).json({ error: `Instance for ${repoId} already running` });
+    }
+    if (req.body.maxModelLen !== undefined) {
+        const maxLen = Number(req.body.maxModelLen);
+        if (isNaN(maxLen) || maxLen < 256 || maxLen > 1048576) {
+            return res.status(400).json({ error: 'maxModelLen must be between 256 and 1048576' });
+        }
+    }
+    if (req.body.gpuMemoryUtilization !== undefined) {
+        const gpuUtil = Number(req.body.gpuMemoryUtilization);
+        if (isNaN(gpuUtil) || gpuUtil < 0.1 || gpuUtil > 1.0) {
+            return res.status(400).json({ error: 'gpuMemoryUtilization must be between 0.1 and 1.0' });
+        }
+    }
+    // enforceEager defaults to true on the HF path: vLLM 0.19.x emits CUDA-
+    // graph PTX that some current NVIDIA drivers can't load on newer arches
+    // (e.g. Blackwell sm_120 + driver 570 → cudaErrorUnsupportedPtxVersion).
+    // Eager bypasses graph capture; the user can flip it off when their
+    // driver / vLLM combo supports compiled graphs.
+    const config = {
+        maxModelLen: req.body.maxModelLen || 4096,
+        cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
+        gpuMemoryUtilization: req.body.gpuMemoryUtilization ?? 0.9,
+        tensorParallelSize: req.body.tensorParallelSize || 1,
+        maxNumSeqs: req.body.maxNumSeqs || 256,
+        kvCacheDtype: req.body.kvCacheDtype || 'auto',
+        trustRemoteCode: req.body.trustRemoteCode ?? true,
+        enforceEager: req.body.enforceEager ?? true,
+        contextSize: req.body.maxModelLen || 4096,
+        compressMemory: req.body.compressMemory ?? false
+    };
+    try {
+        broadcast({ type: 'log', message: `Creating vLLM HF instance for ${repoId} (${format || 'auto'})...` });
+        const result = await createVllmHfInstance(repoId, format || 'auto', config);
+        broadcast({ type: 'status', message: `Instance created on port ${result.port}` });
+        res.json({ message: 'Instance created', backend: 'vllm', source: 'hf', repoId, ...result });
+    } catch (error) {
+        console.error(`Error loading HF repo ${repoId}:`, error.message);
+        broadcast({ type: 'log', message: `Error: ${error.message}` });
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ============================================================================
 // VLLM INSTANCE MANAGEMENT
 // ============================================================================
@@ -3438,6 +3573,106 @@ async function createVllmInstance(modelName, modelPath, config) {
         return { containerId: container.id, port, containerName };
     } catch (error) {
         console.error(`Error creating container:`, error);
+        throw error;
+    }
+}
+
+// Validate a HuggingFace repo id (e.g. "Qwen/Qwen3.6-35B-A3B").
+// HF allows letters, digits, '-', '_', '.' in both org and repo names; one '/'.
+function isValidHfRepoId(repoId) {
+    if (!repoId || typeof repoId !== 'string') return false;
+    if (repoId.length > 200) return false;
+    return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repoId);
+}
+
+// Sanitize a repo id into a docker-safe container name suffix.
+function repoIdToContainerSuffix(repoId) {
+    return repoId.replace(/\//g, '--').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 50);
+}
+
+async function createVllmHfInstance(repoId, format, config) {
+    const port = allocatePort();
+    const containerName = `vllm-hf-${repoIdToContainerSuffix(repoId)}`;
+    const internalPort = port;
+
+    try {
+        const images = await docker.listImages({ filters: { reference: ['modelserver-vllm:latest'] } });
+        if (images.length === 0) {
+            throw new Error('modelserver-vllm:latest image not found. Please run ./build.sh to build the base image.');
+        }
+
+        // vLLM accepts a HuggingFace repo id as --model and downloads on first
+        // start. The HF cache is mounted as a named volume so weights survive
+        // container restarts. The entrypoint's *.gguf branch is a no-op for
+        // repo ids, so quantization is auto-detected from the model config.
+        const envVars = [
+            `VLLM_MODEL_PATH=${repoId}`,
+            `VLLM_PORT=${port}`,
+            `VLLM_MAX_MODEL_LEN=${config.maxModelLen}`,
+            `VLLM_CPU_OFFLOAD_GB=${config.cpuOffloadGb}`,
+            `VLLM_GPU_MEMORY_UTILIZATION=${config.gpuMemoryUtilization}`,
+            `VLLM_TENSOR_PARALLEL_SIZE=${config.tensorParallelSize}`,
+            `VLLM_MAX_NUM_SEQS=${config.maxNumSeqs}`,
+            `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
+            `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
+            `VLLM_ENFORCE_EAGER=${config.enforceEager}`,
+            `VLLM_SERVED_MODEL_NAME=${repoId}`
+        ];
+
+        const hfToken = process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_TOKEN || '';
+        if (hfToken) {
+            envVars.push(`HUGGING_FACE_HUB_TOKEN=${hfToken}`);
+            envVars.push(`HF_TOKEN=${hfToken}`);
+        }
+
+        const container = await docker.createContainer({
+            Image: 'modelserver-vllm:latest',
+            name: containerName,
+            Env: envVars,
+            HostConfig: {
+                Runtime: 'nvidia',
+                Binds: [
+                    getModelsVolumeBind(),
+                    'modelserver_hf_cache:/root/.cache/huggingface'
+                ],
+                PortBindings: {
+                    [`${port}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: `${port}` }]
+                },
+                DeviceRequests: [{
+                    Driver: 'nvidia',
+                    Count: -1,
+                    Capabilities: [['gpu']]
+                }],
+                NetworkMode: 'modelserver_default',
+                ShmSize: 8 * 1024 * 1024 * 1024
+            }
+        });
+
+        await container.start();
+
+        modelInstances.set(repoId, {
+            containerId: container.id,
+            containerName,
+            port,
+            internalPort,
+            status: 'starting',
+            config: { ...config, hfRepoId: repoId, format },
+            backend: 'vllm',
+            source: 'hf'
+        });
+        startSystemMonitoring();
+
+        broadcast({ type: 'status', modelName: repoId, status: 'starting', port });
+        broadcast({ type: 'log', message: `[vllm-hf] starting ${repoId} on port ${port} (cache: modelserver_hf_cache)` });
+
+        console.log(`Created vLLM-HF instance for ${repoId} on port ${port} (container: ${containerName})`);
+
+        streamContainerLogs(container, repoId);
+        monitorContainerHealth(container, repoId, port);
+
+        return { containerId: container.id, port, containerName };
+    } catch (error) {
+        console.error(`Error creating vLLM-HF container:`, error);
         throw error;
     }
 }
@@ -4224,7 +4459,44 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Models permission required' });
     }
 
-    const { query, sortBy = 'downloads', minSize, maxSize } = req.query;
+    const { query, sortBy = 'downloads', minSize, maxSize, format = 'gguf' } = req.query;
+
+    // Map our format names to HuggingFace API tag filters. HF doesn't have a
+    // canonical tag for NVFP4 yet — fall back to a substring search hint.
+    // 'any' omits the filter entirely.
+    const FORMAT_TO_HF_FILTER = {
+        gguf: 'gguf',
+        safetensors: 'safetensors',
+        awq: 'awq',
+        gptq: 'gptq',
+        fp8: 'fp8',
+        bnb: 'bitsandbytes',
+        'compressed-tensors': 'compressed-tensors',
+        nvfp4: null,
+        any: null,
+    };
+    const fmtKey = String(format).toLowerCase();
+    const hfFilter = Object.prototype.hasOwnProperty.call(FORMAT_TO_HF_FILTER, fmtKey)
+        ? FORMAT_TO_HF_FILTER[fmtKey]
+        : 'gguf';
+
+    // Detect a model's actual quantization/format from tags + name. Used to
+    // decorate every result so the UI can show backend compatibility chips.
+    const detectFormat = (model) => {
+        const tags = (model.tags || []).map(t => String(t).toLowerCase());
+        const name = String(model.id || '').toLowerCase();
+        if (tags.includes('gguf') || name.includes('gguf')) return 'gguf';
+        if (name.includes('nvfp4') || tags.some(t => t.includes('nvfp4'))) return 'nvfp4';
+        if (tags.includes('fp8') || /(?:^|[-_/])fp8(?:[-_/]|$)/.test(name)) return 'fp8';
+        if (tags.includes('awq') || /(?:^|[-_/])awq(?:[-_/]|$)/.test(name)) return 'awq';
+        if (tags.includes('gptq') || /(?:^|[-_/])gptq(?:[-_/]|$)/.test(name)) return 'gptq';
+        if (tags.includes('bitsandbytes') || /(?:^|[-_/])bnb(?:[-_/]|$)/.test(name)) return 'bnb';
+        if (tags.includes('compressed-tensors')) return 'compressed-tensors';
+        if (tags.includes('safetensors')) return 'safetensors';
+        return 'unknown';
+    };
+    const VLLM_FORMATS = new Set(['safetensors', 'awq', 'gptq', 'fp8', 'nvfp4', 'bnb', 'compressed-tensors', 'gguf']);
+    const LLAMACPP_FORMATS = new Set(['gguf']);
 
     // Helper to extract parameter size in billions from model name
     const extractParamSize = (name) => {
@@ -4295,19 +4567,22 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
             hfDirection = 1;
         }
 
-        const response = await axios.get('https://huggingface.co/api/models', {
-            params: {
-                search: query || '',
-                filter: 'gguf',
-                sort: hfSort,
-                direction: hfDirection,
-                limit: 100  // Get more results for filtering
-            }
-        });
+        const requestParams = {
+            search: fmtKey === 'nvfp4'
+                ? `${(query || '').trim()} nvfp4`.trim()
+                : (query || ''),
+            sort: hfSort,
+            direction: hfDirection,
+            limit: 100  // Get more results for filtering
+        };
+        if (hfFilter) requestParams.filter = hfFilter;
+
+        const response = await axios.get('https://huggingface.co/api/models', { params: requestParams });
 
         let models = response.data.map(model => {
             const paramSize = extractParamSize(model.id);
             const contextLength = estimateContextLength(model.id, model.tags);
+            const detectedFormat = detectFormat(model);
             return {
                 id: model.id,
                 downloads: model.downloads,
@@ -4316,9 +4591,17 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
                 paramSize: paramSize,  // Size in billions (null if unknown)
                 contextLength: contextLength,  // Estimated context length (null if unknown)
                 contextEstimated: contextLength !== null,  // Whether context was estimated
-                createdAt: model.createdAt
+                createdAt: model.createdAt,
+                format: detectedFormat,
+                vllmCompatible: VLLM_FORMATS.has(detectedFormat),
+                llamacppCompatible: LLAMACPP_FORMATS.has(detectedFormat)
             };
         });
+
+        // For nvfp4 (no canonical HF tag), keep only true matches after detection
+        if (fmtKey === 'nvfp4') {
+            models = models.filter(m => m.format === 'nvfp4');
+        }
 
         // Filter by parameter size if specified
         const minSizeNum = minSize ? parseFloat(minSize) : null;

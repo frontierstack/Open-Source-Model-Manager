@@ -21,6 +21,7 @@ import MenuIcon from '@mui/icons-material/Menu';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import WarningIcon from '@mui/icons-material/Warning';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
@@ -379,6 +380,26 @@ const App = () => {
     const [fileFilter, setFileFilter] = useState('all'); // 'all', 'single', 'split'
     const [searchSortBy, setSearchSortBy] = useState('downloads'); // 'downloads', 'likes', 'params', 'trending', 'newest'
     const [searchSizeFilter, setSearchSizeFilter] = useState('all'); // 'all', 'small', 'medium', 'large', 'xlarge'
+    const [searchFormat, setSearchFormat] = useState('gguf'); // 'gguf', 'safetensors', 'awq', 'gptq', 'fp8', 'nvfp4', 'bnb', 'any'
+    // HuggingFace direct-load dialog (vLLM loads non-GGUF formats from a repo id)
+    const [hfLoadDialog, setHfLoadDialog] = useState({ open: false, repoId: '', format: '' });
+    const [hfLoadConfig, setHfLoadConfig] = useState({
+        maxModelLen: 4096,
+        gpuMemoryUtilization: 0.9,
+        tensorParallelSize: 1,
+        kvCacheDtype: 'auto',
+        trustRemoteCode: true,
+        // Default ON: vLLM 0.19's CUDA-graph PTX fails to load on some
+        // current driver/arch combos (e.g. Blackwell sm_120 + driver 570).
+        // Eager mode bypasses graph capture. Turn off for ~10-30% throughput
+        // gain once your driver supports the compiled graphs.
+        enforceEager: true
+    });
+    const [hfLoading, setHfLoading] = useState(false);
+    // Cached HF repos previously pulled by vLLM (lives in modelserver_hf_cache volume)
+    const [hfCacheEntries, setHfCacheEntries] = useState([]);
+    const [hfCacheTotalBytes, setHfCacheTotalBytes] = useState(0);
+    const [hfCacheLoading, setHfCacheLoading] = useState(false);
     const [searchPage, setSearchPage] = useState(1);
     const ITEMS_PER_PAGE = 24;
 
@@ -633,7 +654,7 @@ const App = () => {
     // Reset search page when sort/size filters change
     useEffect(() => {
         setSearchPage(1);
-    }, [searchSortBy, searchSizeFilter]);
+    }, [searchSortBy, searchSizeFilter, searchFormat]);
 
     // Fetch users when Users tab is selected
     // Note: Using tabOrder here instead of visibleTabOrder since this runs early in component
@@ -651,6 +672,7 @@ const App = () => {
         fetchApiKeys();
         fetchDownloads();
         fetchApps();
+        fetchHfCache();
         fetchAgents();
         fetchSkills();
         fetchMdSkills();
@@ -6931,6 +6953,7 @@ console.log(await res.json());`
             params.append('query', searchQuery);
         }
         params.append('sortBy', searchSortBy);
+        params.append('format', searchFormat);
 
         // Add size filter if not 'all'
         const sizeFilter = SIZE_FILTERS[searchSizeFilter];
@@ -6954,7 +6977,15 @@ console.log(await res.json());`
             });
     };
 
-    const handleSelectModel = (modelId) => {
+    const handleSelectModel = (modelId, modelFormat) => {
+        // Non-GGUF formats (safetensors / AWQ / GPTQ / FP8 / NVFP4 / BnB)
+        // are loaded by vLLM directly from the HF repo id — there's no
+        // single-file pull step. Open a dedicated load dialog so the user
+        // can set max-model-len / GPU mem / tensor-parallel before launch.
+        if (modelFormat && modelFormat !== 'gguf' && modelFormat !== 'unknown') {
+            setHfLoadDialog({ open: true, repoId: modelId, format: modelFormat });
+            return;
+        }
         const [owner, repo] = modelId.split('/');
         fetch(`/api/huggingface/files/${owner}/${repo}`, {
         })
@@ -6969,6 +7000,74 @@ console.log(await res.json());`
                 }
             })
             .catch(error => showSnackbar(`Failed to fetch files: ${error.message}`, 'error'));
+    };
+
+    const handleLoadHf = () => {
+        const { repoId, format } = hfLoadDialog;
+        if (!repoId) return;
+        setHfLoading(true);
+        fetch('/api/models/load-hf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                repoId,
+                format,
+                maxModelLen: Number(hfLoadConfig.maxModelLen) || 4096,
+                gpuMemoryUtilization: Number(hfLoadConfig.gpuMemoryUtilization) || 0.9,
+                tensorParallelSize: Number(hfLoadConfig.tensorParallelSize) || 1,
+                kvCacheDtype: hfLoadConfig.kvCacheDtype || 'auto',
+                trustRemoteCode: !!hfLoadConfig.trustRemoteCode,
+                enforceEager: !!hfLoadConfig.enforceEager
+            })
+        })
+        .then(async res => {
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+            return body;
+        })
+        .then(data => {
+            showSnackbar(`vLLM starting "${repoId}" on port ${data.port} — first launch will download weights`, 'success');
+            setHfLoadDialog({ open: false, repoId: '', format: '' });
+            fetchInstances();
+        })
+        .catch(err => showSnackbar(`Load failed: ${err.message}`, 'error'))
+        .finally(() => setHfLoading(false));
+    };
+
+    const fetchHfCache = () => {
+        setHfCacheLoading(true);
+        fetch('/api/models/hf-cache')
+            .then(res => res.json())
+            .then(data => {
+                setHfCacheEntries(data.entries || []);
+                setHfCacheTotalBytes(data.totalBytes || 0);
+            })
+            .catch(() => { /* silent — endpoint may be unavailable on first load */ })
+            .finally(() => setHfCacheLoading(false));
+    };
+
+    const handleDeleteHfCache = (entry) => {
+        if (!window.confirm(`Delete cached HF model "${entry.repoId}" (${formatBytes(entry.sizeBytes)})?\n\nNext load will re-download.`)) return;
+        fetch(`/api/models/hf-cache/${encodeURIComponent(entry.dirName)}`, { method: 'DELETE' })
+            .then(async r => {
+                const body = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+                showSnackbar(`Deleted "${entry.repoId}" from HF cache`, 'success');
+                fetchHfCache();
+            })
+            .catch(err => showSnackbar(`Delete failed: ${err.message}`, 'error'));
+    };
+
+    const handleReloadHfCache = (entry) => {
+        setHfLoadDialog({ open: true, repoId: entry.repoId, format: 'cached' });
+    };
+
+    const formatBytes = (n) => {
+        if (!n || n < 0) return '—';
+        const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+        let i = 0; let v = n;
+        while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+        return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
     };
 
     const handleSelectGGUFFile = (filename) => {
@@ -7927,6 +8026,36 @@ console.log(await res.json());`
                                                         }}
                                                     />
                                                 ))}
+
+                                                <Box sx={{ width: 1, height: 16, borderLeft: '1px solid', borderColor: 'divider', mx: 0.5 }} />
+
+                                                <Typography variant="caption" sx={{ color: 'text.secondary', mr: 0.5, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: 0.5 }}>Format</Typography>
+                                                {[
+                                                    { value: 'gguf', label: 'GGUF', hint: 'llama.cpp + vLLM (experimental)' },
+                                                    { value: 'safetensors', label: 'safetensors', hint: 'vLLM full precision' },
+                                                    { value: 'awq', label: 'AWQ', hint: 'vLLM 4-bit, NVIDIA-optimized' },
+                                                    { value: 'gptq', label: 'GPTQ', hint: 'vLLM 4-bit, Marlin kernels' },
+                                                    { value: 'fp8', label: 'FP8', hint: 'vLLM Hopper/Ada/Blackwell' },
+                                                    { value: 'nvfp4', label: 'NVFP4', hint: 'vLLM Blackwell only' },
+                                                    { value: 'bnb', label: 'BnB', hint: 'vLLM bitsandbytes' },
+                                                    { value: 'any', label: 'Any', hint: 'No format filter' },
+                                                ].map(opt => (
+                                                    <Tooltip key={opt.value} title={opt.hint} arrow>
+                                                        <Chip
+                                                            label={opt.label}
+                                                            size="small"
+                                                            onClick={() => setSearchFormat(opt.value)}
+                                                            sx={{
+                                                                height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
+                                                                bgcolor: searchFormat === opt.value ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.04)',
+                                                                border: '1px solid',
+                                                                borderColor: searchFormat === opt.value ? 'rgba(34,197,94,0.5)' : 'transparent',
+                                                                color: searchFormat === opt.value ? '#22c55e' : 'text.secondary',
+                                                                '&:hover': { bgcolor: searchFormat === opt.value ? 'rgba(34,197,94,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                            }}
+                                                        />
+                                                    </Tooltip>
+                                                ))}
                                             </Box>
 
                                             {/* Search Results */}
@@ -8039,7 +8168,7 @@ console.log(await res.json());`
                                                                                 },
                                                                             },
                                                                         }}
-                                                                        onClick={() => handleSelectModel(model.id)}
+                                                                        onClick={() => handleSelectModel(model.id, model.format)}
                                                                     >
                                                                         <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
                                                                             {/* Header row: name + param size */}
@@ -8064,26 +8193,58 @@ console.log(await res.json());`
                                                                             <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1, fontSize: '0.7rem' }}>
                                                                                 {model.id.split('/')[0]}
                                                                             </Typography>
-                                                                            {/* Model Type Tags */}
-                                                                            {typeTags.length > 0 && (
-                                                                                <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
-                                                                                    {typeTags.map((tag, idx) => (
-                                                                                        <Chip
-                                                                                            key={idx}
-                                                                                            label={tag.label}
-                                                                                            size="small"
-                                                                                            sx={{
-                                                                                                height: 18,
-                                                                                                fontSize: '0.62rem',
-                                                                                                bgcolor: tag.color,
-                                                                                                color: tag.textColor,
-                                                                                                fontWeight: 600,
-                                                                                                letterSpacing: 0.3,
-                                                                                            }}
-                                                                                        />
-                                                                                    ))}
-                                                                                </Box>
-                                                                            )}
+                                                                            {/* Format + Type Tags */}
+                                                                            {(() => {
+                                                                                const FORMAT_STYLES = {
+                                                                                    gguf:                 { label: 'GGUF',     color: 'rgba(20,184,166,0.3)',  textColor: '#14b8a6', tip: 'llama.cpp + vLLM (experimental)' },
+                                                                                    safetensors:          { label: 'safetensors', color: 'rgba(99,102,241,0.3)', textColor: '#818cf8', tip: 'vLLM full-precision' },
+                                                                                    awq:                  { label: 'AWQ',      color: 'rgba(34,197,94,0.3)',   textColor: '#22c55e', tip: 'vLLM 4-bit, NVIDIA-optimized' },
+                                                                                    gptq:                 { label: 'GPTQ',     color: 'rgba(234,179,8,0.3)',   textColor: '#eab308', tip: 'vLLM 4-bit (Marlin kernels)' },
+                                                                                    fp8:                  { label: 'FP8',      color: 'rgba(244,114,182,0.3)', textColor: '#f472b6', tip: 'vLLM Hopper/Ada/Blackwell' },
+                                                                                    nvfp4:                { label: 'NVFP4',    color: 'rgba(217,70,239,0.3)',  textColor: '#d946ef', tip: 'vLLM Blackwell-only' },
+                                                                                    bnb:                  { label: 'BnB',      color: 'rgba(245,158,11,0.3)',  textColor: '#f59e0b', tip: 'vLLM bitsandbytes' },
+                                                                                    'compressed-tensors': { label: 'comp-tensors', color: 'rgba(129,140,248,0.3)', textColor: '#a5b4fc', tip: 'vLLM compressed-tensors' },
+                                                                                };
+                                                                                const fmt = FORMAT_STYLES[model.format];
+                                                                                const hasFormat = !!fmt;
+                                                                                const hasTypeTags = typeTags.length > 0;
+                                                                                if (!hasFormat && !hasTypeTags) return null;
+                                                                                return (
+                                                                                    <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
+                                                                                        {hasFormat && (
+                                                                                            <Tooltip title={fmt.tip} arrow>
+                                                                                                <Chip
+                                                                                                    label={fmt.label}
+                                                                                                    size="small"
+                                                                                                    sx={{
+                                                                                                        height: 18,
+                                                                                                        fontSize: '0.62rem',
+                                                                                                        bgcolor: fmt.color,
+                                                                                                        color: fmt.textColor,
+                                                                                                        fontWeight: 700,
+                                                                                                        letterSpacing: 0.3,
+                                                                                                    }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {typeTags.map((tag, idx) => (
+                                                                                            <Chip
+                                                                                                key={idx}
+                                                                                                label={tag.label}
+                                                                                                size="small"
+                                                                                                sx={{
+                                                                                                    height: 18,
+                                                                                                    fontSize: '0.62rem',
+                                                                                                    bgcolor: tag.color,
+                                                                                                    color: tag.textColor,
+                                                                                                    fontWeight: 600,
+                                                                                                    letterSpacing: 0.3,
+                                                                                                }}
+                                                                                            />
+                                                                                        ))}
+                                                                                    </Box>
+                                                                                );
+                                                                            })()}
                                                                             {/* Stats row */}
                                                                             <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', color: 'text.secondary', fontSize: '0.7rem' }}>
                                                                                 <Tooltip title="Downloads" arrow>
@@ -8694,6 +8855,79 @@ console.log(await res.json());`
                                                                             >
                                                                                 <StopIcon />
                                                                             </IconButton>
+                                                                        </Tooltip>
+                                                                    </Box>
+                                                                </CardContent>
+                                                            </Card>
+                                                        </Grid>
+                                                    ))}
+                                                </Grid>
+                                            </CardContent>
+                                        </Card>
+                                    </Grid>
+                                )}
+
+                                {/* Cached HuggingFace Models (vLLM HF-repo loads) */}
+                                {hfCacheEntries.length > 0 && (
+                                    <Grid item xs={12}>
+                                        <Card>
+                                            <CardContent>
+                                                <SectionHeader
+                                                    icon={<CloudDownloadIcon />}
+                                                    title="Cached vLLM Models (HuggingFace cache)"
+                                                    subtitle={`${hfCacheEntries.length} repo${hfCacheEntries.length > 1 ? 's' : ''} · ${formatBytes(hfCacheTotalBytes)} total — reloads use this cache (no re-download)`}
+                                                    action={
+                                                        <Tooltip title="Refresh cache list">
+                                                            <IconButton size="small" onClick={fetchHfCache} disabled={hfCacheLoading}>
+                                                                <RefreshIcon />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    }
+                                                />
+                                                <Grid container spacing={2} sx={{ mt: 1 }}>
+                                                    {hfCacheEntries.map(entry => (
+                                                        <Grid item xs={12} sm={6} md={4} key={entry.dirName}>
+                                                            <Card variant="outlined" sx={{
+                                                                bgcolor: entry.loaded ? 'rgba(34,197,94,0.05)' : 'rgba(99,102,241,0.04)',
+                                                                borderColor: entry.loaded ? 'success.dark' : 'rgba(99,102,241,0.3)'
+                                                            }}>
+                                                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                                                                    <Typography sx={{ fontFamily: 'monospace', fontSize: '0.85rem', mb: 0.5, wordBreak: 'break-all' }}>
+                                                                        {entry.repoId}
+                                                                    </Typography>
+                                                                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 1.5 }}>
+                                                                        <Chip label={formatBytes(entry.sizeBytes)} size="small" sx={{ height: 20, fontSize: '0.7rem' }} />
+                                                                        {entry.loaded && (
+                                                                            <Chip label="Loaded" size="small" color="success" sx={{ height: 20, fontSize: '0.7rem' }} />
+                                                                        )}
+                                                                        {entry.lastModified > 0 && (
+                                                                            <Typography variant="caption" sx={{ color: 'text.secondary', ml: 'auto' }}>
+                                                                                {new Date(entry.lastModified).toLocaleDateString()}
+                                                                            </Typography>
+                                                                        )}
+                                                                    </Box>
+                                                                    <Box sx={{ display: 'flex', gap: 1 }}>
+                                                                        <Button
+                                                                            size="small"
+                                                                            variant="outlined"
+                                                                            startIcon={<PlayArrowIcon />}
+                                                                            disabled={entry.loaded}
+                                                                            onClick={() => handleReloadHfCache(entry)}
+                                                                            sx={{ textTransform: 'none', flex: 1 }}
+                                                                        >
+                                                                            {entry.loaded ? 'Running' : 'Load'}
+                                                                        </Button>
+                                                                        <Tooltip title={entry.loaded ? 'Stop instance first' : 'Delete from cache (frees disk; next load re-downloads)'}>
+                                                                            <span>
+                                                                                <IconButton
+                                                                                    size="small"
+                                                                                    color="error"
+                                                                                    disabled={entry.loaded}
+                                                                                    onClick={() => handleDeleteHfCache(entry)}
+                                                                                >
+                                                                                    <DeleteIcon fontSize="small" />
+                                                                                </IconButton>
+                                                                            </span>
                                                                         </Tooltip>
                                                                     </Box>
                                                                 </CardContent>
@@ -10997,7 +11231,7 @@ console.log(await res.json());`
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Delete model</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List all model configs</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/model-configs/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get/update model config</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Search GGUF models</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Search HF models (format filter: gguf/safetensors/awq/gptq/fp8/nvfp4/bnb/any)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/files/:repo</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List repo files</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/downloads</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List active downloads</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/downloads/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Cancel download</TableCell></TableRow>
@@ -12271,6 +12505,88 @@ console.log(await res.json());`
                 </DialogActions>
             </Dialog>
 
+            {/* Load HuggingFace repo via vLLM (non-GGUF formats) */}
+            <Dialog
+                open={hfLoadDialog.open}
+                onClose={() => !hfLoading && setHfLoadDialog({ open: false, repoId: '', format: '' })}
+                maxWidth="sm"
+                fullWidth
+            >
+                <DialogTitle sx={{ pb: 1 }}>
+                    Load via vLLM
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
+                        {hfLoadDialog.format ? `${hfLoadDialog.format.toUpperCase()} · ` : ''}vLLM downloads weights from HuggingFace on first start
+                    </Typography>
+                </DialogTitle>
+                <DialogContent>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+                        <TextField
+                            label="HuggingFace repo"
+                            value={hfLoadDialog.repoId}
+                            disabled
+                            size="small"
+                            InputProps={{ sx: { fontFamily: 'monospace' } }}
+                        />
+                        <TextField
+                            label="Max model length (context window)"
+                            type="number"
+                            value={hfLoadConfig.maxModelLen}
+                            onChange={e => setHfLoadConfig(c => ({ ...c, maxModelLen: e.target.value }))}
+                            inputProps={{ min: 256, max: 1048576, step: 1024 }}
+                            size="small"
+                            helperText="Larger = more VRAM. Set below the model's published max."
+                        />
+                        <TextField
+                            label="GPU memory utilization"
+                            type="number"
+                            value={hfLoadConfig.gpuMemoryUtilization}
+                            onChange={e => setHfLoadConfig(c => ({ ...c, gpuMemoryUtilization: e.target.value }))}
+                            inputProps={{ min: 0.1, max: 1.0, step: 0.05 }}
+                            size="small"
+                            helperText="Fraction of GPU memory vLLM may use (0.1–1.0)."
+                        />
+                        <TextField
+                            label="Tensor parallel size"
+                            type="number"
+                            value={hfLoadConfig.tensorParallelSize}
+                            onChange={e => setHfLoadConfig(c => ({ ...c, tensorParallelSize: e.target.value }))}
+                            inputProps={{ min: 1, max: 8, step: 1 }}
+                            size="small"
+                            helperText="Number of GPUs to split the model across."
+                        />
+                        <FormControl size="small">
+                            <InputLabel>KV cache dtype</InputLabel>
+                            <Select
+                                label="KV cache dtype"
+                                value={hfLoadConfig.kvCacheDtype}
+                                onChange={e => setHfLoadConfig(c => ({ ...c, kvCacheDtype: e.target.value }))}
+                            >
+                                <MenuItem value="auto">auto</MenuItem>
+                                <MenuItem value="fp8">fp8</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <FormControlLabel
+                            control={<Switch checked={hfLoadConfig.trustRemoteCode} onChange={e => setHfLoadConfig(c => ({ ...c, trustRemoteCode: e.target.checked }))} />}
+                            label="Trust remote code (required for some custom architectures)"
+                        />
+                        <FormControlLabel
+                            control={<Switch checked={hfLoadConfig.enforceEager} onChange={e => setHfLoadConfig(c => ({ ...c, enforceEager: e.target.checked }))} />}
+                            label="Enforce eager (disable CUDA graphs)"
+                        />
+                        <Typography variant="caption" sx={{ color: 'text.secondary', mt: -1.5, ml: 5 }}>
+                            Recommended ON for early Blackwell (sm_120) + driver &lt; 580. Off can be ~10-30% faster but may hit cudaErrorUnsupportedPtxVersion. AWQ/GPTQ-Marlin quants currently fail on Blackwell regardless — use plain safetensors or FP8 for now.
+                        </Typography>
+                    </Box>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setHfLoadDialog({ open: false, repoId: '', format: '' })} disabled={hfLoading}>
+                        Cancel
+                    </Button>
+                    <Button onClick={handleLoadHf} variant="contained" disabled={hfLoading}>
+                        {hfLoading ? <CircularProgress size={18} /> : 'Load with vLLM'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             {/* User Menu */}
             <Menu
