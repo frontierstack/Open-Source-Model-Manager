@@ -12169,6 +12169,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Held until SSE headers are flushed below; emits a chunking_progress
         // event so the UI knows the agentic flow took over.
         let pendingAgenticNotice = null;
+        // Tool chip events for the agentic auto-prime (synthetic tool_executing
+        // + tool_result pair). Flushed after SSE headers below so the UI shows
+        // a real read_document_chunk chip instead of the model's first response
+        // appearing to materialize from nowhere.
+        let pendingPrimedToolEvents = null;
         try {
             const chatUserId = req.user?.id || req.apiKeyData?.id || 'default';
             const chatConvId = conversationId || req.body.conversationId;
@@ -12464,15 +12469,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 });
 
                                 const handleNotice =
-                                    `[SYSTEM: A large document was indexed for retrieval. You CANNOT see the document body — it is NOT in your context.\n` +
+                                    `[SYSTEM: A large document was indexed for retrieval. You CANNOT see the full document body — it is NOT in your context.\n` +
                                     `documentId="${indexed.id}"  •  chunks=${indexed.totalChunks}  •  chars=${indexed.totalChars.toLocaleString()}\n\n` +
-                                    `MANDATORY PROTOCOL — failure to follow will produce a wrong answer:\n` +
-                                    `1. Your VERY NEXT action MUST be a tool_calls emission. Do NOT write prose first. Do NOT narrate the plan. Emit a tool call.\n` +
-                                    `2. For targeted questions ("find X", "what is the highest Y", "count rows where Z"), call query_document with documentId="${indexed.id}" and a focused query.\n` +
-                                    `3. For "summarize the whole document" or "list everything", call read_document_chunk with documentId="${indexed.id}", chunkIndex=0, count=5, then iterate by passing the returned nextChunkIndex.\n` +
-                                    `4. After the tool result returns, you may call more tools or write the final answer. Cite line ranges (e.g. "lines 1234–1287") from tool results.\n` +
-                                    `5. NEVER fabricate document content. NEVER say "let me call X" without immediately emitting the tool_call. NEVER claim to have read content the tools did not return.\n` +
-                                    `If you write prose before any tool_call, the user will see a wrong answer.]\n\n`;
+                                    `An auto-prime tool call has already been issued for you: read_document_chunk(documentId, chunkIndex=0, count=5). The result is the assistant→tool message pair immediately following this user turn — read it before you answer.\n\n` +
+                                    `Tools available:\n` +
+                                    `  • query_document(documentId, query, topK?) — TF-IDF top-K relevance search (use for "find X", "highest/lowest Y", "rows where Z", any targeted lookup)\n` +
+                                    `  • read_document_chunk(documentId, chunkIndex, count?) — sequential read; the prior result returned a nextChunkIndex you can pass to continue\n\n` +
+                                    `Rules:\n` +
+                                    `1. Use the primed result. If it already answers the user's question, answer now and cite line ranges (e.g. "lines 1234–1287").\n` +
+                                    `2. If you need more — to scan further chunks, look for specific terms, or cross-check — emit additional tool_calls. Do NOT narrate "let me call X"; just emit the tool_call.\n` +
+                                    `3. NEVER fabricate document content. NEVER claim to have read chunks the tools did not return. If a fact isn't in a tool result you've actually received, call another tool to fetch it or say so.\n` +
+                                    `4. Cite line ranges from tool results in your final answer.]\n\n`;
 
                                 const rewritten = handleNotice + queryPart;
                                 if (isArrayFormat && textPartIdx !== -1) {
@@ -12850,6 +12857,121 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
+        // Agentic auto-prime: when the agentic flow activated, auto-invoke
+        // read_document_chunk(0, 5) and inject the result as a synthetic
+        // assistant tool_call + tool message pair. This puts the model in
+        // tool-result-aware mode from token zero — instead of opening with
+        // prose like "let me call read_document_chunk", it opens by
+        // continuing from the tool result we already provided. Concretely
+        // fixes the failure mode where smaller / less tool-trained models
+        // narrate tool usage without ever emitting a tool_calls delta.
+        //
+        // Side effects: increases initial input by ~12K chars (the primed
+        // chunk content) but the rewritten user message is tiny so total
+        // headroom remains comfortable. The injected assistant message
+        // does NOT have content (only tool_calls), matching the OpenAI
+        // protocol shape the model itself produces on a tool round.
+        let agenticPrimeInfo = null;
+        if (useAgentic && agenticInfo && agenticInfo.documentId) {
+            try {
+                const documentIndex = require('./services/documentIndex');
+                const primeCount = Math.min(5, agenticInfo.totalChunks || 1);
+                const primed = await documentIndex.readChunk(
+                    req.userId || userId,
+                    agenticInfo.documentId,
+                    0,
+                    { count: primeCount }
+                );
+                if (primed && Array.isArray(primed.chunks) && primed.chunks.length > 0) {
+                    const primeCallId = `call_agentic_prime_${Date.now()}`;
+                    const primeArgs = JSON.stringify({
+                        documentId: agenticInfo.documentId,
+                        chunkIndex: 0,
+                        count: primeCount,
+                    });
+                    const primeAssistantMsg = {
+                        role: 'assistant',
+                        content: '',
+                        tool_calls: [{
+                            id: primeCallId,
+                            type: 'function',
+                            function: {
+                                name: 'read_document_chunk',
+                                arguments: primeArgs,
+                            },
+                        }],
+                    };
+                    const primeToolMsg = {
+                        role: 'tool',
+                        tool_call_id: primeCallId,
+                        name: 'read_document_chunk',
+                        content: JSON.stringify(primed),
+                    };
+                    // Insert after the (rewritten) last user message. Find
+                    // it again here — the for-loop above and the safety-net
+                    // both leave the rewritten user message at the same
+                    // index, but it's cheaper to re-locate than to plumb.
+                    const lastUserIdx = chatMessages.map(m => m.role).lastIndexOf('user');
+                    if (lastUserIdx >= 0) {
+                        chatMessages.splice(lastUserIdx + 1, 0, primeAssistantMsg, primeToolMsg);
+                        agenticPrimeInfo = {
+                            callId: primeCallId,
+                            chunksRead: primed.chunks.length,
+                            nextChunkIndex: primed.nextChunkIndex,
+                        };
+                        // Surface the prime as real tool_executing + tool_result
+                        // SSE events so the chat UI renders a chip identical to
+                        // a model-issued call. Held in pendingPrimedToolEvents
+                        // and flushed once SSE headers are written below.
+                        const primePreview = JSON.stringify({
+                            documentId: primed.documentId,
+                            totalChunks: primed.totalChunks,
+                            nextChunkIndex: primed.nextChunkIndex,
+                            chunks: (primed.chunks || []).map(c => ({
+                                chunkIndex: c.chunkIndex,
+                                lineRange: c.lineRange,
+                                textLength: c.text.length,
+                            })),
+                        }).slice(0, 4000);
+                        pendingPrimedToolEvents = [
+                            {
+                                type: 'tool_executing',
+                                tool_call_id: primeCallId,
+                                name: 'read_document_chunk',
+                                arguments: primeArgs,
+                                source: 'agentic_auto_prime',
+                            },
+                            {
+                                type: 'tool_result',
+                                tool_call_id: primeCallId,
+                                name: 'read_document_chunk',
+                                preview: primePreview,
+                                result: {
+                                    documentId: primed.documentId,
+                                    totalChunks: primed.totalChunks,
+                                    nextChunkIndex: primed.nextChunkIndex,
+                                    chunks: (primed.chunks || []).map(c => ({
+                                        chunkIndex: c.chunkIndex,
+                                        lineRange: c.lineRange,
+                                    })),
+                                },
+                            },
+                        ];
+                        // Refresh totalInputTokens so any downstream check
+                        // (e.g. context-shift safety net) accounts for the
+                        // primed payload.
+                        totalInputTokens = 0;
+                        for (const msg of chatMessages) {
+                            totalInputTokens += estimateTokens(msg.content);
+                        }
+                        console.log(`[Chat Stream] Agentic auto-prime: injected read_document_chunk(0, ${primeCount}) tool result (${primed.chunks.length} chunks, nextChunkIndex=${primed.nextChunkIndex}). New totalInputTokens=${totalInputTokens}`);
+                    }
+                }
+            } catch (primeErr) {
+                console.warn(`[Chat Stream] Agentic auto-prime failed (continuing without): ${primeErr.message}`);
+            }
+        }
+
         // Set up SSE headers
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
@@ -12869,6 +12991,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (pendingAgenticNotice) {
             try { res.write(`data: ${JSON.stringify(pendingAgenticNotice)}\n\n`); } catch {}
             pendingAgenticNotice = null;
+        }
+        if (pendingPrimedToolEvents) {
+            for (const evt of pendingPrimedToolEvents) {
+                try { res.write(`data: ${JSON.stringify(evt)}\n\n`); } catch {}
+            }
+            pendingPrimedToolEvents = null;
         }
         if (req.socket) req.socket.setTimeout(0);
 
