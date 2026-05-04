@@ -4809,11 +4809,21 @@ app.get('/api/huggingface/repo-size/:owner/:repo', requireAuth, async (req, res)
     const repoId = `${owner}/${repo}`;
     const WEIGHT_EXT = /\.(safetensors|bin|gguf|pt|pth|ot|h5|msgpack|tflite)$/i;
     try {
-        const response = await axios.get(
-            `https://huggingface.co/api/models/${repoId}/tree/main`,
-            { params: { recursive: true, expand: false }, timeout: 15000 }
-        );
-        const entries = Array.isArray(response.data) ? response.data : [];
+        // Tree (file sizes) and config.json (model shape) in parallel.
+        // config.json drives the KV-cache-per-token estimate so the UI can
+        // tell the user roughly how much VRAM the model will actually need
+        // at runtime, not just how much it weighs on disk.
+        const [treeRes, configRes] = await Promise.allSettled([
+            axios.get(`https://huggingface.co/api/models/${repoId}/tree/main`,
+                { params: { recursive: true, expand: false }, timeout: 15000 }),
+            axios.get(`https://huggingface.co/${repoId}/raw/main/config.json`,
+                { timeout: 10000 }),
+        ]);
+        if (treeRes.status === 'rejected') {
+            const status = treeRes.reason?.response?.status === 404 ? 404 : 500;
+            return res.status(status).json({ error: treeRes.reason?.message || 'Failed to fetch repo tree' });
+        }
+        const entries = Array.isArray(treeRes.value.data) ? treeRes.value.data : [];
         let totalBytes = 0;
         let weightBytes = 0;
         let fileCount = 0;
@@ -4824,7 +4834,35 @@ app.get('/api/huggingface/repo-size/:owner/:repo', requireAuth, async (req, res)
             fileCount += 1;
             if (WEIGHT_EXT.test(e.path || '')) weightBytes += sz;
         }
-        res.json({ repoId, totalBytes, weightBytes, fileCount });
+
+        // KV cache per token = layers × kv_heads × head_dim × 2 (K+V) × bytes/elem.
+        // GQA models have num_key_value_heads < num_attention_heads; standard
+        // MHA has them equal. head_dim = hidden_size / num_attention_heads
+        // unless explicitly set (some configs do).
+        let kvBytesPerToken = null;
+        let modelShape = null;
+        if (configRes.status === 'fulfilled' && configRes.value?.data) {
+            const cfg = configRes.value.data;
+            const numLayers = cfg.num_hidden_layers || cfg.n_layer || cfg.num_layers || 0;
+            const numAttnHeads = cfg.num_attention_heads || cfg.n_head || 0;
+            const numKVHeads = cfg.num_key_value_heads || numAttnHeads || 0;
+            const hiddenSize = cfg.hidden_size || cfg.n_embd || 0;
+            const headDim = cfg.head_dim || (numAttnHeads > 0 ? Math.floor(hiddenSize / numAttnHeads) : 0);
+            const dtype = String(cfg.torch_dtype || 'float16').toLowerCase();
+            const elemBytes = (dtype.includes('32') ? 4 :
+                              (dtype.includes('fp8') || dtype.includes('float8') || dtype.includes('int8')) ? 1 :
+                              2);
+            if (numLayers > 0 && numKVHeads > 0 && headDim > 0) {
+                kvBytesPerToken = numLayers * numKVHeads * headDim * 2 * elemBytes;
+                modelShape = {
+                    numLayers, numAttnHeads, numKVHeads, hiddenSize, headDim,
+                    dtype, elemBytes,
+                    maxPositionEmbeddings: cfg.max_position_embeddings || null,
+                };
+            }
+        }
+
+        res.json({ repoId, totalBytes, weightBytes, fileCount, kvBytesPerToken, modelShape });
     } catch (error) {
         const status = error.response?.status === 404 ? 404 : 500;
         res.status(status).json({ error: error.message || 'Failed to fetch repo tree' });

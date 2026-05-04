@@ -8217,27 +8217,62 @@ console.log(await res.json());`
                                                                                                 />
                                                                                             </Tooltip>
                                                                                         )}
-                                                                                        {showSize && sizeEntry && typeof sizeEntry.totalBytes === 'number' && (
-                                                                                            <Tooltip
-                                                                                                title={sizeEntry.weightBytes
-                                                                                                    ? `Repo total: ${formatBytes(sizeEntry.totalBytes)} · weights: ${formatBytes(sizeEntry.weightBytes)}`
-                                                                                                    : `Repo total: ${formatBytes(sizeEntry.totalBytes)}`}
-                                                                                                arrow
-                                                                                            >
-                                                                                                <Chip
-                                                                                                    label={formatBytes(sizeEntry.totalBytes)}
-                                                                                                    size="small"
-                                                                                                    sx={{
-                                                                                                        height: 18,
-                                                                                                        fontSize: '0.62rem',
-                                                                                                        bgcolor: 'rgba(255,255,255,0.08)',
-                                                                                                        color: 'text.primary',
-                                                                                                        fontWeight: 700,
-                                                                                                        letterSpacing: 0.3,
-                                                                                                    }}
-                                                                                                />
-                                                                                            </Tooltip>
-                                                                                        )}
+                                                                                        {showSize && sizeEntry && typeof sizeEntry.totalBytes === 'number' && (() => {
+                                                                                            // Estimate runtime VRAM at 8K context: weights + KV cache.
+                                                                                            // The +2 GB activation overhead reflects vLLM's CUDA workspace,
+                                                                                            // NCCL buffers, and forward-pass scratch — empirical, not exact,
+                                                                                            // but better than ignoring it. Without this people see "9 GB
+                                                                                            // weights" and assume it'll fit on a 16 GB card; in practice
+                                                                                            // KV cache often doubles the footprint at non-trivial context.
+                                                                                            const ACTIVATION_OVERHEAD = 2 * 1024 * 1024 * 1024;
+                                                                                            const weights = sizeEntry.weightBytes || sizeEntry.totalBytes;
+                                                                                            const kvPerTok = sizeEntry.kvBytesPerToken;
+                                                                                            const kvAt8k = kvPerTok ? kvPerTok * 8192 : null;
+                                                                                            const kvAt32k = kvPerTok ? kvPerTok * 32768 : null;
+                                                                                            const runtimeAt8k = kvAt8k !== null ? weights + kvAt8k + ACTIVATION_OVERHEAD : null;
+                                                                                            const tipLines = [`Repo total: ${formatBytes(sizeEntry.totalBytes)}`];
+                                                                                            if (sizeEntry.weightBytes) tipLines.push(`Weights: ${formatBytes(sizeEntry.weightBytes)}`);
+                                                                                            if (kvAt8k !== null) tipLines.push(`KV cache @ 8K ctx: ${formatBytes(kvAt8k)}`);
+                                                                                            if (kvAt32k !== null) tipLines.push(`KV cache @ 32K ctx: ${formatBytes(kvAt32k)}`);
+                                                                                            if (runtimeAt8k !== null) tipLines.push(`Estimated VRAM @ 8K: ~${formatBytes(runtimeAt8k)} (weights + KV + ~2 GB activations)`);
+                                                                                            return (
+                                                                                                <>
+                                                                                                    <Tooltip title={tipLines.join(' · ')} arrow>
+                                                                                                        <Chip
+                                                                                                            label={formatBytes(sizeEntry.totalBytes)}
+                                                                                                            size="small"
+                                                                                                            sx={{
+                                                                                                                height: 18,
+                                                                                                                fontSize: '0.62rem',
+                                                                                                                bgcolor: 'rgba(255,255,255,0.08)',
+                                                                                                                color: 'text.primary',
+                                                                                                                fontWeight: 700,
+                                                                                                                letterSpacing: 0.3,
+                                                                                                            }}
+                                                                                                        />
+                                                                                                    </Tooltip>
+                                                                                                    {runtimeAt8k !== null && (
+                                                                                                        <Tooltip
+                                                                                                            title={`Estimated runtime VRAM @ 8K context: ~${formatBytes(runtimeAt8k)}. Scales linearly with max_model_len — at 32K you'd add ${formatBytes(kvAt32k - kvAt8k)} more KV cache.`}
+                                                                                                            arrow
+                                                                                                        >
+                                                                                                            <Chip
+                                                                                                                label={`~${formatBytes(runtimeAt8k)} VRAM`}
+                                                                                                                size="small"
+                                                                                                                sx={{
+                                                                                                                    height: 18,
+                                                                                                                    fontSize: '0.62rem',
+                                                                                                                    bgcolor: 'rgba(244,114,182,0.12)',
+                                                                                                                    color: '#f472b6',
+                                                                                                                    fontWeight: 700,
+                                                                                                                    letterSpacing: 0.3,
+                                                                                                                }}
+                                                                                                            />
+                                                                                                        </Tooltip>
+                                                                                                    )}
+                                                                                                </>
+                                                                                            );
+                                                                                        })()}
                                                                                         {showSize && sizeEntry && sizeEntry.loading && (
                                                                                             <Chip
                                                                                                 label="…"
