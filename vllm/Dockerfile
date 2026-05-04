@@ -1,8 +1,14 @@
-# vLLM 0.19.x ships PyTorch 2.10 + cu128. The CUDA runtime base image MUST
-# match torch's CUDA version or the AWQ-Marlin / FlashInfer / NVFP4 kernel
-# PTX fails to load with cudaErrorUnsupportedPtxVersion. cu128 also covers
+# vLLM 0.19.x ships PyTorch 2.10 + cu128. The CUDA base image MUST match
+# torch's CUDA version or the AWQ-Marlin / FlashInfer / NVFP4 kernel PTX
+# fails to load with cudaErrorUnsupportedPtxVersion. cu128 also covers
 # Blackwell sm_120 natively (RTX 5060 Ti and friends).
-FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
+#
+# Use -devel (not -runtime): FlashInfer JIT-compiles FP4 / NVFP4 kernels
+# for sm_120a at first model load, which requires nvcc + the full CUDA
+# headers. With the runtime image, NVFP4 loads die with:
+#   /bin/sh: 1: /usr/local/cuda/bin/nvcc: not found
+# (FAILED: ... /root/.cache/flashinfer/.../fp4_gemm_cutlass_*.cuda.o)
+FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 
 # Build arguments for corporate proxy/SSL environments
 # Pass these at build time: docker build --build-arg HTTP_PROXY=http://proxy:port ...
