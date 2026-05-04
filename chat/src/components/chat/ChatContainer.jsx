@@ -1143,7 +1143,30 @@ export default function ChatContainer({
             role: 'user',
             content,
             ...(enrichedContent !== content && { apiContent: enrichedContent }),
-            attachments: attachedFiles?.map(a => ({ filename: a.filename, type: a.type })),
+            // Persist enough metadata for FilePreviewModal to re-open the
+            // attachment after the response lands. Stripping to just
+            // {filename, type} broke click-to-preview for every prior turn:
+            // isAttachmentPreviewable() needs at least one of content /
+            // dataUrl / attachmentId / sheets to enable the chip. PDFs and
+            // spreadsheets keep their bytes in the attachment store, so the
+            // attachmentId pointer is small; text/code/csv/email content is
+            // already echoed inside apiContent so persisting `content` here
+            // is redundant rather than incremental cost. Images persist
+            // their dataUrl since that's the only thing the preview can
+            // render from.
+            attachments: attachedFiles?.map(a => ({
+                filename: a.filename,
+                type: a.type,
+                ...(a.attachmentId ? { attachmentId: a.attachmentId } : {}),
+                ...(a.content ? { content: a.content } : {}),
+                ...(a.dataUrl ? { dataUrl: a.dataUrl } : {}),
+                ...(Array.isArray(a.sheets) ? { sheets: a.sheets } : {}),
+                ...(a.mimeType ? { mimeType: a.mimeType } : {}),
+                ...(a.charCount != null ? { charCount: a.charCount } : {}),
+                ...(a.pageCount != null ? { pageCount: a.pageCount } : {}),
+                ...(a.sheetCount != null ? { sheetCount: a.sheetCount } : {}),
+                ...(a.estimatedTokens != null ? { estimatedTokens: a.estimatedTokens } : {}),
+            })),
             timestamp: new Date().toISOString(),
         };
 
