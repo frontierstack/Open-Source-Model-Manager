@@ -26,6 +26,90 @@ const generate = require('@babel/generator').default;
 let jsonrepair = null;
 try { jsonrepair = require('jsonrepair').jsonrepair; } catch (_) { /* not installed */ }
 
+// ── Tool-call argument repair helpers ────────────────────────────────────────
+// Mirrors webapp/services/chatTools.js. Local LLMs frequently emit lightly-
+// malformed JSON for tool args (unescaped quotes inside content strings,
+// unquoted keys, trailing commas, smart quotes, mid-string truncation when
+// the response hits the output token cap). Three repair passes salvage those
+// without false positives on actually-valid JSON:
+//   1. jsonrepair       — unescaped quotes, unquoted keys, smart quotes,
+//                         trailing commas, simple mid-stream truncation.
+//   2. closeUnterminated — string-aware bracket-closer that fixes truncation
+//                         cases jsonrepair chokes on (it misinterprets
+//                         brackets *inside* string values as JSON arrays
+//                         and bails — common with code blobs in `content`).
+//   3. regexSalvageFields — regex out individual top-level "key": scalar
+//                         pairs as a last resort. Recovers strings, numbers,
+//                         booleans, null. Skips array / nested object values.
+
+function closeUnterminated(input) {
+    let inString = false;
+    let escape = false;
+    const stack = [];
+    for (let i = 0; i < input.length; i++) {
+        const c = input[i];
+        if (escape) { escape = false; continue; }
+        if (inString) {
+            if (c === '\\') { escape = true; continue; }
+            if (c === '"') { inString = false; continue; }
+            continue;
+        }
+        if (c === '"') { inString = true; continue; }
+        if (c === '{') stack.push('}');
+        else if (c === '[') stack.push(']');
+        else if (c === '}' || c === ']') {
+            if (stack.length && stack[stack.length - 1] === c) stack.pop();
+        }
+    }
+    let out = input;
+    if (inString) out += '"';
+    while (stack.length) out += stack.pop();
+    return out;
+}
+
+function regexSalvageFields(input) {
+    const out = {};
+    let m;
+    const stringPattern = /"([a-zA-Z_][\w-]{0,63})"\s*:\s*"((?:[^"\\]|\\.)*)"(?=\s*[,}\]]|\s*$)/g;
+    while ((m = stringPattern.exec(input)) !== null) {
+        const key = m[1];
+        if (key in out) continue;
+        try { out[key] = JSON.parse(`"${m[2]}"`); }
+        catch { out[key] = m[2]; }
+    }
+    const numPattern = /"([a-zA-Z_][\w-]{0,63})"\s*:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=\s*[,}\]]|\s*$)/g;
+    while ((m = numPattern.exec(input)) !== null) {
+        if (!(m[1] in out)) out[m[1]] = Number(m[2]);
+    }
+    const litPattern = /"([a-zA-Z_][\w-]{0,63})"\s*:\s*(true|false|null)(?=\s*[,}\]]|\s*$)/g;
+    while ((m = litPattern.exec(input)) !== null) {
+        if (!(m[1] in out)) out[m[1]] = m[2] === 'null' ? null : m[2] === 'true';
+    }
+    return out;
+}
+
+// Try strict JSON.parse, then jsonrepair, then closeUnterminated, then
+// regexSalvageFields. Returns { params, repairedVia, error }. `repairedVia`
+// is null when the strict parse succeeded (the common, fast path).
+function parseToolArgsWithRepair(rawArgs) {
+    if (!rawArgs || !rawArgs.trim()) return { params: {}, repairedVia: null, error: null };
+    try {
+        return { params: JSON.parse(rawArgs), repairedVia: null, error: null };
+    } catch (firstErr) {
+        if (jsonrepair) {
+            try { return { params: JSON.parse(jsonrepair(rawArgs)), repairedVia: 'jsonrepair', error: null }; }
+            catch (_) { /* fall through */ }
+        }
+        try { return { params: JSON.parse(closeUnterminated(rawArgs)), repairedVia: 'closeUnterminated', error: null }; }
+        catch (_) { /* fall through */ }
+        const salvaged = regexSalvageFields(rawArgs);
+        if (Object.keys(salvaged).length > 0) {
+            return { params: salvaged, repairedVia: 'regexSalvage', error: null };
+        }
+        return { params: {}, repairedVia: null, error: firstErr.message };
+    }
+}
+
 // Configuration
 const CONFIG_DIR = path.join(os.homedir(), '.koda');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -4405,6 +4489,16 @@ function detectFalseCompletionClaim(response, userMessage) {
 }
 
 // Skill categories for smart routing - ALL skills organized by function
+// Intent-routing buckets for buildToolsArray / buildSkillSystemPrompt.
+//
+// Intentionally absent — workspace-sandbox-only skills:
+//   transform_image, read_xlsx, query_sqlite, transcribe_audio, make_downloadable
+// These run inside the chat conversation's `/workspace` sandbox and resolve
+// paths against it. Koda passes paths from the user's local filesystem, which
+// the sandbox doesn't have mounted, so exposing them would surface tools that
+// fail in confusing ways (zero-byte reads, "file not found", etc.). If Koda
+// ever grows a workspace-upload flow, revisit and add a SANDBOX_WORKSPACE
+// category here.
 const SKILL_CATEGORIES = {
     FILE_OPS: ['create_file', 'read_file', 'update_file', 'delete_file', 'delete_directory', 'list_directory', 'move_file', 'copy_file', 'create_directory', 'append_to_file', 'tail_file', 'head_file', 'search_files', 'get_file_metadata', 'diff_files', 'search_replace_file'],
     ARCHIVE: ['unzip_file', 'zip_files', 'tar_extract', 'tar_create', 'extract_archive'],
@@ -10026,33 +10120,39 @@ async function handleChat(api, message) {
             for (const tc of nativeToolCalls) {
                 const name = tc.function && tc.function.name;
                 if (!name) continue;
-                let params = {};
                 const argsStr = (tc.function && tc.function.arguments) || '';
-                if (argsStr.trim()) {
-                    try {
-                        params = JSON.parse(argsStr);
-                    } catch (firstErr) {
-                        // Local LLMs intermittently emit malformed JSON for
-                        // tool args (unescaped quotes inside content strings,
-                        // unquoted keys, trailing commas, smart quotes, mid-
-                        // string truncation). Try a single jsonrepair pass
-                        // before recording the failure — repair only fires
-                        // when the strict parse already failed, so passthrough
-                        // on valid JSON is unchanged.
-                        let repaired = false;
-                        if (jsonrepair) {
-                            try {
-                                params = JSON.parse(jsonrepair(argsStr));
-                                console.warn(`[koda] Repaired malformed JSON args for ${name} (${firstErr.message})`);
-                                repaired = true;
-                            } catch (_) { /* fall through to failure path */ }
-                        }
-                        if (!repaired) {
-                            parseFailures.push({ id: tc.id, name, error: firstErr.message, raw: argsStr });
-                            continue;
-                        }
-                    }
+                const { params, repairedVia, error } = parseToolArgsWithRepair(argsStr);
+
+                if (error) {
+                    parseFailures.push({ id: tc.id, name, error, raw: argsStr, truncated: false });
+                    continue;
                 }
+
+                // Truncation guard. Strict JSON.parse only succeeds on
+                // complete JSON, so when we needed a repair pass AND the raw
+                // stream didn't close with `}`, the model hit its output
+                // token cap mid-arguments. Any value the repair produced is
+                // suspect — the offending field is almost always a long
+                // string (file content, code blob, base64) that got chopped,
+                // so running the tool with the salvaged args creates a
+                // "successful" zero-byte file or feeds the model a junk
+                // path. Refuse to dispatch and surface a clear retry hint.
+                if (repairedVia) {
+                    const trimmed = argsStr.trimEnd();
+                    if (trimmed.length > 30 && !trimmed.endsWith('}')) {
+                        console.warn(`[koda] ${name} args appear truncated (raw length ${argsStr.length}, repair via ${repairedVia}, no trailing brace) — refusing dispatch`);
+                        parseFailures.push({
+                            id: tc.id,
+                            name,
+                            error: `arguments truncated mid-stream (repair via ${repairedVia})`,
+                            raw: argsStr,
+                            truncated: true,
+                        });
+                        continue;
+                    }
+                    console.warn(`[koda] Repaired malformed JSON args for ${name} via ${repairedVia}`);
+                }
+
                 skillCalls.push({ skillName: name, params, _toolCallId: tc.id, fullMatch: '' });
             }
 
@@ -10071,10 +10171,10 @@ async function handleChat(api, message) {
             // hit its output token limit mid-JSON, leaving us with garbage.
             if (skillCalls.length === 0 && parseFailures.length > 0) {
                 const f = parseFailures[0];
-                addToHistory('system',
-                    `${f.name}: malformed tool arguments (${f.error}). ` +
-                    `The model likely hit its output token limit mid-call. ` +
-                    `Try a smaller request, or load the model with a larger context size in the webapp model manager.`);
+                const msg = f.truncated
+                    ? `${f.name}: tool call was truncated mid-stream — your previous response hit the output token limit before finishing the JSON arguments. The tool was NOT run. Retry with a smaller payload: split large content across multiple calls (e.g. create a stub via create_file, then append the rest in chunks via replace_lines), or move the long content to a follow-up call. Do not retry the same call with the same large content — it will truncate again.`
+                    : `${f.name}: malformed tool arguments (${f.error}). The model likely hit its output token limit mid-call. Try a smaller request, or load the model with a larger context size in the webapp model manager.`;
+                addToHistory('system', msg);
                 displayChatHistory();
                 break;
             }
