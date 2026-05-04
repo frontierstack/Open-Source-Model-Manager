@@ -3342,7 +3342,13 @@ function saveConfig(config) {
 // API client (quiet mode - no logging)
 class AgentAPI {
     constructor(baseUrl, apiKey, apiSecret) {
-        this.baseUrl = baseUrl;
+        // Normalize the base URL so endpoints like `/api/agents` always
+        // concatenate cleanly. A trailing slash from the /auth prompt makes
+        // requests hit `//api/agents` which the webapp's 404 handler answers
+        // with `{"error":"Invalid request"}` — opaque and easy to misread as
+        // a credential problem. Strip any trailing slashes once at the
+        // boundary so every downstream caller is safe.
+        this.baseUrl = (baseUrl || '').replace(/\/+$/, '');
         this.apiKey = apiKey;
         this.apiSecret = apiSecret;
         // Latest-instance reference so the status bar (and any other
@@ -8693,7 +8699,7 @@ async function handleAuth() {
         const apiSecret = await question('API Secret: ');
 
         const config = {
-            apiUrl: (apiUrl.trim() || 'https://localhost:3001'),
+            apiUrl: (apiUrl.trim() || 'https://localhost:3001').replace(/\/+$/, ''),
             apiKey: apiKey.trim(),
             apiSecret: apiSecret.trim()
         };
@@ -11053,7 +11059,7 @@ async function startShell() {
         // Handle auth flow
         if (authState) {
             if (authState === 'url') {
-                authData.apiUrl = input || 'https://localhost:3001';
+                authData.apiUrl = (input || 'https://localhost:3001').replace(/\/+$/, '');
                 authState = 'key';
                 addToHistory('system', 'API Key:');
                 displayChatHistory();
