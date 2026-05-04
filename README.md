@@ -32,7 +32,6 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **OpenAI-Compatible API** — Drop-in replacement for OpenAI endpoints
 - **Vision Models** — Send images to vision-capable models (LLaVA, Qwen-VL) with OCR fallback for non-vision models
 - **Thinking Models** — Parse and display reasoning from models like DeepSeek R1 and Qwen QwQ
-- **Image Generation** *(optional)* — Toggle on a GPU-backed SDXL-Turbo service from the Models tab; chat gets a `generate_image` skill that produces PNGs inline
 - **Audio Transcription** — Built-in `transcribe_audio` skill (faster-whisper, bundled `tiny.en` model, CPU-only, runs in the sandbox)
 - **Spreadsheets & SQL in chat** — `read_xlsx` (openpyxl) and `query_sqlite` skills let the model read XLSX files and run SELECTs (or DDL with `readonly=false`) against SQLite databases in the workspace
 - **Image Editing** — `transform_image` skill (Pillow) for resize, crop, thumbnail, rotate, format-convert, and grayscale operations
@@ -102,7 +101,9 @@ Your autonomous AI project assistant running as an interactive terminal user int
   Your AI project assistant
 ```
 
-- 74 default skills across 20 categories (file ops, git, web, email, OCR, PDF, system info, and more)
+- 120+ default skills across 20+ categories (file ops, git, web, email, OCR, PDF, system info, and more)
+- Native tool calling with multi-stage tool-arg repair (jsonrepair → string-aware bracket close → regex salvage) so local LLMs that emit lightly-malformed JSON still dispatch
+- Path safety net — `/home/user/`, `/Users/USER/`, `/workspace/` and similar training-data placeholder paths get rewritten onto the actual cwd before any FS write
 - Multi-agent collaboration for complex tasks
 - Autonomous skill execution with false-completion detection
 - AES-256 encrypted credentials
