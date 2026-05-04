@@ -234,6 +234,13 @@ function isValidModelName(modelName) {
 // Map structure: modelName -> { containerId, port, status, config, backend }
 const modelInstances = new Map();
 
+// Pending vLLM-HF loads — populated when createVllmHfInstance fires a container
+// and cleared when that container becomes healthy. Used by streamContainerLogs
+// to auto-retry once when vLLM rejects the KV cache size for the requested
+// max_model_len (the engine prints a usable ceiling that we feed back).
+// Map structure: repoId -> { repoId, format, config, retried: boolean }
+const pendingVllmLoads = new Map();
+
 // Content continuation queue for processing large files in chunks
 // Map structure: conversationId -> { content: string, processedChunks: number, totalChunks: number, chunkSize: number }
 const contentContinuationQueue = new Map();
@@ -3718,6 +3725,17 @@ async function createVllmHfInstance(repoId, format, config) {
         });
         startSystemMonitoring();
 
+        // Stash the request so streamContainerLogs can auto-retry once if
+        // vLLM rejects the configured max_model_len for KV-cache reasons.
+        // Preserve the prior `retried` flag if this IS the retry (so we
+        // don't loop forever if the suggested ceiling still doesn't fit).
+        const prior = pendingVllmLoads.get(repoId);
+        pendingVllmLoads.set(repoId, {
+            repoId, format,
+            config: { ...config },
+            retried: prior?.retried ?? false,
+        });
+
         broadcast({ type: 'status', modelName: repoId, status: 'starting', port });
         broadcast({ type: 'log', message: `[vllm-hf] starting ${repoId} on port ${port} (cache: modelserver_hf_cache)` });
 
@@ -3856,6 +3874,10 @@ async function streamContainerLogs(container, modelName) {
             timestamps: true
         });
 
+        // vLLM startup-time errors that have a clear remedy. Detected once
+        // per stream so we can show the user a single, actionable toast
+        // instead of letting the 80-line Python traceback scroll past.
+        let surfacedKvCeiling = false;
         logStream.on('data', (chunk) => {
             try {
                 // Docker multiplexes stdout/stderr with 8-byte header
@@ -3879,6 +3901,78 @@ async function streamContainerLogs(container, modelName) {
                             message: `[${modelName}] ${cleanLine}`,
                             level: isError ? 'error' : isSuccess ? 'success' : 'info'
                         });
+
+                        // KV-cache-too-small startup failure. vLLM tells us the
+                        // exact ceiling — extract it. If this is a vLLM-HF load
+                        // we tracked, auto-relaunch the container once with
+                        // max_model_len = ceiling - 128. Otherwise (or on the
+                        // second failure) surface a status event so the UI can
+                        // show the actionable error instead of the raw trace.
+                        if (!surfacedKvCeiling) {
+                            const kvMatch = cleanLine.match(/max seq len \((\d+)\).*?KV cache memory \(([\d.]+ ?GiB)\).*?estimated maximum model length is (\d+)/i);
+                            if (kvMatch) {
+                                surfacedKvCeiling = true;
+                                const requested = parseInt(kvMatch[1], 10);
+                                const available = kvMatch[2];
+                                const ceiling = parseInt(kvMatch[3], 10);
+                                const pending = pendingVllmLoads.get(modelName);
+                                const canAutoRetry = pending && !pending.retried;
+
+                                if (canAutoRetry) {
+                                    pending.retried = true;
+                                    const newMaxLen = Math.max(2048, ceiling - 128);
+                                    broadcast({
+                                        type: 'log',
+                                        level: 'info',
+                                        message: `[${modelName}] Auto-retrying load: max_model_len ${requested} → ${newMaxLen} (KV ceiling ${ceiling}, available ${available}).`
+                                    });
+                                    // Async retry — fire and forget; the new
+                                    // container's stream will broadcast its
+                                    // own status events.
+                                    setImmediate(async () => {
+                                        try {
+                                            const inst = modelInstances.get(modelName);
+                                            if (inst) {
+                                                try {
+                                                    const c = docker.getContainer(inst.containerId);
+                                                    await c.remove({ force: true, v: true }).catch(() => {});
+                                                } catch (_) { /* already gone */ }
+                                                modelInstances.delete(modelName);
+                                            }
+                                            const newConfig = {
+                                                ...pending.config,
+                                                maxModelLen: newMaxLen,
+                                                contextSize: newMaxLen,
+                                            };
+                                            await createVllmHfInstance(pending.repoId, pending.format, newConfig);
+                                        } catch (err) {
+                                            broadcast({
+                                                type: 'status',
+                                                modelName,
+                                                status: 'load_failed',
+                                                error: `Auto-retry failed: ${err.message}. Try kv_cache_dtype=fp8 or a smaller max_model_len.`,
+                                                suggestedMaxModelLen: ceiling
+                                            });
+                                            pendingVllmLoads.delete(modelName);
+                                        }
+                                    });
+                                } else {
+                                    broadcast({
+                                        type: 'status',
+                                        modelName,
+                                        status: 'load_failed',
+                                        error: `Context too large for available GPU memory. Requested max_model_len=${requested}, only ${available} KV cache free → ceiling ~${ceiling} tokens. ${pending?.retried ? 'Auto-retry already attempted; ' : ''}Reload with max_model_len ≤ ${ceiling}, kv_cache_dtype=fp8, or higher gpu_memory_utilization.`,
+                                        suggestedMaxModelLen: ceiling
+                                    });
+                                    broadcast({
+                                        type: 'log',
+                                        level: 'error',
+                                        message: `[${modelName}] Load aborted — max_model_len ${requested} > KV cache ceiling ${ceiling}. Suggested: max_model_len=${ceiling}, or kv_cache_dtype=fp8.`
+                                    });
+                                    pendingVllmLoads.delete(modelName);
+                                }
+                            }
+                        }
                     }
                 }
             } catch (error) {
@@ -3967,6 +4061,10 @@ async function monitorContainerHealth(container, modelName, port) {
                     // Server is healthy!
                     instance.status = 'running';
                     modelInstances.set(modelName, instance);
+                    // Successful start clears any pending auto-retry record
+                    // for this load, so a future unrelated error doesn't get
+                    // mis-attributed to this load attempt.
+                    pendingVllmLoads.delete(modelName);
 
                     // Broadcast structured status update for frontend
                     broadcast({
@@ -13285,6 +13383,36 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // must keep being generated in the background. Every
             // res.write inside the loop already self-guards, so writes
             // to a dead socket are safe.
+            // Drop the oldest tool-call round (assistant w/ tool_calls + its
+            // tool result messages) until inputs fit `availableContextForInput`.
+            // The chunking gate above only sees the user's original turn — once
+            // a few web_search / fetch_url rounds have appended their results,
+            // input can grow past contextSize even though each individual
+            // tool message is capped (TOOL_RESULT_CHAR_CAP ≈ 12 KB). Without
+            // this trim, the next streamOneRequest gets max_tokens clamped to
+            // 64 (server.js floor) and vLLM rejects the whole request with
+            // "exceeds maximum context length". Always preserves: system,
+            // original user message, and the most recent tool-call round.
+            const trimToolHistoryToFit = (messages, budget) => {
+                const total = (msgs) => msgs.reduce((s, m) => s + estimateTokens(m.content), 0);
+                let dropped = 0;
+                while (total(messages) > budget) {
+                    const idxs = [];
+                    for (let i = 0; i < messages.length; i++) {
+                        const m = messages[i];
+                        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+                            idxs.push(i);
+                        }
+                    }
+                    if (idxs.length <= 1) break; // keep at least the most recent round
+                    const dropStart = idxs[0];
+                    const dropEnd = idxs[1] - 1;
+                    messages = [...messages.slice(0, dropStart), ...messages.slice(dropEnd + 1)];
+                    dropped++;
+                }
+                return { messages, dropped };
+            };
+
             while (toolCallRound <= chatTools.MAX_TOOL_ITERATIONS) {
                 // Reset per-round state. fullResponse is cumulative for the
                 // client stream; roundStart marks where THIS turn's text began
@@ -13292,6 +13420,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 // message when re-prompting after tool execution.
                 accumulatedToolCalls = [];
                 const roundStart = fullResponse.length;
+
+                if (toolCallRound > 0) {
+                    const trimResult = trimToolHistoryToFit(currentMessages, availableContextForInput);
+                    if (trimResult.dropped > 0) {
+                        currentMessages = trimResult.messages;
+                        console.log(`[Chat Stream] Trimmed ${trimResult.dropped} oldest tool-call round(s) to fit context (round ${toolCallRound + 1})`);
+                        broadcast({
+                            type: 'log',
+                            level: 'info',
+                            message: `Dropped ${trimResult.dropped} older tool result round(s) to fit context window`
+                        }, userId);
+                    }
+                }
 
                 // Recompute the per-round max_tokens budget from the *current*
                 // message list. initialMaxTokens was sized for the first

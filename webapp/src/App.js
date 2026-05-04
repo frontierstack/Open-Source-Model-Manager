@@ -748,10 +748,22 @@ const App = () => {
                             timestamp: dockerTime ? dockerTime.getTime() : Date.now()
                         });
                     } else if (data.type === 'status') {
-                        const severity = data.level === 'error' ? 'error' :
-                                         data.level === 'success' ? 'success' :
-                                         data.message.toLowerCase().includes('error') ? 'error' : 'success';
-                        showSnackbar(data.message, severity);
+                        // load_failed carries `error` + remediation; surface it
+                        // prominently and prefill the HF load dialog with the
+                        // KV-cache-suggested max_model_len so retrying is one
+                        // click away.
+                        if (data.status === 'load_failed' && data.error) {
+                            showSnackbar(data.error, 'error');
+                            if (typeof data.suggestedMaxModelLen === 'number') {
+                                setHfLoadConfig(c => ({ ...c, maxModelLen: data.suggestedMaxModelLen }));
+                            }
+                        } else {
+                            const msg = data.message || data.error || 'Status update';
+                            const severity = data.level === 'error' ? 'error' :
+                                             data.level === 'success' ? 'success' :
+                                             msg.toLowerCase().includes('error') ? 'error' : 'success';
+                            showSnackbar(msg, severity);
+                        }
                         fetchModels();
                         fetchInstances();
                         setLoading(false);
