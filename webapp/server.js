@@ -12464,14 +12464,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 });
 
                                 const handleNotice =
-                                    `[A large document (${indexed.totalChars.toLocaleString()} chars, ${indexed.totalChunks} chunks) was indexed for retrieval.\n` +
-                                    `documentId="${indexed.id}"\n\n` +
-                                    `You CANNOT see the document body in your context. To answer the question below, walk the document with these tools:\n` +
-                                    `  • query_document(documentId="${indexed.id}", query="...") — top-K relevant chunks (use first for targeted questions)\n` +
-                                    `  • read_document_chunk(documentId="${indexed.id}", chunkIndex=N, count=1..5) — sequential read\n\n` +
-                                    `Strategy: for "find/extract/compare X" questions, call query_document with each aspect as a separate query; ` +
-                                    `for "summarize the whole document", call read_document_chunk linearly from chunkIndex=0 and accumulate facts. ` +
-                                    `Cite line ranges from the tool results when answering. Do NOT fabricate content the tools didn't return.]\n\n`;
+                                    `[SYSTEM: A large document was indexed for retrieval. You CANNOT see the document body — it is NOT in your context.\n` +
+                                    `documentId="${indexed.id}"  •  chunks=${indexed.totalChunks}  •  chars=${indexed.totalChars.toLocaleString()}\n\n` +
+                                    `MANDATORY PROTOCOL — failure to follow will produce a wrong answer:\n` +
+                                    `1. Your VERY NEXT action MUST be a tool_calls emission. Do NOT write prose first. Do NOT narrate the plan. Emit a tool call.\n` +
+                                    `2. For targeted questions ("find X", "what is the highest Y", "count rows where Z"), call query_document with documentId="${indexed.id}" and a focused query.\n` +
+                                    `3. For "summarize the whole document" or "list everything", call read_document_chunk with documentId="${indexed.id}", chunkIndex=0, count=5, then iterate by passing the returned nextChunkIndex.\n` +
+                                    `4. After the tool result returns, you may call more tools or write the final answer. Cite line ranges (e.g. "lines 1234–1287") from tool results.\n` +
+                                    `5. NEVER fabricate document content. NEVER say "let me call X" without immediately emitting the tool_call. NEVER claim to have read content the tools did not return.\n` +
+                                    `If you write prose before any tool_call, the user will see a wrong answer.]\n\n`;
 
                                 const rewritten = handleNotice + queryPart;
                                 if (isArrayFormat && textPartIdx !== -1) {
@@ -12646,23 +12647,116 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // If still over limit after processing and not using map-reduce/agentic
             if (!useMapReduce && !useAgentic && totalInputTokens > availableContextForInput) {
                 // Safety fallback: if chunking should have triggered but didn't (e.g. condensation
-                // thought it fit but recalculation disagrees), fall back to map-reduce for the
-                // last user message rather than returning a hard 400 error
-                const lastUserMsg = [...chatMessages].reverse().find(m => m.role === 'user');
+                // thought it fit but recalculation disagrees, OR availableForContent went negative
+                // because the exact tokenizer reports denser tokenization than the char-based
+                // estimator predicted — common with dense CSV/numeric content), fall back to
+                // agentic indexing or map-reduce for the last user message rather than returning
+                // a hard 400 error.
+                const lastUserMsgIdx = chatMessages.map(m => m.role).lastIndexOf('user');
+                const lastUserMsg = lastUserMsgIdx >= 0 ? chatMessages[lastUserMsgIdx] : null;
+                const lastUserIsArray = Array.isArray(lastUserMsg?.content);
+                const lastUserTextPartIdx = lastUserIsArray
+                    ? lastUserMsg.content.findIndex(p => p.type === 'text')
+                    : -1;
                 const lastUserContent = typeof lastUserMsg?.content === 'string'
                     ? lastUserMsg.content
-                    : (Array.isArray(lastUserMsg?.content)
-                        ? (lastUserMsg.content.find(p => p.type === 'text')?.text || '')
+                    : (lastUserIsArray
+                        ? (lastUserTextPartIdx >= 0 ? (lastUserMsg.content[lastUserTextPartIdx].text || '') : '')
                         : '');
                 const lastUserTokens = estimateTokens(lastUserContent);
 
-                if (CHUNKING_CONFIG.enabled && lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
+                // Try agentic first (same priority as the inner gate). Only
+                // falls through to map-reduce if agentic is disabled, the
+                // strategy is explicitly map-reduce, or saveAndIndex throws.
+                const fallbackToAgentic = CHUNKING_CONFIG.enabled &&
+                    CHUNKING_CONFIG.enableAgentic &&
+                    lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
+                    (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'agentic') &&
+                    lastUserMsg;
+
+                let agenticFallbackOk = false;
+                if (fallbackToAgentic) {
+                    try {
+                        const lines = lastUserContent.split('\n');
+                        let queryPart = '';
+                        let contentPart = lastUserContent;
+                        for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
+                            const line = lines[j].trim();
+                            if (line.endsWith('?') || line.match(/^(please|can you|what|how|why|summarize|analyze|explain|describe|list|find|search)/i)) {
+                                queryPart = lines.slice(j).join('\n');
+                                contentPart = lines.slice(0, j).join('\n');
+                                break;
+                            }
+                        }
+                        if (!queryPart) queryPart = 'Please analyze and summarize this content using query_document and read_document_chunk.';
+
+                        const documentIndex = require('./services/documentIndex');
+                        const indexed = await documentIndex.saveAndIndex(req.userId || userId, {
+                            text: contentPart,
+                            filename: `large-input-${Date.now()}.txt`,
+                            mimeType: 'text/plain; charset=utf-8',
+                            conversationId: streamingConversationId || null,
+                        });
+
+                        const handleNotice =
+                            `[A large document (${indexed.totalChars.toLocaleString()} chars, ${indexed.totalChunks} chunks) was indexed for retrieval.\n` +
+                            `documentId="${indexed.id}"\n\n` +
+                            `You CANNOT see the document body in your context. To answer the question below, walk the document with these tools:\n` +
+                            `  • query_document(documentId="${indexed.id}", query="...") — top-K relevant chunks (use first for targeted questions)\n` +
+                            `  • read_document_chunk(documentId="${indexed.id}", chunkIndex=N, count=1..5) — sequential read\n\n` +
+                            `Strategy: for "find/extract/compare X" questions, call query_document with each aspect as a separate query; ` +
+                            `for "summarize the whole document", call read_document_chunk linearly from chunkIndex=0 and accumulate facts. ` +
+                            `Cite line ranges from the tool results when answering. Do NOT fabricate content the tools didn't return.]\n\n`;
+
+                        const rewritten = handleNotice + queryPart;
+                        if (lastUserIsArray && lastUserTextPartIdx >= 0) {
+                            chatMessages[lastUserMsgIdx].content[lastUserTextPartIdx].text = rewritten;
+                        } else {
+                            chatMessages[lastUserMsgIdx].content = rewritten;
+                        }
+
+                        useAgentic = true;
+                        agenticFallbackOk = true;
+                        agenticInfo = {
+                            documentId: indexed.id,
+                            totalChunks: indexed.totalChunks,
+                            totalChars: indexed.totalChars,
+                        };
+                        pendingAgenticNotice = {
+                            type: 'chunking_progress',
+                            phase: 'agentic_indexed',
+                            mode: 'agentic',
+                            documentId: indexed.id,
+                            totalChunks: indexed.totalChunks,
+                            totalChars: indexed.totalChars,
+                            message: `Indexed ${indexed.totalChars.toLocaleString()} chars into ${indexed.totalChunks} chunks. Model will query/read via tools.`,
+                        };
+                        broadcast({
+                            type: 'log',
+                            level: 'info',
+                            message: `Agentic chunking (fallback path): indexed ${indexed.totalChars.toLocaleString()} chars into ${indexed.totalChunks} chunks (documentId=${indexed.id})`
+                        });
+
+                        totalInputTokens = 0;
+                        for (const msg of chatMessages) {
+                            totalInputTokens += estimateTokens(msg.content);
+                        }
+                        console.log(`[Chat Stream] Agentic fallback: indexed ${indexed.totalChars} chars into ${indexed.totalChunks} chunks (documentId=${indexed.id}). New totalInputTokens=${totalInputTokens}`);
+                    } catch (agenticErr) {
+                        console.warn(`[Chat Stream] Agentic fallback failed (${agenticErr.message}) — trying map-reduce`);
+                        useAgentic = false;
+                        agenticInfo = null;
+                        pendingAgenticNotice = null;
+                    }
+                }
+
+                if (!agenticFallbackOk && CHUNKING_CONFIG.enabled && lastUserTokens >= CHUNKING_CONFIG.minTokensForChunking &&
                     (effectiveChunkingStrategy === 'auto' || effectiveChunkingStrategy === 'map-reduce')) {
                     console.log(`[Chat Stream] Fallback to map-reduce: condensation did not reduce enough (totalInputTokens=${totalInputTokens}, available=${availableContextForInput})`);
                     useMapReduce = true;
                     mapReduceContent = lastUserContent;
                     mapReduceQuery = mapReduceQuery || 'Please analyze and summarize this content.';
-                } else if (contextShift) {
+                } else if (!agenticFallbackOk && contextShift && totalInputTokens > availableContextForInput) {
                     // CONTEXT SHIFTING: Remove oldest messages (except system) until input fits
                     // Preserve: system messages, last user message, and as many recent messages as possible
                     console.log(`[Chat Stream] Context shift enabled - trimming ${totalInputTokens} tokens to fit ${availableContextForInput}`);
@@ -12746,7 +12840,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     totalInputTokens = systemTokens + conversationTokens;
 
                     console.log(`[Chat Stream] Context shift removed ${removedCount} old messages. New total: ${totalInputTokens} tokens`);
-                } else {
+                } else if (!agenticFallbackOk && !useMapReduce) {
                     clearStreamingJob();
                     return res.status(400).json({
                         success: false,
