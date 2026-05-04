@@ -4698,6 +4698,41 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
     }
 });
 
+// Sum total bytes for a HF repo via its tree listing. Used by the search UI
+// to show download size for non-GGUF formats, where there's no per-file picker
+// and the user otherwise wouldn't see how big the model is until it starts
+// pulling. The tree endpoint gives `size` per file (LFS-resolved), so summing
+// is a single request per repo.
+app.get('/api/huggingface/repo-size/:owner/:repo', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, 'models')) {
+        return res.status(403).json({ error: 'Models permission required' });
+    }
+    const { owner, repo } = req.params;
+    const repoId = `${owner}/${repo}`;
+    const WEIGHT_EXT = /\.(safetensors|bin|gguf|pt|pth|ot|h5|msgpack|tflite)$/i;
+    try {
+        const response = await axios.get(
+            `https://huggingface.co/api/models/${repoId}/tree/main`,
+            { params: { recursive: true, expand: false }, timeout: 15000 }
+        );
+        const entries = Array.isArray(response.data) ? response.data : [];
+        let totalBytes = 0;
+        let weightBytes = 0;
+        let fileCount = 0;
+        for (const e of entries) {
+            if (e.type !== 'file') continue;
+            const sz = Number(e.size) || 0;
+            totalBytes += sz;
+            fileCount += 1;
+            if (WEIGHT_EXT.test(e.path || '')) weightBytes += sz;
+        }
+        res.json({ repoId, totalBytes, weightBytes, fileCount });
+    } catch (error) {
+        const status = error.response?.status === 404 ? 404 : 500;
+        res.status(status).json({ error: error.message || 'Failed to fetch repo tree' });
+    }
+});
+
 // Get GGUF files for specific repo
 app.get('/api/huggingface/files/:owner/:repo', requireAuth, async (req, res) => {
     // Check permission

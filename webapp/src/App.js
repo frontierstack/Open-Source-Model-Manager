@@ -322,6 +322,12 @@ const App = () => {
     // Core state
     const [models, setModels] = useState([]);
     const [instances, setInstances] = useState([]);
+    // Crashed/exited containers stay in modelInstances (server-side) for diagnostics,
+    // but they shouldn't render as "Running" in the UI — filter them out here.
+    const liveInstances = React.useMemo(
+        () => instances.filter(i => i.status !== 'stopped' && i.status !== 'oom_killed'),
+        [instances]
+    );
     const [logs, setLogs] = useState(() => {
         // Load logs from localStorage on mount
         try {
@@ -374,6 +380,10 @@ const App = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [searching, setSearching] = useState(false);
+    // repoId -> { totalBytes, weightBytes, loading?, error? }. Populated lazily
+    // after a search returns by hydrateRepoSizes() — non-GGUF results have no
+    // file picker, so without this the user wouldn't see download size.
+    const [repoSizes, setRepoSizes] = useState({});
     const [selectedModelFiles, setSelectedModelFiles] = useState([]);
     const [ggufRepo, setGgufRepo] = useState('');
     const [ggufFile, setGgufFile] = useState('');
@@ -6902,11 +6912,47 @@ console.log(await res.json());`
             .then(data => {
                 setSearchResults(data);
                 setSearching(false);
+                setRepoSizes({});
+                // Non-GGUF formats have no per-file picker — hydrate repo
+                // size in the background so the user can see how big the
+                // download will be before clicking Load.
+                const targets = (data || []).filter(m => m.format && m.format !== 'gguf');
+                if (targets.length > 0) hydrateRepoSizes(targets.map(m => m.id));
             })
             .catch(error => {
                 showSnackbar(`Search failed: ${error.message}`, 'error');
                 setSearching(false);
             });
+    };
+
+    // Fetch repo size for each id with a small concurrency cap so we don't
+    // open 100 sockets to huggingface.co when a search returns 100 results.
+    const hydrateRepoSizes = async (repoIds) => {
+        const CONCURRENCY = 6;
+        const queue = [...repoIds];
+        setRepoSizes(prev => {
+            const next = { ...prev };
+            for (const id of repoIds) if (!next[id]) next[id] = { loading: true };
+            return next;
+        });
+        const worker = async () => {
+            while (queue.length > 0) {
+                const id = queue.shift();
+                if (!id) return;
+                try {
+                    const res = await fetch(`/api/huggingface/repo-size/${id}`);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const data = await res.json();
+                    setRepoSizes(prev => ({
+                        ...prev,
+                        [id]: { totalBytes: data.totalBytes, weightBytes: data.weightBytes }
+                    }));
+                } catch (err) {
+                    setRepoSizes(prev => ({ ...prev, [id]: { error: err.message } }));
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: CONCURRENCY }, worker));
     };
 
     const handleSelectModel = (modelId, modelFormat) => {
@@ -7135,9 +7181,12 @@ console.log(await res.json());`
 
     const handleStopInstance = (modelName, backend = 'llamacpp') => {
         showSnackbar(`Stopping ${modelName}...`, 'info');
+        // HF-repo instance keys contain '/' (e.g. owner/name), which would split
+        // the URL into too many segments and fall through to a 404 — encode it.
+        const encodedName = encodeURIComponent(modelName);
         const endpoint = backend === 'vllm'
-            ? `/api/vllm/instances/${modelName}`
-            : `/api/llamacpp/instances/${modelName}`;
+            ? `/api/vllm/instances/${encodedName}`
+            : `/api/llamacpp/instances/${encodedName}`;
         fetch(endpoint, {
             method: 'DELETE',
         })
@@ -7698,10 +7747,10 @@ console.log(await res.json());`
                                     variant="outlined"
                                     sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', md: 'inline-flex' }, '& .MuiChip-icon': { ml: 0.5 } }}
                                 />
-                                {instances.length > 0 && (
+                                {liveInstances.length > 0 && (
                                     <Chip
                                         icon={<MemoryIcon sx={{ fontSize: 18 }} />}
-                                        label={`${instances.length} Active`}
+                                        label={`${liveInstances.length} Active`}
                                         size="medium"
                                         color="secondary"
                                         variant="outlined"
@@ -7841,10 +7890,10 @@ console.log(await res.json());`
                                     color={wsConnected ? 'success' : 'error'}
                                     variant="outlined"
                                 />
-                                {instances.length > 0 && (
+                                {liveInstances.length > 0 && (
                                     <Chip
                                         icon={<MemoryIcon sx={{ fontSize: 16 }} />}
-                                        label={`${instances.length} active`}
+                                        label={`${liveInstances.length} active`}
                                         size="small"
                                         color="secondary"
                                         variant="outlined"
@@ -8135,7 +8184,9 @@ console.log(await res.json());`
                                                                                 const fmt = FORMAT_STYLES[model.format];
                                                                                 const hasFormat = !!fmt;
                                                                                 const hasTypeTags = typeTags.length > 0;
-                                                                                if (!hasFormat && !hasTypeTags) return null;
+                                                                                const sizeEntry = repoSizes[model.id];
+                                                                                const showSize = model.format && model.format !== 'gguf';
+                                                                                if (!hasFormat && !hasTypeTags && !showSize) return null;
                                                                                 return (
                                                                                     <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
                                                                                         {hasFormat && (
@@ -8153,6 +8204,40 @@ console.log(await res.json());`
                                                                                                     }}
                                                                                                 />
                                                                                             </Tooltip>
+                                                                                        )}
+                                                                                        {showSize && sizeEntry && typeof sizeEntry.totalBytes === 'number' && (
+                                                                                            <Tooltip
+                                                                                                title={sizeEntry.weightBytes
+                                                                                                    ? `Repo total: ${formatBytes(sizeEntry.totalBytes)} · weights: ${formatBytes(sizeEntry.weightBytes)}`
+                                                                                                    : `Repo total: ${formatBytes(sizeEntry.totalBytes)}`}
+                                                                                                arrow
+                                                                                            >
+                                                                                                <Chip
+                                                                                                    label={formatBytes(sizeEntry.totalBytes)}
+                                                                                                    size="small"
+                                                                                                    sx={{
+                                                                                                        height: 18,
+                                                                                                        fontSize: '0.62rem',
+                                                                                                        bgcolor: 'rgba(255,255,255,0.08)',
+                                                                                                        color: 'text.primary',
+                                                                                                        fontWeight: 700,
+                                                                                                        letterSpacing: 0.3,
+                                                                                                    }}
+                                                                                                />
+                                                                                            </Tooltip>
+                                                                                        )}
+                                                                                        {showSize && sizeEntry && sizeEntry.loading && (
+                                                                                            <Chip
+                                                                                                label="…"
+                                                                                                size="small"
+                                                                                                sx={{
+                                                                                                    height: 18,
+                                                                                                    fontSize: '0.62rem',
+                                                                                                    bgcolor: 'rgba(255,255,255,0.04)',
+                                                                                                    color: 'text.secondary',
+                                                                                                    letterSpacing: 0.3,
+                                                                                                }}
+                                                                                            />
                                                                                         )}
                                                                                         {typeTags.map((tag, idx) => (
                                                                                             <Chip
@@ -8538,17 +8623,17 @@ console.log(await res.json());`
                         {visibleTabOrder[activeTab] === 1 && (
                             <Grid container spacing={3}>
                                 {/* Running Instances */}
-                                {instances.length > 0 && (
+                                {liveInstances.length > 0 && (
                                     <Grid item xs={12}>
                                         <Card sx={{ borderColor: 'success.dark', borderWidth: 1 }}>
                                             <CardContent>
                                                 <SectionHeader
                                                     icon={<MemoryIcon />}
                                                     title="Running Instances"
-                                                    subtitle={`${instances.length} model${instances.length > 1 ? 's' : ''} currently loaded`}
+                                                    subtitle={`${liveInstances.length} model${liveInstances.length > 1 ? 's' : ''} currently loaded`}
                                                 />
                                                 <Grid container spacing={2} sx={{ mt: 1 }}>
-                                                    {instances.map(instance => (
+                                                    {liveInstances.map(instance => (
                                                         <Grid item xs={12} sm={6} md={4} key={instance.name}>
                                                             <Card variant="outlined" sx={{
                                                                 bgcolor: 'rgba(34, 197, 94, 0.05)',
