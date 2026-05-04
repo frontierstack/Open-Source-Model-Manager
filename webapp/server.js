@@ -1675,7 +1675,8 @@ async function syncModelInstances() {
         for (const result of inspectResults) {
             if (!result) continue;
 
-            const { containerInfo, backend, modelName, inspect } = result;
+            const { containerInfo, backend, inspect } = result;
+            let { modelName } = result;
 
             // Extract port from environment or use default
             let port = 8000;
@@ -1704,8 +1705,29 @@ async function syncModelInstances() {
                     gpuMemoryUtilization: parseFloat(getEnvValue('VLLM_GPU_MEMORY_UTILIZATION') || '0.9'),
                     tensorParallelSize: parseInt(getEnvValue('VLLM_TENSOR_PARALLEL_SIZE') || '1'),
                     maxNumSeqs: parseInt(getEnvValue('VLLM_MAX_NUM_SEQS') || '256'),
-                    kvCacheDtype: getEnvValue('VLLM_KV_CACHE_DTYPE') || 'auto'
+                    kvCacheDtype: getEnvValue('VLLM_KV_CACHE_DTYPE') || 'auto',
+                    enforceEager: getEnvValue('VLLM_ENFORCE_EAGER') === 'true',
+                    trustRemoteCode: getEnvValue('VLLM_TRUST_REMOTE_CODE') !== 'false',
+                    toolCallParser: getEnvValue('VLLM_TOOL_CALL_PARSER') || ''
                 };
+                // HF-repo instances: container is `vllm-hf-<owner>--<name>` and
+                // the modelInstances key needs to be the actual repo id (with /)
+                // so requests routed by `model` field match vLLM's served name.
+                if (modelName && modelName.startsWith('hf-')) {
+                    const servedName = getEnvValue('VLLM_SERVED_MODEL_NAME');
+                    const modelPath = getEnvValue('VLLM_MODEL_PATH');
+                    const reconstructed = servedName && servedName.includes('/')
+                        ? servedName
+                        : (modelPath && modelPath.includes('/') && !modelPath.startsWith('/') ? modelPath : null);
+                    if (reconstructed) {
+                        config.hfRepoId = reconstructed;
+                        config.source = 'hf';
+                        // Remap modelName so the Map key, /api/vllm/instances
+                        // listing, and chat requests all use the canonical repo id
+                        // (matches vLLM's served_model_name).
+                        modelName = reconstructed;
+                    }
+                }
             } else if (backend === 'llamacpp') {
                 config = {
                     nGpuLayers: parseInt(getEnvValue('LLAMA_N_GPU_LAYERS') || '-1'),
@@ -3444,6 +3466,21 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'gpuMemoryUtilization must be between 0.1 and 1.0' });
         }
     }
+    // Auto-pick a tool-call parser from the repo name. vLLM 0.19+ requires
+    // --enable-auto-tool-choice + --tool-call-parser when requests include
+    // a `tools` array (which the chat stream always sends) — without it
+    // every chat request fails 400.
+    const autoDetectToolParser = (repo) => {
+        const r = String(repo || '').toLowerCase();
+        if (r.includes('qwen3-coder') || r.includes('qwen2.5-coder') || r.includes('qwen3.6-coder')) return 'qwen3_coder';
+        if (r.includes('llama-3') || r.includes('llama3')) return 'llama3_json';
+        if (r.includes('mistral')) return 'mistral';
+        if (r.includes('deepseek')) return 'deepseek_v3';
+        if (r.includes('phi-4') || r.includes('phi4')) return 'phi4_mini_json';
+        if (r.includes('glm')) return 'glm45';
+        if (r.includes('granite')) return 'granite';
+        return 'hermes'; // default — covers Qwen, OpenChat, Hermes-tuned, many others
+    };
     // enforceEager defaults to false: CUDA graphs give a meaningful throughput
     // win and work on driver 580+ with the open kernel modules (required for
     // Blackwell sm_120 anyway). Older driver/arch combos that hit
@@ -3458,7 +3495,10 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
         trustRemoteCode: req.body.trustRemoteCode ?? true,
         enforceEager: req.body.enforceEager ?? false,
         contextSize: req.body.maxModelLen || 4096,
-        compressMemory: req.body.compressMemory ?? false
+        contextShift: req.body.contextShift ?? true,
+        disableThinking: req.body.disableThinking ?? false,
+        compressMemory: req.body.compressMemory ?? false,
+        toolCallParser: req.body.toolCallParser ?? autoDetectToolParser(repoId)
     };
     try {
         broadcast({ type: 'log', message: `Creating vLLM HF instance for ${repoId} (${format || 'auto'})...` });
@@ -3501,7 +3541,8 @@ async function createVllmInstance(modelName, modelPath, config) {
             `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
             `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
             `VLLM_ENFORCE_EAGER=${config.enforceEager}`,
-            `VLLM_CTX_SHIFT=${config.contextShift}`
+            `VLLM_CTX_SHIFT=${config.contextShift}`,
+            `VLLM_TOOL_CALL_PARSER=${config.toolCallParser || 'hermes'}`
         ];
 
         // Add tokenizer if specified (helps with GGUF models)
@@ -3615,7 +3656,8 @@ async function createVllmHfInstance(repoId, format, config) {
             `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
             `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
             `VLLM_ENFORCE_EAGER=${config.enforceEager}`,
-            `VLLM_SERVED_MODEL_NAME=${repoId}`
+            `VLLM_SERVED_MODEL_NAME=${repoId}`,
+            `VLLM_TOOL_CALL_PARSER=${config.toolCallParser || ''}`
         ];
 
         const hfToken = process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_TOKEN || '';
@@ -12931,13 +12973,37 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 let lastFinishReason = 'stop';
 
                 try {
+                    // Final-pass clamp: input == messages + tool catalog. The
+                    // upstream responseReserve only counts message tokens, so a
+                    // large tool catalog (often ~7k actual vLLM tokens on the
+                    // full skill catalog) can push the request past
+                    // max_model_len here. Estimate JSON char-bytes / 3 over-
+                    // counts because tool schemas tokenize very efficiently
+                    // (field names = single tokens), so this estimate is
+                    // pessimistic and the floor is intentionally low (64) —
+                    // a tiny response beats a 400. The chat stream catches
+                    // a remaining VLLMValidationError below and re-clamps
+                    // from the actual input_tokens vLLM reports.
+                    let actualMaxTokens = maxTokens;
+                    try {
+                        const messagesJson = JSON.stringify(requestMessages);
+                        const toolsJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
+                        const inputTokenEstimate = estimateTokens(messagesJson + toolsJson);
+                        const headroom = contextSize - inputTokenEstimate - 200;
+                        if (actualMaxTokens > headroom) {
+                            const clamped = Math.max(64, headroom);
+                            console.log(`[Chat Stream] Pre-clamp max_tokens ${actualMaxTokens} → ${clamped} (estimate=${inputTokenEstimate}, ctx=${contextSize}, tools=${toolCatalog.length})`);
+                            actualMaxTokens = clamped;
+                        }
+                    } catch (_) { /* estimation best-effort */ }
+
                     const requestBody = {
                         model: targetModel,
                         messages: requestMessages,
                         temperature: temperature || 0.7,
                         top_p: effectiveTopP,
                         stream: true,
-                        max_tokens: maxTokens,
+                        max_tokens: actualMaxTokens,
                         stop: DEFAULT_STOP_STRINGS,
                         // Native tool calling — only attach `tools` when the
                         // catalog has something. Empty arrays confuse some
@@ -16269,14 +16335,25 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'Query permission required' });
         }
 
-        // Get first running instance
-        const instances = Array.from(modelInstances.values());
+        // Get first running instance. Filter to status === 'running' so a
+        // stopped/exited instance still in the Map (e.g. user stopped the
+        // container directly, or boot-time sync hasn't pruned it) doesn't
+        // get picked and cause ENOTFOUND on its dead container name.
+        const allInstances = Array.from(modelInstances.values());
+        const instances = allInstances.filter(i => i && i.status === 'running');
         if (instances.length === 0) {
-            console.log('[Proxy] No running instances found');
+            console.log(`[Proxy] No running instances found (${allInstances.length} tracked, none in 'running' state)`);
             return res.status(503).json({ error: 'No models are currently running. Please load a model first.' });
         }
 
-        const firstInstance = instances[0];
+        // Prefer an instance whose modelName/repoId matches the request body's
+        // `model` field if the client sent one — keeps multi-instance setups
+        // routing predictably.
+        const requestedModel = req.body && typeof req.body.model === 'string' ? req.body.model : null;
+        const matched = requestedModel
+            ? instances.find(i => i.config?.hfRepoId === requestedModel || i.containerName === `vllm-${requestedModel}` || i.containerName === `llamacpp-${requestedModel}`)
+            : null;
+        const firstInstance = matched || instances[0];
         // Use container name to reach vLLM via Docker network
         // Fall back to host.docker.internal for backwards compatibility
         const targetHost = firstInstance.containerName || `host.docker.internal`;

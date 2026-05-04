@@ -13,6 +13,9 @@
 # - VLLM_ENFORCE_EAGER: Disable CUDA graph for debugging (default: false)
 # - VLLM_TOKENIZER: HuggingFace tokenizer repo (optional, for GGUF models)
 # - VLLM_CHAT_TEMPLATE: Path or inline Jinja2 chat template (optional, auto-detected for GGUF)
+# - VLLM_TOOL_CALL_PARSER: tool-call parser name (default 'hermes', covers Qwen/most current models;
+#                          others: llama3_json, mistral, deepseek_v3, qwen3_coder, glm45, granite,
+#                          phi4_mini_json, pythonic, xlam, etc.). Set empty to disable tool choice.
 
 set -e
 
@@ -30,6 +33,11 @@ ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
 TOKENIZER=${VLLM_TOKENIZER:-}
 CHAT_TEMPLATE=${VLLM_CHAT_TEMPLATE:-}
 SERVED_MODEL_NAME=${VLLM_SERVED_MODEL_NAME:-}
+# Default to hermes parser — works for Qwen2/3, OpenChat, Hermes, and many
+# other current models. The webapp's chat stream attaches `tools` and lets
+# tool_choice default to "auto", which vLLM 0.19 rejects unless the server
+# is launched with both --enable-auto-tool-choice and --tool-call-parser.
+TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER-hermes}
 
 echo ">>> Starting vLLM server"
 echo "    Model: $MODEL_PATH"
@@ -116,6 +124,15 @@ fi
 if [ "$ENFORCE_EAGER" = "true" ]; then
     CMD_ARGS+=(--enforce-eager)
     echo "    [Enforce eager mode ENABLED - CUDA graphs disabled]"
+fi
+
+# Enable native tool calling unless explicitly disabled. Without these flags
+# vLLM 0.19+ rejects every request that includes a `tools` array (the chat
+# stream always attaches the skill catalog) with:
+#   "auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set
+if [ -n "$TOOL_CALL_PARSER" ]; then
+    CMD_ARGS+=(--enable-auto-tool-choice --tool-call-parser "$TOOL_CALL_PARSER")
+    echo "    [Tool calling ENABLED (parser: $TOOL_CALL_PARSER)]"
 fi
 
 # Set served model name so the OpenAI-compatible API accepts it in the

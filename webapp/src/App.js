@@ -384,15 +384,24 @@ const App = () => {
     // HuggingFace direct-load dialog (vLLM loads non-GGUF formats from a repo id)
     const [hfLoadDialog, setHfLoadDialog] = useState({ open: false, repoId: '', format: '' });
     const [hfLoadConfig, setHfLoadConfig] = useState({
-        maxModelLen: 4096,
+        // 16K default: the chat stream attaches the full skill catalog
+        // (~7k tokens) plus a runtime-context system prompt, so an 8K
+        // context leaves no room for the user message. 16K is the safe
+        // minimum for chat use; bump higher for long conversations.
+        maxModelLen: 16384,
         gpuMemoryUtilization: 0.9,
         tensorParallelSize: 1,
+        cpuOffloadGb: 0,
         kvCacheDtype: 'auto',
         trustRemoteCode: true,
         // CUDA graphs are a noticeable throughput win on driver 580+ /
         // Blackwell-open. Flip on per-load if a driver/arch combo emits
         // cudaErrorUnsupportedPtxVersion at warmup.
-        enforceEager: false
+        enforceEager: false,
+        contextShift: true,
+        disableThinking: false,
+        compressMemory: false,
+        toolCallParser: '' // empty = server auto-picks from repo name
     });
     const [hfLoading, setHfLoading] = useState(false);
     // Cached HF repos previously pulled by vLLM (lives in modelserver_hf_cache volume)
@@ -7014,9 +7023,14 @@ console.log(await res.json());`
                 maxModelLen: Number(hfLoadConfig.maxModelLen) || 4096,
                 gpuMemoryUtilization: Number(hfLoadConfig.gpuMemoryUtilization) || 0.9,
                 tensorParallelSize: Number(hfLoadConfig.tensorParallelSize) || 1,
+                cpuOffloadGb: Number(hfLoadConfig.cpuOffloadGb) || 0,
                 kvCacheDtype: hfLoadConfig.kvCacheDtype || 'auto',
                 trustRemoteCode: !!hfLoadConfig.trustRemoteCode,
-                enforceEager: !!hfLoadConfig.enforceEager
+                enforceEager: !!hfLoadConfig.enforceEager,
+                contextShift: !!hfLoadConfig.contextShift,
+                disableThinking: !!hfLoadConfig.disableThinking,
+                compressMemory: !!hfLoadConfig.compressMemory,
+                toolCallParser: hfLoadConfig.toolCallParser || undefined
             })
         })
         .then(async res => {
@@ -12533,7 +12547,7 @@ console.log(await res.json());`
                             onChange={e => setHfLoadConfig(c => ({ ...c, maxModelLen: e.target.value }))}
                             inputProps={{ min: 256, max: 1048576, step: 1024 }}
                             size="small"
-                            helperText="Larger = more VRAM. Set below the model's published max."
+                            helperText="Larger = more VRAM. The chat tool catalog is ~7K tokens, so set ≥16K for chat use."
                         />
                         <TextField
                             label="GPU memory utilization"
@@ -12553,6 +12567,15 @@ console.log(await res.json());`
                             size="small"
                             helperText="Number of GPUs to split the model across."
                         />
+                        <TextField
+                            label="CPU offload (GB)"
+                            type="number"
+                            value={hfLoadConfig.cpuOffloadGb}
+                            onChange={e => setHfLoadConfig(c => ({ ...c, cpuOffloadGb: e.target.value }))}
+                            inputProps={{ min: 0, max: 256, step: 1 }}
+                            size="small"
+                            helperText="Move N GB of weights to CPU RAM to fit a larger model. 0 = GPU only."
+                        />
                         <FormControl size="small">
                             <InputLabel>KV cache dtype</InputLabel>
                             <Select
@@ -12564,6 +12587,36 @@ console.log(await res.json());`
                                 <MenuItem value="fp8">fp8</MenuItem>
                             </Select>
                         </FormControl>
+                        <FormControl size="small">
+                            <InputLabel>Tool-call parser</InputLabel>
+                            <Select
+                                label="Tool-call parser"
+                                value={hfLoadConfig.toolCallParser}
+                                onChange={e => setHfLoadConfig(c => ({ ...c, toolCallParser: e.target.value }))}
+                            >
+                                <MenuItem value="">auto-detect from repo name</MenuItem>
+                                <MenuItem value="hermes">hermes (Qwen, OpenChat, default)</MenuItem>
+                                <MenuItem value="qwen3_coder">qwen3_coder</MenuItem>
+                                <MenuItem value="llama3_json">llama3_json</MenuItem>
+                                <MenuItem value="mistral">mistral</MenuItem>
+                                <MenuItem value="deepseek_v3">deepseek_v3</MenuItem>
+                                <MenuItem value="phi4_mini_json">phi4_mini_json</MenuItem>
+                                <MenuItem value="glm45">glm45</MenuItem>
+                                <MenuItem value="granite">granite</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <FormControlLabel
+                            control={<Switch checked={hfLoadConfig.contextShift} onChange={e => setHfLoadConfig(c => ({ ...c, contextShift: e.target.checked }))} />}
+                            label="Context shift (auto-truncate to fit context window)"
+                        />
+                        <FormControlLabel
+                            control={<Switch checked={hfLoadConfig.disableThinking} onChange={e => setHfLoadConfig(c => ({ ...c, disableThinking: e.target.checked }))} />}
+                            label="Disable thinking (suppress <think> blocks for reasoning models)"
+                        />
+                        <FormControlLabel
+                            control={<Switch checked={hfLoadConfig.compressMemory} onChange={e => setHfLoadConfig(c => ({ ...c, compressMemory: e.target.checked }))} />}
+                            label="AIMem (compress older conversation messages)"
+                        />
                         <FormControlLabel
                             control={<Switch checked={hfLoadConfig.trustRemoteCode} onChange={e => setHfLoadConfig(c => ({ ...c, trustRemoteCode: e.target.checked }))} />}
                             label="Trust remote code (required for some custom architectures)"
