@@ -1416,10 +1416,6 @@ async function processWithMapReduce(options) {
     }
 }
 
-// Global active backend state - determines which backend is used for loading models
-// Can be 'llamacpp' or 'vllm'
-let activeBackend = 'llamacpp'; // Default to llama.cpp for older GPU support
-
 // Backend configuration defaults
 const BACKEND_DEFAULTS = {
     vllm: {
@@ -14365,36 +14361,6 @@ app.get('/api/apps', requireAdmin, async (req, res) => {
                 status: { status: 'running', type: 'integrated' },
                 integrated: true // Built-in feature, not a Docker service
             },
-            {
-                name: 'backend-llamacpp',
-                displayName: 'llama.cpp Backend',
-                description: 'GGUF model inference - Works with older GPUs (Maxwell 5.2+)',
-                ports: [],
-                url: null,
-                status: {
-                    status: activeBackend === 'llamacpp' ? 'running' : 'stopped',
-                    type: 'backend'
-                },
-                integrated: true,
-                isBackend: true,
-                backendType: 'llamacpp',
-                isActive: activeBackend === 'llamacpp'
-            },
-            {
-                name: 'backend-vllm',
-                displayName: 'vLLM Backend',
-                description: 'High-throughput inference - Best for newer GPUs (Pascal 6.0+)',
-                ports: [],
-                url: null,
-                status: {
-                    status: activeBackend === 'vllm' ? 'running' : 'stopped',
-                    type: 'backend'
-                },
-                integrated: true,
-                isBackend: true,
-                backendType: 'vllm',
-                isActive: activeBackend === 'vllm'
-            }
         ];
 
         res.json(apps);
@@ -14477,108 +14443,6 @@ app.post('/api/apps/:name/restart', requireAdmin, async (req, res) => {
         console.error(`Error restarting ${name}:`, error);
         broadcast({ type: 'log', message: `Failed to restart ${name}: ${error.message}`, level: 'error' });
         res.status(500).json({ error: `Failed to restart ${name}`, details: error.message });
-    }
-});
-
-// ============================================================================
-// BACKEND MANAGEMENT ENDPOINTS
-// ============================================================================
-
-// Get current active backend
-app.get('/api/backend/active', requireAuth, async (req, res) => {
-    if (!checkPermission(req.apiKeyData, 'models')) {
-        return res.status(403).json({ error: 'models permission required' });
-    }
-
-    try {
-        // Count running instances per backend
-        let llamacppCount = 0;
-        let vllmCount = 0;
-
-        for (const [_, instance] of modelInstances) {
-            if (instance.backend === 'llamacpp') llamacppCount++;
-            else if (instance.backend === 'vllm') vllmCount++;
-        }
-
-        res.json({
-            activeBackend,
-            runningInstances: {
-                llamacpp: llamacppCount,
-                vllm: vllmCount
-            }
-        });
-    } catch (error) {
-        console.error('Error getting active backend:', error);
-        res.status(500).json({ error: 'Failed to get active backend' });
-    }
-});
-
-// Set active backend (switches backends, stops instances of old backend)
-app.post('/api/backend/active', requireAdmin, async (req, res) => {
-
-    const { backend, stopInstances } = req.body;
-
-    if (!backend || !['llamacpp', 'vllm'].includes(backend)) {
-        return res.status(400).json({ error: 'Invalid backend. Must be "llamacpp" or "vllm"' });
-    }
-
-    try {
-        const previousBackend = activeBackend;
-
-        if (previousBackend === backend) {
-            return res.json({
-                success: true,
-                message: `Backend is already set to ${backend}`,
-                activeBackend: backend,
-                instancesStopped: 0
-            });
-        }
-
-        // If stopInstances is true, stop all instances of the previous backend
-        let instancesStopped = 0;
-        if (stopInstances !== false) {
-            broadcast({ type: 'log', message: `Switching backend from ${previousBackend} to ${backend}...` });
-
-            // Stop all instances of the previous backend
-            for (const [modelName, instance] of modelInstances) {
-                if (instance.backend === previousBackend) {
-                    try {
-                        broadcast({ type: 'log', message: `Stopping ${modelName} (${previousBackend})...` });
-                        const container = docker.getContainer(instance.containerId);
-                        await container.stop();
-                        await container.remove();
-                        modelInstances.delete(modelName);
-                        if (modelInstances.size === 0) stopSystemMonitoring();
-                        instancesStopped++;
-                        broadcast({ type: 'model_stopped', modelName, instancesStopped });
-                    } catch (err) {
-                        console.error(`Error stopping instance ${modelName}:`, err);
-                    }
-                }
-            }
-        }
-
-        // Set the new active backend
-        activeBackend = backend;
-
-        broadcast({
-            type: 'backend_changed',
-            previousBackend,
-            activeBackend: backend,
-            instancesStopped
-        });
-
-        broadcast({ type: 'status', message: `Backend switched to ${backend}` });
-
-        res.json({
-            success: true,
-            message: `Backend switched from ${previousBackend} to ${backend}`,
-            activeBackend: backend,
-            instancesStopped
-        });
-    } catch (error) {
-        console.error('Error switching backend:', error);
-        res.status(500).json({ error: 'Failed to switch backend', details: error.message });
     }
 });
 

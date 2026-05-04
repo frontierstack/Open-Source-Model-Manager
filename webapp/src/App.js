@@ -419,8 +419,6 @@ const App = () => {
     const [userDialogMode, setUserDialogMode] = useState('create'); // 'create', 'edit', 'resetPassword', 'invite'
     const [newUserData, setNewUserData] = useState({ username: '', email: '', password: '', role: 'user' });
 
-    // Backend selection (llamacpp works with older GPUs like Maxwell 5.2+)
-    const [selectedBackend, setSelectedBackend] = useState('llamacpp');
 
     // Model configuration state for vLLM
     const [modelConfig, setModelConfig] = useState({
@@ -2993,80 +2991,6 @@ Write-Output "Context Size: $($response.contextSize)"`,
   console.log('Recommended settings:', settings);
 })
 .catch(err => console.error(err));`
-            },
-            // ============================================================================
-            // BACKEND MANAGEMENT
-            // ============================================================================
-            '/api/backend/active': {
-                curl: `# Get active backend (llamacpp or vllm)
-curl -k -X GET ${baseUrl}/api/backend/active \\
-  -H "Authorization: Bearer your_bearer_token"
-
-# Set active backend
-curl -k -X POST ${baseUrl}/api/backend/active \\
-  -H "Authorization: Bearer your_bearer_token" \\
-  -H "Content-Type: application/json" \\
-  -d '{"backend": "llamacpp"}'`,
-                python: `import requests
-
-# Get current backend
-response = requests.get(
-    '${baseUrl}/api/backend/active',
-    headers={'Authorization': 'Bearer your_bearer_token'},
-    verify=False
-)
-print(f"Current backend: {response.json()['backend']}")
-
-# Set backend to llama.cpp
-response = requests.post(
-    '${baseUrl}/api/backend/active',
-    headers={
-        'Authorization': 'Bearer your_bearer_token',
-        'Content-Type': 'application/json'
-    },
-    json={'backend': 'llamacpp'},
-    verify=False
-)
-print(f"Backend set to: {response.json()['backend']}")`,
-                powershell: `# Bearer Token Authentication
-$headers = @{
-    "Authorization" = "Bearer your_bearer_token"
-    "Content-Type" = "application/json"
-}
-
-# OR API Key + Secret Authentication
-$headers = @{
-    "X-API-Key" = "your_api_key"
-    "X-API-Secret" = "your_api_secret"
-    "Content-Type" = "application/json"
-}
-
-# Get current backend
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/backend/active" -Headers $headers
-Write-Output "Current backend: $($response.backend)"
-
-# Set backend
-$body = @{ backend = "llamacpp" } | ConvertTo-Json
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/backend/active" -Method Post -Headers $headers -Body $body
-Write-Output "Backend set to: $($response.backend)"`,
-                javascript: `// Get current backend
-fetch('${baseUrl}/api/backend/active', {
-  headers: { 'Authorization': 'Bearer your_bearer_token' }
-})
-.then(res => res.json())
-.then(data => console.log('Current backend:', data.backend));
-
-// Set backend
-fetch('${baseUrl}/api/backend/active', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer your_bearer_token',
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({ backend: 'llamacpp' })
-})
-.then(res => res.json())
-.then(data => console.log('Backend set to:', data.backend));`
             },
             // ============================================================================
             // LLAMA.CPP INSTANCES
@@ -7116,12 +7040,12 @@ console.log(await res.json());`
 
     // Model instance handlers
     const handleLoadModel = (modelName) => {
-        showSnackbar(`Starting ${modelName} with ${selectedBackend}...`, 'info');
-
-        // Build config based on selected backend
-        const config = selectedBackend === 'vllm'
-            ? { backend: 'vllm', ...modelConfig }
-            : { backend: 'llamacpp', ...llamacppConfig };
+        // Local /models/<name> directories are always GGUF (the only path
+        // that produces them is the HF GGUF pull flow), so they always go
+        // to llama.cpp. Non-GGUF models use the Load-via-vLLM dialog from
+        // the search results.
+        showSnackbar(`Starting ${modelName}...`, 'info');
+        const config = { backend: 'llamacpp', ...llamacppConfig };
 
         fetch(`/api/models/${modelName}/load`, {
             method: 'POST',
@@ -7160,7 +7084,7 @@ console.log(await res.json());`
                 body: JSON.stringify({
                     modelFileSize: model.fileSize,
                     modelName: model.name,
-                    backend: selectedBackend  // Pass the selected backend
+                    backend: 'llamacpp'
                 }),
             });
 
@@ -7171,47 +7095,30 @@ console.log(await res.json());`
 
             const data = await response.json();
 
-            // Apply settings based on backend
-            if (data.backend === 'llamacpp' || selectedBackend === 'llamacpp') {
-                // Apply llama.cpp optimal settings
-                setLlamacppConfig(prev => ({
-                    ...prev,
-                    nGpuLayers: data.settings.nGpuLayers,
-                    contextSize: data.settings.contextSize,
-                    flashAttention: data.settings.flashAttention,
-                    cacheTypeK: data.settings.cacheTypeK,
-                    cacheTypeV: data.settings.cacheTypeV,
-                    threads: data.settings.threads,
-                    parallelSlots: data.settings.parallelSlots,
-                    batchSize: data.settings.batchSize,
-                    ubatchSize: data.settings.ubatchSize,
-                    repeatPenalty: data.settings.repeatPenalty,
-                    repeatLastN: data.settings.repeatLastN,
-                    presencePenalty: data.settings.presencePenalty,
-                    frequencyPenalty: data.settings.frequencyPenalty,
-                    swaFull: data.settings.swaFull === true
-                }));
-            } else {
-                // Apply the optimal vLLM settings to modelConfig
-                setModelConfig(prev => ({
-                    ...prev,
-                    maxModelLen: data.settings.maxModelLen,
-                    cpuOffloadGb: data.settings.cpuOffloadGb,
-                    gpuMemoryUtilization: data.settings.gpuMemoryUtilization,
-                    tensorParallelSize: data.settings.tensorParallelSize,
-                    maxNumSeqs: data.settings.maxNumSeqs,
-                    kvCacheDtype: data.settings.kvCacheDtype,
-                    trustRemoteCode: data.settings.trustRemoteCode,
-                    enforceEager: data.settings.enforceEager
-                }));
-            }
+            setLlamacppConfig(prev => ({
+                ...prev,
+                nGpuLayers: data.settings.nGpuLayers,
+                contextSize: data.settings.contextSize,
+                flashAttention: data.settings.flashAttention,
+                cacheTypeK: data.settings.cacheTypeK,
+                cacheTypeV: data.settings.cacheTypeV,
+                threads: data.settings.threads,
+                parallelSlots: data.settings.parallelSlots,
+                batchSize: data.settings.batchSize,
+                ubatchSize: data.settings.ubatchSize,
+                repeatPenalty: data.settings.repeatPenalty,
+                repeatLastN: data.settings.repeatLastN,
+                presencePenalty: data.settings.presencePenalty,
+                frequencyPenalty: data.settings.frequencyPenalty,
+                swaFull: data.settings.swaFull === true
+            }));
 
             setOptimalSettingsNotes(data.notes || []);
 
             const hardwareInfo = data.hardware.gpuFreeGB
                 ? `${data.hardware.gpuCount} GPU(s) · ${data.hardware.gpuFreeGB}/${data.hardware.gpuMemoryGB}GB free, ${data.hardware.cpuCores} CPU cores`
                 : `${data.hardware.gpuCount} GPU(s) with ${data.hardware.gpuMemoryGB}GB VRAM, ${data.hardware.cpuCores} CPU cores`;
-            showSnackbar(`Optimal ${selectedBackend} settings applied for ${model.name} (${hardwareInfo})`, 'success');
+            showSnackbar(`Optimal settings applied for ${model.name} (${hardwareInfo})`, 'success');
         } catch (error) {
             showSnackbar(error.message, 'error');
         } finally {
@@ -9103,40 +9010,7 @@ console.log(await res.json());`
                                                 subtitle="Configure model instance parameters (applied when loading models)"
                                             />
 
-                                            {/* Backend Selection */}
-                                            <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                                                    <Typography variant="subtitle2" sx={{ minWidth: { xs: 'auto', md: 100 } }}>
-                                                        Backend:
-                                                    </Typography>
-                                                    <ToggleButtonGroup
-                                                        value={selectedBackend}
-                                                        exclusive
-                                                        onChange={(e, newBackend) => newBackend && setSelectedBackend(newBackend)}
-                                                        size="small"
-                                                    >
-                                                        <ToggleButton value="llamacpp" sx={{ px: 2 }}>
-                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <span>llama.cpp</span>
-                                                                <Chip label="GPU 5.2+" size="small" sx={{ height: 18, fontSize: '0.65rem' }} />
-                                                            </Box>
-                                                        </ToggleButton>
-                                                        <ToggleButton value="vllm" sx={{ px: 2 }}>
-                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <span>vLLM</span>
-                                                                <Chip label="GPU 6.0+" size="small" sx={{ height: 18, fontSize: '0.65rem' }} />
-                                                            </Box>
-                                                        </ToggleButton>
-                                                    </ToggleButtonGroup>
-                                                    <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
-                                                        {selectedBackend === 'llamacpp'
-                                                            ? 'Recommended for GGUF models. Works with older GPUs (Maxwell 5.2+).'
-                                                            : 'Best for newer GPUs (Pascal 6.0+). May have issues with some GGUF models.'}
-                                                    </Typography>
-                                                </Box>
-                                            </Box>
-
-                                            {/* Optimal Settings Section - shown for both backends */}
+                                            {/* Optimal Settings Section */}
                                             <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                                                     <AutoAwesomeIcon color="primary" />
@@ -9157,7 +9031,7 @@ console.log(await res.json());`
                                                             ))}
                                                         </Select>
                                                     </FormControl>
-                                                    <Tooltip title={`Calculate optimal ${selectedBackend} settings based on your hardware and the selected model size`}>
+                                                    <Tooltip title="Calculate optimal llama.cpp settings based on your hardware and the selected model size">
                                                         <Button
                                                             variant="contained"
                                                             size="small"
@@ -9183,265 +9057,8 @@ console.log(await res.json());`
                                                 )}
                                             </Box>
 
-                                            {/* vLLM Settings (shown when vLLM backend selected) */}
-                                            {selectedBackend === 'vllm' && (
-                                            <Grid container spacing={3}>
-                                                {/* vLLM Core Settings Section */}
-                                                <Grid item xs={12} md={6}>
-                                                    <CollapsibleSection title="Model & Context" icon={<MemoryIcon />}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.maxModelLen} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Max Model Length</InputLabel>
-                                                                        <Select
-                                                                            value={modelConfig.maxModelLen}
-                                                                            onChange={(e) => setModelConfig({...modelConfig, maxModelLen: e.target.value})}
-                                                                            label="Max Model Length"
-                                                                            endAdornment={<HelpOutlineIcon sx={{ fontSize: 16, color: 'text.secondary', mr: 2 }} />}
-                                                                        >
-                                                                            <MenuItem value={512}>512</MenuItem>
-                                                                            <MenuItem value={1024}>1024</MenuItem>
-                                                                            <MenuItem value={2048}>2048</MenuItem>
-                                                                            <MenuItem value={4096}>4096</MenuItem>
-                                                                            <MenuItem value={8192}>8192</MenuItem>
-                                                                            <MenuItem value={16384}>16K</MenuItem>
-                                                                            <MenuItem value={32768}>32K</MenuItem>
-                                                                            <MenuItem value={65536}>64K</MenuItem>
-                                                                            <MenuItem value={131072}>128K</MenuItem>
-                                                                            <MenuItem value={262144}>256K</MenuItem>
-                                                                            <MenuItem value={524288}>512K</MenuItem>
-                                                                            <MenuItem value={1048576}>1M</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.cpuOffloadGb} arrow placement="top">
-                                                                    <TextField
-                                                                        fullWidth
-                                                                        label="CPU Offload (GB)"
-                                                                        type="number"
-                                                                        size="small"
-                                                                        value={modelConfig.cpuOffloadGb}
-                                                                        onChange={(e) => setModelConfig({...modelConfig, cpuOffloadGb: parseFloat(e.target.value) || 0})}
-                                                                        helperText="0 = all on GPU"
-                                                                        InputProps={{
-                                                                            endAdornment: <HelpOutlineIcon sx={{ fontSize: 16, color: 'text.secondary' }} />,
-                                                                            inputProps: { min: 0, step: 1 }
-                                                                        }}
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            {modelConfig.maxModelLen <= 2048 && (
-                                                                <Grid item xs={12}>
-                                                                    <Alert severity="warning" sx={{ py: 0.5, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>
-                                                                        Small context ({modelConfig.maxModelLen}). If your prompt exceeds this, the request will fail. Consider 4096+ for most use cases.
-                                                                    </Alert>
-                                                                </Grid>
-                                                            )}
-                                                            {modelConfig.cpuOffloadGb > 0 && (
-                                                                <Grid item xs={12}>
-                                                                    <Alert severity="info" sx={{ py: 0.5, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>
-                                                                        CPU offloading enabled ({modelConfig.cpuOffloadGb}GB). Note: GGUF + CPU offload may have issues (vLLM GitHub #8757).
-                                                                    </Alert>
-                                                                </Grid>
-                                                            )}
-                                                        </Grid>
-                                                    </CollapsibleSection>
 
-                                                    <CollapsibleSection title="GPU Memory" icon={<TuneIcon />} defaultExpanded={false}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.gpuMemoryUtilization} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>GPU Memory %</InputLabel>
-                                                                        <Select
-                                                                            value={modelConfig.gpuMemoryUtilization}
-                                                                            onChange={(e) => setModelConfig({...modelConfig, gpuMemoryUtilization: e.target.value})}
-                                                                            label="GPU Memory %"
-                                                                        >
-                                                                            <MenuItem value={0.5}>50%</MenuItem>
-                                                                            <MenuItem value={0.6}>60%</MenuItem>
-                                                                            <MenuItem value={0.7}>70%</MenuItem>
-                                                                            <MenuItem value={0.8}>80%</MenuItem>
-                                                                            <MenuItem value={0.85}>85%</MenuItem>
-                                                                            <MenuItem value={0.9}>90%</MenuItem>
-                                                                            <MenuItem value={0.95}>95%</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.kvCacheDtype} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>KV Cache Dtype</InputLabel>
-                                                                        <Select
-                                                                            value={modelConfig.kvCacheDtype}
-                                                                            onChange={(e) => setModelConfig({...modelConfig, kvCacheDtype: e.target.value})}
-                                                                            label="KV Cache Dtype"
-                                                                        >
-                                                                            <MenuItem value="auto">auto</MenuItem>
-                                                                            <MenuItem value="fp8">fp8</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                        </Grid>
-                                                    </CollapsibleSection>
-                                                </Grid>
-
-                                                {/* Performance Section */}
-                                                <Grid item xs={12} md={6}>
-                                                    <CollapsibleSection title="Performance" icon={<SettingsIcon />} defaultExpanded={false}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.tensorParallelSize} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Tensor Parallel</InputLabel>
-                                                                        <Select
-                                                                            value={modelConfig.tensorParallelSize}
-                                                                            onChange={(e) => setModelConfig({...modelConfig, tensorParallelSize: e.target.value})}
-                                                                            label="Tensor Parallel"
-                                                                        >
-                                                                            <MenuItem value={1}>1 GPU</MenuItem>
-                                                                            <MenuItem value={2}>2 GPUs</MenuItem>
-                                                                            <MenuItem value={4}>4 GPUs</MenuItem>
-                                                                            <MenuItem value={8}>8 GPUs</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.maxNumSeqs} arrow placement="top">
-                                                                    <FormControl fullWidth size="small">
-                                                                        <InputLabel>Max Sequences</InputLabel>
-                                                                        <Select
-                                                                            value={modelConfig.maxNumSeqs}
-                                                                            onChange={(e) => setModelConfig({...modelConfig, maxNumSeqs: e.target.value})}
-                                                                            label="Max Sequences"
-                                                                        >
-                                                                            <MenuItem value={32}>32</MenuItem>
-                                                                            <MenuItem value={64}>64</MenuItem>
-                                                                            <MenuItem value={128}>128</MenuItem>
-                                                                            <MenuItem value={256}>256</MenuItem>
-                                                                            <MenuItem value={512}>512</MenuItem>
-                                                                            <MenuItem value={1024}>1024</MenuItem>
-                                                                        </Select>
-                                                                    </FormControl>
-                                                                </Tooltip>
-                                                            </Grid>
-                                                        </Grid>
-                                                    </CollapsibleSection>
-
-                                                    <CollapsibleSection title="Advanced" icon={<TuneIcon />} defaultExpanded={false}>
-                                                        <Grid container spacing={2}>
-                                                            <Grid item xs={12}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.trustRemoteCode} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={modelConfig.trustRemoteCode}
-                                                                                onChange={(e) => setModelConfig({...modelConfig, trustRemoteCode: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Trust Remote Code</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.enforceEager} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={modelConfig.enforceEager}
-                                                                                onChange={(e) => setModelConfig({...modelConfig, enforceEager: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Enforce Eager Mode</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.contextShift} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={modelConfig.contextShift}
-                                                                                onChange={(e) => setModelConfig({...modelConfig, contextShift: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Context Shift</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.disableThinking} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={!modelConfig.disableThinking}
-                                                                                onChange={(e) => setModelConfig({...modelConfig, disableThinking: !e.target.checked})}
-                                                                                color="success"
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2" sx={{ fontWeight: 600, color: modelConfig.disableThinking ? 'text.secondary' : 'success.main' }}>
-                                                                                    {modelConfig.disableThinking ? 'Reasoning Disabled' : 'Reasoning Enabled'}
-                                                                                </Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                            <Grid item xs={12} sm={6}>
-                                                                <Tooltip title={SETTINGS_TOOLTIPS.compressMemory} arrow placement="top">
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={modelConfig.compressMemory}
-                                                                                onChange={(e) => setModelConfig({...modelConfig, compressMemory: e.target.checked})}
-                                                                                size="small"
-                                                                            />
-                                                                        }
-                                                                        label={
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                                                <Typography variant="body2">Compress Memory</Typography>
-                                                                                <HelpOutlineIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                                                                            </Box>
-                                                                        }
-                                                                    />
-                                                                </Tooltip>
-                                                            </Grid>
-                                                        </Grid>
-                                                    </CollapsibleSection>
-                                                </Grid>
-                                            </Grid>
-                                            )}
-
-                                            {/* llama.cpp Settings (shown when llamacpp backend selected) */}
-                                            {selectedBackend === 'llamacpp' && (
+                                            {/* llama.cpp Settings */}
                                             <Grid container spacing={3}>
                                                 {/* GPU & Context Section */}
                                                 <Grid item xs={12} md={6}>
@@ -9786,7 +9403,6 @@ console.log(await res.json());`
                                                     </CollapsibleSection>
                                                 </Grid>
                                             </Grid>
-                                            )}
                                         </CardContent>
                                     </Card>
                                 </Grid>
@@ -10656,8 +10272,7 @@ console.log(await res.json());`
                                                             <MenuItem value="/api/system-prompts/:modelName">GET /api/system-prompts/:name - Get System Prompt</MenuItem>
                                                             <MenuItem value="/api/system-prompts/:modelName/update">PUT /api/system-prompts/:name - Update System Prompt</MenuItem>
                                                             <MenuItem value="/api/system-prompts/:modelName/delete">DELETE /api/system-prompts/:name - Delete System Prompt</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Backend & System ───</MenuItem>
-                                                            <MenuItem value="/api/backend/active">GET/POST /api/backend/active - Get/Set Backend</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── System ───</MenuItem>
                                                             <MenuItem value="/api/system/resources">GET /api/system/resources - System Hardware Info</MenuItem>
                                                             <MenuItem value="/api/system/optimal-settings">POST /api/system/optimal-settings - Calculate Settings</MenuItem>
                                                             <MenuItem value="/api/system/reset">POST /api/system/reset - System Reset (Admin)</MenuItem>
@@ -11325,7 +10940,6 @@ console.log(await res.json());`
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Update/delete key</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/revoke</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Revoke API key</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/stats</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get key stats</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/backend/active</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get/set backend</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List apps</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/start</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start app</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/stop</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop app</TableCell></TableRow>
@@ -11896,81 +11510,6 @@ console.log(await res.json());`
                                             </Card>
                                         </Grid>
                                     ))}
-
-                                    {/* Backend Selection Section */}
-                                    <Grid item xs={12}>
-                                        <Card sx={{ bgcolor: 'background.default' }}>
-                                            <CardContent>
-                                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                                                    <Box>
-                                                        <Typography variant="h6">Inference Backend</Typography>
-                                                        <Typography variant="body2" color="text.secondary">
-                                                            Select the backend engine for loading and running models
-                                                        </Typography>
-                                                    </Box>
-                                                </Box>
-
-                                                <Grid container spacing={2}>
-                                                    {apps.filter(app => app.isBackend).map(app => (
-                                                        <Grid item xs={12} md={6} key={app.name}>
-                                                            <Card
-                                                                variant={app.isActive ? "elevation" : "outlined"}
-                                                                sx={{
-                                                                    border: app.isActive ? '2px solid' : '1px solid',
-                                                                    borderColor: app.isActive ? 'success.main' : 'divider',
-                                                                    bgcolor: app.isActive ? 'action.selected' : 'background.paper'
-                                                                }}
-                                                            >
-                                                                <CardContent>
-                                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
-                                                                        <Typography variant="h6">{app.displayName}</Typography>
-                                                                        <Chip
-                                                                            label={app.isActive ? 'Active' : 'Inactive'}
-                                                                            size="small"
-                                                                            color={app.isActive ? 'success' : 'default'}
-                                                                        />
-                                                                    </Box>
-                                                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                                                        {app.description}
-                                                                    </Typography>
-                                                                    <Button
-                                                                        fullWidth
-                                                                        variant={app.isActive ? "outlined" : "contained"}
-                                                                        color={app.isActive ? "success" : "primary"}
-                                                                        startIcon={app.isActive ? <CheckCircleIcon /> : <PlayArrowIcon />}
-                                                                        disabled={app.isActive}
-                                                                        onClick={async () => {
-                                                                            try {
-                                                                                showSnackbar(`Switching to ${app.displayName}...`, 'info');
-                                                                                const response = await fetch('/api/backend/active', {
-                                                                                    method: 'POST',
-                                                                                    headers: { 'Content-Type': 'application/json' },
-                                                                                    credentials: 'include',
-                                                                                    body: JSON.stringify({ backend: app.backendType })
-                                                                                });
-                                                                                if (!response.ok) {
-                                                                                    const err = await response.json();
-                                                                                    throw new Error(err.error || 'Failed to switch backend');
-                                                                                }
-                                                                                const data = await response.json();
-                                                                                showSnackbar(data.message, 'success');
-                                                                                fetchApps();
-                                                                                setSelectedBackend(app.backendType);
-                                                                            } catch (error) {
-                                                                                showSnackbar(error.message, 'error');
-                                                                            }
-                                                                        }}
-                                                                    >
-                                                                        {app.isActive ? 'Currently Active' : 'Activate'}
-                                                                    </Button>
-                                                                </CardContent>
-                                                            </Card>
-                                                        </Grid>
-                                                    ))}
-                                                </Grid>
-                                            </CardContent>
-                                        </Card>
-                                    </Grid>
 
                                     {apps.filter(app => app.integrated && app.name === 'open-model-agents').map(app => (
                                         <Grid item xs={12} key={app.name}>
