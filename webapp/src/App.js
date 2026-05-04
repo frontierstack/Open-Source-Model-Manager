@@ -6915,6 +6915,13 @@ console.log(await res.json());`
         // single-file pull step. Open a dedicated load dialog so the user
         // can set max-model-len / GPU mem / tensor-parallel before launch.
         if (modelFormat && modelFormat !== 'gguf' && modelFormat !== 'unknown') {
+            // Prefill tensorParallelSize with the detected GPU count so vLLM
+            // fans across every GPU by default. Falls back to whatever the
+            // dialog already had if /api/system/resources is unreachable.
+            fetch('/api/system/resources').then(r => r.json()).then(d => {
+                const gpus = d?.gpu?.count || d?.gpus?.length || 1;
+                setHfLoadConfig(c => ({ ...c, tensorParallelSize: gpus }));
+            }).catch(() => {});
             setHfLoadDialog({ open: true, repoId: modelId, format: modelFormat });
             return;
         }
@@ -12104,7 +12111,7 @@ console.log(await res.json());`
                             onChange={e => setHfLoadConfig(c => ({ ...c, tensorParallelSize: e.target.value }))}
                             inputProps={{ min: 1, max: 8, step: 1 }}
                             size="small"
-                            helperText="Number of GPUs to split the model across."
+                            helperText="Number of GPUs to split the model across. Auto-prefilled to all detected GPUs."
                         />
                         <TextField
                             label="CPU offload (GB)"

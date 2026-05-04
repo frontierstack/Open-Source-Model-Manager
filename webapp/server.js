@@ -1566,6 +1566,23 @@ function getModelsVolumeBind() {
     return `${hostModelsPath}:/models:ro`;
 }
 
+// Detected NVIDIA GPU count, cached for the lifetime of the process.
+// Used as the default tensor_parallel_size when a vLLM instance is loaded
+// without an explicit value — vLLM should fan out across every GPU
+// available unless the user opts down. Cache invalidates on falsy.
+let cachedGpuCount = null;
+async function getGpuCount() {
+    if (cachedGpuCount !== null) return cachedGpuCount;
+    try {
+        const { stdout } = await execPromise('nvidia-smi --query-gpu=index --format=csv,noheader,nounits');
+        const count = stdout.trim().split('\n').filter(l => l.trim() !== '').length;
+        cachedGpuCount = Math.max(1, count);
+    } catch {
+        cachedGpuCount = 1;
+    }
+    return cachedGpuCount;
+}
+
 // ============================================================================
 // GLOBAL ERROR HANDLERS - Prevent server crashes
 // ============================================================================
@@ -3301,11 +3318,12 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 console.warn(`Attempting to load potentially incompatible VLM model: ${modelName}`);
             }
 
+            const detectedGpus = await getGpuCount();
             const config = {
                 maxModelLen: req.body.maxModelLen || 4096,
                 cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
                 gpuMemoryUtilization: req.body.gpuMemoryUtilization ?? 0.9,
-                tensorParallelSize: req.body.tensorParallelSize || 1,
+                tensorParallelSize: Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : detectedGpus,
                 maxNumSeqs: req.body.maxNumSeqs || 256,
                 kvCacheDtype: req.body.kvCacheDtype || 'auto',
                 trustRemoteCode: req.body.trustRemoteCode ?? true,
@@ -3481,11 +3499,12 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
     // win and work on driver 580+ with the open kernel modules (required for
     // Blackwell sm_120 anyway). Older driver/arch combos that hit
     // cudaErrorUnsupportedPtxVersion can flip this on per-load via the dialog.
+    const detectedGpus = await getGpuCount();
     const config = {
         maxModelLen: req.body.maxModelLen || 4096,
         cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
         gpuMemoryUtilization: req.body.gpuMemoryUtilization ?? 0.9,
-        tensorParallelSize: req.body.tensorParallelSize || 1,
+        tensorParallelSize: Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : detectedGpus,
         maxNumSeqs: req.body.maxNumSeqs || 256,
         kvCacheDtype: req.body.kvCacheDtype || 'auto',
         trustRemoteCode: req.body.trustRemoteCode ?? true,
