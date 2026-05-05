@@ -2084,6 +2084,29 @@ async function saveAgentPermissions(permissions) {
     invalidateCache('agentPermissions');
 }
 
+// Remove any container (running, exited, dead) that holds the given name.
+// Crashed/OOM-killed model containers stay around in "Exited" state, and Docker
+// keeps the name reserved — so the next createContainer with the same name
+// fails with a 409 conflict and the model gets stuck in "Instance: stopped".
+async function removeStaleContainerByName(name) {
+    if (!name) return;
+    try {
+        const list = await docker.listContainers({
+            all: true,
+            filters: { name: [`^/${name}$`] }
+        });
+        for (const info of list) {
+            const c = docker.getContainer(info.Id);
+            try { await c.stop({ t: 5 }); } catch { /* not running, fine */ }
+            try { await c.remove({ force: true }); } catch (e) {
+                console.warn(`[cleanup] could not remove stale container ${name}: ${e.message}`);
+            }
+        }
+    } catch (e) {
+        console.warn(`[cleanup] listContainers failed for ${name}: ${e.message}`);
+    }
+}
+
 // Port allocation for vLLM instances
 const BASE_PORT = 8001;
 
@@ -3250,9 +3273,18 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
     console.log(`Request to load model: ${modelName} with backend: ${backend}`);
 
     try {
-        // Check if instance already exists
-        if (modelInstances.has(modelName)) {
-            return res.status(400).json({ error: `Instance for ${modelName} already running` });
+        // Check if instance already exists. A stopped/oom_killed entry left
+        // behind by a crashed container blocked reload here — drop it so the
+        // create path below can rebuild a fresh container.
+        const existing = modelInstances.get(modelName);
+        if (existing) {
+            if (existing.status === 'running' || existing.status === 'starting') {
+                return res.status(400).json({ error: `Instance for ${modelName} already running` });
+            }
+            console.log(`[load] dropping stale ${existing.status} entry for ${modelName} before reload`);
+            modelInstances.delete(modelName);
+            await removeStaleContainerByName(existing.containerName);
+            broadcast({ type: 'status', modelName, status: 'cleared' });
         }
 
         const modelPath = path.join('/models', modelName);
@@ -3587,6 +3619,8 @@ async function createVllmInstance(modelName, modelPath, config) {
         // Set served model name so vLLM accepts it in the `model` request field
         envVars.push(`VLLM_SERVED_MODEL_NAME=${modelName}`);
 
+        await removeStaleContainerByName(containerName);
+
         const container = await docker.createContainer({
             Image: 'modelserver-vllm:latest',
             name: containerName,
@@ -3694,6 +3728,8 @@ async function createVllmHfInstance(repoId, format, config) {
             envVars.push(`HUGGING_FACE_HUB_TOKEN=${hfToken}`);
             envVars.push(`HF_TOKEN=${hfToken}`);
         }
+
+        await removeStaleContainerByName(containerName);
 
         const container = await docker.createContainer({
             Image: 'modelserver-vllm:latest',
@@ -3812,6 +3848,8 @@ async function createLlamacppInstance(modelName, modelPath, config) {
         if (config.threads && config.threads > 0) {
             envVars.push(`LLAMA_THREADS=${config.threads}`);
         }
+
+        await removeStaleContainerByName(containerName);
 
         const container = await docker.createContainer({
             Image: 'modelserver-llamacpp:latest',
