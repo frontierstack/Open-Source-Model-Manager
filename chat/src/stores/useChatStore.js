@@ -151,6 +151,10 @@ export const useChatStore = create(
 
         // Settings
         // maxTokens: null means "use model's context window" (dynamic)
+        // The order here matters: built-in defaults first, persisted values
+        // last so a user toggle survives reloads. Previously
+        // `codePreviewEnabled: false` sat AFTER the spread which silently
+        // reset the user's choice on every page load.
         settings: {
             model: null,
             temperature: 0.7,
@@ -159,12 +163,13 @@ export const useChatStore = create(
             selectedSystemPromptId: null,
             fontSize: 'medium',
             fontFamily: 'system',
-            ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
             // Live code previewer — default OFF so arbitrary code blocks
-            // from the model never execute without the user opting in
-            // per-session. When off, no Run button is rendered and no
-            // iframe preview is created.
+            // from the model never execute without the user opting in.
+            // The persisted value in localStorage takes precedence (spread
+            // below) so a user who turned it on stays opted in across
+            // reloads.
             codePreviewEnabled: false,
+            ...loadFromStorage(STORAGE_KEYS.SETTINGS, {}),
         },
 
         // ==================== Theme Actions ====================

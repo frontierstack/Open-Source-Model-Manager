@@ -2191,6 +2191,9 @@ body.font-size-large .markdown-content,
 .text-white\/20{
   color: rgb(255 255 255 / 0.2);
 }
+.underline{
+  text-decoration-line: underline;
+}
 .placeholder-dark-500::-moz-placeholder{
   --tw-placeholder-opacity: 1;
   color: rgb(113 113 122 / var(--tw-placeholder-opacity, 1));

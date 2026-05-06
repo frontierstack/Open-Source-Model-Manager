@@ -1,21 +1,47 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { X, Eye, Code, RefreshCw, Download, Share2, FileText } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 
 /**
  * ArtifactsPanel — right-rail panel with Preview / Source / Diff tabs.
  *
- * Artifacts are detected client-side from assistant messages:
- *   - Every fenced code block (```lang\n...\n```) becomes an artifact
- *   - Each artifact has: id, title, language, source
- *
- * Detection is read-only; nothing is persisted. Future enhancements may
- * promote long markdown sections or attached files to artifacts too.
+ * Artifacts come from two places:
+ *   - Fenced code blocks (```lang\n...\n```) in assistant prose
+ *     → kind='code', source is the raw code
+ *   - Tool-call artifacts (files written by create_file / run_python /
+ *     make_downloadable etc., emitted via _artifacts on the tool result)
+ *     → kind='file', `url` points at /api/tool-artifacts/<runId>/<name>
+ *     so the Preview tab can iframe HTML, render images inline, and the
+ *     Source tab can fetch the bytes for code-style files. This closes
+ *     the gap where a model that wrote an .html via create_file produced
+ *     no side-panel artifact at all.
  */
+const FILE_LANG_BY_EXT = {
+    html: 'html', htm: 'html', xhtml: 'html',
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    ts: 'typescript', tsx: 'typescript',
+    jsx: 'javascript',
+    css: 'css', scss: 'scss', less: 'less',
+    json: 'json', md: 'markdown', txt: 'text', csv: 'csv', tsv: 'tsv',
+    py: 'python', rb: 'ruby', go: 'go', rs: 'rust',
+    java: 'java', kt: 'kotlin', swift: 'swift',
+    sh: 'bash', bash: 'bash', zsh: 'bash',
+    yaml: 'yaml', yml: 'yaml', toml: 'toml', ini: 'ini',
+    xml: 'xml', svg: 'xml',
+    png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', bmp: 'image',
+    pdf: 'pdf', zip: 'archive', tar: 'archive', gz: 'archive',
+    mp3: 'audio', wav: 'audio', mp4: 'video', webm: 'video',
+};
+function langFromName(name) {
+    const ext = (name || '').toLowerCase().split('.').pop();
+    return FILE_LANG_BY_EXT[ext] || 'text';
+}
+
 export function extractArtifacts(messages = []) {
     const artifacts = [];
     messages.forEach((msg, msgIdx) => {
         if (msg.role !== 'assistant') return;
+        // Fenced code blocks in prose ----------------------------------
         const content = msg.content || '';
         const fenceRegex = /```(\w+)?\s*(?:\[([^\]]+)\])?\n([\s\S]*?)```/g;
         let match;
@@ -37,8 +63,38 @@ export function extractArtifacts(messages = []) {
             });
             blockIdx++;
         }
+
+        // Tool-call artifacts (files written by skills) ----------------
+        const tcalls = Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+        tcalls.forEach((tc, tcIdx) => {
+            const arts = Array.isArray(tc?.artifacts) ? tc.artifacts : [];
+            arts.forEach((a, aIdx) => {
+                if (!a || typeof a !== 'object' || !a.url || !a.name) return;
+                const lang = langFromName(a.name);
+                artifacts.push({
+                    id: `m${msgIdx}_t${tcIdx}_a${aIdx}`,
+                    title: a.name,
+                    language: lang,
+                    // Empty `source` until we fetch it on demand. CodeBlock
+                    // and the line-count footer fall back gracefully on ''.
+                    source: '',
+                    url: a.url,
+                    fileSize: typeof a.size === 'number' ? a.size : undefined,
+                    fileName: a.name,
+                    messageIdx: msgIdx,
+                    kind: 'file',
+                });
+            });
+        });
     });
     return artifacts;
+}
+
+function fmtBytes(b) {
+    if (typeof b !== 'number' || !Number.isFinite(b) || b < 0) return '';
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelect, onClose }) {
@@ -48,6 +104,39 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
         if (!artifacts.length) return null;
         return artifacts.find(a => a.id === activeId) || artifacts[artifacts.length - 1];
     }, [artifacts, activeId]);
+
+    // Source fetch for file artifacts. The active artifact carries only
+    // a URL (the bytes live on the server); pull them on demand and
+    // memoise per artifact id so switching tabs / artifacts is cheap and
+    // refreshing the active artifact re-fetches.
+    const [fileSources, setFileSources] = useState({}); // { [id]: { text|null, error|null, loading } }
+    useEffect(() => {
+        if (!active || active.kind !== 'file' || !active.url) return;
+        // Don't refetch if already cached
+        if (fileSources[active.id] && !fileSources[active.id].loading) return;
+        // Skip binaries — Source tab shows a placeholder for image/pdf/archive.
+        const lang = active.language;
+        if (['image', 'pdf', 'archive', 'audio', 'video'].includes(lang)) return;
+        let cancelled = false;
+        setFileSources(prev => ({ ...prev, [active.id]: { text: null, error: null, loading: true } }));
+        fetch(active.url, { credentials: 'include' })
+            .then(r => r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))
+            .then(text => {
+                if (cancelled) return;
+                setFileSources(prev => ({
+                    ...prev,
+                    [active.id]: { text: text.slice(0, 500_000), error: null, loading: false },
+                }));
+            })
+            .catch(err => {
+                if (cancelled) return;
+                setFileSources(prev => ({
+                    ...prev,
+                    [active.id]: { text: null, error: err.message || 'Fetch failed', loading: false },
+                }));
+            });
+        return () => { cancelled = true; };
+    }, [active?.id, active?.url, active?.kind, active?.language]);
 
     if (!open) return null;
 
@@ -134,6 +223,20 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                     <button
                         style={iconBtn}
                         onClick={() => {
+                            // File artifact: navigate to the server URL with
+                            // ?download=1 so Content-Disposition: attachment
+                            // is forced regardless of MIME-type rules.
+                            // Code-block artifact: build a Blob from the
+                            // captured source and trigger a save dialog.
+                            if (active.kind === 'file' && active.url) {
+                                const u = active.url + (active.url.includes('?') ? '&' : '?') + 'download=1';
+                                const a = document.createElement('a');
+                                a.href = u;
+                                a.download = active.fileName || active.title;
+                                a.rel = 'noopener noreferrer';
+                                a.click();
+                                return;
+                            }
                             const blob = new Blob([active.source], { type: 'text/plain' });
                             const url = URL.createObjectURL(blob);
                             const a = document.createElement('a');
@@ -174,7 +277,11 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                     <span>All ({artifacts.length})</span>
                 </button>
                 <span style={version}>
-                    {active ? `${active.language || 'text'} · ${active.source.split('\n').length} lines` : ''}
+                    {active
+                        ? (active.kind === 'file'
+                            ? `${active.language || 'file'}${active.fileSize ? ' · ' + fmtBytes(active.fileSize) : ''}`
+                            : `${active.language || 'text'} · ${(active.source || '').split('\n').length} lines`)
+                        : ''}
                 </span>
             </div>
 
@@ -188,25 +295,9 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                 ) : !active ? (
                     <EmptyState />
                 ) : tab === 'preview' ? (
-                    <div style={{ padding: '16px 18px 40px' }}>
-                        <CodeBlock
-                            code={active.source}
-                            language={active.language}
-                            isStreaming={false}
-                        />
-                    </div>
+                    <FilePreviewBody active={active} fileSource={fileSources[active.id]} />
                 ) : (
-                    <pre style={{
-                        margin: 0,
-                        padding: '20px 22px',
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: 12.5, lineHeight: 1.6,
-                        color: 'var(--ink-2)',
-                        whiteSpace: 'pre',
-                        overflowX: 'auto',
-                    }}>
-                        {active.source}
-                    </pre>
+                    <FileSourceBody active={active} fileSource={fileSources[active.id]} />
                 )}
             </div>
 
@@ -225,7 +316,12 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                         style={primaryBtn}
                         onClick={async () => {
                             try {
-                                await navigator.clipboard.writeText(active.source);
+                                let toCopy = active.source;
+                                if (active.kind === 'file') {
+                                    const cached = fileSources[active.id];
+                                    toCopy = (cached && cached.text) || active.url || '';
+                                }
+                                await navigator.clipboard.writeText(toCopy);
                             } catch (e) { /* ignore */ }
                         }}
                     >
@@ -237,6 +333,121 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
             </aside>
         </>
     );
+}
+
+// Preview tab body. For code artifacts, renders the captured source via
+// CodeBlock (existing behavior). For file artifacts: HTML iframes live so
+// the user can interact with maps / dashboards / generated pages, images
+// render inline, and binary file types fall back to an "Open in new tab"
+// button. Text-based files (json, csv, md, py, js, ...) render their
+// fetched source through CodeBlock.
+function FilePreviewBody({ active, fileSource }) {
+    if (active.kind !== 'file') {
+        return (
+            <div style={{ padding: '16px 18px 40px' }}>
+                <CodeBlock code={active.source} language={active.language} isStreaming={false} />
+            </div>
+        );
+    }
+    const lang = active.language;
+    if (lang === 'html') {
+        return (
+            <iframe
+                src={active.url}
+                title={active.title || 'preview'}
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
+            />
+        );
+    }
+    if (lang === 'image') {
+        return (
+            <div style={{
+                width: '100%', height: '100%', overflow: 'auto',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: 16, background: 'var(--bg-2)',
+            }}>
+                <img
+                    src={active.url}
+                    alt={active.title}
+                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                />
+            </div>
+        );
+    }
+    if (['pdf', 'audio', 'video'].includes(lang)) {
+        // Browsers natively render these in an iframe.
+        return (
+            <iframe
+                src={active.url}
+                title={active.title || 'preview'}
+                style={{ width: '100%', height: '100%', border: 0, background: 'var(--bg-2)' }}
+            />
+        );
+    }
+    if (lang === 'archive') {
+        return (
+            <div style={{
+                padding: '32px 24px', display: 'flex', flexDirection: 'column',
+                alignItems: 'center', gap: 14, color: 'var(--ink-3)',
+            }}>
+                <FileText style={{ width: 40, height: 40, color: 'var(--ink-4)' }} strokeWidth={1.25} />
+                <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>
+                    Archive — no inline preview.
+                </div>
+                <a href={active.url} target="_blank" rel="noopener noreferrer"
+                   style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'underline' }}>
+                    Open / download {active.fileName || active.title}
+                </a>
+            </div>
+        );
+    }
+    // Text-ish file (json, md, py, js, csv, ...). Fetch and render via CodeBlock.
+    if (fileSource?.loading) {
+        return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12 }}>Loading…</div>;
+    }
+    if (fileSource?.error) {
+        return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12 }}>Could not load file: {fileSource.error}</div>;
+    }
+    const text = fileSource?.text || '';
+    return (
+        <div style={{ padding: '16px 18px 40px' }}>
+            <CodeBlock code={text} language={active.language} isStreaming={false} />
+        </div>
+    );
+}
+
+// Source tab body. Code artifacts: pre-formatted source. File artifacts:
+// fetched bytes for text-ish files, "binary — open in new tab" for the
+// rest so the panel never tries to render a 4 MB PNG as text.
+function FileSourceBody({ active, fileSource }) {
+    const preStyle = {
+        margin: 0,
+        padding: '20px 22px',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 12.5, lineHeight: 1.6,
+        color: 'var(--ink-2)',
+        whiteSpace: 'pre',
+        overflowX: 'auto',
+    };
+    if (active.kind !== 'file') {
+        return <pre style={preStyle}>{active.source}</pre>;
+    }
+    const lang = active.language;
+    if (['image', 'pdf', 'archive', 'audio', 'video'].includes(lang)) {
+        return (
+            <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12.5 }}>
+                Binary file — no source view. Use Preview or open in a new tab.
+            </div>
+        );
+    }
+    if (fileSource?.loading) {
+        return <div style={{ padding: 24, color: 'var(--ink-3)', fontSize: 12 }}>Loading source…</div>;
+    }
+    if (fileSource?.error) {
+        return <div style={{ padding: 24, color: 'var(--err, #d33)', fontSize: 12 }}>Could not load source: {fileSource.error}</div>;
+    }
+    return <pre style={preStyle}>{fileSource?.text || ''}</pre>;
 }
 
 function EmptyState() {
