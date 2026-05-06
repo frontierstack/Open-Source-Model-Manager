@@ -13887,6 +13887,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // One-shot retry latch for the false-completion detector below
             // (claims "saved/created/wrote ... file" but emitted no tool calls).
             let falseCompletionRetried = false;
+            // One-shot retry latch for the abandoned-research detector
+            // (mid-research turn ends "Let me dig deeper..." / "I'll search
+            // for X" without emitting the next tool_call).
+            let abandonedResearchRetried = false;
             // Hoisted out of the per-round body: skills don't change mid-turn,
             // so loading and indexing them once per request avoids re-walking
             // the (potentially large) skills file on every tool round.
@@ -14266,6 +14270,40 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         continue; // re-stream
                     }
                 }
+
+                // Abandoned-research detector: after at least one round of
+                // tool use, the model ends its turn with a planning verb
+                // ("Let me dig deeper", "I'll search for X next") instead
+                // of either emitting the next tool_call or writing the
+                // final summary. Common with small local LLMs — they
+                // narrate intent in prose but the structured tool_call
+                // never lands. Without this guard the user sees a partial
+                // response and has to manually click Continue.
+                if (toolCallRound > 0 && !abandonedResearchRetried) {
+                    const trimmed = (fullResponse || '').trim();
+                    const tail = trimmed.slice(-220);
+                    // Trailing planning verb (e.g. "let me dig", "i'll fetch",
+                    // "next, i'll search"). Excludes legitimate narrative
+                    // verbs ("explain", "summarize", "know", "see") that
+                    // appear in real conclusions.
+                    const planSubject = /\b(?:let\s+me|i['’]?ll|i\s+will|next,?\s*i['’]?ll|i\s+should(?:\s+also)?|let['’]?s)\s+/i;
+                    const planVerb = /\b(?:dig|search(?:\s+for)?|fetch|look\s+(?:up|into|at|for)|check|grab|find|examine|investigate|review|gather|pull|retrieve|explore|verify|confirm|try|do)\b/i;
+                    const isShort = trimmed.length < 800;
+                    if (isShort && planSubject.test(tail) && planVerb.test(tail)) {
+                        abandonedResearchRetried = true;
+                        const snippet = tail.replace(/\s+/g, ' ').slice(-140);
+                        console.warn(`[Chat Stream] Abandoned-research detected after ${toolCallRound} tool round(s) — re-streaming with nudge. Tail: "${snippet}"`);
+                        currentMessages = [
+                            ...currentMessages,
+                            {
+                                role: 'system',
+                                content: 'You ended your last turn announcing more work ("' + snippet + '") but did not actually emit the tool_call. Either call the tool now to follow through, OR write the final answer to the user using the tool results already in this conversation. Do not narrate plans without executing them — the runtime only acts on real tool_calls.',
+                            },
+                        ];
+                        continue; // re-stream
+                    }
+                }
+
                 // Normal end — no tool calls. Exit outer loop.
                 break;
             } // end tool-call outer loop
