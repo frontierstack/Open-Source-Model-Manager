@@ -385,9 +385,16 @@ except Exception as _e:
     // promotion step, a file created by run_python and then copy_file'd
     // into /workspace/artifacts/ silently never appears.
     //
-    // We mtime-filter against `start` so files left over from prior turns
-    // don't re-surface every time, and skip names the artifact endpoint
-    // would reject (dotfiles / `..`) to avoid 400s on download.
+    // We use Math.max(mtime, ctime) against `start` so files left over
+    // from prior turns don't re-surface every time. ctime is critical
+    // because copy_file/shutil.copy2 (Python convention used by the
+    // copy_file skill) preserves the SOURCE's mtime on the destination —
+    // so a file copied into /workspace/artifacts/ during this run has an
+    // mtime older than start and would be falsely skipped if we only
+    // checked mtime. ctime ('change time') updates whenever the inode is
+    // created or its metadata changes, so a freshly-copied file's ctime
+    // is always within the run window. Skip dotfiles / `..` names since
+    // the artifact endpoint would reject them anyway.
     if (workspaceInfo) {
         const wsArtifactsDir = path.join(workspaceInfo.localInContainer, 'artifacts');
         try {
@@ -400,7 +407,8 @@ except Exception as _e:
                 const srcPath = path.join(wsArtifactsDir, e.name);
                 let stat;
                 try { stat = await fs.stat(srcPath); } catch { continue; }
-                if (!stat.isFile() || stat.mtimeMs < start) continue;
+                const newest = Math.max(stat.mtimeMs, stat.ctimeMs);
+                if (!stat.isFile() || newest < start) continue;
                 const destPath = path.join(artifactsIn, e.name);
                 try {
                     await fs.copyFile(srcPath, destPath);
