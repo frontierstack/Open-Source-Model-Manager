@@ -96,6 +96,7 @@ import Slider from '@mui/material/Slider';
 import InputAdornment from '@mui/material/InputAdornment';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
+import Autocomplete from '@mui/material/Autocomplete';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
@@ -481,6 +482,7 @@ const App = () => {
     const [apiKeys, setApiKeys] = useState([]);
     const [newKeyName, setNewKeyName] = useState('');
     const [newKeyPermissions, setNewKeyPermissions] = useState(['query', 'models']);
+    const [newKeyAllowedSkills, setNewKeyAllowedSkills] = useState([]);
     const [newKeyRateLimitRequests, setNewKeyRateLimitRequests] = useState(60);
     const [newKeyRateLimitTokens, setNewKeyRateLimitTokens] = useState(100000);
     const [noRateLimit, setNoRateLimit] = useState(false);
@@ -493,6 +495,7 @@ const App = () => {
     const [editingKey, setEditingKey] = useState(null);
     const [editKeyName, setEditKeyName] = useState('');
     const [editKeyPermissions, setEditKeyPermissions] = useState([]);
+    const [editKeyAllowedSkills, setEditKeyAllowedSkills] = useState([]);
     const [editKeyRateLimitRequests, setEditKeyRateLimitRequests] = useState(60);
     const [editKeyRateLimitTokens, setEditKeyRateLimitTokens] = useState(100000);
     const [editNoRateLimit, setEditNoRateLimit] = useState(false);
@@ -550,18 +553,17 @@ const App = () => {
         priority: 'medium'
     });
 
-    // Agent permissions state
-    const [agentPermissions, setAgentPermissions] = useState({
-        allowFileRead: true,
-        allowFileWrite: true,
-        allowFileDelete: true,
-        allowToolExecution: true,
-        allowModelAccess: true,
-        allowCollaboration: true
-    });
-
     // Agent sub-tab state
     const [agentSubTab, setAgentSubTab] = useState(0);
+
+    // Tools sub-tab UI state (search/filter)
+    const [toolsSearchQuery, setToolsSearchQuery] = useState('');
+    const [toolsEnabledFilter, setToolsEnabledFilter] = useState('all'); // all | enabled | disabled
+    const [toolsTypeFilter, setToolsTypeFilter] = useState('all'); // 'all' or specific type
+
+    // Skills sub-tab UI state (search/filter)
+    const [skillsSearchQuery, setSkillsSearchQuery] = useState('');
+    const [skillsEnabledFilter, setSkillsEnabledFilter] = useState('all'); // all | enabled | disabled
 
     // System reset state
     const [resetDialogOpen, setResetDialogOpen] = useState(false);
@@ -699,7 +701,6 @@ const App = () => {
         fetchSkills();
         fetchMdSkills();
         fetchTasks();
-        fetchAgentPermissions();
 
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = window.location.hostname;
@@ -1033,13 +1034,6 @@ const App = () => {
             .catch(error => console.error('Error fetching tasks:', error));
     };
 
-    const fetchAgentPermissions = () => {
-        fetch('/api/agent-permissions', { credentials: 'include' })
-            .then(res => res.json())
-            .then(data => setAgentPermissions(data))
-            .catch(error => console.error('Error fetching agent permissions:', error));
-    };
-
     // API Key handlers
     const handleCreateApiKey = () => {
         if (!newKeyName.trim()) {
@@ -1055,6 +1049,7 @@ const App = () => {
             body: JSON.stringify({
                 name: newKeyName,
                 permissions: newKeyPermissions,
+                allowedSkills: newKeyAllowedSkills,
                 rateLimitRequests: noRateLimit ? null : newKeyRateLimitRequests,
                 rateLimitTokens: noTokenLimit ? null : newKeyRateLimitTokens,
                 bearerOnly: bearerOnly
@@ -1065,6 +1060,7 @@ const App = () => {
             setCreatedKeyData(data);
             setNewKeyName('');
             setNewKeyPermissions(['query', 'models']);
+            setNewKeyAllowedSkills([]);
             setNewKeyRateLimitRequests(60);
             setNewKeyRateLimitTokens(100000);
             setNoRateLimit(false);
@@ -1138,6 +1134,7 @@ const App = () => {
         setEditingKey(key);
         setEditKeyName(key.name);
         setEditKeyPermissions(key.permissions || []);
+        setEditKeyAllowedSkills(Array.isArray(key.allowedSkills) ? key.allowedSkills : []);
         setEditKeyRateLimitRequests(key.rateLimitRequests || 60);
         setEditKeyRateLimitTokens(key.rateLimitTokens || 100000);
         setEditNoRateLimit(key.rateLimitRequests === null);
@@ -1158,6 +1155,7 @@ const App = () => {
             body: JSON.stringify({
                 name: editKeyName,
                 permissions: editKeyPermissions,
+                allowedSkills: editKeyAllowedSkills,
                 rateLimitRequests: editNoRateLimit ? null : editKeyRateLimitRequests,
                 rateLimitTokens: editNoTokenLimit ? null : editKeyRateLimitTokens
             }),
@@ -7514,23 +7512,6 @@ console.log(await res.json());`
             .catch(error => showSnackbar('Failed to delete task', 'error'));
     };
 
-    // Permission handlers
-    const handleUpdatePermissions = (newPermissions) => {
-        fetch('/api/agent-permissions', {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(newPermissions)
-        })
-            .then(res => res.json())
-            .then(data => {
-                showSnackbar('Permissions updated successfully', 'success');
-                setAgentPermissions(data);
-            })
-            .catch(error => showSnackbar('Failed to update permissions', 'error'));
-    };
-
     // User menu handlers
     const handleUserMenuOpen = (event) => {
         setUserMenuAnchor(event.currentTarget);
@@ -9489,6 +9470,29 @@ console.log(await res.json());`
                                                                 Bearer tokens can be used with "Authorization: Bearer &lt;token&gt;" header without requiring a secret.
                                                             </Typography>
                                                         </Grid>
+                                                        <Grid item xs={12}>
+                                                            <Autocomplete
+                                                                multiple
+                                                                size="small"
+                                                                options={skills.map(s => s.name).filter(Boolean)}
+                                                                value={newKeyAllowedSkills}
+                                                                onChange={(e, v) => setNewKeyAllowedSkills(v)}
+                                                                renderTags={(value, getTagProps) =>
+                                                                    value.map((option, index) => (
+                                                                        <Chip variant="outlined" label={option} size="small" {...getTagProps({ index })} key={option} />
+                                                                    ))
+                                                                }
+                                                                renderInput={(params) => (
+                                                                    <TextField
+                                                                        {...params}
+                                                                        size="small"
+                                                                        label="Allowed Skills"
+                                                                        placeholder="Select tools"
+                                                                        helperText="Restrict this API key to specific tools. Leave empty for no restriction."
+                                                                    />
+                                                                )}
+                                                            />
+                                                        </Grid>
                                                         <Grid item xs={12} md={6}>
                                                             <Box>
                                                                 <FormControlLabel
@@ -9631,6 +9635,29 @@ console.log(await res.json());`
                                                                     <MenuItem value="admin">Admin Access</MenuItem>
                                                                 </Select>
                                                             </FormControl>
+                                                        </Grid>
+                                                        <Grid item xs={12}>
+                                                            <Autocomplete
+                                                                multiple
+                                                                size="small"
+                                                                options={skills.map(s => s.name).filter(Boolean)}
+                                                                value={editKeyAllowedSkills}
+                                                                onChange={(e, v) => setEditKeyAllowedSkills(v)}
+                                                                renderTags={(value, getTagProps) =>
+                                                                    value.map((option, index) => (
+                                                                        <Chip variant="outlined" label={option} size="small" {...getTagProps({ index })} key={option} />
+                                                                    ))
+                                                                }
+                                                                renderInput={(params) => (
+                                                                    <TextField
+                                                                        {...params}
+                                                                        size="small"
+                                                                        label="Allowed Skills"
+                                                                        placeholder="Select tools"
+                                                                        helperText="Restrict this API key to specific tools. Leave empty for no restriction."
+                                                                    />
+                                                                )}
+                                                            />
                                                         </Grid>
                                                         <Grid item xs={12} md={6}>
                                                             <Box>
@@ -11280,16 +11307,34 @@ console.log(await res.json());`
                                                     <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
                                                         <Tab label="Tools" />
                                                         <Tab label="Skills" />
-                                                        <Tab label="Permissions" />
                                                     </Tabs>
 
                                                     {/* Tools Sub-Tab */}
-                                                    {agentSubTab === 0 && (
+                                                    {agentSubTab === 0 && (() => {
+                                                        const toolTypes = Array.from(new Set(skills.map(s => s.type).filter(Boolean)));
+                                                        const q = toolsSearchQuery.trim().toLowerCase();
+                                                        const filteredTools = skills.filter(skill => {
+                                                            if (toolsEnabledFilter === 'enabled' && skill.enabled === false) return false;
+                                                            if (toolsEnabledFilter === 'disabled' && skill.enabled !== false) return false;
+                                                            if (toolsTypeFilter !== 'all' && skill.type !== toolsTypeFilter) return false;
+                                                            if (q) {
+                                                                const name = (skill.name || '').toLowerCase();
+                                                                const desc = (skill.description || '').toLowerCase();
+                                                                if (!name.includes(q) && !desc.includes(q)) return false;
+                                                            }
+                                                            return true;
+                                                        });
+                                                        return (
                                                         <Box>
-                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
-                                                                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                                                                    Tools Library ({skills.length})
-                                                                </Typography>
+                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
+                                                                <Box>
+                                                                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                                                                        Tools Library
+                                                                    </Typography>
+                                                                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                                                        Showing {filteredTools.length} of {skills.length}
+                                                                    </Typography>
+                                                                </Box>
                                                                 <Button
                                                                     variant="contained"
                                                                     size="small"
@@ -11306,81 +11351,161 @@ console.log(await res.json());`
                                                             {skills.length === 0 ? (
                                                                 <Alert severity="info">No tools created yet. Click "Create Tool" to get started.</Alert>
                                                             ) : (
-                                                                <Accordion defaultExpanded={false}>
-                                                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                                                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                                                                            View All Tools ({skills.length})
-                                                                        </Typography>
-                                                                    </AccordionSummary>
-                                                                    <AccordionDetails>
-                                                                        <Grid container spacing={2}>
-                                                                    {skills.map(skill => (
-                                                                        <Grid item xs={12} md={6} key={skill.id}>
-                                                                            <Card variant="outlined">
-                                                                                <CardContent>
-                                                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 1 }}>
-                                                                                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
-                                                                                            <Typography variant="h6">{skill.name}</Typography>
-                                                                                            <Chip label={skill.type} size="small" />
-                                                                                        </Box>
-                                                                                        <Switch
-                                                                                            checked={skill.enabled !== false}
-                                                                                            onChange={(e) => {
-                                                                                                fetch(`/api/skills/${skill.id}`, {
-                                                                                                    credentials: 'include',
-                                                                                                    method: 'PUT',
-                                                                                                    headers: { 'Content-Type': 'application/json' },
-                                                                                                    body: JSON.stringify({ ...skill, enabled: e.target.checked })
-                                                                                                })
-                                                                                                    .then(res => res.json())
-                                                                                                    .then(() => {
-                                                                                                        showSnackbar(`Tool ${e.target.checked ? 'disabled' : 'enabled'}`, 'success');
-                                                                                                        fetchSkills();
-                                                                                                    })
-                                                                                                    .catch(error => showSnackbar(`Failed to update tool: ${error.message}`, 'error'));
-                                                                                            }}
-                                                                                            size="small"
-                                                                                        />
-                                                                                    </Box>
-                                                                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                                                                        {skill.description || 'No description'}
-                                                                                    </Typography>
-                                                                                    <Typography variant="caption" color="text.secondary">
-                                                                                        Created: {skill.createdAt ? new Date(skill.createdAt).toLocaleDateString() : 'Built-in'}
-                                                                                    </Typography>
-                                                                                </CardContent>
-                                                                                <CardActions>
-                                                                                    <Button
+                                                                <>
+                                                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
+                                                                        <TextField
+                                                                            fullWidth
+                                                                            size="small"
+                                                                            placeholder="Search tools by name or description"
+                                                                            value={toolsSearchQuery}
+                                                                            onChange={(e) => setToolsSearchQuery(e.target.value)}
+                                                                            InputProps={{
+                                                                                startAdornment: (
+                                                                                    <InputAdornment position="start">
+                                                                                        <SearchIcon fontSize="small" />
+                                                                                    </InputAdornment>
+                                                                                ),
+                                                                                endAdornment: toolsSearchQuery ? (
+                                                                                    <InputAdornment position="end">
+                                                                                        <IconButton size="small" onClick={() => setToolsSearchQuery('')}>
+                                                                                            <ClearIcon fontSize="small" />
+                                                                                        </IconButton>
+                                                                                    </InputAdornment>
+                                                                                ) : null
+                                                                            }}
+                                                                        />
+                                                                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                                                                            <ToggleButtonGroup
+                                                                                value={toolsEnabledFilter}
+                                                                                exclusive
+                                                                                size="small"
+                                                                                onChange={(e, v) => { if (v !== null) setToolsEnabledFilter(v); }}
+                                                                            >
+                                                                                <ToggleButton value="all">All</ToggleButton>
+                                                                                <ToggleButton value="enabled">Enabled</ToggleButton>
+                                                                                <ToggleButton value="disabled">Disabled</ToggleButton>
+                                                                            </ToggleButtonGroup>
+                                                                            {toolTypes.length > 0 && (
+                                                                                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', ml: { xs: 0, sm: 1 } }}>
+                                                                                    <Chip
+                                                                                        label="all types"
                                                                                         size="small"
-                                                                                        onClick={() => {
-                                                                                            setEditingSkill(skill);
-                                                                                            setSkillFormData(skill);
-                                                                                            setSkillDialogOpen(true);
-                                                                                        }}
-                                                                                    >
-                                                                                        Edit
-                                                                                    </Button>
-                                                                                    <Button size="small" color="error" onClick={() => handleDeleteSkill(skill.id)}>
-                                                                                        Delete
-                                                                                    </Button>
-                                                                                </CardActions>
-                                                                            </Card>
-                                                                        </Grid>
-                                                                    ))}
-                                                                        </Grid>
-                                                                    </AccordionDetails>
-                                                                </Accordion>
+                                                                                        clickable
+                                                                                        color={toolsTypeFilter === 'all' ? 'primary' : 'default'}
+                                                                                        variant={toolsTypeFilter === 'all' ? 'filled' : 'outlined'}
+                                                                                        onClick={() => setToolsTypeFilter('all')}
+                                                                                    />
+                                                                                    {toolTypes.map(t => (
+                                                                                        <Chip
+                                                                                            key={t}
+                                                                                            label={t}
+                                                                                            size="small"
+                                                                                            clickable
+                                                                                            color={toolsTypeFilter === t ? 'primary' : 'default'}
+                                                                                            variant={toolsTypeFilter === t ? 'filled' : 'outlined'}
+                                                                                            onClick={() => setToolsTypeFilter(t)}
+                                                                                        />
+                                                                                    ))}
+                                                                                </Box>
+                                                                            )}
+                                                                        </Box>
+                                                                    </Box>
+
+                                                                    {filteredTools.length === 0 ? (
+                                                                        <Alert severity="info">No tools match the current filters.</Alert>
+                                                                    ) : (
+                                                                        <Box sx={{ maxHeight: 600, overflow: 'auto', pr: 0.5 }}>
+                                                                            <Grid container spacing={1.5}>
+                                                                                {filteredTools.map(skill => {
+                                                                                    const isEnabled = skill.enabled !== false;
+                                                                                    return (
+                                                                                    <Grid item xs={12} md={6} key={skill.id}>
+                                                                                        <Card variant="outlined" sx={{ opacity: isEnabled ? 1 : 0.62 }}>
+                                                                                            <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                                                                                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 0.5, gap: 1 }}>
+                                                                                                    <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                                                                                                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{skill.name}</Typography>
+                                                                                                        {skill.type && <Chip label={skill.type} size="small" sx={{ height: 18, fontSize: '0.65rem' }} />}
+                                                                                                        {!isEnabled && <Chip label="disabled" size="small" color="warning" sx={{ height: 18, fontSize: '0.65rem' }} />}
+                                                                                                    </Box>
+                                                                                                    <Switch
+                                                                                                        checked={isEnabled}
+                                                                                                        onChange={(e) => {
+                                                                                                            fetch(`/api/skills/${skill.id}`, {
+                                                                                                                credentials: 'include',
+                                                                                                                method: 'PUT',
+                                                                                                                headers: { 'Content-Type': 'application/json' },
+                                                                                                                body: JSON.stringify({ ...skill, enabled: e.target.checked })
+                                                                                                            })
+                                                                                                                .then(res => res.json())
+                                                                                                                .then(() => {
+                                                                                                                    showSnackbar(`Tool ${e.target.checked ? 'enabled' : 'disabled'}`, 'success');
+                                                                                                                    fetchSkills();
+                                                                                                                })
+                                                                                                                .catch(error => showSnackbar(`Failed to update tool: ${error.message}`, 'error'));
+                                                                                                        }}
+                                                                                                        size="small"
+                                                                                                    />
+                                                                                                </Box>
+                                                                                                <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5, fontSize: '0.8rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                                                                                                    {skill.description || 'No description'}
+                                                                                                </Typography>
+                                                                                                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                                                                                                    {skill.createdAt ? `Created ${new Date(skill.createdAt).toLocaleDateString()}` : 'Built-in'}
+                                                                                                </Typography>
+                                                                                            </CardContent>
+                                                                                            <CardActions sx={{ pt: 0, px: 1 }}>
+                                                                                                <Button
+                                                                                                    size="small"
+                                                                                                    onClick={() => {
+                                                                                                        setEditingSkill(skill);
+                                                                                                        setSkillFormData(skill);
+                                                                                                        setSkillDialogOpen(true);
+                                                                                                    }}
+                                                                                                >
+                                                                                                    Edit
+                                                                                                </Button>
+                                                                                                <Button size="small" color="error" onClick={() => handleDeleteSkill(skill.id)}>
+                                                                                                    Delete
+                                                                                                </Button>
+                                                                                            </CardActions>
+                                                                                        </Card>
+                                                                                    </Grid>
+                                                                                    );
+                                                                                })}
+                                                                            </Grid>
+                                                                        </Box>
+                                                                    )}
+                                                                </>
                                                             )}
                                                         </Box>
-                                                    )}
+                                                        );
+                                                    })()}
 
                                                     {/* Skills Sub-Tab — markdown instructional files */}
-                                                    {agentSubTab === 1 && (
+                                                    {agentSubTab === 1 && (() => {
+                                                        const sq = skillsSearchQuery.trim().toLowerCase();
+                                                        const filteredMdSkills = mdSkills.filter(skill => {
+                                                            const isEnabled = skill.enabled !== false;
+                                                            if (skillsEnabledFilter === 'enabled' && !isEnabled) return false;
+                                                            if (skillsEnabledFilter === 'disabled' && isEnabled) return false;
+                                                            if (sq) {
+                                                                const name = (skill.name || '').toLowerCase();
+                                                                const desc = (skill.description || '').toLowerCase();
+                                                                const triggers = (skill.triggers || '').toLowerCase();
+                                                                if (!name.includes(sq) && !desc.includes(sq) && !triggers.includes(sq)) return false;
+                                                            }
+                                                            return true;
+                                                        });
+                                                        return (
                                                         <Box>
-                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'center' }}>
+                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
                                                                 <Box>
                                                                     <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                                                                        Skills Library ({mdSkills.length})
+                                                                        Skills Library
+                                                                    </Typography>
+                                                                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                                                                        Showing {filteredMdSkills.length} of {mdSkills.length}
                                                                     </Typography>
                                                                     <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                                                                         Markdown guides the chat model loads on demand via <code>load_skill</code>. Not executable — tools do the work.
@@ -11400,133 +11525,100 @@ console.log(await res.json());`
                                                                     No skills yet. Click "New Skill" to write your first one — describe a procedure the model should follow when a task matches the triggers.
                                                                 </Alert>
                                                             ) : (
-                                                                <Grid container spacing={2}>
-                                                                    {mdSkills.map(skill => {
-                                                                        const isEnabled = skill.enabled !== false;
-                                                                        return (
-                                                                        <Grid item xs={12} md={6} key={skill.id}>
-                                                                            <Card variant="outlined" sx={{ opacity: isEnabled ? 1 : 0.62 }}>
-                                                                                <CardContent>
-                                                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 1, gap: 1 }}>
-                                                                                        <Box sx={{ flex: 1, minWidth: 0 }}>
-                                                                                            <Typography variant="h6" sx={{ fontSize: '1rem' }}>{skill.name}</Typography>
-                                                                                            <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5, flexWrap: 'wrap' }}>
-                                                                                                {skill.owner == null && (
-                                                                                                    <Chip label="global" size="small" sx={{ height: 18, fontSize: '0.65rem' }} />
+                                                                <>
+                                                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
+                                                                        <TextField
+                                                                            fullWidth
+                                                                            size="small"
+                                                                            placeholder="Search skills by name, description, or triggers"
+                                                                            value={skillsSearchQuery}
+                                                                            onChange={(e) => setSkillsSearchQuery(e.target.value)}
+                                                                            InputProps={{
+                                                                                startAdornment: (
+                                                                                    <InputAdornment position="start">
+                                                                                        <SearchIcon fontSize="small" />
+                                                                                    </InputAdornment>
+                                                                                ),
+                                                                                endAdornment: skillsSearchQuery ? (
+                                                                                    <InputAdornment position="end">
+                                                                                        <IconButton size="small" onClick={() => setSkillsSearchQuery('')}>
+                                                                                            <ClearIcon fontSize="small" />
+                                                                                        </IconButton>
+                                                                                    </InputAdornment>
+                                                                                ) : null
+                                                                            }}
+                                                                        />
+                                                                        <ToggleButtonGroup
+                                                                            value={skillsEnabledFilter}
+                                                                            exclusive
+                                                                            size="small"
+                                                                            onChange={(e, v) => { if (v !== null) setSkillsEnabledFilter(v); }}
+                                                                        >
+                                                                            <ToggleButton value="all">All</ToggleButton>
+                                                                            <ToggleButton value="enabled">Enabled</ToggleButton>
+                                                                            <ToggleButton value="disabled">Disabled</ToggleButton>
+                                                                        </ToggleButtonGroup>
+                                                                    </Box>
+
+                                                                    {filteredMdSkills.length === 0 ? (
+                                                                        <Alert severity="info">No skills match the current filters.</Alert>
+                                                                    ) : (
+                                                                        <Box sx={{ maxHeight: 600, overflow: 'auto', pr: 0.5 }}>
+                                                                            <Grid container spacing={1.5}>
+                                                                                {filteredMdSkills.map(skill => {
+                                                                                    const isEnabled = skill.enabled !== false;
+                                                                                    return (
+                                                                                    <Grid item xs={12} md={6} key={skill.id}>
+                                                                                        <Card variant="outlined" sx={{ opacity: isEnabled ? 1 : 0.62 }}>
+                                                                                            <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                                                                                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 0.5, gap: 1 }}>
+                                                                                                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                                                                                                        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{skill.name}</Typography>
+                                                                                                        <Box sx={{ display: 'flex', gap: 0.5, mt: 0.25, flexWrap: 'wrap' }}>
+                                                                                                            {skill.owner == null && (
+                                                                                                                <Chip label="global" size="small" sx={{ height: 18, fontSize: '0.65rem' }} />
+                                                                                                            )}
+                                                                                                            {!isEnabled && (
+                                                                                                                <Chip label="disabled" size="small" color="warning" sx={{ height: 18, fontSize: '0.65rem' }} />
+                                                                                                            )}
+                                                                                                        </Box>
+                                                                                                    </Box>
+                                                                                                    <Switch
+                                                                                                        checked={isEnabled}
+                                                                                                        onChange={(e) => handleToggleMdSkill(skill, e.target.checked)}
+                                                                                                        size="small"
+                                                                                                        inputProps={{ 'aria-label': isEnabled ? 'Disable skill' : 'Enable skill' }}
+                                                                                                    />
+                                                                                                </Box>
+                                                                                                <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5, fontSize: '0.8rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                                                                                                    {skill.description || 'No description'}
+                                                                                                </Typography>
+                                                                                                {skill.triggers && (
+                                                                                                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5, fontSize: '0.65rem' }}>
+                                                                                                        Triggers: {skill.triggers}
+                                                                                                    </Typography>
                                                                                                 )}
-                                                                                                {!isEnabled && (
-                                                                                                    <Chip label="disabled" size="small" color="warning" sx={{ height: 18, fontSize: '0.65rem' }} />
-                                                                                                )}
-                                                                                            </Box>
-                                                                                        </Box>
-                                                                                        <Switch
-                                                                                            checked={isEnabled}
-                                                                                            onChange={(e) => handleToggleMdSkill(skill, e.target.checked)}
-                                                                                            size="small"
-                                                                                            inputProps={{ 'aria-label': isEnabled ? 'Disable skill' : 'Enable skill' }}
-                                                                                        />
-                                                                                    </Box>
-                                                                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                                                                                        {skill.description || 'No description'}
-                                                                                    </Typography>
-                                                                                    {skill.triggers && (
-                                                                                        <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
-                                                                                            Triggers: {skill.triggers}
-                                                                                        </Typography>
-                                                                                    )}
-                                                                                    <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                                                                                        {skill.bodyPreview || '(empty body)'}
-                                                                                    </Typography>
-                                                                                </CardContent>
-                                                                                <CardActions>
-                                                                                    <Button size="small" onClick={() => openMdSkillEditor(skill)}>Edit</Button>
-                                                                                    <Button size="small" color="error" onClick={() => handleDeleteMdSkill(skill)}>Delete</Button>
-                                                                                </CardActions>
-                                                                            </Card>
-                                                                        </Grid>
-                                                                        );
-                                                                    })}
-                                                                </Grid>
+                                                                                                <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', fontSize: '0.65rem' }}>
+                                                                                                    {skill.bodyPreview || '(empty body)'}
+                                                                                                </Typography>
+                                                                                            </CardContent>
+                                                                                            <CardActions sx={{ pt: 0, px: 1 }}>
+                                                                                                <Button size="small" onClick={() => openMdSkillEditor(skill)}>Edit</Button>
+                                                                                                <Button size="small" color="error" onClick={() => handleDeleteMdSkill(skill)}>Delete</Button>
+                                                                                            </CardActions>
+                                                                                        </Card>
+                                                                                    </Grid>
+                                                                                    );
+                                                                                })}
+                                                                            </Grid>
+                                                                        </Box>
+                                                                    )}
+                                                                </>
                                                             )}
                                                         </Box>
-                                                    )}
+                                                        );
+                                                    })()}
 
-                                                    {/* Permissions Sub-Tab */}
-                                                    {agentSubTab === 2 && (
-                                                        <Box>
-                                                            <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
-                                                                Global Agent Permissions
-                                                            </Typography>
-                                                            <Grid container spacing={2}>
-                                                                <Grid item xs={12} md={6}>
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={agentPermissions.allowFileRead}
-                                                                                onChange={(e) => handleUpdatePermissions({ ...agentPermissions, allowFileRead: e.target.checked })}
-                                                                            />
-                                                                        }
-                                                                        label="Allow File Read"
-                                                                    />
-                                                                </Grid>
-                                                                <Grid item xs={12} md={6}>
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={agentPermissions.allowFileWrite}
-                                                                                onChange={(e) => handleUpdatePermissions({ ...agentPermissions, allowFileWrite: e.target.checked })}
-                                                                            />
-                                                                        }
-                                                                        label="Allow File Write"
-                                                                    />
-                                                                </Grid>
-                                                                <Grid item xs={12} md={6}>
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={agentPermissions.allowFileDelete}
-                                                                                onChange={(e) => handleUpdatePermissions({ ...agentPermissions, allowFileDelete: e.target.checked })}
-                                                                            />
-                                                                        }
-                                                                        label="Allow File Delete"
-                                                                    />
-                                                                </Grid>
-                                                                <Grid item xs={12} md={6}>
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={agentPermissions.allowToolExecution}
-                                                                                onChange={(e) => handleUpdatePermissions({ ...agentPermissions, allowToolExecution: e.target.checked })}
-                                                                            />
-                                                                        }
-                                                                        label="Allow Tool Execution"
-                                                                    />
-                                                                </Grid>
-                                                                <Grid item xs={12} md={6}>
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={agentPermissions.allowModelAccess}
-                                                                                onChange={(e) => handleUpdatePermissions({ ...agentPermissions, allowModelAccess: e.target.checked })}
-                                                                            />
-                                                                        }
-                                                                        label="Allow Model Access"
-                                                                    />
-                                                                </Grid>
-                                                                <Grid item xs={12} md={6}>
-                                                                    <FormControlLabel
-                                                                        control={
-                                                                            <Switch
-                                                                                checked={agentPermissions.allowCollaboration}
-                                                                                onChange={(e) => handleUpdatePermissions({ ...agentPermissions, allowCollaboration: e.target.checked })}
-                                                                            />
-                                                                        }
-                                                                        label="Allow Collaboration"
-                                                                    />
-                                                                </Grid>
-                                                            </Grid>
-                                                        </Box>
-                                                    )}
                                                 </CardContent>
                                             </Card>
                                         </Grid>
@@ -11578,6 +11670,26 @@ console.log(await res.json());`
                         rows={4}
                         value={agentFormData.systemPrompt}
                         onChange={(e) => setAgentFormData({ ...agentFormData, systemPrompt: e.target.value })}
+                        sx={{ mb: 2 }}
+                    />
+                    <Autocomplete
+                        multiple
+                        options={skills.map(s => s.name).filter(Boolean)}
+                        value={Array.isArray(agentFormData.skills) ? agentFormData.skills : []}
+                        onChange={(e, newValue) => setAgentFormData({ ...agentFormData, skills: newValue })}
+                        renderTags={(value, getTagProps) =>
+                            value.map((option, index) => (
+                                <Chip variant="outlined" label={option} size="small" {...getTagProps({ index })} key={option} />
+                            ))
+                        }
+                        renderInput={(params) => (
+                            <TextField
+                                {...params}
+                                label="Allowed Skills"
+                                placeholder="Select tools"
+                                helperText="Restrict this agent to a specific set of tools. Leave empty to allow all enabled tools."
+                            />
+                        )}
                         sx={{ mb: 2 }}
                     />
                 </DialogContent>

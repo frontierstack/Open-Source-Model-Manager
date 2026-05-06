@@ -2369,6 +2369,49 @@ const {
     selfServicePasswordReset
 } = require('./auth/users');
 
+// ----- Skill whitelist enforcement (module-scope helpers) -----------------
+// Used by both the chat-tools dynamic provider/dispatch (inside the IIFE
+// near the bottom of this file) and by the REST `/api/skills/:name/execute`
+// route. Keeping them at module scope avoids duplicating logic across the
+// two call sites.
+function safeToolName(name) {
+    return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+
+// Returns a Set<string> of safe-named skills the request is allowed to call,
+// or null when no whitelist applies (= unrestricted, which is the default).
+// Resolution order: explicit agentId in ctx → API key's allowedSkills → user's allowedSkills.
+// An empty array in any of those scopes means "block all skills" (intentional lockdown).
+async function resolveSkillWhitelist(ctx) {
+    if (!ctx) return null;
+    // 1. Explicit agent
+    if (ctx.agentId) {
+        try {
+            const agents = await loadAgents();
+            const ag = agents.find(a => a.id === ctx.agentId);
+            if (ag && Array.isArray(ag.skills)) {
+                return new Set(ag.skills.map(n => safeToolName(n)));
+            }
+        } catch (_) { /* fall through */ }
+    }
+    // 2. API key scope
+    const apiAllowed = ctx?.apiKeyData?.allowedSkills;
+    if (Array.isArray(apiAllowed)) {
+        return new Set(apiAllowed.map(n => safeToolName(n)));
+    }
+    // 3. User scope
+    if (ctx.userId) {
+        try {
+            const users = await getAllUsers();
+            const u = users.find(x => x.id === ctx.userId);
+            if (u && Array.isArray(u.allowedSkills)) {
+                return new Set(u.allowedSkills.map(n => safeToolName(n)));
+            }
+        } catch (_) { /* fall through */ }
+    }
+    return null;
+}
+
 // Check if any users exist (for first admin setup)
 app.get('/api/auth/has-users', authRateLimiter, async (req, res) => {
     try {
@@ -2539,7 +2582,8 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
                 username: user.username,
                 email: user.email,
                 role: user.role,
-                createdAt: user.createdAt
+                createdAt: user.createdAt,
+                allowedSkills: Array.isArray(user.allowedSkills) ? user.allowedSkills : null
             };
         }
 
@@ -2569,6 +2613,7 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
                 permissions: keyData.permissions,
                 rateLimitRequests: keyData.rateLimitRequests,
                 rateLimitTokens: keyData.rateLimitTokens,
+                allowedSkills: Array.isArray(keyData.allowedSkills) ? keyData.allowedSkills : null,
                 active: keyData.active,
                 stats: {
                     requestCount: stats.requestCount,
@@ -2645,11 +2690,17 @@ app.put('/api/users/:id', requireAuth, async (req, res) => {
         const { id } = req.params;
 
         // Whitelist allowed fields to prevent mass assignment
-        const { email, disabled, role } = req.body;
+        const { email, disabled, role, allowedSkills } = req.body;
         const updates = {};
         if (email !== undefined) updates.email = email;
         if (disabled !== undefined) updates.disabled = disabled;
         if (role !== undefined && req.user.role === 'admin') updates.role = role;
+        if (allowedSkills !== undefined) {
+            if (allowedSkills !== null && (!Array.isArray(allowedSkills) || !allowedSkills.every(s => typeof s === 'string'))) {
+                return res.status(400).json({ error: 'allowedSkills must be an array of strings or null' });
+            }
+            updates.allowedSkills = Array.isArray(allowedSkills) ? allowedSkills : null;
+        }
 
         const updatedUser = await updateUser(id, updates);
         res.json(updatedUser);
@@ -5306,7 +5357,7 @@ app.get('/api/tool-artifacts/:runId/:filename', requireAuth, async (req, res) =>
 app.get('/api/system/tools-catalog', requireAuth, async (req, res) => {
     try {
         const t = require('./services/chatTools');
-        const full = await t.buildToolCatalog({ userId: req.userId });
+        const full = await t.buildToolCatalog({ userId: req.userId, apiKeyData: req.apiKeyData });
         const names = full.map(f => f.function?.name).filter(Boolean);
         res.json({
             count: names.length,
@@ -6418,10 +6469,16 @@ app.get('/api/api-keys', requireAdmin, async (req, res) => {
 
 // Create a new API key - Admin only
 app.post('/api/api-keys', requireAdmin, async (req, res) => {
-    const { name, permissions, rateLimitRequests, rateLimitTokens, bearerOnly } = req.body;
+    const { name, permissions, rateLimitRequests, rateLimitTokens, bearerOnly, allowedSkills } = req.body;
 
     if (!name) {
         return res.status(400).json({ error: 'Name is required' });
+    }
+
+    if (allowedSkills !== undefined && allowedSkills !== null) {
+        if (!Array.isArray(allowedSkills) || !allowedSkills.every(s => typeof s === 'string')) {
+            return res.status(400).json({ error: 'allowedSkills must be an array of strings' });
+        }
     }
 
     try {
@@ -6435,6 +6492,7 @@ app.post('/api/api-keys', requireAdmin, async (req, res) => {
             permissions: permissions || ['query', 'models'],
             rateLimitRequests: (rateLimitRequests !== undefined && rateLimitRequests !== null && rateLimitRequests > 0) ? rateLimitRequests : 60,
             rateLimitTokens: (rateLimitTokens !== undefined && rateLimitTokens !== null && rateLimitTokens > 0) ? rateLimitTokens : 100000,
+            allowedSkills: Array.isArray(allowedSkills) ? allowedSkills : null,
             userId: req.userId || null, // Associate key with creating user
             active: true,
             createdAt: new Date().toISOString()
@@ -6452,7 +6510,13 @@ app.post('/api/api-keys', requireAdmin, async (req, res) => {
 // Update an API key - Admin only
 app.put('/api/api-keys/:id', requireAdmin, async (req, res) => {
     const { id } = req.params;
-    const { name, permissions, rateLimitRequests, rateLimitTokens, active } = req.body;
+    const { name, permissions, rateLimitRequests, rateLimitTokens, active, allowedSkills } = req.body;
+
+    if (allowedSkills !== undefined && allowedSkills !== null) {
+        if (!Array.isArray(allowedSkills) || !allowedSkills.every(s => typeof s === 'string')) {
+            return res.status(400).json({ error: 'allowedSkills must be an array of strings' });
+        }
+    }
 
     try {
         const keys = await loadApiKeys();
@@ -6466,6 +6530,9 @@ app.put('/api/api-keys/:id', requireAdmin, async (req, res) => {
         if (rateLimitRequests !== undefined) keys[keyIndex].rateLimitRequests = rateLimitRequests;
         if (rateLimitTokens !== undefined) keys[keyIndex].rateLimitTokens = rateLimitTokens;
         if (active !== undefined) keys[keyIndex].active = active;
+        if (allowedSkills !== undefined) {
+            keys[keyIndex].allowedSkills = Array.isArray(allowedSkills) ? allowedSkills : null;
+        }
 
         await saveApiKeys(keys);
         broadcast({ type: 'log', message: `API key updated: ${keys[keyIndex].name}` });
@@ -6669,6 +6736,10 @@ app.post('/api/agents', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'Agent name is required' });
     }
 
+    if (skills !== undefined && !Array.isArray(skills)) {
+        return res.status(400).json({ error: 'skills must be an array' });
+    }
+
     try {
         const agents = await loadAgents();
 
@@ -6715,6 +6786,10 @@ app.put('/api/agents/:id', requireAuth, async (req, res) => {
 
     const { id } = req.params;
     const { name, description, modelName, systemPrompt, skills, permissions } = req.body;
+
+    if (skills !== undefined && !Array.isArray(skills)) {
+        return res.status(400).json({ error: 'skills must be an array' });
+    }
 
     try {
         const agents = await loadAgents();
@@ -7230,6 +7305,18 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
 
         if (!skill) {
             return res.status(404).json({ error: 'Skill not found' });
+        }
+
+        // Whitelist enforcement (per-agent → per-API-key → per-user).
+        // Returns null when no whitelist applies; admin keys still get
+        // checked because admin status is orthogonal to skill scoping.
+        const whitelist = await resolveSkillWhitelist({
+            userId: req.userId,
+            apiKeyData: req.apiKeyData,
+            agentId
+        });
+        if (whitelist && !whitelist.has(safeToolName(skill.name))) {
+            return res.status(403).json({ error: 'Skill is not in the allowed-skills list for this scope.' });
         }
 
         if (!skill.enabled) {
@@ -13342,6 +13429,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
         const toolCtx = {
             userId: req.userId,
+            apiKeyData: req.apiKeyData,
+            agentId: req.body?.agentId || null,
             conversationId: conversationId || null,
             latestUserText,
         };
@@ -18098,11 +18187,10 @@ app.use((req, res) => {
     // applies the sandbox / workspace / network-allowlist policy on the
     // skill record.
 
-    // OpenAI tool names accept only [a-zA-Z0-9_-]{1,64}. Skills follow
-    // that convention already (snake_case), but sanitize defensively.
-    function safeToolName(name) {
-        return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-    }
+    // OpenAI tool names accept only [a-zA-Z0-9_-]{1,64}. `safeToolName` is
+    // module-scope (defined near the top of this file) so the REST route
+    // `/api/skills/:name/execute` can use the same sanitizer when checking
+    // whitelist entries.
 
     // Skills store their parameter list as a flat map
     //   { paramName: 'string' | 'number' | 'boolean' | 'array' | 'object' }
@@ -18135,10 +18223,14 @@ app.use((req, res) => {
         };
     }
 
+    // `resolveSkillWhitelist` is also module-scope — see the helper near the
+    // auth destructure at the top of this file.
+
     tools.setDynamicToolProvider(async (ctx) => {
         try {
             const all = await loadSkills();
             const scoped = filterByUserId(all, ctx?.userId);
+            const whitelist = await resolveSkillWhitelist(ctx);
             const out = [];
             // Tool names must be unique — load_skill / web_search /
             // fetch_url are already in the static registry. Dedupe.
@@ -18146,6 +18238,7 @@ app.use((req, res) => {
             for (const s of scoped) {
                 if (!s || s.enabled === false || !s.name) continue;
                 const name = safeToolName(s.name);
+                if (whitelist && !whitelist.has(name)) continue;
                 if (!name || taken.has(name)) continue;
                 taken.add(name);
                 // Description is the primary selection signal — most skills
@@ -18209,6 +18302,10 @@ app.use((req, res) => {
         const skill = scoped.find(s => safeToolName(s.name) === safe);
         if (!skill) {
             return { success: false, error: `Unknown skill: ${toolName}` };
+        }
+        const whitelist = await resolveSkillWhitelist(ctx);
+        if (whitelist && !whitelist.has(safeToolName(skill.name))) {
+            return { success: false, error: `Skill "${toolName}" is not in the allowed-skills list for this scope.` };
         }
         if (skill.enabled === false) {
             return { success: false, error: `Skill "${toolName}" is disabled` };
