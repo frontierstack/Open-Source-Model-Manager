@@ -701,6 +701,7 @@ function buildChatRuntimePrelude() {
         `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
         `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
+        `Files the user should be able to download (HTML, PDF, image, archive, dataset, generated script, etc.) MUST be written under /workspace/artifacts/ — the chat UI auto-surfaces that directory as download chips. Files written elsewhere in /workspace are NOT downloadable. After producing such a file you may also call make_downloadable to publish it.`,
     ].join('\n');
     _preludeCache = { day, text };
     return text;
