@@ -14105,16 +14105,53 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // iterations on "find_patterns count:0" spins.
                         // Intercept, return a nudge, and let the model
                         // pick a different tool next round.
-                        const fp = `${call.function.name}:${call.function.arguments || ''}`;
+                        //
+                        // For mutating write tools (create_file, etc.), the
+                        // model regenerates the file content one byte at a
+                        // time across rounds — narration changes, a comment
+                        // moves, JSON whitespace drifts — and the full-args
+                        // fingerprint never matches even though the model is
+                        // clearly stuck rewriting the same target. Dedupe
+                        // those by target path instead, and fire the nudge
+                        // on the SECOND call (one prior hit) rather than the
+                        // third.
+                        const MUTATING_TARGET_EXTRACTORS = {
+                            create_file:       a => a?.filePath || a?.path,
+                            update_file:       a => a?.filePath || a?.path,
+                            append_to_file:    a => a?.filePath || a?.path,
+                            delete_file:       a => a?.filePath || a?.path,
+                            move_file:         a => a?.destPath || a?.destination || a?.dest,
+                            copy_file:         a => a?.destPath || a?.destination || a?.dest,
+                            create_directory:  a => a?.dirPath || a?.path,
+                            create_pdf:        a => a?.filePath || a?.outputPath,
+                            create_xlsx:       a => a?.filePath || a?.outputPath,
+                            html_to_pdf:       a => a?.filePath || a?.outputPath,
+                            make_downloadable: a => a?.filePath || a?.path,
+                        };
+                        let targetKey = null;
+                        const targetExtractor = MUTATING_TARGET_EXTRACTORS[call.function.name];
+                        if (targetExtractor) {
+                            try {
+                                const parsedArgs = JSON.parse(call.function.arguments || '{}');
+                                const target = targetExtractor(parsedArgs);
+                                if (target) targetKey = `${call.function.name}:target=${target}`;
+                            } catch { /* malformed args — fall back to full-args fp */ }
+                        }
+                        const fp = targetKey || `${call.function.name}:${call.function.arguments || ''}`;
                         const priorHits = toolCallHistory.filter(h => h.fp === fp);
                         let resultMsg;
-                        if (priorHits.length >= 2 &&
-                            priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash) {
+                        const targetRepeat = !!targetKey && priorHits.length >= 1;
+                        const argRepeat = !targetKey && priorHits.length >= 2 &&
+                            priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
+                        if (targetRepeat || argRepeat) {
                             const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
                             const webTools = new Set(['web_search', 'fetch_url']);
                             const loopingToolName = call.function.name;
                             let nudgeText;
-                            if (fileTools.has(loopingToolName)) {
+                            if (targetRepeat) {
+                                const target = targetKey.split('target=')[1];
+                                nudgeText = `You already called ${loopingToolName} for "${target}" this turn — that write succeeded. Do not call ${loopingToolName} again for the same target. Either move on to a different file, or stop calling tools and write your final answer to the user describing what you produced.`;
+                            } else if (fileTools.has(loopingToolName)) {
                                 nudgeText = `You've already called ${loopingToolName} with these arguments and it failed or returned no useful data. The path may not exist — call list_directory on the parent first, or stop and tell the user the file is not accessible.`;
                             } else if (webTools.has(loopingToolName)) {
                                 nudgeText = `You've already searched for this with the same query. Try different keywords, or stop and answer with what you have.`;
@@ -14135,7 +14172,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 name: call.function.name,
                                 content: JSON.stringify(nudge),
                             };
-                            console.warn(`[Chat Stream] Loop detected for ${call.function.name}; short-circuited with nudge after ${priorHits.length} identical calls`);
+                            console.warn(`[Chat Stream] Loop detected for ${call.function.name} (${targetRepeat ? 'target-repeat' : 'arg-repeat'}); short-circuited with nudge after ${priorHits.length} prior call(s)`);
                         } else {
                             resultMsg = await chatTools.executeToolCall(call, toolCtx);
                         }
