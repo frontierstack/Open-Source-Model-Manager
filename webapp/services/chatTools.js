@@ -497,14 +497,15 @@ async function executeToolCall(call, ctx) {
 // Config
 // ---------------------------------------------------------------------------
 
-// Cap on model⇄tool rounds per user turn. Set to 20 — generous enough for
-// multi-file audits while keeping small local LLMs from burning rounds in
-// loops. Runaway loops are also caught by the per-turn identical-call
-// detector in server.js (2 repeats → nudge) and the reasoning-stream loop
-// guard (8+ phrase matches → abort), so an explicit iteration cap mainly
-// guards against pathological token-cost blowups where those guards don't
-// apply.
-const MAX_TOOL_ITERATIONS = 20;
+// Cap on model⇄tool rounds per user turn. Set to 50 — research workloads
+// (multi-city news, multi-source comparisons with paywall fallbacks) can
+// legitimately need 30+ distinct tool calls before synthesizing. The cap
+// is not the runaway-loop defense: the per-turn identical-call detector
+// (2 repeats with same result → nudge) and the reasoning-stream loop
+// guard (8+ phrase matches → abort) catch loops cheaply. The iteration
+// cap is the last-resort guard against pathological token-cost blowups
+// where neither of those guards apply.
+const MAX_TOOL_ITERATIONS = 50;
 
 module.exports = {
     registerTool,
