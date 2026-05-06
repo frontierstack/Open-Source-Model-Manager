@@ -20,13 +20,16 @@ const COMPRESS_SCRIPT = path.join(__dirname, 'aimem_compress.py');
  * Check if AIMem dependencies are available
  * @returns {Promise<boolean>}
  */
+let _isAvailableCache = null;
 async function isAvailable() {
+    if (_isAvailableCache !== null) return _isAvailableCache;
     try {
         await execFileAsync('python3', ['-c', 'import tiktoken, numpy, sklearn'], { timeout: 10000 });
-        return true;
+        _isAvailableCache = true;
     } catch {
-        return false;
+        _isAvailableCache = false;
     }
+    return _isAvailableCache;
 }
 
 /**
@@ -56,7 +59,7 @@ async function compressMessages(messages, query, options = {}) {
             dedup_threshold: dedupThreshold,
         };
 
-        fs.writeFileSync(paramsFile, JSON.stringify(params));
+        await fs.promises.writeFile(paramsFile, JSON.stringify(params));
 
         const { stdout, stderr } = await execFileAsync(
             'python3', [COMPRESS_SCRIPT, paramsFile],

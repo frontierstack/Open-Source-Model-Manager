@@ -30,7 +30,11 @@ const DEFAULT_COLORS = [
 // here we just render the chart itself and an optional summary line.
 export default function ChartBlock({ spec, summary }) {
     if (!spec || !Array.isArray(spec.data) || spec.data.length === 0) {
-        return null;
+        return (
+            <div style={{ padding: '12px 16px', color: 'var(--ink-3)', fontSize: 13, fontStyle: 'italic' }}>
+                No chart data to display.
+            </div>
+        );
     }
     const { type, title, xLabel, yLabel, data, series } = spec;
 
@@ -40,10 +44,35 @@ export default function ChartBlock({ spec, summary }) {
     // either declare series explicitly OR we infer them from non-x keys.
     const resolvedSeries = useMemo(() => {
         if (Array.isArray(series) && series.length > 0) {
-            return series.map((s, i) => ({
+            const declared = series.map((s, i) => ({
                 name: s.name,
                 color: s.color || DEFAULT_COLORS[i % DEFAULT_COLORS.length],
             }));
+            // Series-key inference fallback: if every declared series name is
+            // missing from every data row (e.g. series=[{name:"close"}] but
+            // rows are {x, y}), the chart would silently render nothing.
+            // Rewrite the dataKey to 'y' when present, else infer numeric
+            // keys from the first row excluding the X-axis key.
+            const allMissing = declared.every(s =>
+                data.every(row => !(s.name in (row || {})))
+            );
+            if (allMissing) {
+                const sample = data[0] || {};
+                if ('y' in sample) {
+                    return [{ name: 'y', color: declared[0].color }];
+                }
+                const inferred = Object.keys(sample).filter(k =>
+                    k !== 'x' && k !== 'label' && k !== 'date' &&
+                    typeof sample[k] === 'number'
+                );
+                if (inferred.length > 0) {
+                    return inferred.map((k, i) => ({
+                        name: k,
+                        color: declared[i] ? declared[i].color : DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+                    }));
+                }
+            }
+            return declared;
         }
         if (type === 'pie') return [];
         if (type === 'scatter') {
@@ -82,7 +111,10 @@ export default function ChartBlock({ spec, summary }) {
         borderRadius: 6,
         fontSize: 12,
         color: 'var(--ink)',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
     };
+    const tooltipLabelStyle = { color: 'var(--ink)', fontWeight: 600, marginBottom: 4 };
+    const tooltipItemStyle = { color: 'var(--ink-2)' };
     const axisProps = {
         tick: { fill: 'var(--ink-3)', fontSize: 11 },
         stroke: 'var(--rule)',
@@ -95,7 +127,7 @@ export default function ChartBlock({ spec, summary }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule-2)" />
                 <XAxis dataKey={xKey} {...axisProps} label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -8, fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
                 <YAxis {...axisProps} label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
                 {resolvedSeries.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
                 {resolvedSeries.map(s => (
                     <Line key={s.name} type="monotone" dataKey={s.name} stroke={s.color} strokeWidth={2} dot={data.length <= 30} activeDot={{ r: 4 }} isAnimationActive={false} />
@@ -108,7 +140,7 @@ export default function ChartBlock({ spec, summary }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule-2)" />
                 <XAxis dataKey={xKey} {...axisProps} label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -8, fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
                 <YAxis {...axisProps} label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
-                <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'var(--bg-2)' }} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} cursor={{ fill: 'var(--bg-2)' }} />
                 {resolvedSeries.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
                 {resolvedSeries.map(s => (
                     <Bar key={s.name} dataKey={s.name} fill={s.color} isAnimationActive={false} />
@@ -121,7 +153,7 @@ export default function ChartBlock({ spec, summary }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule-2)" />
                 <XAxis dataKey={xKey} {...axisProps} label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -8, fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
                 <YAxis {...axisProps} label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
                 {resolvedSeries.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
                 {resolvedSeries.map(s => (
                     <Area key={s.name} type="monotone" dataKey={s.name} stroke={s.color} fill={s.color} fillOpacity={0.25} strokeWidth={2} isAnimationActive={false} />
@@ -141,7 +173,7 @@ export default function ChartBlock({ spec, summary }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule-2)" />
                 <XAxis type="number" dataKey="x" {...axisProps} label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -8, fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
                 <YAxis type="number" dataKey="y" {...axisProps} label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', fill: 'var(--ink-3)', fontSize: 11 } : undefined} />
-                <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: '3 3' }} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} cursor={{ strokeDasharray: '3 3' }} />
                 <Scatter data={scatterData} fill={DEFAULT_COLORS[0]} isAnimationActive={false} />
             </ScatterChart>
         );
@@ -153,7 +185,7 @@ export default function ChartBlock({ spec, summary }) {
         })).filter(d => Number.isFinite(d.value) && d.value > 0);
         chart = (
             <PieChart>
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Pie
                     data={pieData}

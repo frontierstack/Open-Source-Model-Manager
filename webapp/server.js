@@ -319,41 +319,43 @@ const DEFAULT_STOP_STRINGS = ['<|im_end|>', '<|im_start|>', '<|endoftext|>', '<|
  * @param {string} query - The user's query
  * @returns {string[]} Array of keywords
  */
-function extractQueryKeywords(query) {
-    // Common stop words to filter out
-    const stopWords = new Set([
-        'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-        'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
-        'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
-        'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above',
-        'below', 'between', 'under', 'again', 'further', 'then', 'once', 'here',
-        'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more',
-        'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
-        'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
-        'because', 'until', 'while', 'although', 'though', 'after', 'before',
-        'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am',
-        'it', 'its', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'you',
-        'your', 'yours', 'he', 'him', 'his', 'she', 'her', 'hers', 'they',
-        'them', 'their', 'please', 'help', 'want', 'know', 'tell', 'give',
-        'find', 'show', 'explain', 'describe', 'summarize', 'analyze', 'about'
-    ]);
+// Module-scope constants (used to be re-allocated on every
+// extractQueryKeywords call — hot path during chunking / condensation).
+const STOP_WORDS = new Set([
+    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
+    'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
+    'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above',
+    'below', 'between', 'under', 'again', 'further', 'then', 'once', 'here',
+    'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more',
+    'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+    'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
+    'because', 'until', 'while', 'although', 'though', 'after', 'before',
+    'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am',
+    'it', 'its', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'you',
+    'your', 'yours', 'he', 'him', 'his', 'she', 'her', 'hers', 'they',
+    'them', 'their', 'please', 'help', 'want', 'know', 'tell', 'give',
+    'find', 'show', 'explain', 'describe', 'summarize', 'analyze', 'about'
+]);
 
+const PHRASE_PATTERNS = [
+    /security\s+\w+/gi, /data\s+\w+/gi, /user\s+\w+/gi,
+    /error\s+\w+/gi, /api\s+\w+/gi, /\w+\s+management/gi,
+    /\w+\s+system/gi, /\w+\s+service/gi, /\w+\s+control/gi
+];
+
+function extractQueryKeywords(query) {
     // Extract words, filter stop words, keep meaningful terms
     const words = query.toLowerCase()
         .replace(/[^\w\s-]/g, ' ')
         .split(/\s+/)
-        .filter(word => word.length > 2 && !stopWords.has(word));
+        .filter(word => word.length > 2 && !STOP_WORDS.has(word));
 
     // Also extract multi-word phrases (bigrams) for better matching
     const queryLower = query.toLowerCase();
     const phrases = [];
-    const phrasePatterns = [
-        /security\s+\w+/gi, /data\s+\w+/gi, /user\s+\w+/gi,
-        /error\s+\w+/gi, /api\s+\w+/gi, /\w+\s+management/gi,
-        /\w+\s+system/gi, /\w+\s+service/gi, /\w+\s+control/gi
-    ];
-    for (const pattern of phrasePatterns) {
+    for (const pattern of PHRASE_PATTERNS) {
         const matches = queryLower.match(pattern);
         if (matches) phrases.push(...matches);
     }
@@ -684,66 +686,24 @@ function makeReasoningLoopDetector() {
 // models with training cutoffs earlier than "now" otherwise refuse queries
 // about recent dates thinking they're in the future; (2) nudge tool
 // selection so "current news / recent events" requests route to
-// web_search instead of find_patterns or get_timestamp loops.
+// web_search. Memoized per UTC day — the static body is identical between
+// calls within the same day and was previously rebuilt on every chat turn.
+let _preludeCache = { day: null, text: '' };
 function buildChatRuntimePrelude() {
-    const now = new Date();
-    const iso = now.toISOString().slice(0, 10);
-    const human = now.toLocaleDateString('en-US', {
+    const day = new Date().toISOString().slice(0, 10);
+    if (_preludeCache.day === day) return _preludeCache.text;
+    const today = new Date().toLocaleDateString('en-US', {
         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     });
-    return (
-        `Runtime context (injected by the server, not the user):\n` +
-        `- Today's date is ${human} (${iso}). References to "today", "current", ` +
-        `"recent", or a specific recent date refer to real data from the present, ` +
-        `not the future. Your training cutoff is earlier than today; do not refuse ` +
-        `or hedge a request on the basis of "not knowing" recent events — call a tool.\n` +
-        `- For any question about current events, news, prices, release dates/times, ` +
-        `sports results, stock/crypto prices, weather, real-time / recent information, ` +
-        `or the current state of any public entity (companies, people, games, products): ` +
-        `you MUST call web_search before answering. To read a specific URL, call fetch_url. ` +
-        `find_patterns is a LOCAL regex on text you supply; it cannot search the web or ` +
-        `any external corpus, so never use it to look up news or online data.\n` +
-        `- Never state a specific date, time, price, version number, score, or other ` +
-        `concrete fact about a real-world current event from memory. If the user asks ` +
-        `"when does X release", "what's the price of Y", "who won Z" — call web_search ` +
-        `first, cite the URL you pulled the fact from, and if the snippets don't contain ` +
-        `the exact fact call fetch_url on the most authoritative-looking result.\n` +
-        `- FOLLOW-UP questions: if the user asks about a specific detail (date, time, ` +
-        `number, name) related to a topic you already searched, call web_search AGAIN ` +
-        `with a query targeted at that detail. Do not paraphrase or infer from the ` +
-        `previous turn's search snippets — they may not have contained the specific ` +
-        `answer, and re-searching with a narrower query often surfaces it.\n` +
-        `- If the user contests your answer ("wrong", "incorrect", "check again", ` +
-        `"are you sure", "not right"): ALWAYS call web_search with a DIFFERENT, more ` +
-        `specific query. Do not simply repeat your previous answer or re-run the same ` +
-        `query. If two searches still disagree, present both and let the user decide ` +
-        `— do not guess.\n` +
-        `- When answering from web_search results, cite source URLs inline so the user ` +
-        `can verify. Do not present search-derived facts as if from your own knowledge.\n` +
-        `- If the same tool returns an empty or identical result twice in a row, stop ` +
-        `calling it and switch strategy (usually: call web_search with different terms) ` +
-        `or give the user a direct answer from what you already have.\n` +
-        `- TOOL CATALOG: you have a large catalog of tools attached to this request — ` +
-        `inspect the \`tools\` schemas, do not assume only web_search/fetch_url exist. ` +
-        `Categories you can rely on: file ops (read_file, create_file, update_file, ` +
-        `list_directory, search_files, grep_code, outline_file, replace_lines, ` +
-        `diff_files, tail_file, head_file); parsing (parse_html, parse_xml, parse_yaml, ` +
-        `parse_toml, parse_ini, parse_json, parse_csv, parse_url, parse_query_string, ` +
-        `parse_jwt, parse_cookie, parse_user_agent, parse_email, parse_diff, parse_ip, ` +
-        `parse_har, parse_pem, parse_sitemap, base64_decode); web (web_search, ` +
-        `fetch_url, scrapling_fetch, playwright_fetch, crawl_pages); system & data ` +
-        `(calculate, date_math, hash_data, ocr_image, system_info, dns_lookup, ` +
-        `csv_describe, spreadsheet_query, chart_plot); git (git_status, git_diff, ` +
-        `git_log, git_clone_shallow, git_show_commit, git_blame); plus many more. ` +
-        `If the user's request matches a tool by name or purpose, USE IT.\n` +
-        `- TOOL DISCIPLINE: when your reasoning concludes "I should use the X tool" ` +
-        `or "I'll call Y", you must EMIT the tool_call immediately — do not narrate ` +
-        `the call, do not say "I'll use calculate" and then answer from memory, do not ` +
-        `apologize that the task is "trivial" and skip the call. Trivial tasks still ` +
-        `get the tool call (calculate for "10+10", parse_url for any URL, base64_decode ` +
-        `for any base64 string). Tools are cheap; guessing is expensive when wrong. ` +
-        `Never write a tool name in prose as a substitute for invoking it.`
-    );
+    const text = [
+        `Today is ${today}.`,
+        `When the user asks for current, external, or time-sensitive information, call web_search or fetch_url BEFORE answering.`,
+        `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
+        `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
+        `Refuse to fabricate file contents, URLs, or data you have not actually fetched. If a tool failed, say so plainly.`,
+    ].join('\n');
+    _preludeCache = { day, text };
+    return text;
 }
 
 /**
@@ -765,6 +725,31 @@ function estimateTokenCount(content) {
                 tokens += Math.ceil((part.text.length / charsPerToken) * safetyMargin);
             } else if (part.type === 'image_url') {
                 // Images use ~1000 tokens (conservative estimate)
+                tokens += 1000;
+            }
+        }
+        return tokens;
+    }
+    return 0;
+}
+
+// Conservative estimator used inside the chat-stream handler. Used to be
+// rebuilt as a closure on every request. Distinct from estimateTokenCount
+// (4 chars/token, 1.05x) — this one uses 3 chars/token + 1.1x to trip
+// chunking sooner on number-heavy content. See CLAUDE.md for the rationale.
+const CHAT_STREAM_CHARS_PER_TOKEN = 3;
+const CHAT_STREAM_SAFETY_MARGIN = 1.1;
+function estimateTokens(content) {
+    if (typeof content === 'string') {
+        return Math.ceil((content.length / CHAT_STREAM_CHARS_PER_TOKEN) * CHAT_STREAM_SAFETY_MARGIN);
+    }
+    if (Array.isArray(content)) {
+        let tokens = 0;
+        for (const part of content) {
+            if (part.type === 'text' && part.text) {
+                tokens += Math.ceil((part.text.length / CHAT_STREAM_CHARS_PER_TOKEN) * CHAT_STREAM_SAFETY_MARGIN);
+            } else if (part.type === 'image_url') {
+                // Images use ~85 tokens for low-res, ~1000+ for high-res; conservative.
                 tokens += 1000;
             }
         }
@@ -1901,8 +1886,8 @@ const dataCache = {
     modelConfigs: { data: null, timestamp: 0 }
 };
 
-// Cache TTL in milliseconds (30 seconds default)
-const CACHE_TTL = 30000;
+// Cache TTL in milliseconds (5 minutes — matches CLAUDE.md)
+const CACHE_TTL = 300000;
 
 // Invalidate specific cache
 function invalidateCache(cacheKey) {
@@ -7023,8 +7008,7 @@ app.put('/api/skills/:id', requireAuth, async (req, res) => {
 
     const { id } = req.params;
     const { name, description, type, parameters, code, enabled } = req.body;
-    console.log('PUT /api/skills/:id - Request body:', JSON.stringify(req.body));
-    console.log('PUT /api/skills/:id - enabled value:', enabled, 'type:', typeof enabled);
+    console.log(`PUT /api/skills/${req.params.id} - body keys: ${Object.keys(req.body || {}).join(',')}`);
 
     try {
         const skills = await loadSkills();
@@ -10193,9 +10177,12 @@ app.get('/api/conversations', requireAuth, async (req, res) => {
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
         const conversations = await loadConversationsIndex(userId);
 
-        // Backfill messageCount for conversations missing it
+        // Backfill messageCount / memoryCount for conversations missing
+        // them. Run per-conversation backfills in parallel — each one was
+        // a separate disk read previously serialised by `await` in a for
+        // loop, blocking the sidebar render for users with many threads.
         let needsSave = false;
-        for (const conv of conversations) {
+        await Promise.all(conversations.map(async (conv) => {
             if (conv.messageCount === undefined) {
                 try {
                     const msgs = await loadConversationMessages(userId, conv.id);
@@ -10214,7 +10201,7 @@ app.get('/api/conversations', requireAuth, async (req, res) => {
                 }
                 needsSave = true;
             }
-        }
+        }));
         if (needsSave) {
             await saveConversationsIndex(userId, conversations).catch(() => {});
         }
@@ -12115,32 +12102,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const contextShift = targetInstance.config?.contextShift || false;
         const disableThinking = targetInstance.config?.disableThinking || false;
 
-        // Estimate token count - use conservative ratio for safety
-        // Number-heavy content (prices, dates) tokenizes at ~2-3 chars/token, not 4
-        // Being conservative here ensures chunking triggers before the model API rejects with 400
+        // Estimate token count - use conservative ratio for safety.
+        // Number-heavy content (prices, dates) tokenizes at ~2-3 chars/token, not 4.
+        // Being conservative here ensures chunking triggers before the model API rejects with 400.
+        // estimateTokens (the function) was lifted to module scope; the
+        // CHARS_PER_TOKEN / SAFETY_MARGIN constants stay locally defined
+        // because the chat-stream body recomputes char budgets from them
+        // (see e.g. `availableForContent * CHARS_PER_TOKEN` below). They
+        // must match CHAT_STREAM_CHARS_PER_TOKEN / CHAT_STREAM_SAFETY_MARGIN.
         const CHARS_PER_TOKEN = 3;
-        const SAFETY_MARGIN = 1.1;  // 10% buffer for tokenizer variance
-
-        const estimateTokens = (content) => {
-            if (typeof content === 'string') {
-                return Math.ceil((content.length / CHARS_PER_TOKEN) * SAFETY_MARGIN);
-            }
-            if (Array.isArray(content)) {
-                // Vision format: array of { type: 'text', text: '...' } and { type: 'image_url', ... }
-                let tokens = 0;
-                for (const part of content) {
-                    if (part.type === 'text' && part.text) {
-                        tokens += Math.ceil((part.text.length / CHARS_PER_TOKEN) * SAFETY_MARGIN);
-                    } else if (part.type === 'image_url') {
-                        // Images use ~85 tokens for low-res, ~1000+ for high-res
-                        // Use conservative estimate of 1000 tokens per image
-                        tokens += 1000;
-                    }
-                }
-                return tokens;
-            }
-            return 0;
-        };
+        const SAFETY_MARGIN = 1.1;
 
         // Build messages array based on input format
         let chatMessages = [];
@@ -13824,6 +13795,47 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 return { messages, dropped };
             };
 
+            // One-shot retry latch for the false-completion detector below
+            // (claims "saved/created/wrote ... file" but emitted no tool calls).
+            let falseCompletionRetried = false;
+            // Hoisted out of the per-round body: skills don't change mid-turn,
+            // so loading and indexing them once per request avoids re-walking
+            // the (potentially large) skills file on every tool round.
+            const allSkillsForPolicy = await loadSkills().catch(() => []);
+            const skillByName = new Map(allSkillsForPolicy.map(s => [s.name, s]));
+            const policyCache = new Map();
+            const toolPolicy = (toolName) => {
+                const cached = policyCache.get(toolName);
+                if (cached) return cached;
+                // Native handlers take precedence: if a tool is registered in
+                // chatTools.toolRegistry, executeToolCall dispatches to the
+                // in-process JS handler and never touches the Python skill
+                // record — even when a matching default-skill stub exists
+                // (e.g. fetch_url, web_search, playwright_fetch all ship
+                // comment-only Python stubs purely for catalog/system-prompt
+                // purposes). Label by what actually executes.
+                let result;
+                if (chatTools.toolRegistry?.has(toolName)) {
+                    result = { sandboxed: false, source: 'native' };
+                } else {
+                    const s = skillByName.get(toolName);
+                    if (!s) {
+                        result = { sandboxed: false, source: 'native' };
+                    } else {
+                        const wantSandbox = typeof s.sandbox === 'boolean'
+                            ? s.sandbox
+                            : !!s.userId;
+                        result = {
+                            sandboxed: !!wantSandbox,
+                            source: 'skill',
+                            workspace: !!s.workspace,
+                            network: s.network || 'none',
+                        };
+                    }
+                }
+                policyCache.set(toolName, result);
+                return result;
+            };
             while (toolCallRound <= chatTools.MAX_TOOL_ITERATIONS) {
                 // Reset per-round state. fullResponse is cumulative for the
                 // client stream; roundStart marks where THIS turn's text began
@@ -13972,39 +13984,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     if (!finalizedCalls.length) break; // no valid calls — bail
 
                     logChatActivity(`Tool-call round ${toolCallRound + 1}: ${finalizedCalls.length} call(s)`);
-                    // Pre-resolve the sandbox policy for each tool call so the
-                    // UI can label every chip. For skills this mirrors
-                    // executePythonSkill's wantSandbox logic; for static native
-                    // tools (web_search, fetch_url, chart_plot, ...) it's
-                    // always false because those are hand-coded JS in-process.
-                    const allSkillsForPolicy = await loadSkills().catch(() => []);
-                    const skillByName = new Map(allSkillsForPolicy.map(s => [s.name, s]));
-                    const toolPolicy = (toolName) => {
-                        // Native handlers take precedence: if a tool is
-                        // registered in chatTools.toolRegistry, executeToolCall
-                        // dispatches to the in-process JS handler and never
-                        // touches the Python skill record — even when a
-                        // matching default-skill stub exists (e.g. fetch_url,
-                        // web_search, playwright_fetch all ship comment-only
-                        // Python stubs purely for catalog/system-prompt
-                        // purposes). Label by what actually executes.
-                        if (chatTools.toolRegistry?.has(toolName)) {
-                            return { sandboxed: false, source: 'native' };
-                        }
-                        const s = skillByName.get(toolName);
-                        if (!s) {
-                            return { sandboxed: false, source: 'native' };
-                        }
-                        const wantSandbox = typeof s.sandbox === 'boolean'
-                            ? s.sandbox
-                            : !!s.userId;
-                        return {
-                            sandboxed: !!wantSandbox,
-                            source: 'skill',
-                            workspace: !!s.workspace,
-                            network: s.network || 'none',
-                        };
-                    };
+                    // toolPolicy was hoisted to before the outer loop so the
+                    // (potentially large) skills file is read once per request
+                    // instead of once per round. policyCache memoizes per name.
                     const toolResultMessages = [];
                     for (const call of finalizedCalls) {
                         const policy = toolPolicy(call.function.name);
@@ -14034,9 +14016,23 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         let resultMsg;
                         if (priorHits.length >= 2 &&
                             priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash) {
+                            const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
+                            const webTools = new Set(['web_search', 'fetch_url']);
+                            const loopingToolName = call.function.name;
+                            let nudgeText;
+                            if (fileTools.has(loopingToolName)) {
+                                nudgeText = `You've already called ${loopingToolName} with these arguments and it failed or returned no useful data. The path may not exist — call list_directory on the parent first, or stop and tell the user the file is not accessible.`;
+                            } else if (webTools.has(loopingToolName)) {
+                                nudgeText = `You've already searched for this with the same query. Try different keywords, or stop and answer with what you have.`;
+                            } else {
+                                nudgeText = `You've already called ${loopingToolName} with these arguments. Either change the arguments or stop calling tools and write your answer now.`;
+                            }
+                            if (toolCallRound > 8) {
+                                nudgeText += ` You've used 8+ tool calls this turn. Wrap up and answer.`;
+                            }
                             const nudge = {
                                 error: 'loop_detected',
-                                message: `You have called ${call.function.name} with the same arguments ${priorHits.length} times this turn and received an identical result each time. Stop calling this tool with these arguments. If you need external/current information, call web_search or fetch_url. Otherwise, write a direct answer from what you already have and end your turn.`,
+                                message: nudgeText,
                                 previous_call_count: priorHits.length,
                             };
                             resultMsg = {
@@ -14066,8 +14062,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             resultMsg = {
                                 ...resultMsg,
                                 content: resultMsg.content.slice(0, TOOL_RESULT_CHAR_CAP) +
-                                    `\n\n[Tool result truncated by server: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars. ` +
-                                    `If you need more, re-call ${call.function.name} with a narrower scope ` +
+                                    `\n\n[TRUNCATED — only first ${TOOL_RESULT_CHAR_CAP} characters of ${original} shown (~${Math.round(TOOL_RESULT_CHAR_CAP / 4)} tokens). ` +
+                                    `Request a narrower scope if you need more — re-call ${call.function.name} with ` +
                                     `(e.g. a specific entry path, a smaller line range, an entryPath / startLine+endLine arg).]`,
                             };
                             console.warn(`[Chat Stream] Capped ${call.function.name} result: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars`);
@@ -14099,9 +14095,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 // Guard: don't ship a huge result down the SSE
                                 // stream. 32 KB is generous for search results
                                 // (5 hits × a few KB each) but much smaller than
-                                // typical skill bodies.
+                                // typical skill bodies. render_chart is exempted
+                                // because its result IS the chart spec the UI
+                                // needs to render — dropping it leaves a chart
+                                // chip with no chart.
                                 const RESULT_SIZE_CAP = 32 * 1024;
-                                const resultPayload = parsedResult && Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP
+                                const isChartTool = call?.function?.name === 'render_chart';
+                                const resultPayload = parsedResult && (isChartTool || Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP)
                                     ? parsedResult
                                     : undefined;
                                 res.write(`data: ${JSON.stringify({
@@ -14158,6 +14158,25 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     continue;
                 }
 
+                // False-completion detector: model claims a file action
+                // ("saved", "created", "wrote") in prose without ever
+                // calling a file-write tool. Inject a corrective system
+                // message and re-stream once. Capped at one retry.
+                if (toolCallRound === 0 && !falseCompletionRetried) {
+                    const claimedAction = /\b(saved|created|wrote|generated|exported)\b.*\b(file|to disk|to[\s].*\.(?:txt|md|json|py|csv|xlsx|html))/i.test(fullResponse || '');
+                    if (claimedAction) {
+                        falseCompletionRetried = true;
+                        console.warn('[Chat Stream] False-completion detected — injecting corrective system message and retrying');
+                        currentMessages = [
+                            ...currentMessages,
+                            {
+                                role: 'system',
+                                content: 'Your previous turn claimed a file action ("saved"/"created"/"wrote") but you did not call a tool. If a file action was needed, call the appropriate tool now. If not, restate plainly what you actually did without claiming file operations.',
+                            },
+                        ];
+                        continue; // re-stream
+                    }
+                }
                 // Normal end — no tool calls. Exit outer loop.
                 break;
             } // end tool-call outer loop
@@ -17250,6 +17269,7 @@ app.use((req, res) => {
                 function: {
                     name: 'render_chart',
                     description:
+                        'USE WHEN the user asks to visualize data, plot a chart, graph numbers, or display time-series. ' +
                         'Render an inline chart in the chat UI. Use whenever the user asks to graph, plot, chart, or visualize data — either data they provided in the conversation or data you fetched via fetch_timeseries / fetch_url / web_search. ' +
                         'Pick the chart type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (≤8 slices), scatter for correlations. ' +
                         'For multi-series charts, pass each series as `{ name, color? }` in `series[]` and one `{ x, <seriesName>: y, ... }` object per x-value in `data[]`. For single-series charts, just use `{ x, y }`. ' +
@@ -17374,6 +17394,7 @@ app.use((req, res) => {
                 function: {
                     name: 'fetch_timeseries',
                     description:
+                        'USE WHEN the user asks for stock/index/forex/crypto charts, price history, or to graph a ticker. ' +
                         'Fetch historical OHLC time series from Yahoo Finance (free, no API key). Use for stock tickers (AAPL, MSFT), market indexes (^GSPC for S&P 500, ^DJI for Dow, ^IXIC for Nasdaq — also accepts ^spx/^dji/^ndq aliases), forex (EURUSD=X or just "eurusd"), crypto (BTC-USD), and commodities (GC=F gold, CL=F oil). ' +
                         'After fetching, pass the rows into render_chart with type=line and a `close` series for a price chart. If a symbol returns no data, the model should suggest the user check the ticker — Yahoo uses different symbols than some other sources (e.g. ^GSPC not ^SPX).',
                     parameters: {
@@ -17505,6 +17526,7 @@ app.use((req, res) => {
                 function: {
                     name: 'scrapling_fetch',
                     description:
+                        'USE WHEN fetch_url or playwright_fetch returned thin/bot-blocked content (Cloudflare, DataDome, "Just a moment", CAPTCHA). ' +
                         'Fetch a webpage with Scrapling stealth (StealthyFetcher + curl_cffi). Strongest anti-bot tool — use when fetch_url/playwright_fetch returned a `hint` about bot protection or thin content, ' +
                         'on Cloudflare/PerimeterX/DataDome/Akamai-gated sites, threat-intel portals (abuse.ch, threatfox, urlhaus), or pages showing "Checking your browser" / "Just a moment" / "Access denied" / CAPTCHA. ' +
                         'Slower than fetch_url; reach for it only when evasion is needed, but try it before asking the user to paste. Rejects private addresses.',
@@ -17571,6 +17593,7 @@ app.use((req, res) => {
                 function: {
                     name: 'playwright_fetch',
                     description:
+                        'USE WHEN fetch_url returned empty/wrong content for a JS-rendered page (SPA, lazy-loaded, dynamic). ' +
                         'Fetch a webpage rendered by a real browser (Playwright + stealth). Use for JavaScript-heavy pages, SPAs, and sites where fetch_url returned empty or wrong content. Falls back to axios if Playwright is unavailable. Rejects private/internal addresses. ' +
                         'If the result includes a `hint` mentioning bot protection or thin content (Cloudflare, "Just a moment...", CAPTCHA), retry the same URL with scrapling_fetch — do NOT ask the user to paste before trying it.',
                     parameters: {
@@ -17736,6 +17759,7 @@ app.use((req, res) => {
                 function: {
                     name: 'crawl_pages',
                     description:
+                        'USE WHEN the user asks for "top N / most recent N" items spanning a paginated listing or when a fetch returned only page 1. ' +
                         'Walk a paginated listing across multiple pages in one call. Use for "top N / most recent N" requests or when a fetch returned only page 1. ' +
                         'Modes: auto (default; URL pattern then DOM Next/Load-more), url-pattern (increments ?page=/?p=/?offset=//page/N/), link-follow (clicks Next; pass nextSelector to override), ' +
                         'load-more (clicks button; pass loadMoreSelector), infinite-scroll. Rejects private addresses. Stops on duplicate content.',
@@ -18137,14 +18161,31 @@ app.use((req, res) => {
                 if (desc.length < 80 && typeof s.systemPrompt === 'string' && s.systemPrompt.trim()) {
                     // Pull the first sentence of systemPrompt — usually the
                     // load-bearing trigger phrase ("Use this skill to ...").
-                    const firstSentence = s.systemPrompt.trim().split(/(?<=[.!?])\s+/)[0] || '';
-                    if (firstSentence) desc = (desc + ' — ' + firstSentence).slice(0, 150);
+                    // Strip the boilerplate "Use this skill to" lead-in and any
+                    // chat-sandbox workspace clauses so the description stays
+                    // task-focused (avoids "in your workspace at /workspace/..."
+                    // leaking into Koda/API tool catalogs).
+                    const cleaned = s.systemPrompt
+                        .replace(/^\s*Use this skill to\s+/i, '')
+                        .replace(/\bin (?:your |the )?workspace[^.]*\./gi, '')
+                        .trim();
+                    const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] || '';
+                    if (firstSentence && firstSentence.length <= 150 - desc.length - 3) {
+                        desc = `${desc} — ${firstSentence}`;
+                    }
+                }
+                let truncatedDesc;
+                if (desc.length > 150) {
+                    const sp = desc.lastIndexOf(' ', 147);
+                    truncatedDesc = (sp > 0 ? desc.slice(0, sp) : desc.slice(0, 147)) + '…';
+                } else {
+                    truncatedDesc = desc;
                 }
                 out.push({
                     type: 'function',
                     function: {
                         name,
-                        description: desc.slice(0, 150),
+                        description: truncatedDesc,
                         parameters: paramsToJsonSchema(s.parameters),
                     },
                 });

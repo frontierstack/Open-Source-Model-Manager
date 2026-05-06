@@ -128,12 +128,21 @@ function setFallbackDispatch(fn) { fallbackDispatch = fn || null; }
 
 async function buildToolCatalog(ctx) {
     const out = [];
-    for (const def of toolRegistry.values()) {
+    // Build registered tools in parallel (each build(ctx) may hit the skills
+    // store / DB). Order is preserved by Promise.all + the original
+    // toolRegistry.values() iteration order. Per-tool errors are swallowed
+    // and the slot dropped — same semantics as the prior sequential loop.
+    const defs = Array.from(toolRegistry.values());
+    const settled = await Promise.all(defs.map(async def => {
         try {
-            out.push(await def.build(ctx));
+            return await def.build(ctx);
         } catch (e) {
             console.warn(`[chatTools] build failed for ${def.name}:`, e.message);
+            return null;
         }
+    }));
+    for (const built of settled) {
+        if (built) out.push(built);
     }
     if (dynamicToolProvider) {
         try {
@@ -488,15 +497,14 @@ async function executeToolCall(call, ctx) {
 // Config
 // ---------------------------------------------------------------------------
 
-// Cap on model⇄tool rounds per user turn. Raised from 10 → 50 so the
-// model has room to iterate through large repos / multi-file audits
-// without hitting the cap after a few rounds and triggering synthesis.
-// Runaway loops are now caught by the per-turn identical-call detector
-// in server.js (2 repeats → nudge) and the reasoning-stream loop guard
-// (8+ phrase matches → abort), so an explicit iteration cap mainly
-// guards against pathological token-cost blowups where those guards
-// don't apply.
-const MAX_TOOL_ITERATIONS = 50;
+// Cap on model⇄tool rounds per user turn. Set to 20 — generous enough for
+// multi-file audits while keeping small local LLMs from burning rounds in
+// loops. Runaway loops are also caught by the per-turn identical-call
+// detector in server.js (2 repeats → nudge) and the reasoning-stream loop
+// guard (8+ phrase matches → abort), so an explicit iteration cap mainly
+// guards against pathological token-cost blowups where those guards don't
+// apply.
+const MAX_TOOL_ITERATIONS = 20;
 
 module.exports = {
     registerTool,
