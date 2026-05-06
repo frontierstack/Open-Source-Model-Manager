@@ -219,31 +219,42 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                         {active ? active.title : `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`}
                     </div>
                 </div>
-                {active && (
+                {active && (active.kind === 'file' && active.url ? (
+                    // Native <a download> for file artifacts — no JS click
+                    // chain so Chrome's "non-user-initiated download" guard
+                    // never trips. ?download=1 forces Content-Disposition:
+                    // attachment server-side regardless of file type.
+                    <a
+                        href={active.url + (active.url.includes('?') ? '&' : '?') + 'download=1'}
+                        download={active.fileName || active.title}
+                        title="Download"
+                        style={{
+                            ...iconBtn,
+                            textDecoration: 'none',
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                    >
+                        <Download style={{ width: 14, height: 14 }} strokeWidth={1.75} />
+                    </a>
+                ) : (
+                    // Code-block artifact: build a Blob from the captured
+                    // source. The blob URL is data-only and same-origin,
+                    // so the click chain doesn't trip download blockers.
                     <button
                         style={iconBtn}
                         onClick={() => {
-                            // File artifact: navigate to the server URL with
-                            // ?download=1 so Content-Disposition: attachment
-                            // is forced regardless of MIME-type rules.
-                            // Code-block artifact: build a Blob from the
-                            // captured source and trigger a save dialog.
-                            if (active.kind === 'file' && active.url) {
-                                const u = active.url + (active.url.includes('?') ? '&' : '?') + 'download=1';
-                                const a = document.createElement('a');
-                                a.href = u;
-                                a.download = active.fileName || active.title;
-                                a.rel = 'noopener noreferrer';
-                                a.click();
-                                return;
-                            }
                             const blob = new Blob([active.source], { type: 'text/plain' });
                             const url = URL.createObjectURL(blob);
                             const a = document.createElement('a');
                             a.href = url;
                             a.download = `${active.title.replace(/[^a-z0-9.-]+/gi, '_')}.${active.language || 'txt'}`;
+                            document.body.appendChild(a);
                             a.click();
-                            setTimeout(() => URL.revokeObjectURL(url), 0);
+                            setTimeout(() => {
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(url);
+                            }, 0);
                         }}
                         title="Download"
                         onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-2)'}
@@ -251,7 +262,7 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                     >
                         <Download style={{ width: 14, height: 14 }} strokeWidth={1.75} />
                     </button>
-                )}
+                ))}
                 <button
                     style={iconBtn}
                     onClick={onClose}
@@ -355,7 +366,12 @@ function FilePreviewBody({ active, fileSource }) {
             <iframe
                 src={active.url}
                 title={active.title || 'preview'}
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                // `allow-downloads` lets the user Ctrl+S / right-click-save
+                // from inside the sandboxed iframe — without it Chrome
+                // silently blocks the save. `allow-popups-to-escape-sandbox`
+                // lets links inside the page open externally with their own
+                // (un-sandboxed) origin so Leaflet/Mapbox tile URLs work.
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
                 style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
             />
         );
