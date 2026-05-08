@@ -16943,9 +16943,12 @@ app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
     try {
         const filePath = path.join(PI_EXTENSION_DIR, file);
         let content = await fs.readFile(filePath, 'utf8');
-        // install.sh has __MODELSERVER_BASE_URL__ placeholders; substitute
-        // when serving directly so the file is self-contained off-tree.
-        if (file === 'install.sh') {
+        // install.sh and modelserver.ts both have __MODELSERVER_BASE_URL__
+        // placeholders. Substitute on the way out so the served file is
+        // self-contained — install.sh works as a curl|bash, and the
+        // extension still phones home correctly when the user forgets
+        // to export MODELSERVER_BASE_URL in their shell.
+        if (file === 'install.sh' || file === 'modelserver.ts') {
             content = content.replace(/__MODELSERVER_BASE_URL__/g, piBaseUrlForRequest(req));
         }
         const contentType = file.endsWith('.json') ? 'application/json'

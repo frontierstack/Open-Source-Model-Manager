@@ -99,36 +99,98 @@ else
     fi
 
     installed=0
+    NODE_LOG=$(mktemp -t pi-install-node.XXXXXX)
+    log "  (full Node-install log: $NODE_LOG)"
 
     # Path A: NodeSource via apt (fast, system-wide). Use -k for the
     # setup script; it adds the apt source then we install with the
     # apt cert-verify bypass.
     if [ "$installed" = 0 ] && have apt-get && [ -n "$SUDO" -o "$(id -u)" -eq 0 ]; then
         log "  trying NodeSource (apt path)"
-        if curl -fsSLk https://deb.nodesource.com/setup_22.x | sudo_run -E bash - >/dev/null 2>&1; then
-            if sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y nodejs >/dev/null 2>&1; then
-                if [ "$(node_major)" -ge 20 ] 2>/dev/null; then installed=1; fi
-            fi
+        {
+            printf '\n=== NodeSource setup script ===\n'
+            curl -fsSLk https://deb.nodesource.com/setup_22.x | sudo_run -E bash -
+            printf '\n=== apt install nodejs ===\n'
+            sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y nodejs
+        } >>"$NODE_LOG" 2>&1
+        if [ "$(node_major)" -ge 20 ] 2>/dev/null; then
+            installed=1
+            ok "  installed system Node $(node -v)"
+        else
+            warn "  NodeSource path didn't produce Node>=20; tail of log:"
+            tail -8 "$NODE_LOG" | sed 's/^/    /' >&2
         fi
-        [ "$installed" = 1 ] && ok "  installed system Node $(node -v)"
     fi
 
     # Path B: nvm (per-user, no apt). Always works around MITM if
-    # ~/.curlrc has 'insecure' (which we set above).
+    # ~/.curlrc has 'insecure' (which we set above). Also force-set
+    # NODE_TLS_REJECT_UNAUTHORIZED=0 in the nvm subshell since some
+    # corporate inspectors break nvm's curl differently than the
+    # global curlrc fixes.
     if [ "$installed" = 0 ]; then
         log "  trying nvm (per-user path)"
         export NVM_DIR="$HOME/.nvm"
         if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-            curl -kfsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash >/dev/null 2>&1 \
-                || { err "nvm download failed"; exit 1; }
+            log "  downloading nvm"
+            {
+                printf '\n=== nvm install.sh ===\n'
+                curl -kfsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+            } >>"$NODE_LOG" 2>&1
+            if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+                err "nvm download failed; tail of log:"
+                tail -15 "$NODE_LOG" | sed 's/^/    /' >&2
+                err "Full log: $NODE_LOG"
+                exit 1
+            fi
         fi
         # shellcheck disable=SC1091
         . "$NVM_DIR/nvm.sh"
-        nvm install 22 >/dev/null 2>&1 || { err "nvm install 22 failed"; exit 1; }
-        nvm use 22 >/dev/null 2>&1 || true
+        log "  running 'nvm install 22' (this can take 1-3 min)"
+        {
+            printf '\n=== nvm install 22 ===\n'
+            NODE_TLS_REJECT_UNAUTHORIZED=0 nvm install 22
+        } >>"$NODE_LOG" 2>&1
+        # Some MITM proxies break nvm's fetch of nodejs.org/dist/index.tab,
+        # which makes the `22` alias unresolvable. Fall back to pinned
+        # Node 22 LTS releases (try latest first, then known-stable).
+        if [ "$(node_major)" -lt 20 ] 2>/dev/null || ! have node; then
+            for ver in 22.11.0 22.9.0 22.6.0; do
+                log "  alias '22' unresolvable; trying pinned v$ver"
+                {
+                    printf '\n=== nvm install %s ===\n' "$ver"
+                    NODE_TLS_REJECT_UNAUTHORIZED=0 nvm install "$ver"
+                } >>"$NODE_LOG" 2>&1
+                if [ "$(node_major)" -ge 20 ] 2>/dev/null; then break; fi
+            done
+        fi
+        # Final fallback: direct tarball install if nvm can't reach
+        # nodejs.org/dist/ at all.
+        if [ "$(node_major)" -lt 20 ] 2>/dev/null || ! have node; then
+            log "  nvm can't reach nodejs.org/dist/; trying direct tarball install"
+            tarball_ver=22.11.0
+            arch=$(uname -m); case "$arch" in
+                x86_64) arch=x64 ;;
+                aarch64|arm64) arch=arm64 ;;
+            esac
+            tarball="node-v${tarball_ver}-linux-${arch}.tar.xz"
+            tdir=$(mktemp -d)
+            {
+                printf '\n=== direct tarball install (%s) ===\n' "$tarball"
+                cd "$tdir" \
+                    && curl -fkLO "https://nodejs.org/dist/v${tarball_ver}/${tarball}" \
+                    && sudo_run tar -xJf "$tarball" -C /usr/local --strip-components=1
+            } >>"$NODE_LOG" 2>&1
+            rm -rf "$tdir"
+        fi
         if [ "$(node_major)" -ge 20 ] 2>/dev/null; then
             installed=1
-            ok "  nvm installed Node $(node -v)"
+            nvm use "$(node -v | sed 's/^v//')" >>"$NODE_LOG" 2>&1 || true
+            ok "  installed Node $(node -v)"
+        else
+            err "Could not install Node>=20 by any path; tail of log:"
+            tail -30 "$NODE_LOG" | sed 's/^/    /' >&2
+            err "Full log: $NODE_LOG"
+            exit 1
         fi
     fi
 
@@ -230,6 +292,14 @@ echo "  Extension:  $EXT_DIR"
 echo "  Settings:   $SETTINGS"
 echo "  Base URL:   $BASE_URL"
 echo
-echo "Run:"
-echo "  export MODELSERVER_API_KEY=\"<your-bearer-key>\"   # if not already set"
-echo "  pi"
+echo "Run (in THIS shell — bashrc edits don't take effect until next login):"
+if [ -n "${MODELSERVER_API_KEY:-}" ]; then
+    echo "  export MODELSERVER_BASE_URL=\"$BASE_URL\""
+    echo "  pi"
+    echo
+    echo "(MODELSERVER_API_KEY is already set; MODELSERVER_BASE_URL was appended to your shell rc but won't be live until you re-source it.)"
+else
+    echo "  export MODELSERVER_BASE_URL=\"$BASE_URL\""
+    echo "  export MODELSERVER_API_KEY=\"<your-bearer-key>\""
+    echo "  pi"
+fi

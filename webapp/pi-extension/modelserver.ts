@@ -38,8 +38,13 @@ interface ModelInfo {
     max_tokens?: number;
 }
 
+// __MODELSERVER_BASE_URL__ is replaced by the webapp at serve time
+// (/api/pi/extension/modelserver.ts) so the file already knows where
+// to phone home even when the user forgets to export the env var.
+const SERVER_BAKED_BASE_URL = "__MODELSERVER_BASE_URL__";
+
 export default async function (pi: ExtensionAPI) {
-    const baseUrl = (process.env.MODELSERVER_BASE_URL || "https://localhost:3001").replace(/\/+$/, "");
+    const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
     const apiKey = process.env.MODELSERVER_API_KEY;
 
     if (!apiKey) {
@@ -48,9 +53,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     const insecure = process.env.MODELSERVER_INSECURE_TLS === "1"
-        || baseUrl.startsWith("https://localhost")
-        || baseUrl.startsWith("https://127.")
-        || baseUrl.startsWith("https://[::1]");
+        || isPrivateOrLoopbackUrl(baseUrl);
 
     if (insecure && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0") {
         process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -143,6 +146,36 @@ export default async function (pi: ExtensionAPI) {
         } catch (e) {
             console.error(`[modelserver] failed to register skill ${skill.name}:`, e);
         }
+    }
+}
+
+// Self-hosted modelserver deployments typically use a self-signed cert.
+// Any URL pointing at localhost or an RFC-1918 / IPv6 unique-local address
+// is almost certainly an internal install — auto-relax TLS verification
+// so users on a LAN don't have to manually export MODELSERVER_INSECURE_TLS=1.
+// Public-IP / DNS hostnames keep strict verification.
+function isPrivateOrLoopbackUrl(u: string): boolean {
+    try {
+        const host = new URL(u).hostname.replace(/^\[|\]$/g, "");
+        if (host === "localhost") return true;
+        // IPv4
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+            const [a, b] = host.split(".").map(Number);
+            if (a === 127) return true;                          // 127.0.0.0/8 loopback
+            if (a === 10) return true;                           // 10.0.0.0/8
+            if (a === 192 && b === 168) return true;             // 192.168.0.0/16
+            if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16.0.0/12
+            if (a === 169 && b === 254) return true;             // 169.254.0.0/16 link-local
+            return false;
+        }
+        // IPv6
+        if (host === "::1") return true;
+        const lower = host.toLowerCase();
+        if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // fc00::/7 ULA
+        if (lower.startsWith("fe80:")) return true;              // link-local
+        return false;
+    } catch {
+        return false;
     }
 }
 

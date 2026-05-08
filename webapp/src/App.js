@@ -480,6 +480,9 @@ const App = () => {
 
     // API Keys state
     const [apiKeys, setApiKeys] = useState([]);
+    // Pi-setup picker: which bearer key to embed in the install one-liner
+    const [piSelectedKeyId, setPiSelectedKeyId] = useState('');
+    const [piRevealKey, setPiRevealKey] = useState(false);
     const [newKeyName, setNewKeyName] = useState('');
     const [newKeyPermissions, setNewKeyPermissions] = useState(['query', 'models']);
     const [newKeyAllowedSkills, setNewKeyAllowedSkills] = useState([]);
@@ -10187,24 +10190,95 @@ console.log(await res.json());`
                                             </Typography>
                                         </Box>
 
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Create a bearer-mode API key</Typography>
-                                            <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
-                                                Open the <strong style={{ color: '#fafafa' }}>API Keys</strong> tab → create a key with the <code>bearer-only</code> flag set. Pi authenticates via <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch.
-                                            </Typography>
-                                        </Box>
+                                        {(() => {
+                                            const bearerKeys = (apiKeys || []).filter(k => k && k.bearerOnly && k.active !== false);
+                                            const selectedKey = bearerKeys.find(k => k.id === piSelectedKeyId) || null;
+                                            const keyForCmd = selectedKey ? selectedKey.key : '<your-bearer-key>';
+                                            const keyDisplay = selectedKey
+                                                ? (piRevealKey ? selectedKey.key : `${selectedKey.key.slice(0, 8)}…${selectedKey.key.slice(-4)}`)
+                                                : '<your-bearer-key>';
+                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash`;
+                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash`;
+                                            const missingAgents = selectedKey && !(selectedKey.permissions || []).includes('agents');
+                                            return (
+                                                <>
+                                                    <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Pick a bearer-mode API key</Typography>
+                                                        {bearerKeys.length === 0 ? (
+                                                            <Box sx={{ p: 1.25, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, border: '1px solid rgba(251,191,36,0.2)' }}>
+                                                                <Typography sx={{ fontSize: '0.78rem', color: 'warning.main', mb: 0.5 }}>
+                                                                    No bearer-mode keys yet.
+                                                                </Typography>
+                                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>
+                                                                    Open the <strong style={{ color: '#fafafa' }}>API Keys</strong> tab → create a key with the <code>Bearer Only</code> flag and the <code>agents</code> permission (Pi sends <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch).
+                                                                </Typography>
+                                                            </Box>
+                                                        ) : (
+                                                            <>
+                                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                    <FormControl size="small" sx={{ flex: 1 }}>
+                                                                        <InputLabel sx={{ fontSize: '0.8rem' }}>Bearer key</InputLabel>
+                                                                        <Select
+                                                                            value={piSelectedKeyId}
+                                                                            label="Bearer key"
+                                                                            onChange={(e) => setPiSelectedKeyId(e.target.value)}
+                                                                            sx={{ fontSize: '0.8rem' }}
+                                                                            MenuProps={{ PaperProps: { sx: { maxHeight: 300 } } }}
+                                                                        >
+                                                                            <MenuItem value=""><em>— select —</em></MenuItem>
+                                                                            {bearerKeys.map(k => (
+                                                                                <MenuItem key={k.id} value={k.id} sx={{ fontSize: '0.8rem' }}>
+                                                                                    {k.name}
+                                                                                    {!(k.permissions || []).includes('agents') && (
+                                                                                        <Chip label="no agents perm" size="small" sx={{ ml: 1, height: 18, fontSize: '0.6rem', bgcolor: 'rgba(251,191,36,0.2)', color: 'warning.main' }} />
+                                                                                    )}
+                                                                                </MenuItem>
+                                                                            ))}
+                                                                        </Select>
+                                                                    </FormControl>
+                                                                    {selectedKey && (
+                                                                        <Tooltip title={piRevealKey ? 'Hide key' : 'Reveal key'}>
+                                                                            <IconButton size="small" onClick={() => setPiRevealKey(v => !v)}>
+                                                                                {piRevealKey ? <VisibilityOffIcon sx={{ fontSize: 16 }} /> : <VisibilityIcon sx={{ fontSize: 16 }} />}
+                                                                            </IconButton>
+                                                                        </Tooltip>
+                                                                    )}
+                                                                </Box>
+                                                                {missingAgents && (
+                                                                    <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'warning.main' }}>
+                                                                        ⚠ This key lacks the <code>agents</code> permission. Pi will register the model provider but <code>/api/skills</code> will return 403 — the skill catalog won&apos;t load. Edit the key (API Keys tab) to add it.
+                                                                    </Typography>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                    </Box>
 
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. One-liner install (curl | bash)</Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
-                                                <span>{`export MODELSERVER_API_KEY="<your-bearer-key>"
-curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
-  ${baseUrl}/api/pi/install | bash`}</span>
-                                            </Box>
-                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
-                                                One script handles every common failure: corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
-                                            </Typography>
-                                        </Box>
+                                                    <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. One-liner install (curl | bash)</Typography>
+                                                            {selectedKey && (
+                                                                <Tooltip title="Copy full command (with cleartext key)">
+                                                                    <IconButton size="small" onClick={() => copyToClipboard(cmdFull)}>
+                                                                        <ContentCopyIcon sx={{ fontSize: 14 }} />
+                                                                    </IconButton>
+                                                                </Tooltip>
+                                                            )}
+                                                        </Box>
+                                                        <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
+                                                            <span>{cmdReveal}</span>
+                                                        </Box>
+                                                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                            {selectedKey
+                                                                ? <>The copy button grabs the full command with the cleartext key. The key is masked in the displayed snippet by default — click <VisibilityIcon sx={{ fontSize: 12, verticalAlign: 'middle' }} /> above to reveal.</>
+                                                                : <>Pick a key above and the command auto-populates. Or replace <code>&lt;your-bearer-key&gt;</code> by hand.</>}
+                                                        </Typography>
+                                                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                            One script handles every common failure: corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
+                                                        </Typography>
+                                                    </Box>
+                                                </>
+                                            );
+                                        })()}
 
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Run</Typography>
