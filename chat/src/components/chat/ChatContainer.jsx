@@ -1024,8 +1024,8 @@ export default function ChatContainer({
         }
 
         // Reset the rolling-credits log at the very start of the turn so the
-        // streaming bubble can narrate everything Koda is about to do (URL
-        // fetch, search, model thinking, streaming, chunking, synthesis).
+        // streaming bubble can narrate everything the assistant is about to
+        // do (URL fetch, search, model thinking, streaming, chunking, synthesis).
         clearProcessingLog();
 
         // Create conversation if none exists
@@ -1126,7 +1126,7 @@ export default function ChatContainer({
         // Collect tool-call metadata across this turn so we can attach it to
         // the final assistant message. The chat UI renders each entry as a
         // collapsible ToolCallBlock above the message body, giving the user
-        // transparency into what Koda did before answering (web search, URL
+        // transparency into what tools ran before the answer (web search, URL
         // fetch, etc). Neither tool is streamed over SSE — both run here on
         // the client before the chat request is sent — so this is the only
         // place where the metadata is actually known.

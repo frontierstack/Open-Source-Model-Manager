@@ -6223,94 +6223,79 @@ fetch('${baseUrl}/api/model-configs', {
 .then(configs => console.log(configs))
 .catch(err => console.error(err));`
             },
-            '/api/cli/install': {
-                curl: `# Public endpoint — no authentication required.
-# Pipe directly to bash to install the Koda CLI:
-curl -sk ${baseUrl}/api/cli/install | bash
+            '/api/pi/config': {
+                curl: `# Returns the Pi (pi.dev) auto-config payload for this host: settings.json
+# snippet, env-var contract, and an installScript field that creates
+# ~/.pi/agent/extensions/modelserver/ end-to-end.
 
-# Or save the install script first and inspect it:
-curl -sk ${baseUrl}/api/cli/install -o install-koda.sh
-cat install-koda.sh
-bash install-koda.sh`,
-                python: `import requests, subprocess
+# Auth required — bearer-mode API key (Authorization: Bearer …).
+curl -sk \\
+  -H "Authorization: Bearer your_bearer_key" \\
+  ${baseUrl}/api/pi/config | jq
 
-# Public endpoint — no auth headers needed.
-response = requests.get('${baseUrl}/api/cli/install', verify=False)
-script = response.text
-print(script[:200], '...')
+# Common usage — pipe the install script straight to bash:
+export MODELSERVER_API_KEY="your_bearer_key"
+curl -sk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
+  ${baseUrl}/api/pi/config | jq -r .installScript | bash`,
+                python: `import requests, subprocess, os
 
-# To actually install (equivalent to \`curl ... | bash\`):
-# subprocess.run(['bash', '-c', script], check=True)`,
-                powershell: `# This endpoint serves a bash script. Use /api/cli/install.ps1 on Windows.
-$script = Invoke-RestMethod -Uri "${baseUrl}/api/cli/install"
-Write-Output $script.Substring(0, 200)`,
-                javascript: `// Public endpoint — no auth.
-fetch('${baseUrl}/api/cli/install')
-  .then(res => res.text())
-  .then(script => console.log(script.slice(0, 200), '...'))
-  .catch(err => console.error(err));`
+H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
+cfg = requests.get(f'${baseUrl}/api/pi/config', headers=H, verify=False).json()
+print('Provider :', cfg['providerName'])
+print('Endpoint :', cfg['v1Endpoint'])
+print('Settings :', cfg['settingsPath'])
+
+# Equivalent of piping installScript to bash:
+# subprocess.run(['bash', '-c', cfg['installScript']], check=True, env=os.environ)`,
+                powershell: `# Auth via bearer-mode API key.
+$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
+$cfg = Invoke-RestMethod -Uri "${baseUrl}/api/pi/config" -Headers $h -SkipCertificateCheck
+$cfg | ConvertTo-Json -Depth 5
+
+# Pipe installScript through WSL bash if you have it:
+# wsl bash -c $cfg.installScript`,
+                javascript: `// Auth via bearer-mode API key.
+const r = await fetch('${baseUrl}/api/pi/config', {
+  headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
+});
+const cfg = await r.json();
+console.log('Provider:', cfg.providerName, 'Endpoint:', cfg.v1Endpoint);
+console.log('Run:\\n' + cfg.installScript);`
             },
-            '/api/cli/install.ps1': {
-                curl: `# Public endpoint — no authentication required.
-# Fetch the PowerShell installer (for piping on Windows with iex):
-curl -sk ${baseUrl}/api/cli/install.ps1 -o install-koda.ps1
-powershell -File install-koda.ps1`,
-                python: `import requests
-
-# Public endpoint — no auth headers needed.
-response = requests.get('${baseUrl}/api/cli/install.ps1', verify=False)
-with open('install-koda.ps1', 'w') as f:
-    f.write(response.text)
-print('Saved install-koda.ps1')`,
-                powershell: `# One-liner install:
-irm -SkipCertificateCheck ${baseUrl}/api/cli/install.ps1 | iex
-
-# Or save first and inspect:
-Invoke-RestMethod -Uri "${baseUrl}/api/cli/install.ps1" -OutFile install-koda.ps1
-Get-Content install-koda.ps1 | Select-Object -First 20`,
-                javascript: `// Public endpoint — no auth.
-fetch('${baseUrl}/api/cli/install.ps1')
-  .then(res => res.text())
-  .then(script => console.log(script.slice(0, 200), '...'))
-  .catch(err => console.error(err));`
+            '/api/pi/extension/modelserver.ts': {
+                curl: `# Raw TypeScript source for the bundled Pi extension that registers this
+# server as an OpenAI-compatible provider and proxies the skill catalog.
+# Auth required.
+curl -sk -H "Authorization: Bearer your_bearer_key" \\
+  ${baseUrl}/api/pi/extension/modelserver.ts \\
+  -o ~/.pi/agent/extensions/modelserver/modelserver.ts`,
+                python: `import requests, os
+H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
+src = requests.get(f'${baseUrl}/api/pi/extension/modelserver.ts', headers=H, verify=False).text
+print(src[:400])`,
+                powershell: `$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
+Invoke-WebRequest -Uri "${baseUrl}/api/pi/extension/modelserver.ts" -Headers $h \`
+  -SkipCertificateCheck -OutFile "$HOME\\.pi\\agent\\extensions\\modelserver\\modelserver.ts"`,
+                javascript: `const r = await fetch('${baseUrl}/api/pi/extension/modelserver.ts', {
+  headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
+});
+const src = await r.text();
+console.log(src.slice(0, 400));`
             },
-            '/api/cli/files/koda.js': {
-                curl: `# Public endpoint — downloads the Koda CLI source.
-# Used internally by the installer; you can also grab it directly:
-curl -sk ${baseUrl}/api/cli/files/koda.js -o koda.js`,
-                python: `import requests
-
-# Public endpoint — no auth.
-response = requests.get('${baseUrl}/api/cli/files/koda.js', verify=False)
-with open('koda.js', 'wb') as f:
-    f.write(response.content)
-print(f'Downloaded koda.js ({len(response.content)} bytes)')`,
-                powershell: `# Public endpoint — no auth.
-Invoke-RestMethod -Uri "${baseUrl}/api/cli/files/koda.js" -OutFile "koda.js"
-Write-Output "Downloaded koda.js"`,
-                javascript: `// Public endpoint — no auth.
-fetch('${baseUrl}/api/cli/files/koda.js')
-  .then(res => res.text())
-  .then(src => console.log('Koda CLI source length:', src.length))
-  .catch(err => console.error(err));`
-            },
-            '/api/cli/files/package.json': {
-                curl: `# Public endpoint — downloads the Koda CLI manifest.
-curl -sk ${baseUrl}/api/cli/files/package.json -o package.json`,
-                python: `import requests
-
-# Public endpoint — no auth.
-response = requests.get('${baseUrl}/api/cli/files/package.json', verify=False)
-manifest = response.json()
-print(manifest.get('name'), manifest.get('version'))`,
-                powershell: `# Public endpoint — no auth.
-$manifest = Invoke-RestMethod -Uri "${baseUrl}/api/cli/files/package.json"
-Write-Output "$($manifest.name) v$($manifest.version)"`,
-                javascript: `// Public endpoint — no auth.
-fetch('${baseUrl}/api/cli/files/package.json')
-  .then(res => res.json())
-  .then(pkg => console.log(\`\${pkg.name} v\${pkg.version}\`))
-  .catch(err => console.error(err));`
+            '/api/pi/extension/package.json': {
+                curl: `# Manifest for the bundled Pi extension (declares the typebox dep that
+# Pi's npm install --omit=dev will pull in).
+curl -sk -H "Authorization: Bearer your_bearer_key" \\
+  ${baseUrl}/api/pi/extension/package.json`,
+                python: `import requests, os
+H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
+print(requests.get(f'${baseUrl}/api/pi/extension/package.json', headers=H, verify=False).json())`,
+                powershell: `$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
+Invoke-RestMethod -Uri "${baseUrl}/api/pi/extension/package.json" -Headers $h -SkipCertificateCheck | ConvertTo-Json`,
+                javascript: `const pkg = await fetch('${baseUrl}/api/pi/extension/package.json', {
+  headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
+}).then(r => r.json());
+console.log(pkg.name, pkg.version);`
             },
             '/api/agent-permissions': {
                 curl: `# GET — fetch the current global agent file-operation permissions.
@@ -9937,7 +9922,7 @@ console.log(await res.json());`
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
                                                     </Box>
                                                     <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
-                                                        <strong style={{ color: '#fafafa' }}>AI Chat</strong> for web • <strong style={{ color: '#fafafa' }}>Koda CLI</strong> for terminal • <strong style={{ color: '#fafafa' }}>API</strong> for code
+                                                        <strong style={{ color: '#fafafa' }}>AI Chat</strong> for web • <strong style={{ color: '#fafafa' }}>Pi</strong> for terminal • <strong style={{ color: '#fafafa' }}>API</strong> for code
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -9972,9 +9957,9 @@ console.log(await res.json());`
                                                             <TableCell sx={{ color: 'text.secondary' }}>Web chat interface with streaming</TableCell>
                                                         </TableRow>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600, color: 'secondary.main' }}>Koda CLI</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -sk {baseUrl}/api/cli/install | bash</TableCell>
-                                                            <TableCell sx={{ color: 'text.secondary' }}>Terminal, automation</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'secondary.main' }}>Pi</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>npm install -g @earendil-works/pi-coding-agent</TableCell>
+                                                            <TableCell sx={{ color: 'text.secondary' }}>Terminal, automation (see Pi section below)</TableCell>
                                                         </TableRow>
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'success.main' }}>Direct API</TableCell>
@@ -10138,11 +10123,10 @@ console.log(await res.json());`
                                                             <MenuItem value="/api/api-keys/:id/delete">DELETE /api/api-keys/:id - Delete API Key</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/clear-usage">POST /api/api-keys/:id/clear-usage - Clear Usage Stats</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/stats">GET /api/api-keys/:id/stats - Get Key Stats</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── CLI (Koda) ───</MenuItem>
-                                                            <MenuItem value="/api/cli/install">GET /api/cli/install - Install Koda CLI (bash)</MenuItem>
-                                                            <MenuItem value="/api/cli/install.ps1">GET /api/cli/install.ps1 - Install Koda CLI (PowerShell)</MenuItem>
-                                                            <MenuItem value="/api/cli/files/koda.js">GET /api/cli/files/koda.js - Download Koda CLI Source</MenuItem>
-                                                            <MenuItem value="/api/cli/files/package.json">GET /api/cli/files/package.json - Download Koda CLI Manifest</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Pi (Terminal Agent) ───</MenuItem>
+                                                            <MenuItem value="/api/pi/config">GET /api/pi/config - Pi auto-config payload</MenuItem>
+                                                            <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
+                                                            <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Documentation ───</MenuItem>
                                                             <MenuItem value="/api/docs">GET /api/docs - Get API Documentation</MenuItem>
                                                         </Select>
@@ -10193,130 +10177,85 @@ console.log(await res.json());`
                                     </AccordionDetails>
                                 </Accordion>
 
-                                {/* Koda CLI Commands */}
+                                {/* Pi setup */}
                                 <Accordion sx={docAccordionSx}>
                                     <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<TerminalIcon />} color="primary" />
                                             <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Koda CLI</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Terminal commands and installation</Typography>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Pi setup</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Install Pi (pi.dev) and connect it to this server</Typography>
                                             </Box>
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        {/* Installation - condensed */}
-                                        <Box sx={{ mb: 2, p: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                <CloudDownloadIcon sx={{ fontSize: 14, color: 'secondary.main' }} />
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.8rem', color: 'secondary.main' }}>Install</Typography>
-                                            </Box>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                    <Chip label="Linux/macOS" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.2)' }} />
-                                                    <span>curl -sk {baseUrl}/api/cli/install | bash</span>
-                                                </Box>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
-                                                    <Chip label="Windows" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.2)' }} />
-                                                    <span>iwr -useb {baseUrl}/api/cli/install.ps1 | iex</span>
-                                                </Box>
-                                            </Box>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
+                                                <strong style={{ color: '#fafafa' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: '#818cf8' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
+                                            </Typography>
                                         </Box>
 
-                                        {/* Launch flags */}
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Launch Flags</Typography>
-                                            <Table size="small" sx={compactTableSx}>
-                                                <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start interactive REPL (default)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda --continue, -c</TableCell><TableCell sx={{ color: 'text.secondary' }}>Resume the most recent session for this directory</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda --resume &lt;id&gt;, -r</TableCell><TableCell sx={{ color: 'text.secondary' }}>Resume a specific session by id (no id = list sessions)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda --yolo</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip every confirmation prompt (combinable with --continue)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>koda -p "question"</TableCell><TableCell sx={{ color: 'text.secondary' }}>Single-shot: run one prompt, print answer, exit (CI/scripts)</TableCell></TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </Box>
-
-                                        {/* Commands - compact two-column layout */}
-                                        <Grid container spacing={2}>
-                                            <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Core Commands</Typography>
-                                                    <Table size="small" sx={compactTableSx}>
-                                                        <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/auth</TableCell><TableCell sx={{ color: 'text.secondary' }}>Authenticate</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/init</TableCell><TableCell sx={{ color: 'text.secondary' }}>Create koda.md</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/project</TableCell><TableCell sx={{ color: 'text.secondary' }}>New project</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/clear</TableCell><TableCell sx={{ color: 'text.secondary' }}>Clear history</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/help</TableCell><TableCell sx={{ color: 'text.secondary' }}>Show commands</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/quit</TableCell><TableCell sx={{ color: 'text.secondary' }}>Exit CLI</TableCell></TableRow>
-                                                        </TableBody>
-                                                    </Table>
-                                                </Box>
-                                            </Grid>
-                                            <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Working Files & Web</Typography>
-                                                    <Table size="small" sx={compactTableSx}>
-                                                        <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/files</TableCell><TableCell sx={{ color: 'text.secondary' }}>List files in the working set</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/add-file &lt;path&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Add a file to context (max 20)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/remove-file &lt;path&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Drop a file from context</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/focus &lt;path&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Restrict context to specific files</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/search &lt;query&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>One-shot web search (also: /websearch)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/docs &lt;topic&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch documentation</TableCell></TableRow>
-                                                        </TableBody>
-                                                    </Table>
-                                                    <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
-                                                        No <code>/mode</code> or <code>/web</code> toggle: web search and URL fetch are invoked by the model itself as native tools whenever the query warrants it.
-                                                    </Typography>
-                                                </Box>
-                                            </Grid>
-                                        </Grid>
-
-                                        {/* Persistence row */}
-                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Persistence — Sessions, Memory, Project Guidance</Typography>
-                                            <Table size="small" sx={compactTableSx}>
-                                                <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/sessions</TableCell><TableCell sx={{ color: 'text.secondary' }}>List saved sessions for the current directory</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/resume &lt;id&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Resume a specific session inside the running REPL</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/memory</TableCell><TableCell sx={{ color: 'text.secondary' }}>View cross-session notes (~/.koda/memory.md)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/memory add &lt;note&gt;</TableCell><TableCell sx={{ color: 'text.secondary' }}>Append a note Koda will read on every future launch</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>/memory clear</TableCell><TableCell sx={{ color: 'text.secondary' }}>Wipe ~/.koda/memory.md</TableCell></TableRow>
-                                                </TableBody>
-                                            </Table>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Install Pi</Typography>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                                <span>npm install -g @earendil-works/pi-coding-agent</span>
+                                            </Box>
                                             <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
-                                                Koda also auto-loads <code>KODA.md</code>, <code>koda.md</code>, <code>CLAUDE.md</code>, or <code>AGENTS.md</code> from the current directory at startup, injecting it into the system prompt every turn (re-read live so edits take effect immediately). Sessions are saved to <code>~/.koda/sessions/&lt;id&gt;.json</code> after every turn; the most recent 200 are kept.
+                                                Or via curl/pnpm — see <a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: '#818cf8' }}>pi.dev</a> for alternates.
                                             </Typography>
                                         </Box>
 
-                                        {/* Code-navigation skills */}
-                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Code-Navigation Skills (model-invoked)</Typography>
-                                            <Table size="small" sx={compactTableSx}>
-                                                <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>grep_code</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recursive content search w/ regex, glob filter, context lines — much cheaper than reading whole files</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>outline_file</TableCell><TableCell sx={{ color: 'text.secondary' }}>Extract function/class signatures with line numbers (Python, JS/TS, Go, Rust, Java, C/C++)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>replace_lines</TableCell><TableCell sx={{ color: 'text.secondary' }}>Surgical line-range replace/insert — pair with grep_code or outline_file for targeted edits to large files</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>search_replace_file</TableCell><TableCell sx={{ color: 'text.secondary' }}>Find-and-replace text by string match (regex optional)</TableCell></TableRow>
-                                                </TableBody>
-                                            </Table>
-                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
-                                                These run server-side and are invoked by the model automatically — you don't call them as slash commands. Designed to scale to large code files: <code>outline_file</code> handles 10k+ line files in under 50ms.
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. Create a bearer-mode API key</Typography>
+                                            <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
+                                                Open the <strong style={{ color: '#fafafa' }}>API Keys</strong> tab → create a key with the <code>bearer-only</code> flag set. Pi authenticates via <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch.
                                             </Typography>
                                         </Box>
 
-                                        {/* Features - compact chips */}
-                                        <Box sx={{ mt: 2, display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                                            <Chip label="Tab completion" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Autonomous skills" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Animated UI" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Context tracking" size="small" sx={{ bgcolor: 'rgba(251,191,36,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Multi-line paste" size="small" sx={{ bgcolor: 'rgba(99,102,241,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Session resume" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="Cross-session memory" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
-                                            <Chip label="KODA.md auto-load" size="small" sx={{ bgcolor: 'rgba(34,197,94,0.15)', fontSize: '0.7rem' }} />
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Auto-config (one-liner)</Typography>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
+                                                <span>{`export MODELSERVER_API_KEY="<your-bearer-key>"
+curl -sk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
+  ${baseUrl}/api/pi/config | jq -r .installScript | bash`}</span>
+                                            </Box>
+                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                Drops <code>~/.pi/agent/extensions/modelserver/</code> (extension + Typebox dep), runs <code>npm install</code> there, and writes <code>~/.pi/agent/settings.json</code>. The bearer key is used both during install and at runtime.
+                                            </Typography>
+                                        </Box>
+
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>4. Run</Typography>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                                <span>{`pi  # picks up MODELSERVER_BASE_URL + MODELSERVER_API_KEY automatically`}</span>
+                                            </Box>
+                                        </Box>
+
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>What gets registered</Typography>
+                                            <Table size="small" sx={compactTableSx}>
+                                                <TableBody>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>provider</TableCell><TableCell sx={{ color: 'text.secondary' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>tools</TableCell><TableCell sx={{ color: 'text.secondary' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>auth</TableCell><TableCell sx={{ color: 'text.secondary' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </Box>
+
+                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Manual install</Typography>
+                                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
+                                                Don&apos;t want to pipe to bash? Fetch the files directly and edit <code>~/.pi/agent/settings.json</code> by hand:
+                                            </Typography>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
+                                                <span>{`# Extension files (auth required)
+${baseUrl}/api/pi/extension/modelserver.ts
+${baseUrl}/api/pi/extension/package.json
+${baseUrl}/api/pi/extension/README.md
+
+# Full config payload (settings + script + endpoints)
+${baseUrl}/api/pi/config`}</span>
+                                            </Box>
                                         </Box>
                                     </AccordionDetails>
                                 </Accordion>
@@ -10575,7 +10514,7 @@ console.log(await res.json());`
                                         </Box>
                                         <Box sx={{ mt: 2, p: 1, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
                                             <WarningIcon sx={{ fontSize: 14, color: 'warning.main' }} />
-                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Auth endpoints use session auth only. <code style={{ fontSize: '0.65rem' }}>/api/cli/install</code> is public.</Typography>
+                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Auth endpoints use session auth only.</Typography>
                                         </Box>
                                     </AccordionDetails>
                                 </Accordion>
@@ -10737,19 +10676,6 @@ console.log(await res.json());`
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible chat</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible text</TableCell></TableRow>
 
-                                                    {/* CLI / Public (no auth) */}
-                                                    <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(148, 163, 184, 0.12)', py: 0.75 }}>
-                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <Chip label="public" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(148,163,184,0.35)' }} />
-                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Koda CLI Distribution (no auth)</Typography>
-                                                            </Box>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/install</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Bash install script</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/install.ps1</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>PowerShell install script</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/files/koda.js</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Koda CLI source bundle</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/cli/files/package.json</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Koda CLI manifest</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -10812,8 +10738,6 @@ console.log(await res.json());`
                                                 </TableHead>
                                                 <TableBody>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>scripts/manage-users.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Interactive user account management: list users, create admin, reset passwords, delete accounts.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Linux/macOS. Creates ~/.local/bin/koda symlink.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>scripts/install-agents-cli.ps1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Install Koda CLI on Windows PowerShell. Creates AppData shortcut.</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>scripts/download_model.py</TableCell><TableCell sx={{ color: 'text.secondary' }}>Python script for downloading GGUF models from HuggingFace (used internally by webapp).</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>scripts/download_model.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Shell wrapper for downloading models (delegates to the Python script).</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'info.main' }}>scripts/migrate-to-multiuser.js</TableCell><TableCell sx={{ color: 'text.secondary' }}>One-time migration: convert single-user data layout to per-user.</TableCell></TableRow>

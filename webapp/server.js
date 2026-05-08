@@ -13100,8 +13100,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // SSE keepalive: emit a comment line every 25s for as long as the
         // response is open. Slow reasoning models can spend several minutes
         // on first-token latency, during which the server sends no data.
-        // Clients with their own data-activity timeouts (Koda CLI's 5-min
-        // ACTIVITY_TIMEOUT, browsers/proxies/LBs that drop idle SSE
+        // Clients with their own data-activity timeouts (CLI agents,
+        // browsers/proxies/LBs that drop idle SSE
         // connections) would otherwise kill the socket while the server is
         // legitimately working. SSE comment lines start with ':' and are
         // ignored by EventSource parsers, but they still count as bytes on
@@ -15533,8 +15533,8 @@ const REFRESH_STALE_SKILLS = new Set([
     // prefix / userconfig into /tmp so npm has a writable scratch dir.
     'run_npm',
     // create_pdf / create_docx / create_xlsx — original templates were
-    // stub-only (Koda CLI implementations only); the server-side code
-    // body was just comments. Refreshed code is real reportlab / docx /
+    // stub-only; the server-side code body was just comments.
+    // Refreshed code is real reportlab / docx /
     // openpyxl implementations that write to /artifacts so the chat UI
     // can surface a download button.
     'create_pdf',
@@ -16895,88 +16895,90 @@ function sanitizeHost(hostHeader) {
     return sanitized;
 }
 
-/**
- * Resolve the base URL embedded in the CLI install scripts. Prefers an
- * operator-configured PUBLIC_BASE_URL over the request's Host header — a
- * crafted Host: would otherwise let an attacker (or any virtual-host
- * misroute) point freshly-installed CLIs at an arbitrary URL.
- *
- * Falls back to req protocol + sanitized Host when no env var is set, which
- * is the legacy behavior for self-hosted single-tenant deployments.
- */
-function resolveInstallBaseUrl(req) {
-    const configured = process.env.PUBLIC_BASE_URL || process.env.KODA_API_URL;
-    if (configured && /^https?:\/\/[A-Za-z0-9.\-:[\]]+(\/.*)?$/.test(configured)) {
-        return configured.replace(/\/+$/, '');
-    }
+// ============================================================================
+// Pi (pi.dev) auto-config — returns a settings.json snippet, the bundled
+// extension files, and a copy-paste install script that drops the extension
+// at ~/.pi/agent/extensions/modelserver/. The caller's host header is the
+// canonical base URL, sanitized through sanitizeHost above.
+// ============================================================================
+
+const PI_EXTENSION_DIR = path.join(__dirname, 'pi-extension');
+
+function piBaseUrlForRequest(req) {
     const host = sanitizeHost(req.get('host'));
     const protocol = (req.protocol === 'http' || req.protocol === 'https') ? req.protocol : 'https';
     return `${protocol}://${host}`;
 }
 
-// Bash installer (Linux/macOS/WSL/Git Bash)
-app.get('/api/cli/install', apiRateLimiter, (req, res) => {
-    const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.sh');
-    const apiUrl = resolveInstallBaseUrl(req);
+app.get('/api/pi/config', requireAuth, async (req, res) => {
+    try {
+        const baseUrl = piBaseUrlForRequest(req);
+        const settings = {
+            defaultProvider: 'modelserver',
+            packages: [],
+            extensions: ['~/.pi/agent/extensions/modelserver/modelserver.ts']
+        };
+        const installScript = [
+            'set -eu',
+            '# 1) Drop the extension into Pi\'s global extensions dir',
+            'mkdir -p ~/.pi/agent/extensions/modelserver',
+            `curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\`,
+            `  ${baseUrl}/api/pi/extension/modelserver.ts \\`,
+            '  -o ~/.pi/agent/extensions/modelserver/modelserver.ts',
+            `curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\`,
+            `  ${baseUrl}/api/pi/extension/package.json \\`,
+            '  -o ~/.pi/agent/extensions/modelserver/package.json',
+            '',
+            '# 2) Install the extension\'s deps (Typebox)',
+            '( cd ~/.pi/agent/extensions/modelserver && npm install --omit=dev --silent )',
+            '',
+            '# 3) Drop a settings.json that points Pi at the modelserver provider',
+            'mkdir -p ~/.pi/agent',
+            `cat > ~/.pi/agent/settings.json <<'PI_SETTINGS_EOF'`,
+            JSON.stringify(settings, null, 2),
+            'PI_SETTINGS_EOF',
+            '',
+            '# 4) Set the base URL the extension talks to',
+            `export MODELSERVER_BASE_URL="${baseUrl}"`,
+            'echo "Pi setup complete. Run: pi"'
+        ].join('\n');
 
-    fs.readFile(scriptPath, 'utf8')
-        .then(content => {
-            // Inject API URL into the script environment
-            const modifiedContent = `export KODA_API_URL="${apiUrl}"\n` + content;
-
-            res.setHeader('Content-Type', 'text/plain');
-            res.send(modifiedContent);
-        })
-        .catch(error => {
-            console.error('Error reading install script:', error);
-            res.status(500).json({ error: 'Failed to load install script' });
+        res.json({
+            baseUrl,
+            v1Endpoint: `${baseUrl}/v1`,
+            providerName: 'modelserver',
+            envVarName: 'MODELSERVER_API_KEY',
+            extensionPath: '~/.pi/agent/extensions/modelserver',
+            settingsPath: '~/.pi/agent/settings.json',
+            settings,
+            installScript,
+            piInstallCommand: 'npm install -g @earendil-works/pi-coding-agent',
+            note: 'Create a bearer-mode API key in the API Keys tab. Pi sends Authorization: Bearer <key>; X-API-Key/X-API-Secret pairs are not used.'
         });
+    } catch (err) {
+        console.error('[pi-config] error:', err);
+        res.status(500).json({ error: 'Failed to generate Pi config' });
+    }
 });
 
-// PowerShell installer (Windows)
-app.get('/api/cli/install.ps1', apiRateLimiter, (req, res) => {
-    const scriptPath = path.join(__dirname, 'scripts/install-agents-cli.ps1');
-    const apiUrl = resolveInstallBaseUrl(req);
-
-    fs.readFile(scriptPath, 'utf8')
-        .then(content => {
-            // Inject API URL into the script
-            const modifiedContent = `$env:KODA_API_URL = "${apiUrl}"\n` + content;
-
-            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-            res.send(modifiedContent);
-        })
-        .catch(error => {
-            console.error('Error reading PowerShell install script:', error);
-            res.status(500).json({ error: 'Failed to load install script' });
-        });
-});
-
-// Serve CLI files for download
-app.get('/api/cli/files/package.json', apiRateLimiter, (req, res) => {
-    const packagePath = path.join(__dirname, 'agents-cli/package.json');
-    fs.readFile(packagePath, 'utf8')
-        .then(content => {
-            res.setHeader('Content-Type', 'application/json');
-            res.send(content);
-        })
-        .catch(error => {
-            console.error('Error reading package.json:', error);
-            res.status(500).json({ error: 'Failed to load package.json' });
-        });
-});
-
-app.get('/api/cli/files/koda.js', apiRateLimiter, (req, res) => {
-    const kodaPath = path.join(__dirname, 'agents-cli/bin/koda.js');
-    fs.readFile(kodaPath, 'utf8')
-        .then(content => {
-            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-            res.send(content);
-        })
-        .catch(error => {
-            console.error('Error reading koda.js:', error);
-            res.status(500).json({ error: 'Failed to load koda.js' });
-        });
+app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
+    const allowed = new Set(['modelserver.ts', 'package.json', 'README.md']);
+    const file = req.params.file;
+    if (!allowed.has(file)) {
+        return res.status(404).json({ error: 'Unknown extension file' });
+    }
+    try {
+        const filePath = path.join(PI_EXTENSION_DIR, file);
+        const content = await fs.readFile(filePath, 'utf8');
+        const contentType = file.endsWith('.json') ? 'application/json'
+            : file.endsWith('.md') ? 'text/markdown; charset=utf-8'
+            : 'text/typescript; charset=utf-8';
+        res.setHeader('Content-Type', contentType);
+        res.send(content);
+    } catch (err) {
+        console.error('[pi-extension] read failed:', err);
+        res.status(500).json({ error: 'Failed to read extension file' });
+    }
 });
 
 // ============================================================================
@@ -18333,7 +18335,7 @@ app.use((req, res) => {
                     // Strip the boilerplate "Use this skill to" lead-in and any
                     // chat-sandbox workspace clauses so the description stays
                     // task-focused (avoids "in your workspace at /workspace/..."
-                    // leaking into Koda/API tool catalogs).
+                    // leaking into external tool catalogs).
                     const cleaned = s.systemPrompt
                         .replace(/^\s*Use this skill to\s+/i, '')
                         .replace(/\bin (?:your |the )?workspace[^.]*\./gi, '')

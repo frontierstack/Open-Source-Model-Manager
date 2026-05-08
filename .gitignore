@@ -9,6 +9,8 @@
 
 # Exception: COMMANDS.md is tracked
 !COMMANDS.md
+# Exception: bundled Pi extension docs ship with its source
+!webapp/pi-extension/README.md
 
 # ============================================================================
 # SENSITIVE DATA (DO NOT PUSH)

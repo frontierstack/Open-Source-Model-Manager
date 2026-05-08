@@ -29,7 +29,7 @@ WORKDIR /usr/src/app
 COPY package*.json .npmrc ./
 ENV PATH=/usr/local/bin:$PATH
 
-# Install system dependencies for Playwright Chromium and Koda skills
+# Install system dependencies for Playwright Chromium and skill execution
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip jq \
     # Virtual display for headed mode (bypasses bot detection)

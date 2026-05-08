@@ -1,0 +1,17 @@
+{
+  "name": "@modelserver/pi-extension",
+  "version": "0.1.0",
+  "description": "Pi (pi.dev) extension that registers the model server as a provider and exposes its skill catalog as tools.",
+  "private": true,
+  "type": "module",
+  "main": "modelserver.ts",
+  "pi": {
+    "extensions": ["./modelserver.ts"]
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

@@ -64,7 +64,7 @@ Long conversations consume increasing amounts of context window and VRAM. AIMem 
 - **4-stage pipeline** — Semantic deduplication, lossy prompt compression, symbolic shorthand, and relevance-gated retrieval
 - **~48% token reduction** with 100% fact retention (benchmarked across 47 strategy combinations)
 - **Faster responses** — Fewer input tokens means faster time-to-first-token and lower VRAM pressure
-- **Transparent** — Enable per-model via the "Compress Memory" toggle in the model manager; all clients (Chat UI, Koda, API) respect the setting automatically
+- **Transparent** — Enable per-model via the "Compress Memory" toggle in the model manager; all clients (Chat UI, API) respect the setting automatically
 - **Smart triggering** — Only activates when conversations have 6+ messages and input exceeds 60% of available context, keeping short conversations untouched
 
 ### Chat Interface
@@ -87,27 +87,14 @@ Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
   <em>The model decides to call <code>web_search</code>, reads the results, and follows up with <code>scrapling_fetch</code> to pull a full page — each call appears as a clickable chip below the response.</em>
 </p>
 
-### Koda — AI Agent TUI
+### Pi — Terminal Coding Agent
 
-Your autonomous AI project assistant running as an interactive terminal user interface:
+For terminal use, point [Pi](https://pi.dev) at the webapp's OpenAI-compatible endpoint. Pi is a third-party minimal coding harness that supports any OpenAI-compatible provider — install once, register the model server as a custom provider, and the 120+ default skills become tools Pi can call.
 
-```
-  ██╗  ██╗ ██████╗ ██████╗  █████╗
-  ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗
-  █████╔╝ ██║   ██║██║  ██║███████║
-  ██╔═██╗ ██║   ██║██║  ██║██╔══██║
-  ██║  ██╗╚██████╔╝██████╔╝██║  ██║
-  ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝
-  Your AI project assistant
-```
-
-- 120+ default skills across 20+ categories (file ops, git, web, email, OCR, PDF, system info, and more)
-- Native tool calling with multi-stage tool-arg repair (jsonrepair → string-aware bracket close → regex salvage) so local LLMs that emit lightly-malformed JSON still dispatch
-- Path safety net — `/home/user/`, `/Users/USER/`, `/workspace/` and similar training-data placeholder paths get rewritten onto the actual cwd before any FS write
-- Multi-agent collaboration for complex tasks
-- Autonomous skill execution with false-completion detection
-- AES-256 encrypted credentials
-- Cross-platform (Linux, macOS, Windows)
+- 120+ default skills (file ops, git, web, email, OCR, PDF, system info, and more) — proxied to Pi via the included extension
+- Connects through the `/v1/*` OpenAI-compatible proxy with API-key auth
+- Bring your own model server: any container loaded in **My Models** is reachable
+- See the **Docs** tab in the webapp for the install one-liner, the `settings.json` snippet, and the extension package — all pre-baked with your API key
 
 ---
 
@@ -199,34 +186,24 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 5. **API Keys** — Generate access tokens
 6. **Docs** — API code builder with 70+ endpoints in 4 languages
 
-### Koda TUI
+### Pi (terminal)
 
 ```bash
-# Install and start
-curl -sk https://localhost:3001/api/cli/install | bash
-koda
+# Install Pi (once)
+npm install -g @earendil-works/pi-coding-agent
 
-# Authenticate and initialize
-/auth    # Enter API key from Web UI
-/init    # Analyze project structure
+# Open the webapp Docs tab → "Pi setup" → copy the settings.json snippet
+# (it bakes in your API key + the local /v1 endpoint), drop it at:
+#   ~/.pi/agent/settings.json
 
-# Pick up where you left off
-koda --continue              # resume the most recent session for this directory
-koda --resume <session-id>   # resume a specific session (no id → list)
-koda --yolo                  # skip every confirmation (combinable with --continue)
+# Install the skill-catalog extension (one-liner shown in Docs tab):
+pi install npm:@modelserver/pi-extension
 
-# Key commands
-/help              # Show all commands
-/files             # Show files Koda has loaded into context
-/sessions          # List saved sessions
-/memory add <note> # Save a note Koda remembers across launches
-/yolo              # Skip every confirmation prompt this session
-/quit              # Exit
+# Run
+pi
 ```
 
-Koda also auto-loads a `KODA.md`, `koda.md`, `CLAUDE.md`, or `AGENTS.md` from the current directory and injects it into every prompt as project guidance — drop in your conventions and Koda picks them up without restarting.
-
-See [COMMANDS.md](COMMANDS.md) for complete command reference.
+The extension auto-fetches the user's enabled skills from the webapp on startup and registers each as a Pi tool, so the 120+ default skills (web search, URL fetch, code navigation, file ops, …) are available without any additional configuration.
 
 ### API
 
@@ -284,7 +261,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           ┌───────────────┼──────────────┼──────────────┼───────────────┐
           │               ▼              ▼              ▼               │
           │  ┌────────────────────┐ ┌──────────┐ ┌───────────────┐     │
-          │  │   Webapp  :3001   │ │Chat :3002│ │  Koda TUI     │     │
+          │  │   Webapp  :3001   │ │Chat :3002│ │   Pi (TUI)    │     │
           │  │                    │ │          │ │  (API client) │     │
           │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
           │  │  Express API       │ │ Tailwind │         │             │
@@ -336,7 +313,6 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 | Model OOM errors | Reduce GPU layers, use q8_0/q4_0 cache type |
 | Port 3001 in use | `netstat -tulpn \| grep 3001` to find conflict |
 | GPU not detected | Reinstall NVIDIA Container Toolkit, test with `nvidia-smi` |
-| Koda not found | `export PATH="$HOME/.local/bin:$PATH"` |
 | SSL/corporate proxy errors | `echo "NODE_TLS_REJECT_UNAUTHORIZED=0" >> .env` |
 
 ```bash
