@@ -1052,7 +1052,11 @@ const App = () => {
             body: JSON.stringify({
                 name: newKeyName,
                 permissions: newKeyPermissions,
-                allowedSkills: newKeyAllowedSkills,
+                // Empty list = "no restriction" per the UI helper text.
+                // Sending [] would mean explicit deny-all per the server-
+                // side resolver, which is almost never what a user picking
+                // zero options actually wants.
+                allowedSkills: (newKeyAllowedSkills && newKeyAllowedSkills.length > 0) ? newKeyAllowedSkills : null,
                 rateLimitRequests: noRateLimit ? null : newKeyRateLimitRequests,
                 rateLimitTokens: noTokenLimit ? null : newKeyRateLimitTokens,
                 bearerOnly: bearerOnly
@@ -1158,7 +1162,9 @@ const App = () => {
             body: JSON.stringify({
                 name: editKeyName,
                 permissions: editKeyPermissions,
-                allowedSkills: editKeyAllowedSkills,
+                // See create-key path: [] means deny-all to the server, which
+                // is almost never what unselecting all chips is meant to do.
+                allowedSkills: (editKeyAllowedSkills && editKeyAllowedSkills.length > 0) ? editKeyAllowedSkills : null,
                 rateLimitRequests: editNoRateLimit ? null : editKeyRateLimitRequests,
                 rateLimitTokens: editNoTokenLimit ? null : editKeyRateLimitTokens
             }),
@@ -9468,7 +9474,7 @@ console.log(await res.json());`
                                                                         size="small"
                                                                         label="Allowed Skills"
                                                                         placeholder="Select tools"
-                                                                        helperText="Restrict this API key to specific tools. Leave empty for no restriction."
+                                                                        helperText="Leave empty = no restriction (key can call every enabled skill). Pick one or more to lock the key down to that subset."
                                                                     />
                                                                 )}
                                                             />
@@ -9634,7 +9640,7 @@ console.log(await res.json());`
                                                                         size="small"
                                                                         label="Allowed Skills"
                                                                         placeholder="Select tools"
-                                                                        helperText="Restrict this API key to specific tools. Leave empty for no restriction."
+                                                                        helperText="Leave empty = no restriction (key can call every enabled skill). Pick one or more to lock the key down to that subset."
                                                                     />
                                                                 )}
                                                             />
