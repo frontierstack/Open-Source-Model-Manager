@@ -16903,6 +16903,7 @@ function sanitizeHost(hostHeader) {
 // ============================================================================
 
 const PI_EXTENSION_DIR = path.join(__dirname, 'pi-extension');
+const PI_INSTALL_SCRIPT_PATH = path.join(PI_EXTENSION_DIR, 'install.sh');
 
 function piBaseUrlForRequest(req) {
     const host = sanitizeHost(req.get('host'));
@@ -16910,68 +16911,46 @@ function piBaseUrlForRequest(req) {
     return `${protocol}://${host}`;
 }
 
-app.get('/api/pi/config', requireAuth, async (req, res) => {
+// Load install.sh from disk and substitute the placeholder with the
+// caller's actual base URL. Cached read on disk error since install.sh
+// is small and rarely changes.
+async function buildPiInstallScript(baseUrl) {
+    const raw = await fs.readFile(PI_INSTALL_SCRIPT_PATH, 'utf8');
+    return raw.replace(/__MODELSERVER_BASE_URL__/g, baseUrl);
+}
+
+// Bash-pipeable installer. Curl this with the bearer key and pipe to
+// bash — the script handles MITM TLS, missing/old Node, missing Pi,
+// missing curl, broken sudo, and is idempotent across re-runs.
+app.get('/api/pi/install', requireAuth, async (req, res) => {
     try {
         const baseUrl = piBaseUrlForRequest(req);
-        const settings = {
-            defaultProvider: 'modelserver',
-            packages: [],
-            extensions: ['~/.pi/agent/extensions/modelserver/modelserver.ts']
-        };
-        const installScript = [
-            'set -eu',
-            '# 1) Drop the extension into Pi\'s global extensions dir',
-            'mkdir -p ~/.pi/agent/extensions/modelserver',
-            `curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\`,
-            `  ${baseUrl}/api/pi/extension/modelserver.ts \\`,
-            '  -o ~/.pi/agent/extensions/modelserver/modelserver.ts',
-            `curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\`,
-            `  ${baseUrl}/api/pi/extension/package.json \\`,
-            '  -o ~/.pi/agent/extensions/modelserver/package.json',
-            '',
-            '# 2) Install the extension\'s deps (Typebox)',
-            '( cd ~/.pi/agent/extensions/modelserver && npm install --omit=dev --silent )',
-            '',
-            '# 3) Drop a settings.json that points Pi at the modelserver provider',
-            'mkdir -p ~/.pi/agent',
-            `cat > ~/.pi/agent/settings.json <<'PI_SETTINGS_EOF'`,
-            JSON.stringify(settings, null, 2),
-            'PI_SETTINGS_EOF',
-            '',
-            '# 4) Set the base URL the extension talks to',
-            `export MODELSERVER_BASE_URL="${baseUrl}"`,
-            'echo "Pi setup complete. Run: pi"'
-        ].join('\n');
-
-        res.json({
-            baseUrl,
-            v1Endpoint: `${baseUrl}/v1`,
-            providerName: 'modelserver',
-            envVarName: 'MODELSERVER_API_KEY',
-            extensionPath: '~/.pi/agent/extensions/modelserver',
-            settingsPath: '~/.pi/agent/settings.json',
-            settings,
-            installScript,
-            piInstallCommand: 'npm install -g @earendil-works/pi-coding-agent',
-            note: 'Create a bearer-mode API key in the API Keys tab. Pi sends Authorization: Bearer <key>; X-API-Key/X-API-Secret pairs are not used.'
-        });
+        const script = await buildPiInstallScript(baseUrl);
+        res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
+        res.send(script);
     } catch (err) {
-        console.error('[pi-config] error:', err);
-        res.status(500).json({ error: 'Failed to generate Pi config' });
+        console.error('[pi-install] error:', err);
+        res.status(500).json({ error: 'Failed to load install script' });
     }
 });
 
 app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
-    const allowed = new Set(['modelserver.ts', 'package.json', 'README.md']);
+    const allowed = new Set(['modelserver.ts', 'package.json', 'README.md', 'install.sh']);
     const file = req.params.file;
     if (!allowed.has(file)) {
         return res.status(404).json({ error: 'Unknown extension file' });
     }
     try {
         const filePath = path.join(PI_EXTENSION_DIR, file);
-        const content = await fs.readFile(filePath, 'utf8');
+        let content = await fs.readFile(filePath, 'utf8');
+        // install.sh has __MODELSERVER_BASE_URL__ placeholders; substitute
+        // when serving directly so the file is self-contained off-tree.
+        if (file === 'install.sh') {
+            content = content.replace(/__MODELSERVER_BASE_URL__/g, piBaseUrlForRequest(req));
+        }
         const contentType = file.endsWith('.json') ? 'application/json'
             : file.endsWith('.md') ? 'text/markdown; charset=utf-8'
+            : file.endsWith('.sh') ? 'text/x-shellscript; charset=utf-8'
             : 'text/typescript; charset=utf-8';
         res.setHeader('Content-Type', contentType);
         res.send(content);

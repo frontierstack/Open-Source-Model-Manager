@@ -9,33 +9,37 @@ The 120+ default skills (web search, URL fetch, code navigation, file ops, OCR, 
 
 ## Quick start
 
-1. Install Pi:
+1. Create a bearer-mode API key in the webapp's **API Keys** tab. Pi authenticates via `Authorization: Bearer …` — regular key+secret pairs won't dispatch.
+
+2. Run the auto-installer. The endpoint is auth-gated; pipe straight to bash:
 
    ```bash
-   npm install -g @earendil-works/pi-coding-agent
-   ```
-
-2. Drop the extension under Pi's global extensions directory and install its deps:
-
-   ```bash
-   mkdir -p ~/.pi/agent/extensions/modelserver
-   cp modelserver.ts package.json ~/.pi/agent/extensions/modelserver/
-   ( cd ~/.pi/agent/extensions/modelserver && npm install --omit=dev )
-   ```
-
-   The webapp's **Docs → Pi setup** tab generates a one-liner that does all of the above.
-
-3. Create a bearer-mode API key in the webapp's **API Keys** tab (the regular key+secret pair won't work — Pi sends `Authorization: Bearer …`).
-
-4. Set the env vars before launching `pi`:
-
-   ```bash
-   export MODELSERVER_BASE_URL="https://localhost:3001"
    export MODELSERVER_API_KEY="<bearer-mode-key>"
+   curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \
+     https://<your-host>:3001/api/pi/install | bash
+   ```
+
+   `install.sh` self-corrects for: corporate MITM proxies (writes `~/.curlrc`, sets `NODE_TLS_REJECT_UNAUTHORIZED=0`, `npm strict-ssl=false`), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — re-run anytime.
+
+3. Run Pi:
+
+   ```bash
    pi
    ```
 
-5. Inside Pi, run `/provider modelserver` (or set `defaultProvider: "modelserver"` in `~/.pi/agent/settings.json`) and pick any loaded model.
+   The script persists `MODELSERVER_BASE_URL` to your shell rc. Keep `MODELSERVER_API_KEY` in your shell (don't commit it to rc) and you're set.
+
+### Manual install
+
+If you'd rather not pipe to bash, the auto-installer is the same `install.sh` shipped in this directory. Drop it next to `modelserver.ts`/`package.json` and run it. Or do the steps by hand:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+mkdir -p ~/.pi/agent/extensions/modelserver
+cp modelserver.ts package.json ~/.pi/agent/extensions/modelserver/
+( cd ~/.pi/agent/extensions/modelserver && npm install --omit=dev )
+# Then write ~/.pi/agent/settings.json with defaultProvider="modelserver"
+```
 
 ## Env vars
 

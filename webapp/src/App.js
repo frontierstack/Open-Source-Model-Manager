@@ -6223,44 +6223,36 @@ fetch('${baseUrl}/api/model-configs', {
 .then(configs => console.log(configs))
 .catch(err => console.error(err));`
             },
-            '/api/pi/config': {
-                curl: `# Returns the Pi (pi.dev) auto-config payload for this host: settings.json
-# snippet, env-var contract, and an installScript field that creates
-# ~/.pi/agent/extensions/modelserver/ end-to-end.
+            '/api/pi/install': {
+                curl: `# Bash-pipeable installer. Self-corrects: MITM TLS, missing/old Node
+# (NodeSource → nvm fallback), missing Pi, missing curl, broken sudo.
+# Idempotent.
 
 # Auth required — bearer-mode API key (Authorization: Bearer …).
-curl -sk \\
-  -H "Authorization: Bearer your_bearer_key" \\
-  ${baseUrl}/api/pi/config | jq
-
-# Common usage — pipe the install script straight to bash:
 export MODELSERVER_API_KEY="your_bearer_key"
-curl -sk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
-  ${baseUrl}/api/pi/config | jq -r .installScript | bash`,
-                python: `import requests, subprocess, os
+curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
+  ${baseUrl}/api/pi/install | bash`,
+                python: `import os, subprocess, requests
 
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-cfg = requests.get(f'${baseUrl}/api/pi/config', headers=H, verify=False).json()
-print('Provider :', cfg['providerName'])
-print('Endpoint :', cfg['v1Endpoint'])
-print('Settings :', cfg['settingsPath'])
+script = requests.get(f'${baseUrl}/api/pi/install', headers=H, verify=False).text
 
-# Equivalent of piping installScript to bash:
-# subprocess.run(['bash', '-c', cfg['installScript']], check=True, env=os.environ)`,
-                powershell: `# Auth via bearer-mode API key.
-$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
-$cfg = Invoke-RestMethod -Uri "${baseUrl}/api/pi/config" -Headers $h -SkipCertificateCheck
-$cfg | ConvertTo-Json -Depth 5
-
-# Pipe installScript through WSL bash if you have it:
-# wsl bash -c $cfg.installScript`,
-                javascript: `// Auth via bearer-mode API key.
-const r = await fetch('${baseUrl}/api/pi/config', {
+# Run the installer. The script is idempotent.
+env = {**os.environ, 'MODELSERVER_API_KEY': os.environ['MODELSERVER_API_KEY']}
+subprocess.run(['bash', '-c', script], check=True, env=env)`,
+                powershell: `# Pi's installer is bash-only. From PowerShell, hand off to WSL:
+$env:MODELSERVER_API_KEY = "your_bearer_key"
+$script = Invoke-RestMethod -Uri "${baseUrl}/api/pi/install" \`
+  -Headers @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" } \`
+  -SkipCertificateCheck
+$script | wsl bash -c "MODELSERVER_API_KEY=$env:MODELSERVER_API_KEY bash"`,
+                javascript: `// Fetch the script, then exec via Node's child_process.
+import { execSync } from 'node:child_process';
+const r = await fetch('${baseUrl}/api/pi/install', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 });
-const cfg = await r.json();
-console.log('Provider:', cfg.providerName, 'Endpoint:', cfg.v1Endpoint);
-console.log('Run:\\n' + cfg.installScript);`
+const script = await r.text();
+execSync(script, { stdio: 'inherit', shell: '/bin/bash', env: process.env });`
             },
             '/api/pi/extension/modelserver.ts': {
                 curl: `# Raw TypeScript source for the bundled Pi extension that registers this
@@ -10124,7 +10116,7 @@ console.log(await res.json());`
                                                             <MenuItem value="/api/api-keys/:id/clear-usage">POST /api/api-keys/:id/clear-usage - Clear Usage Stats</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/stats">GET /api/api-keys/:id/stats - Get Key Stats</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Pi (Terminal Agent) ───</MenuItem>
-                                                            <MenuItem value="/api/pi/config">GET /api/pi/config - Pi auto-config payload</MenuItem>
+                                                            <MenuItem value="/api/pi/install">GET /api/pi/install - Pi auto-installer (curl | bash)</MenuItem>
                                                             <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
                                                             <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Documentation ───</MenuItem>
@@ -10196,36 +10188,26 @@ console.log(await res.json());`
                                         </Box>
 
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Install Pi</Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                <span>npm install -g @earendil-works/pi-coding-agent</span>
-                                            </Box>
-                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
-                                                Or via curl/pnpm — see <a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: '#818cf8' }}>pi.dev</a> for alternates.
-                                            </Typography>
-                                        </Box>
-
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. Create a bearer-mode API key</Typography>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Create a bearer-mode API key</Typography>
                                             <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
                                                 Open the <strong style={{ color: '#fafafa' }}>API Keys</strong> tab → create a key with the <code>bearer-only</code> flag set. Pi authenticates via <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch.
                                             </Typography>
                                         </Box>
 
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Auto-config (one-liner)</Typography>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. One-liner install (curl | bash)</Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
                                                 <span>{`export MODELSERVER_API_KEY="<your-bearer-key>"
-curl -sk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
-  ${baseUrl}/api/pi/config | jq -r .installScript | bash`}</span>
+curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
+  ${baseUrl}/api/pi/install | bash`}</span>
                                             </Box>
                                             <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
-                                                Drops <code>~/.pi/agent/extensions/modelserver/</code> (extension + Typebox dep), runs <code>npm install</code> there, and writes <code>~/.pi/agent/settings.json</code>. The bearer key is used both during install and at runtime.
+                                                One script handles every common failure: corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
                                             </Typography>
                                         </Box>
 
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>4. Run</Typography>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Run</Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
                                                 <span>{`pi  # picks up MODELSERVER_BASE_URL + MODELSERVER_API_KEY automatically`}</span>
                                             </Box>
@@ -10248,13 +10230,13 @@ curl -sk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
                                                 Don&apos;t want to pipe to bash? Fetch the files directly and edit <code>~/.pi/agent/settings.json</code> by hand:
                                             </Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
-                                                <span>{`# Extension files (auth required)
+                                                <span>{`# Auto-installer (raw bash; what /api/pi/install serves)
+${baseUrl}/api/pi/extension/install.sh
+
+# Individual extension files (auth required on all of these)
 ${baseUrl}/api/pi/extension/modelserver.ts
 ${baseUrl}/api/pi/extension/package.json
-${baseUrl}/api/pi/extension/README.md
-
-# Full config payload (settings + script + endpoints)
-${baseUrl}/api/pi/config`}</span>
+${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Box>
                                         </Box>
                                     </AccordionDetails>
@@ -10555,12 +10537,14 @@ ${baseUrl}/api/pi/config`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id/messages</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Append a message</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id/streaming</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Background-stream status / cancel</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id/memories</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Per-conversation memory entries</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/conversations/:id/memories/:memId</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Edit / delete a single memory</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Chunked-content queue status</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Web search with content fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch URLs for chat context</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stealth browser fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Page interaction</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/playwright/status</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Browser status</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'primary.main' }}>/api/docs</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>DevDocs reference lookup</TableCell></TableRow>
 
                                                     {/* Models Permission */}
                                                     <TableRow>
@@ -10574,11 +10558,15 @@ ${baseUrl}/api/pi/config`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List all models</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/pull</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Download from HuggingFace</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start model instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Load HuggingFace repo directly into vLLM</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Delete model</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/hf-cache</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List HuggingFace cache contents (vLLM downloads)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/models/hf-cache/:dirName</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Delete a cached HF repo</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List all model configs</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/model-configs/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get/update model config</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Search HF models (format filter: gguf/safetensors/awq/gptq/fp8/nvfp4/bnb/any)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/files/:repo</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List repo files</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/huggingface/repo-size/:repo</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Total size of an HF repo (pre-download size check)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/downloads</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List active downloads</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/downloads/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Cancel download</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'secondary.main' }}>/api/system/resources</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Hardware info</TableCell></TableRow>
@@ -10649,15 +10637,19 @@ ${baseUrl}/api/pi/config`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/login</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Login</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/logout</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Logout</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/me</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get current user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/password</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Change password</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/password</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Change password (session auth only)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/reset-password</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Self-service password reset</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create users</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Update/delete user</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:id/disable</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Disable user</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:id/enable</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Enable user</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:username/reset-password</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Admin resets a user&apos;s password</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/invite</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Generate user invite link</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create API keys</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Update/delete key</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/revoke</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Revoke API key</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/stats</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get key stats</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/clear-usage</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Reset usage counters</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List apps</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/start</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start app</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/stop</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop app</TableCell></TableRow>
@@ -10673,8 +10665,22 @@ ${baseUrl}/api/pi/config`}</span>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible chat</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible text</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible chat (proxied to first running instance)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible text completion</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/models</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible model list (used by Pi extension)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/*</TableCell><TableCell sx={{ color: 'text.secondary' }}>ALL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Catch-all proxy: any other vLLM/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
+
+                                                    {/* Pi Terminal Agent */}
+                                                    <TableRow>
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(168, 85, 247, 0.1)', py: 0.75 }}>
+                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Chip label="Pi" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(168,85,247,0.5)', color: '#fafafa' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Pi Terminal Agent (bearer-only auth)</Typography>
+                                                            </Box>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/pi/install</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Bash auto-installer (curl | bash). Self-corrects MITM TLS, missing/old Node, missing Pi.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Serves modelserver.ts, package.json, README.md, install.sh</TableCell></TableRow>
 
                                                 </TableBody>
                                             </Table>
