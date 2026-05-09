@@ -287,6 +287,15 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                     root: {
                         backgroundImage: 'none',
                         borderRadius: 8,
+                        // Paper bg/border previously inherited from
+                        // palette.background.paper; route through the same
+                        // theme variables Tailwind components use so
+                        // tokens stay in sync across both styling layers.
+                        backgroundColor: 'var(--surface-primary)',
+                        color: 'var(--text-primary)',
+                    },
+                    outlined: {
+                        borderColor: 'var(--border-primary)',
                     },
                 },
             },
@@ -294,13 +303,14 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                 styleOverrides: {
                     root: {
                         backgroundImage: 'none',
-                        backgroundColor: alpha(isDark ? '#ffffff' : '#000000', isDark ? 0.02 : 0.02),
+                        backgroundColor: 'var(--surface-primary)',
+                        color: 'var(--text-primary)',
                         borderRadius: 12,
-                        border: `1px solid ${alpha(isDark ? '#ffffff' : '#000000', 0.08)}`,
+                        border: '1px solid var(--border-primary)',
                         boxShadow: `0 4px 16px ${alpha('#000000', isDark ? 0.4 : 0.1)}`,
                         transition: 'all 0.2s ease',
                         '&:hover': {
-                            borderColor: alpha(colors.secondary.main, 0.3),
+                            borderColor: 'var(--border-hover)',
                             boxShadow: `0 8px 24px ${alpha('#000000', isDark ? 0.5 : 0.15)}`,
                         },
                     },
@@ -312,16 +322,22 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                         '& .MuiOutlinedInput-root': {
                             borderRadius: 8,
                             fontSize: '0.875rem',
+                            backgroundColor: 'var(--input-bg, var(--bg-tertiary))',
+                            color: 'var(--text-primary)',
                             '& fieldset': {
-                                borderColor: alpha(isDark ? '#ffffff' : '#000000', 0.08),
+                                borderColor: 'var(--input-border, var(--border-primary))',
                             },
                             '&:hover fieldset': {
-                                borderColor: alpha(colors.secondary.main, 0.3),
+                                borderColor: 'var(--border-hover)',
                             },
                             '&.Mui-focused fieldset': {
-                                borderColor: colors.secondary.main,
+                                borderColor: 'var(--border-focus)',
                                 borderWidth: 1,
                             },
+                        },
+                        '& .MuiInputLabel-root': {
+                            color: 'var(--text-tertiary)',
+                            '&.Mui-focused': { color: 'var(--accent-primary)' },
                         },
                     },
                 },
@@ -350,7 +366,91 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                 styleOverrides: {
                     root: {
                         fontSize: '0.875rem',
+                        color: 'var(--text-primary)',
                     },
+                    icon: { color: 'var(--text-tertiary)' },
+                },
+            },
+            MuiMenu: {
+                styleOverrides: {
+                    paper: {
+                        backgroundColor: 'var(--surface-primary)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--border-primary)',
+                    },
+                },
+            },
+            MuiMenuItem: {
+                styleOverrides: {
+                    root: {
+                        color: 'var(--text-primary)',
+                        '&:hover': { backgroundColor: 'var(--bg-hover)' },
+                        '&.Mui-selected': {
+                            backgroundColor: 'var(--accent-muted)',
+                            color: 'var(--accent-primary)',
+                            '&:hover': { backgroundColor: 'var(--accent-muted)' },
+                        },
+                    },
+                },
+            },
+            MuiDialog: {
+                styleOverrides: {
+                    paper: {
+                        backgroundColor: 'var(--surface-primary)',
+                        color: 'var(--text-primary)',
+                        border: '1px solid var(--border-primary)',
+                        backgroundImage: 'none',
+                    },
+                },
+            },
+            MuiDialogTitle: {
+                styleOverrides: {
+                    root: {
+                        color: 'var(--text-primary)',
+                        borderBottom: '1px solid var(--border-primary)',
+                    },
+                },
+            },
+            MuiDialogContent: {
+                styleOverrides: {
+                    root: { color: 'var(--text-primary)' },
+                },
+            },
+            MuiAccordion: {
+                styleOverrides: {
+                    root: {
+                        backgroundColor: 'var(--surface-primary)',
+                        color: 'var(--text-primary)',
+                        backgroundImage: 'none',
+                        border: '1px solid var(--border-primary)',
+                        '&:before': { display: 'none' },
+                    },
+                },
+            },
+            MuiAccordionSummary: {
+                styleOverrides: {
+                    root: {
+                        color: 'var(--text-primary)',
+                        '&:hover': { backgroundColor: 'var(--bg-hover)' },
+                    },
+                    expandIconWrapper: { color: 'var(--text-tertiary)' },
+                },
+            },
+            MuiTableCell: {
+                styleOverrides: {
+                    root: {
+                        borderBottomColor: 'var(--border-primary)',
+                        color: 'var(--text-primary)',
+                    },
+                    head: {
+                        color: 'var(--text-secondary)',
+                        backgroundColor: 'var(--bg-tertiary)',
+                    },
+                },
+            },
+            MuiDivider: {
+                styleOverrides: {
+                    root: { borderColor: 'var(--border-primary)' },
                 },
             },
             MuiInputLabel: {
