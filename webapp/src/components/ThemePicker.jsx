@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { usePreferencesStore, PREFERENCES_OPTIONS } from '../stores/usePreferencesStore';
 
-// Theme display order + label, mirroring chat's ChatSettings picker.
+// Theme display order + label.
 const THEME_META = [
     { id: 'dark',          label: 'Dark',          dot: '#a78bfa' },
     { id: 'midnight',      label: 'Midnight',      dot: '#7dd3fc' },
@@ -12,8 +12,16 @@ const THEME_META = [
     { id: 'kanagawa',      label: 'Kanagawa',      dot: '#7e9cd8' },
     { id: 'palenight',     label: 'Palenight',     dot: '#c792ea' },
     { id: 'research',      label: 'Research',      dot: '#a78bfa' },
-    { id: 'research-dark', label: 'Research Dark', dot: '#a78bfa' },
+    { id: 'research-dark', label: 'Research Dk',   dot: '#a78bfa' },
     { id: 'light',         label: 'Light',         dot: '#525252' },
+    { id: 'forest',        label: 'Forest',        dot: '#22c55e' },
+    { id: 'cyberpunk',     label: 'Cyberpunk',     dot: '#ff00ff' },
+    { id: 'dracula',       label: 'Dracula',       dot: '#ff79c6' },
+    { id: 'nord',          label: 'Nord',          dot: '#88c0d0' },
+    { id: 'gruvbox',       label: 'Gruvbox',       dot: '#fabd2f' },
+    { id: 'mocha',         label: 'Mocha',         dot: '#cba6f7' },
+    { id: 'synthwave',     label: 'Synthwave',     dot: '#ff71ce' },
+    { id: 'rose-pine',     label: 'Rose Pine',     dot: '#ebbcba' },
 ];
 
 const ACCENT_META = [
@@ -22,6 +30,13 @@ const ACCENT_META = [
     { id: 'emerald', swatch: 'oklch(0.6 0.13 160)' },
     { id: 'slate',   swatch: 'oklch(0.48 0.04 260)' },
     { id: 'rose',    swatch: 'oklch(0.6 0.17 15)' },
+    { id: 'cyan',    swatch: 'oklch(0.65 0.14 200)' },
+    { id: 'teal',    swatch: 'oklch(0.58 0.12 180)' },
+    { id: 'indigo',  swatch: 'oklch(0.55 0.16 270)' },
+    { id: 'pink',    swatch: 'oklch(0.65 0.20 350)' },
+    { id: 'lime',    swatch: 'oklch(0.78 0.18 130)' },
+    { id: 'orange',  swatch: 'oklch(0.68 0.18 50)' },
+    { id: 'sky',     swatch: 'oklch(0.70 0.14 230)' },
 ];
 
 export default function ThemePicker() {

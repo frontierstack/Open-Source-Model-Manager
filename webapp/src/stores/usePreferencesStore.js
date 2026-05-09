@@ -47,8 +47,18 @@ function mirrorPatchToLegacyStore(patch) {
  * theme picked in either app is reflected in the other on next mount.
  */
 
-const VALID_THEMES = ['dark', 'midnight', 'ocean', 'sunset', 'matrix', 'solarized', 'kanagawa', 'palenight', 'research', 'research-dark', 'light'];
-const VALID_ACCENTS = ['violet', 'amber', 'emerald', 'slate', 'rose'];
+const VALID_THEMES = [
+    // Originals (chat-imported)
+    'dark', 'midnight', 'ocean', 'sunset', 'matrix', 'solarized', 'kanagawa',
+    'palenight', 'research', 'research-dark', 'light',
+    // Webapp-added
+    'forest', 'cyberpunk', 'dracula', 'nord', 'gruvbox', 'mocha', 'synthwave', 'rose-pine',
+];
+const VALID_ACCENTS = [
+    'violet', 'amber', 'emerald', 'slate', 'rose',
+    // Added
+    'cyan', 'teal', 'indigo', 'pink', 'lime', 'orange', 'sky',
+];
 const VALID_BUBBLES = ['bubbles', 'cards', 'rows'];
 const VALID_DENSITIES = ['comfortable', 'compact'];
 
@@ -63,36 +73,19 @@ const VALID_DENSITIES = ['comfortable', 'compact'];
 // hue ~20° for the gradient endpoint, hover is 1 step lighter, muted is
 // the primary at 18% opacity.
 const ACCENT_OVERRIDES = {
-    violet: {
-        primary:   'oklch(0.55 0.13 290)',
-        secondary: 'oklch(0.62 0.13 270)',
-        hover:     'oklch(0.65 0.13 290)',
-        muted:     'oklch(0.55 0.13 290 / 0.18)',
-    },
-    amber: {
-        primary:   'oklch(0.70 0.13 70)',
-        secondary: 'oklch(0.62 0.14 45)',
-        hover:     'oklch(0.78 0.13 70)',
-        muted:     'oklch(0.70 0.13 70 / 0.18)',
-    },
-    emerald: {
-        primary:   'oklch(0.60 0.13 160)',
-        secondary: 'oklch(0.65 0.13 180)',
-        hover:     'oklch(0.70 0.13 160)',
-        muted:     'oklch(0.60 0.13 160 / 0.18)',
-    },
-    slate: {
-        primary:   'oklch(0.50 0.04 260)',
-        secondary: 'oklch(0.62 0.04 240)',
-        hover:     'oklch(0.60 0.04 260)',
-        muted:     'oklch(0.50 0.04 260 / 0.20)',
-    },
-    rose: {
-        primary:   'oklch(0.60 0.17 15)',
-        secondary: 'oklch(0.62 0.17 350)',
-        hover:     'oklch(0.70 0.17 15)',
-        muted:     'oklch(0.60 0.17 15 / 0.18)',
-    },
+    violet:  { primary: 'oklch(0.55 0.13 290)', secondary: 'oklch(0.62 0.13 270)', hover: 'oklch(0.65 0.13 290)', muted: 'oklch(0.55 0.13 290 / 0.18)' },
+    amber:   { primary: 'oklch(0.70 0.13 70)',  secondary: 'oklch(0.62 0.14 45)',  hover: 'oklch(0.78 0.13 70)',  muted: 'oklch(0.70 0.13 70 / 0.18)'  },
+    emerald: { primary: 'oklch(0.60 0.13 160)', secondary: 'oklch(0.65 0.13 180)', hover: 'oklch(0.70 0.13 160)', muted: 'oklch(0.60 0.13 160 / 0.18)' },
+    slate:   { primary: 'oklch(0.50 0.04 260)', secondary: 'oklch(0.62 0.04 240)', hover: 'oklch(0.60 0.04 260)', muted: 'oklch(0.50 0.04 260 / 0.20)' },
+    rose:    { primary: 'oklch(0.60 0.17 15)',  secondary: 'oklch(0.62 0.17 350)', hover: 'oklch(0.70 0.17 15)',  muted: 'oklch(0.60 0.17 15 / 0.18)'  },
+    // Additions
+    cyan:    { primary: 'oklch(0.65 0.14 200)', secondary: 'oklch(0.70 0.13 220)', hover: 'oklch(0.72 0.14 200)', muted: 'oklch(0.65 0.14 200 / 0.18)' },
+    teal:    { primary: 'oklch(0.58 0.12 180)', secondary: 'oklch(0.65 0.12 175)', hover: 'oklch(0.66 0.12 180)', muted: 'oklch(0.58 0.12 180 / 0.18)' },
+    indigo:  { primary: 'oklch(0.55 0.16 270)', secondary: 'oklch(0.60 0.18 260)', hover: 'oklch(0.65 0.16 270)', muted: 'oklch(0.55 0.16 270 / 0.18)' },
+    pink:    { primary: 'oklch(0.65 0.20 350)', secondary: 'oklch(0.62 0.18 5)',   hover: 'oklch(0.72 0.20 350)', muted: 'oklch(0.65 0.20 350 / 0.18)' },
+    lime:    { primary: 'oklch(0.78 0.18 130)', secondary: 'oklch(0.72 0.18 120)', hover: 'oklch(0.83 0.18 130)', muted: 'oklch(0.78 0.18 130 / 0.18)' },
+    orange:  { primary: 'oklch(0.68 0.18 50)',  secondary: 'oklch(0.62 0.18 35)',  hover: 'oklch(0.74 0.18 50)',  muted: 'oklch(0.68 0.18 50 / 0.18)'  },
+    sky:     { primary: 'oklch(0.70 0.14 230)', secondary: 'oklch(0.72 0.14 215)', hover: 'oklch(0.76 0.14 230)', muted: 'oklch(0.70 0.14 230 / 0.18)' },
 };
 
 const DEFAULTS = {

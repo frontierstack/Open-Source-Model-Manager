@@ -886,6 +886,222 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     --info: #52525b;
 }
 
+/* ============================================
+   Webapp-added themes — minimal var sets so the picker covers more
+   options without having to re-derive every chat-side variable.
+   These mostly target the surface chrome (bg, text, border, accent
+   primary/secondary/hover/muted); chat-specific message-bubble
+   vars fall back to :root defaults.
+   ============================================ */
+
+.theme-forest {
+    --primary-rgb: 34, 197, 94;
+    --bg-primary: #0d1f0d;
+    --bg-secondary: #122512;
+    --bg-tertiary: #1a331a;
+    --bg-elevated: #15291a;
+    --bg-hover: rgba(34, 197, 94, 0.06);
+    --surface-primary: rgba(20, 40, 25, 0.92);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-tertiary: #71717a;
+    --text-muted: #525252;
+    --border-primary: rgba(34, 197, 94, 0.14);
+    --border-secondary: rgba(34, 197, 94, 0.08);
+    --border-hover: rgba(34, 197, 94, 0.30);
+    --border-focus: rgba(34, 197, 94, 0.55);
+    --accent-primary: #22c55e;
+    --accent-secondary: #84cc16;
+    --accent-hover: #4ade80;
+    --accent-muted: rgba(34, 197, 94, 0.18);
+    --success: #22c55e;
+    --warning: #eab308;
+    --error: #ef4444;
+    --info: #84cc16;
+}
+
+.theme-cyberpunk {
+    --primary-rgb: 255, 0, 255;
+    --bg-primary: #0a0014;
+    --bg-secondary: #14041f;
+    --bg-tertiary: #1a0a2e;
+    --bg-elevated: #170628;
+    --bg-hover: rgba(255, 0, 255, 0.08);
+    --surface-primary: rgba(26, 10, 46, 0.92);
+    --text-primary: #ffffff;
+    --text-secondary: #b388ff;
+    --text-tertiary: #8a6db8;
+    --text-muted: #5a4a7a;
+    --border-primary: rgba(255, 0, 255, 0.18);
+    --border-secondary: rgba(255, 0, 255, 0.10);
+    --border-hover: rgba(255, 0, 255, 0.35);
+    --border-focus: rgba(255, 0, 255, 0.60);
+    --accent-primary: #ff00ff;
+    --accent-secondary: #00ffff;
+    --accent-hover: #ff66ff;
+    --accent-muted: rgba(255, 0, 255, 0.18);
+    --success: #00ff66;
+    --warning: #ffff00;
+    --error: #ff0066;
+    --info: #00ffff;
+}
+
+.theme-dracula {
+    --primary-rgb: 189, 147, 249;
+    --bg-primary: #282a36;
+    --bg-secondary: #1f2029;
+    --bg-tertiary: #21222c;
+    --bg-elevated: #2d2f3b;
+    --bg-hover: rgba(189, 147, 249, 0.08);
+    --surface-primary: rgba(40, 42, 54, 0.94);
+    --text-primary: #f8f8f2;
+    --text-secondary: #c2c2bb;
+    --text-tertiary: #a8a89a;
+    --text-muted: #6272a4;
+    --border-primary: rgba(189, 147, 249, 0.16);
+    --border-secondary: rgba(189, 147, 249, 0.08);
+    --border-hover: rgba(189, 147, 249, 0.30);
+    --border-focus: rgba(189, 147, 249, 0.55);
+    --accent-primary: #ff79c6;
+    --accent-secondary: #bd93f9;
+    --accent-hover: #ff92d0;
+    --accent-muted: rgba(255, 121, 198, 0.18);
+    --success: #50fa7b;
+    --warning: #f1fa8c;
+    --error: #ff5555;
+    --info: #8be9fd;
+}
+
+.theme-nord {
+    --primary-rgb: 136, 192, 208;
+    --bg-primary: #2e3440;
+    --bg-secondary: #3b4252;
+    --bg-tertiary: #434c5e;
+    --bg-elevated: #4c566a;
+    --bg-hover: rgba(136, 192, 208, 0.08);
+    --surface-primary: rgba(59, 66, 82, 0.92);
+    --text-primary: #eceff4;
+    --text-secondary: #d8dee9;
+    --text-tertiary: #b9bfc9;
+    --text-muted: #7b8493;
+    --border-primary: rgba(136, 192, 208, 0.14);
+    --border-secondary: rgba(136, 192, 208, 0.08);
+    --border-hover: rgba(136, 192, 208, 0.28);
+    --border-focus: rgba(136, 192, 208, 0.55);
+    --accent-primary: #88c0d0;
+    --accent-secondary: #81a1c1;
+    --accent-hover: #a3d0de;
+    --accent-muted: rgba(136, 192, 208, 0.18);
+    --success: #a3be8c;
+    --warning: #ebcb8b;
+    --error: #bf616a;
+    --info: #5e81ac;
+}
+
+.theme-gruvbox {
+    --primary-rgb: 250, 189, 47;
+    --bg-primary: #282828;
+    --bg-secondary: #32302f;
+    --bg-tertiary: #3c3836;
+    --bg-elevated: #504945;
+    --bg-hover: rgba(250, 189, 47, 0.07);
+    --surface-primary: rgba(50, 48, 47, 0.94);
+    --text-primary: #ebdbb2;
+    --text-secondary: #d5c4a1;
+    --text-tertiary: #bdae93;
+    --text-muted: #a89984;
+    --border-primary: rgba(250, 189, 47, 0.14);
+    --border-secondary: rgba(250, 189, 47, 0.08);
+    --border-hover: rgba(250, 189, 47, 0.30);
+    --border-focus: rgba(250, 189, 47, 0.55);
+    --accent-primary: #fabd2f;
+    --accent-secondary: #fe8019;
+    --accent-hover: #fad15c;
+    --accent-muted: rgba(250, 189, 47, 0.18);
+    --success: #b8bb26;
+    --warning: #fabd2f;
+    --error: #fb4934;
+    --info: #83a598;
+}
+
+.theme-mocha {
+    --primary-rgb: 203, 166, 247;
+    --bg-primary: #1e1e2e;
+    --bg-secondary: #181825;
+    --bg-tertiary: #313244;
+    --bg-elevated: #45475a;
+    --bg-hover: rgba(203, 166, 247, 0.08);
+    --surface-primary: rgba(30, 30, 46, 0.94);
+    --text-primary: #cdd6f4;
+    --text-secondary: #bac2de;
+    --text-tertiary: #9399b2;
+    --text-muted: #7f849c;
+    --border-primary: rgba(203, 166, 247, 0.14);
+    --border-secondary: rgba(203, 166, 247, 0.08);
+    --border-hover: rgba(203, 166, 247, 0.30);
+    --border-focus: rgba(203, 166, 247, 0.55);
+    --accent-primary: #cba6f7;
+    --accent-secondary: #f5c2e7;
+    --accent-hover: #d5b8f9;
+    --accent-muted: rgba(203, 166, 247, 0.18);
+    --success: #a6e3a1;
+    --warning: #f9e2af;
+    --error: #f38ba8;
+    --info: #89b4fa;
+}
+
+.theme-synthwave {
+    --primary-rgb: 255, 113, 206;
+    --bg-primary: #241b2f;
+    --bg-secondary: #2b2042;
+    --bg-tertiary: #322750;
+    --bg-elevated: #3a2c5d;
+    --bg-hover: rgba(255, 113, 206, 0.10);
+    --surface-primary: rgba(43, 32, 66, 0.94);
+    --text-primary: #f8f8f2;
+    --text-secondary: #d4d0e1;
+    --text-tertiary: #b1aac4;
+    --text-muted: #8a849f;
+    --border-primary: rgba(255, 113, 206, 0.18);
+    --border-secondary: rgba(255, 113, 206, 0.10);
+    --border-hover: rgba(255, 113, 206, 0.35);
+    --border-focus: rgba(255, 113, 206, 0.60);
+    --accent-primary: #ff71ce;
+    --accent-secondary: #01cdfe;
+    --accent-hover: #ff8dd6;
+    --accent-muted: rgba(255, 113, 206, 0.18);
+    --success: #05ffa1;
+    --warning: #fffb96;
+    --error: #ff5555;
+    --info: #01cdfe;
+}
+
+.theme-rose-pine {
+    --primary-rgb: 235, 188, 186;
+    --bg-primary: #191724;
+    --bg-secondary: #1f1d2e;
+    --bg-tertiary: #26233a;
+    --bg-elevated: #2a273f;
+    --bg-hover: rgba(235, 188, 186, 0.07);
+    --surface-primary: rgba(31, 29, 46, 0.94);
+    --text-primary: #e0def4;
+    --text-secondary: #cdc9d6;
+    --text-tertiary: #a8a3b6;
+    --text-muted: #908caa;
+    --border-primary: rgba(235, 188, 186, 0.14);
+    --border-secondary: rgba(235, 188, 186, 0.08);
+    --border-hover: rgba(235, 188, 186, 0.30);
+    --border-focus: rgba(235, 188, 186, 0.55);
+    --accent-primary: #ebbcba;
+    --accent-secondary: #c4a7e7;
+    --accent-hover: #f0c9c8;
+    --accent-muted: rgba(235, 188, 186, 0.18);
+    --success: #9ccfd8;
+    --warning: #f6c177;
+    --error: #eb6f92;
+    --info: #31748f;
+}
+
 /* Light theme specific overrides for Tailwind dark classes */
 
 /* === Backgrounds === */
