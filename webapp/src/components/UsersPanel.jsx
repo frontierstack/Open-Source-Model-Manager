@@ -1,10 +1,12 @@
 import React from 'react';
-import PeopleIcon from '@mui/icons-material/People';
-import EmailIcon from '@mui/icons-material/Email';
-import EditIcon from '@mui/icons-material/Edit';
-import VpnKeyIcon from '@mui/icons-material/VpnKey';
-import DeleteIcon from '@mui/icons-material/Delete';
-import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+import {
+    Users as PeopleIcon,
+    Mail as EmailIcon,
+    Pencil as EditIcon,
+    KeyRound as VpnKeyIcon,
+    Trash2 as DeleteIcon,
+    UserCircle as AccountCircleIcon,
+} from 'lucide-react';
 import Switch from '@mui/material/Switch';
 import Tooltip from '@mui/material/Tooltip';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -126,7 +128,7 @@ export default function UsersPanel({
                         className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
                         style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
                     >
-                        <PeopleIcon style={{ fontSize: 20 }} />
+                        <PeopleIcon size={20} strokeWidth={1.75} />
                     </span>
                     <div className="min-w-0">
                         <div
@@ -151,7 +153,7 @@ export default function UsersPanel({
                             backgroundColor: 'var(--accent-muted)',
                         }}
                     >
-                        <EmailIcon style={{ fontSize: 14 }} />
+                        <EmailIcon size={14} strokeWidth={2} />
                         <span>{isMobile ? 'Invite' : 'Invite User'}</span>
                     </button>
                 )}
@@ -160,7 +162,7 @@ export default function UsersPanel({
             {/* Body */}
             {!isAdmin ? (
                 <div className="flex flex-col items-center gap-3 py-12">
-                    <PeopleIcon style={{ fontSize: 48, color: 'var(--text-tertiary)' }} />
+                    <PeopleIcon size={40} strokeWidth={1.5} style={{ color: 'var(--text-tertiary)' }} />
                     <div className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
                         Admin access required to manage users
                     </div>
@@ -213,8 +215,9 @@ export default function UsersPanel({
                                     <td className="px-4 py-3" style={{ color: 'var(--text-primary)' }}>
                                         <div className="flex items-center gap-2">
                                             <AccountCircleIcon
+                                                size={16}
+                                                strokeWidth={1.75}
                                                 style={{
-                                                    fontSize: 18,
                                                     color: u.disabled ? 'var(--text-muted)' : 'var(--text-tertiary)',
                                                 }}
                                             />
@@ -267,14 +270,14 @@ export default function UsersPanel({
                                                 </Tooltip>
                                             )}
                                             <ActionButton title="Edit" onClick={() => onEdit(u)}>
-                                                <EditIcon style={{ fontSize: 16 }} />
+                                                <EditIcon size={15} strokeWidth={2} />
                                             </ActionButton>
                                             <ActionButton title="Reset Password" onClick={() => onResetPassword(u)}>
-                                                <VpnKeyIcon style={{ fontSize: 16 }} />
+                                                <VpnKeyIcon size={15} strokeWidth={2} />
                                             </ActionButton>
                                             {u.id !== user?.id && (
                                                 <ActionButton danger title="Delete" onClick={() => onDelete(u.id)}>
-                                                    <DeleteIcon style={{ fontSize: 16 }} />
+                                                    <DeleteIcon size={15} strokeWidth={2} />
                                                 </ActionButton>
                                             )}
                                         </div>

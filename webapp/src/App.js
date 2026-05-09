@@ -108,6 +108,15 @@ import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
 import Menu from '@mui/material/Menu';
 import useMediaQuery from '@mui/material/useMediaQuery';
+import {
+    Search as LucideSearch,
+    HardDrive as LucideHardDrive,
+    Users as LucideUsers,
+    KeyRound as LucideKey,
+    BookOpen as LucideBookOpen,
+    Terminal as LucideTerminal,
+    LayoutGrid as LucideLayoutGrid,
+} from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
@@ -6879,15 +6888,17 @@ console.log(await res.json());`
         localStorage.setItem('docsAccordionOrder', JSON.stringify(newOrder));
     };
 
-    // Tab definitions
+    // Tab definitions — sidebar icons via lucide-react for a sleeker
+    // monoline aesthetic (chat:3002 already uses lucide). MUI Material
+    // Icons feel out of place in a Tailwind/CSS-var design system.
     const tabDefinitions = [
-        { id: 0, icon: <SearchIcon sx={{ fontSize: 18 }} />, label: 'Discover' },
-        { id: 1, icon: <StorageIcon sx={{ fontSize: 18 }} />, label: 'My Models' },
-        { id: 2, icon: <PeopleIcon sx={{ fontSize: 18 }} />, label: 'Users' },
-        { id: 3, icon: <VpnKeyIcon sx={{ fontSize: 18 }} />, label: 'API Keys', adminOnly: true },
-        { id: 4, icon: <MenuBookIcon sx={{ fontSize: 18 }} />, label: 'Docs' },
-        { id: 5, icon: <TerminalIcon sx={{ fontSize: 18 }} />, label: 'Logs' },
-        { id: 6, icon: <AppsIcon sx={{ fontSize: 18 }} />, label: 'Apps', adminOnly: true }
+        { id: 0, icon: <LucideSearch size={18} strokeWidth={1.75} />,    label: 'Discover' },
+        { id: 1, icon: <LucideHardDrive size={18} strokeWidth={1.75} />, label: 'My Models' },
+        { id: 2, icon: <LucideUsers size={18} strokeWidth={1.75} />,     label: 'Users' },
+        { id: 3, icon: <LucideKey size={18} strokeWidth={1.75} />,       label: 'API Keys', adminOnly: true },
+        { id: 4, icon: <LucideBookOpen size={18} strokeWidth={1.75} />,  label: 'Docs' },
+        { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
+        { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true }
     ];
 
     // Filter tabs based on user role - hide admin-only tabs for non-admin users
@@ -9865,12 +9876,43 @@ console.log(await res.json());`
 
                         {/* Docs Tab */}
                         {visibleTabOrder[activeTab] === 4 && (
+                            <div className="flex flex-col gap-4">
+                                {/* Tailwind page header in the same vocabulary
+                                    as the other rebuilt panels (Logs, Users,
+                                    Apps, My Models). The accordions below
+                                    inherit theme via Phase 3 MUI overrides. */}
+                                <div
+                                    className="flex items-center gap-3 rounded-xl border px-4 py-3"
+                                    style={{
+                                        backgroundColor: 'var(--surface-primary)',
+                                        borderColor: 'var(--border-primary)',
+                                    }}
+                                >
+                                    <span
+                                        className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
+                                        style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
+                                    >
+                                        <LucideBookOpen size={20} strokeWidth={1.75} />
+                                    </span>
+                                    <div className="min-w-0">
+                                        <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                            Documentation &amp; API Reference
+                                        </div>
+                                        <div className="text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
+                                            Complete guide to getting started, API usage, and configuration
+                                        </div>
+                                    </div>
+                                </div>
                             <Box>
-                                <SectionHeader
-                                    icon={<MenuBookIcon />}
-                                    title="Documentation & API Reference"
-                                    subtitle="Complete guide to getting started, API usage, and configuration"
-                                />
+                                {/* Legacy SectionHeader retained guarded `false`
+                                    for one cycle for A/B verification. */}
+                                {false && (
+                                    <SectionHeader
+                                        icon={<MenuBookIcon />}
+                                        title="Documentation & API Reference"
+                                        subtitle="Complete guide to getting started, API usage, and configuration"
+                                    />
+                                )}
 
                                 
                                 {/* Quick Start Guide */}
@@ -10866,6 +10908,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                     </AccordionDetails>
                                 </Accordion>
                             </Box>
+                            </div>
                         )}
 
                         {/* Logs Tab — Phase 2 Tailwind rewrite. Component lives at

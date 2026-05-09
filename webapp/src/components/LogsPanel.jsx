@@ -1,7 +1,5 @@
 import React from 'react';
-import TerminalIcon from '@mui/icons-material/Terminal';
-import ClearIcon from '@mui/icons-material/Clear';
-import SearchIcon from '@mui/icons-material/Search';
+import { Terminal as TerminalIcon, X as ClearIcon, Search as SearchIcon } from 'lucide-react';
 import SystemResourceMonitor from './SystemResourceMonitor';
 
 // Phase 2: Tailwind rewrite of the Logs tab. State + refs + handlers
@@ -283,7 +281,7 @@ export default function LogsPanel({
                     {/* Header */}
                     <div className="mb-3 flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                            <TerminalIcon style={{ fontSize: 22, color: 'var(--accent-primary)' }} />
+                            <TerminalIcon size={20} strokeWidth={1.75} style={{ color: 'var(--accent-primary)' }} />
                             <div>
                                 <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
                                     Process Logs
@@ -301,7 +299,7 @@ export default function LogsPanel({
                                 className="inline-flex h-8 w-8 items-center justify-center rounded-md border transition"
                                 style={{ borderColor: 'var(--border-primary)', color: 'var(--text-secondary)' }}
                             >
-                                <ClearIcon style={{ fontSize: 16 }} />
+                                <ClearIcon size={16} strokeWidth={2} />
                             </button>
                         ) : (
                             <button
@@ -310,7 +308,7 @@ export default function LogsPanel({
                                 className="inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium transition"
                                 style={{ borderColor: 'var(--border-primary)', color: 'var(--text-secondary)' }}
                             >
-                                <ClearIcon style={{ fontSize: 14 }} />
+                                <ClearIcon size={14} strokeWidth={2} />
                                 <span>Clear</span>
                             </button>
                         )}
@@ -337,7 +335,7 @@ export default function LogsPanel({
                                 minWidth: 200,
                             }}
                         >
-                            <SearchIcon style={{ fontSize: 14, color: 'var(--text-tertiary)' }} />
+                            <SearchIcon size={14} strokeWidth={2} style={{ color: 'var(--text-tertiary)' }} />
                             <input
                                 type="text"
                                 placeholder="Search logs..."
@@ -357,7 +355,7 @@ export default function LogsPanel({
                                     style={{ color: 'var(--text-tertiary)' }}
                                     aria-label="Clear search"
                                 >
-                                    <ClearIcon style={{ fontSize: 12 }} />
+                                    <ClearIcon size={12} strokeWidth={2} />
                                 </button>
                             )}
                         </div>

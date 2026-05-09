@@ -1,8 +1,10 @@
 import React from 'react';
-import AppsIcon from '@mui/icons-material/Apps';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import StopIcon from '@mui/icons-material/Stop';
-import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import {
+    LayoutGrid as AppsIcon,
+    Play as PlayArrowIcon,
+    Square as StopIcon,
+    RefreshCw as RestartAltIcon,
+} from 'lucide-react';
 
 // Phase 5: Tailwind chrome for the Apps tab.
 // Owns the page header and the grid of *non-integrated* app cards
@@ -60,7 +62,7 @@ function ActionPill({ icon: Icon, label, color, onClick, disabled }) {
             }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
         >
-            <Icon style={{ fontSize: 16 }} />
+            <Icon size={15} strokeWidth={2} />
             <span>{label}</span>
         </button>
     );
@@ -180,7 +182,7 @@ export default function AppsPanel({
                     className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
                     style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
                 >
-                    <AppsIcon style={{ fontSize: 20 }} />
+                    <AppsIcon size={20} strokeWidth={1.75} />
                 </span>
                 <div className="min-w-0">
                     <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>

@@ -1,5 +1,5 @@
 import React from 'react';
-import StorageIcon from '@mui/icons-material/Storage';
+import { HardDrive as StorageIcon } from 'lucide-react';
 
 // Phase 6: Tailwind chrome for the My Models tab.
 //
@@ -32,7 +32,7 @@ export default function MyModelsPanel({ instancesLoaded = 0, children }) {
                     className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
                     style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
                 >
-                    <StorageIcon style={{ fontSize: 20 }} />
+                    <StorageIcon size={20} strokeWidth={1.75} />
                 </span>
                 <div className="min-w-0">
                     <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>

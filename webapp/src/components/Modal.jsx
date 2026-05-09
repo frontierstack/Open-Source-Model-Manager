@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import CloseIcon from '@mui/icons-material/Close';
+import { X as CloseIcon } from 'lucide-react';
 
 // Tailwind dialog primitive replacing MUI's <Dialog>. Used by the
 // per-feature dialog ports (UserDialog, ApiKeyDialog, AgentDialog, …)
@@ -157,7 +157,7 @@ export default function Modal({
                                     e.currentTarget.style.color = 'var(--text-tertiary)';
                                 }}
                             >
-                                <CloseIcon style={{ fontSize: 18 }} />
+                                <CloseIcon size={18} strokeWidth={2} />
                             </button>
                         )}
                     </div>

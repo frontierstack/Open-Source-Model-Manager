@@ -1,6 +1,5 @@
 import React from 'react';
-import MemoryIcon from '@mui/icons-material/Memory';
-import StopIcon from '@mui/icons-material/Stop';
+import { Cpu as MemoryIcon, Square as StopIcon } from 'lucide-react';
 import Tooltip from '@mui/material/Tooltip';
 
 // Phase 7: Tailwind rewrite of the Running Instances section in
@@ -148,7 +147,7 @@ function InstanceCard({ instance, onStop }) {
                         onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(248,113,113,0.12)'; e.currentTarget.style.color = '#ef4444'; }}
                         onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#f87171'; }}
                     >
-                        <StopIcon style={{ fontSize: 18 }} />
+                        <StopIcon size={16} strokeWidth={2} />
                     </button>
                 </Tooltip>
             </div>
@@ -172,7 +171,7 @@ export default function RunningInstancesPanel({ instances = [], onStop }) {
                     className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
                     style={{ backgroundColor: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                 >
-                    <MemoryIcon style={{ fontSize: 20 }} />
+                    <MemoryIcon size={20} strokeWidth={1.75} />
                 </span>
                 <div>
                     <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>

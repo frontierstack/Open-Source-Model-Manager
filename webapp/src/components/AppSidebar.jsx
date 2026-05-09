@@ -44,14 +44,22 @@ export default function AppSidebar({
                 >
                     Model Server
                 </div>
-                <div
-                    className="mt-0.5 truncate text-[0.65rem] uppercase tracking-wider"
-                    style={{ color: 'var(--text-tertiary)' }}
-                >
-                    {user?.username || 'guest'}
-                    {user?.role === 'admin' && (
+                <div className="mt-1 flex items-center gap-1.5">
+                    {/* Username — natural case, no uppercase transform.
+                        Previously this row had `uppercase tracking-wider`
+                        which together with a same-text role badge produced
+                        "ADMIN ADMIN" when the user happened to be named
+                        admin. Drop the global uppercase; the role badge
+                        carries its own caps. */}
+                    <span
+                        className="truncate text-xs"
+                        style={{ color: 'var(--text-tertiary)' }}
+                    >
+                        {user?.username || 'guest'}
+                    </span>
+                    {user?.role === 'admin' && user?.username !== 'admin' && (
                         <span
-                            className="ml-1.5 rounded px-1 py-px text-[0.55rem] font-semibold"
+                            className="inline-flex h-4 items-center rounded px-1 text-[0.55rem] font-semibold uppercase tracking-wider"
                             style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
                         >
                             admin
@@ -106,8 +114,12 @@ export default function AppSidebar({
                             <span className="truncate">{tab.label}</span>
                             {tab.adminOnly && !active && (
                                 <span
-                                    className="ml-auto rounded px-1 py-px text-[0.55rem]"
-                                    style={{ backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}
+                                    className="ml-auto inline-flex h-[18px] items-center rounded px-1.5 text-[0.6rem] font-semibold uppercase tracking-wider"
+                                    style={{
+                                        backgroundColor: 'var(--accent-muted)',
+                                        color: 'var(--accent-primary)',
+                                        opacity: 0.85,
+                                    }}
                                 >
                                     admin
                                 </span>
