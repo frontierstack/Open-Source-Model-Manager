@@ -2,7 +2,7 @@
 
 > **A Production-Ready MLOps Platform for Large Language Models**
 
-Containerized platform for serving and managing LLMs with dual backend support, web UI, chat interface, and an autonomous AI agent system.
+Containerized platform for serving and managing LLMs with dual backend support, web UI, chat interface, an autonomous AI agent system, and a [Pi (pi.dev)](https://pi.dev) terminal coding agent that talks to it over the OpenAI-compatible endpoint.
 
 <p align="center">
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-24.0%2B-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
@@ -10,6 +10,7 @@ Containerized platform for serving and managing LLMs with dual backend support, 
   <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-12.1-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
+  <a href="https://pi.dev"><img src="https://img.shields.io/badge/Pi-pi.dev-8b5cf6?style=flat-square" alt="Pi (pi.dev)"></a>
 </p>
 
 ---
@@ -87,14 +88,16 @@ Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
   <em>The model decides to call <code>web_search</code>, reads the results, and follows up with <code>scrapling_fetch</code> to pull a full page — each call appears as a clickable chip below the response.</em>
 </p>
 
-### Pi — Terminal Coding Agent
+### Pi (pi.dev) — Terminal UI
 
-For terminal use, point [Pi](https://pi.dev) at the webapp's OpenAI-compatible endpoint. Pi is a third-party minimal coding harness that supports any OpenAI-compatible provider — install once, register the model server as a custom provider, and the 120+ default skills become tools Pi can call.
+The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`), a third-party minimal coding harness — we don't ship our own TUI, we wire Pi in. Install Pi once, drop in the bundled extension, and any model loaded in **My Models** becomes a Pi-driven coding agent backed by the 120+ skills the webapp already exposes.
 
-- 120+ default skills (file ops, git, web, email, OCR, PDF, system info, and more) — proxied to Pi via the included extension
-- Connects through the `/v1/*` OpenAI-compatible proxy with API-key auth
-- Bring your own model server: any container loaded in **My Models** is reachable
-- See the **Docs** tab in the webapp for the install one-liner, the `settings.json` snippet, and the extension package — all pre-baked with your API key
+- **Pi handles the local FS** — read/write/bash/edit/grep run on the user's `$PWD` via Pi's built-ins, not on the server's `/workspace`
+- **Skills surface as Pi tools** — the bundled extension at `webapp/pi-extension/modelserver.ts` registers each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) and proxies execution to `/api/skills/:name/execute`
+- **Real context window** — `/v1/models` is augmented server-side to inject the running instance's actual `context_window`, so Pi's status line and auto-truncation match the loaded model's true ceiling instead of defaulting to 32k
+- **Real token usage** — `/v1/*` streaming requests inject `stream_options.include_usage: true` and tap the SSE for the final usage chunk, so per-key token counters update on every Pi turn instead of sitting at `0/max`
+- **Bearer-mode API key required** — the Pi extension uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
+- **Auto-config in Docs tab** — the install one-liner, `settings.json` snippet, and extension package are all pre-baked with your API key + endpoint
 
 ---
 
@@ -186,24 +189,25 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 5. **API Keys** — Generate access tokens
 6. **Docs** — API code builder with 70+ endpoints in 4 languages
 
-### Pi (terminal)
+### Pi (pi.dev) — terminal coding agent
 
 ```bash
-# Install Pi (once)
+# Install Pi (once) — https://pi.dev
 npm install -g @earendil-works/pi-coding-agent
 
 # Open the webapp Docs tab → "Pi setup" → copy the settings.json snippet
 # (it bakes in your API key + the local /v1 endpoint), drop it at:
 #   ~/.pi/agent/settings.json
 
-# Install the skill-catalog extension (one-liner shown in Docs tab):
-pi install npm:@modelserver/pi-extension
+# Install the bundled skill-catalog extension (one-liner shown in Docs tab —
+# pulls webapp/pi-extension/modelserver.ts to ~/.pi/agent/extensions/modelserver/)
+curl -sk https://localhost:3001/api/pi/install | bash
 
-# Run
+# Run from any project directory
 pi
 ```
 
-The extension auto-fetches the user's enabled skills from the webapp on startup and registers each as a Pi tool, so the 120+ default skills (web search, URL fetch, code navigation, file ops, …) are available without any additional configuration.
+The extension auto-fetches the user's enabled skills on startup and registers each as a Pi tool, so the 120+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. Pi handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other.
 
 ### API
 
@@ -261,8 +265,8 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           ┌───────────────┼──────────────┼──────────────┼───────────────┐
           │               ▼              ▼              ▼               │
           │  ┌────────────────────┐ ┌──────────┐ ┌───────────────┐     │
-          │  │   Webapp  :3001   │ │Chat :3002│ │   Pi (TUI)    │     │
-          │  │                    │ │          │ │  (API client) │     │
+          │  │   Webapp  :3001   │ │Chat :3002│ │  Pi  (pi.dev) │     │
+          │  │                    │ │          │ │   Terminal UI │     │
           │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
           │  │  Express API       │ │ Tailwind │         │             │
           │  │  WebSocket Server  │ │ 18 Themes│   :3001/api           │
@@ -347,7 +351,7 @@ MIT License — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-[llama.cpp](https://github.com/ggerganov/llama.cpp) | [vLLM](https://github.com/vllm-project/vllm) | [HuggingFace](https://huggingface.co/) | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
+[llama.cpp](https://github.com/ggerganov/llama.cpp) | [vLLM](https://github.com/vllm-project/vllm) | [HuggingFace](https://huggingface.co/) | [Pi (pi.dev)](https://pi.dev) — terminal coding agent | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
 
 ---
 
