@@ -1,15 +1,16 @@
 import React from 'react';
 import { Terminal as TerminalIcon, X as ClearIcon, Search as SearchIcon } from 'lucide-react';
 import SystemResourceMonitor from './SystemResourceMonitor';
+import { usePreferencesStore } from '../stores/usePreferencesStore';
 
 // Phase 2: Tailwind rewrite of the Logs tab. State + refs + handlers
 // are passed in as props so the data flow stays identical to the
 // previous MUI implementation. Surface chrome reads CSS variables so
 // the panel tracks theme + accent picks.
 //
-// The dark log-rendering area (bg #0a0a0f, level coloring, syntax
-// highlights) is intentionally NOT themed — log readability against
-// a fixed dark surface is more important than matching every theme.
+// The log-rendering area is dark-on-bright-text on every theme except
+// `theme-light`, where it flips to a light surface with dark text so a
+// light-mode dashboard doesn't get a single gaping black tile in it.
 //
 // Props:
 //   logs           array of log entries (string | { level, message, timestamp })
@@ -79,78 +80,117 @@ function FilterPill({ active, label, count, color, onClick }) {
 }
 
 // Inline syntax highlights for log lines. Returns an array of <span>s.
-// Identical regex set to the previous MUI implementation; only the
-// surrounding shell changed.
-function formatMessageInline(msg) {
+// `isLight` flips the high-luminance hues (light indigo, near-white,
+// pale blue, alpha-white separator) to their darker counterparts so
+// the spans stay readable on the slate surface used in light mode.
+function formatMessageInline(msg, isLight = false) {
+    const C = isLight
+        ? {
+              bracket:    '#0e7490',  // cyan-700
+              step:       '#4338ca',  // indigo-700
+              percent:    '#b45309',  // amber-700
+              size:       '#7e22ce',  // purple-700
+              path:       '#1d4ed8',  // blue-700
+              port:       '#047857',  // emerald-700
+              keyword:    '#0f172a',  // slate-900
+              errFg:      '#b91c1c',  // red-700
+              warnFg:     '#b45309',  // amber-700
+              container:  '#0e7490',
+              apiKey:     '#7e22ce',
+              separator:  'rgba(15,23,42,0.30)',
+              bracketBg:  'rgba(14,116,144,0.10)',
+              stepBg:     'rgba(99,102,241,0.14)',
+              errBg:      'rgba(185,28,28,0.10)',
+              warnBg:     'rgba(180,83,9,0.10)',
+          }
+        : {
+              bracket:    '#22d3ee',
+              step:       '#a5b4fc',
+              percent:    '#fbbf24',
+              size:       '#c084fc',
+              path:       '#93c5fd',
+              port:       '#34d399',
+              keyword:    '#e2e8f0',
+              errFg:      '#f87171',
+              warnFg:     '#fbbf24',
+              container:  '#22d3ee',
+              apiKey:     '#c084fc',
+              separator:  'rgba(255,255,255,0.35)',
+              bracketBg:  'rgba(34,211,238,0.08)',
+              stepBg:     'rgba(99,102,241,0.15)',
+              errBg:      'rgba(239,68,68,0.12)',
+              warnBg:     'rgba(245,158,11,0.12)',
+          };
+
     const parts = [];
     let remaining = msg;
     let key = 0;
     while (remaining.length > 0) {
         let match = remaining.match(/^\[([^\]]+)\]/);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.08)', padding: '0 4px', borderRadius: 3, fontSize: '0.72rem' }}>[{match[1]}]</span>);
+            parts.push(<span key={key++} style={{ color: C.bracket, backgroundColor: C.bracketBg, padding: '0 4px', borderRadius: 3, fontSize: '0.72rem' }}>[{match[1]}]</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^(Step \d+\/\d+:)/i);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#a5b4fc', backgroundColor: 'rgba(99,102,241,0.15)', padding: '1px 6px', borderRadius: 3, fontSize: '0.72rem', fontWeight: 600 }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.step, backgroundColor: C.stepBg, padding: '1px 6px', borderRadius: 3, fontSize: '0.72rem', fontWeight: 600 }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^(\d+(?:\.\d+)?%)/);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#fbbf24', fontWeight: 600 }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.percent, fontWeight: 600 }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^(\d+(?:\.\d+)?\s*(?:GB|MB|KB|K|B|TB))\b/i);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#c084fc' }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.size }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^((?:\/[\w.\-]+){2,}(?:\/[\w.\-]*)?)/);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#93c5fd', fontSize: '0.73rem' }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.path, fontSize: '0.73rem' }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^((?:port\s+)\d{2,5}|:\d{2,5})\b/i);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#34d399' }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.port }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^(Creating|Stopping|Deleting|Starting|Syncing|Removing|Restarting|Switching|Checking|Loading|Verifying|Downloading)\b/);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#e2e8f0', fontWeight: 600 }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.keyword, fontWeight: 600 }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^(ERROR|Error|WARNING|Warning|WARN)(:?\s*)/i);
         if (match) {
             const isErr = match[1].toLowerCase().startsWith('err');
-            parts.push(<span key={key++} style={{ color: isErr ? '#f87171' : '#fbbf24', fontWeight: 700, fontSize: '0.72rem', backgroundColor: isErr ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)', padding: '0 4px', borderRadius: 2 }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: isErr ? C.errFg : C.warnFg, fontWeight: 700, fontSize: '0.72rem', backgroundColor: isErr ? C.errBg : C.warnBg, padding: '0 4px', borderRadius: 2 }}>{match[1]}</span>);
             if (match[2]) parts.push(<span key={key++}>{match[2]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^((?:llamacpp|vllm)-[\w\-]+)/);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#22d3ee', fontSize: '0.73rem' }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.container, fontSize: '0.73rem' }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^(API key)\b/i);
         if (match) {
-            parts.push(<span key={key++} style={{ color: '#c084fc', fontWeight: 500 }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.apiKey, fontWeight: 500 }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
         match = remaining.match(/^(={3,}[^=]*={3,})/);
         if (match) {
-            parts.push(<span key={key++} style={{ color: 'rgba(255,255,255,0.35)', letterSpacing: '1px' }}>{match[1]}</span>);
+            parts.push(<span key={key++} style={{ color: C.separator, letterSpacing: '1px' }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);
             continue;
         }
@@ -166,7 +206,7 @@ function formatMessageInline(msg) {
     return parts;
 }
 
-function LogRow({ entry }) {
+function LogRow({ entry, isLight }) {
     let message = typeof entry === 'string' ? entry : entry.message;
     const level = typeof entry === 'string' ? 'info' : (entry.level || 'info');
 
@@ -189,31 +229,39 @@ function LogRow({ entry }) {
     const cfg = LEVEL_CONFIG[level] || LEVEL_CONFIG.info;
     const isStepMsg = /^Step \d+\/\d+:/i.test(message);
     const isSeparator = /^={3,}/.test(message);
-    const baseTextColor = level === 'error' ? '#f87171'
-        : level === 'success' ? '#4ade80'
-        : level === 'warning' ? '#fbbf24'
-        : 'rgba(255,255,255,0.65)';
+    // Default text fades to off-white on dark surfaces and slate on the
+    // light surface; the saturated error/success/warning hues read fine
+    // on either.
+    const baseTextColor = level === 'error' ? (isLight ? '#dc2626' : '#f87171')
+        : level === 'success' ? (isLight ? '#15803d' : '#4ade80')
+        : level === 'warning' ? (isLight ? '#b45309' : '#fbbf24')
+        : (isLight ? 'rgba(15,23,42,0.78)' : 'rgba(255,255,255,0.65)');
+
+    const stepBg = isLight ? 'rgba(99,102,241,0.10)' : 'rgba(99,102,241,0.04)';
+    const separatorBg = isLight ? 'rgba(15,23,42,0.04)' : 'rgba(255,255,255,0.02)';
+    const stepBorderTop = isLight ? '1px solid rgba(15,23,42,0.06)' : '1px solid rgba(255,255,255,0.04)';
 
     const rowStyle = {
-        backgroundColor: isStepMsg ? 'rgba(99,102,241,0.04)'
-            : isSeparator ? 'rgba(255,255,255,0.02)'
-            : cfg.bg,
+        backgroundColor: isStepMsg ? stepBg : isSeparator ? separatorBg : cfg.bg,
         borderLeft: `2px solid ${isStepMsg ? 'rgba(99,102,241,0.3)' : cfg.border}`,
-        borderTop: isStepMsg ? '1px solid rgba(255,255,255,0.04)' : 'none',
+        borderTop: isStepMsg ? stepBorderTop : 'none',
         paddingTop: isStepMsg ? '0.6rem' : isSeparator ? '0.55rem' : '0.32rem',
         paddingBottom: isStepMsg ? '0.6rem' : isSeparator ? '0.55rem' : '0.32rem',
         marginTop: isStepMsg ? '0.35rem' : 0,
         transition: 'background-color 0.15s',
     };
 
+    const hoverClass = isLight ? 'hover:bg-black/[0.03]' : 'hover:bg-white/[0.03]';
+    const tsColor = isLight ? 'rgba(15,23,42,0.35)' : 'rgba(255,255,255,0.18)';
+
     return (
-        <div className="flex items-start gap-0 px-3 hover:bg-white/[0.03]" style={rowStyle}>
+        <div className={`flex items-start gap-0 px-3 ${hoverClass}`} style={rowStyle}>
             <span
                 className="flex-shrink-0 mr-2 mt-[2px] select-none whitespace-pre"
                 style={{
                     fontFamily: '"Fira Code", monospace',
                     fontSize: '0.68rem',
-                    color: 'rgba(255,255,255,0.18)',
+                    color: tsColor,
                 }}
             >
                 {timeStr ? `${timeStr} ` : '         '}
@@ -228,7 +276,7 @@ function LogRow({ entry }) {
                     lineHeight: 1.55,
                 }}
             >
-                {formatMessageInline(message)}
+                {formatMessageInline(message, isLight)}
             </div>
         </div>
     );
@@ -248,6 +296,12 @@ export default function LogsPanel({
     systemStats,
     systemStatsHistory,
 }) {
+    // Subscribe to theme so the log surface re-renders when the picker changes.
+    const theme = usePreferencesStore((s) => s.theme);
+    const isLight = theme === 'light';
+    const logSurfaceBg = isLight ? '#f8fafc' : '#0a0a0f';
+    const logSurfaceBorder = isLight ? 'rgba(15,23,42,0.10)' : 'rgba(255,255,255,0.08)';
+    const emptyTextColor = isLight ? 'rgba(15,23,42,0.45)' : 'rgba(255,255,255,0.25)';
     const logCounts = { all: logs.length, error: 0, warning: 0, success: 0, info: 0 };
     for (const l of logs) {
         const lv = (typeof l === 'string' ? 'info' : l.level) || 'info';
@@ -368,16 +422,16 @@ export default function LogsPanel({
                         </div>
                     )}
 
-                    {/* Log display — kept on a fixed dark surface for readability
-                        regardless of theme (pure-#0a0a0f background, white-tone
-                        text, level coloring) */}
+                    {/* Log display — terminal-black on every theme except light,
+                        where it flips to a slate surface so the panel doesn't
+                        look like a black tile pasted onto a white dashboard. */}
                     <div
                         ref={logsContainerRef}
                         onScroll={handleLogsScroll}
                         className="flex-1 overflow-auto rounded-lg border"
                         style={{
-                            backgroundColor: '#0a0a0f',
-                            borderColor: 'rgba(255,255,255,0.08)',
+                            backgroundColor: logSurfaceBg,
+                            borderColor: logSurfaceBorder,
                             paddingTop: '0.25rem',
                             paddingBottom: '0.25rem',
                         }}
@@ -388,7 +442,7 @@ export default function LogsPanel({
                                     className="text-xs"
                                     style={{
                                         fontFamily: '"Fira Code", monospace',
-                                        color: 'rgba(255,255,255,0.25)',
+                                        color: emptyTextColor,
                                     }}
                                 >
                                     {logs.length === 0 ? '● Waiting for activity...' : 'No matching log entries'}
@@ -396,7 +450,7 @@ export default function LogsPanel({
                             </div>
                         ) : (
                             filteredLogs.map((entry, index) => (
-                                <LogRow key={index} entry={entry} />
+                                <LogRow key={index} entry={entry} isLight={isLight} />
                             ))
                         )}
                         <div ref={logsEndRef} />

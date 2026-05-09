@@ -2688,6 +2688,35 @@ function sanitizePreferencesPatch(patch) {
     return out;
 }
 
+// `?app=webapp|chat` scopes prefs into a per-app bucket so the two UIs can
+// hold different theme/accent/font choices independently. Calls without
+// `?app=` return/write the legacy flat shape (kept for any external
+// integrations that may still hit this endpoint directly).
+function resolveAppScope(req) {
+    const a = req.query && req.query.app;
+    return (a === 'webapp' || a === 'chat') ? a : null;
+}
+
+function readScopedPrefs(user, app) {
+    const all = user.preferences || {};
+    if (app && all.byApp && all.byApp[app]) return all.byApp[app];
+    // First read for this app — seed from the whitelisted top-level fields
+    // so the user's existing pre-split choices show up once, then diverge.
+    const seed = {};
+    for (const [k, v] of Object.entries(all)) {
+        if (PREF_FIELDS.has(k)) seed[k] = v;
+    }
+    return seed;
+}
+
+function mergeScopedPrefs(user, app, sanitized) {
+    const cur = user.preferences || {};
+    if (!app) return { ...cur, ...sanitized };
+    const byApp = { ...(cur.byApp || {}) };
+    byApp[app] = { ...readScopedPrefs(user, app), ...sanitized };
+    return { ...cur, byApp };
+}
+
 app.get('/api/me/preferences', requireAuth, async (req, res) => {
     if (!req.user || !req.user.id) {
         return res.status(401).json({ error: 'Session authentication required' });
@@ -2695,7 +2724,8 @@ app.get('/api/me/preferences', requireAuth, async (req, res) => {
     try {
         const user = await getUserById(req.user.id);
         if (!user) return res.status(404).json({ error: 'User not found' });
-        res.json({ preferences: user.preferences || {} });
+        const app = resolveAppScope(req);
+        res.json({ preferences: readScopedPrefs(user, app) });
     } catch (err) {
         console.error('[preferences] get error:', err);
         res.status(500).json({ error: 'Failed to load preferences' });
@@ -2710,9 +2740,10 @@ app.put('/api/me/preferences', requireAuth, async (req, res) => {
     try {
         const user = await getUserById(req.user.id);
         if (!user) return res.status(404).json({ error: 'User not found' });
-        const merged = { ...(user.preferences || {}), ...sanitized };
+        const app = resolveAppScope(req);
+        const merged = mergeScopedPrefs(user, app, sanitized);
         await updateUser(req.user.id, { preferences: merged });
-        res.json({ preferences: merged });
+        res.json({ preferences: readScopedPrefs({ preferences: merged }, app) });
     } catch (err) {
         console.error('[preferences] put error:', err);
         res.status(500).json({ error: 'Failed to save preferences' });

@@ -1,14 +1,14 @@
 // Bridge between chat's useChatStore (localStorage-backed) and the
-// server-side /api/me/preferences endpoint shared with webapp:3001.
+// server-side /api/me/preferences endpoint, scoped to the `chat` bucket.
 //
-// On mount, chat calls hydrateFromServer() once after auth: any prefs
-// that were set in webapp (or chat itself on a different device) are
-// applied to the local store. Subsequent local changes (setTheme,
-// updateSettings) are pushed back via watchAndSync().
+// On mount, chat calls hydrateFromServer() once after auth and applies the
+// chat-scoped prefs to the local store. Subsequent local changes
+// (setTheme, updateSettings) are pushed back via watchAndSync().
 //
-// localStorage stays the source of truth between sessions on a single
-// device for offline tolerance; the server endpoint is the source of
-// truth across devices/apps.
+// The server stores webapp:3001 and chat:3002 prefs in separate buckets so
+// changing the theme in one app does not silently alter the other.
+// localStorage remains the source of truth between sessions on a single
+// device; the server is the source of truth across devices.
 
 import { useChatStore } from './stores/useChatStore';
 
@@ -21,7 +21,7 @@ function debouncedPush(patch) {
     if (Object.keys(patch).length === 0) return;
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => {
-        fetch('/api/me/preferences', {
+        fetch('/api/me/preferences?app=chat', {
             method: 'PUT',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -32,7 +32,7 @@ function debouncedPush(patch) {
 
 export async function hydrateFromServer() {
     try {
-        const r = await fetch('/api/me/preferences', { credentials: 'include' });
+        const r = await fetch('/api/me/preferences?app=chat', { credentials: 'include' });
         if (!r.ok) return;
         const { preferences } = await r.json();
         if (!preferences) return;

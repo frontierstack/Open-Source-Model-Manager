@@ -27,6 +27,60 @@
             height: 100vh;
         }
     </style>
+    <script>
+        // Pre-mount theme/accent application — eliminates the FOUC where
+        // <html> would paint with the default theme-dark + blue accent
+        // until the React bundle hydrated and applyPreferencesToDom ran.
+        // Reads the same `app-storage` localStorage blob the legacy
+        // useAppStore writes, so whatever the user last picked is on
+        // <html> before first paint.
+        (function () {
+            try {
+                var raw = localStorage.getItem('app-storage');
+                var html = document.documentElement;
+                var themes = ['dark','midnight','ocean','sunset','matrix','solarized','kanagawa','palenight','research','research-dark','light','forest','cyberpunk','dracula','nord','gruvbox','mocha','synthwave','rose-pine'];
+                var prefs = null;
+                if (raw) {
+                    var parsed = JSON.parse(raw);
+                    prefs = parsed && parsed.state && parsed.state.preferences;
+                }
+                var theme = prefs && prefs.theme;
+                html.classList.add('theme-' + (theme && themes.indexOf(theme) >= 0 ? theme : 'dark'));
+                var accentMap = {
+                    violet:  ['oklch(0.55 0.13 290)','oklch(0.62 0.13 270)','oklch(0.65 0.13 290)','oklch(0.55 0.13 290 / 0.18)'],
+                    amber:   ['oklch(0.70 0.13 70)', 'oklch(0.62 0.14 45)', 'oklch(0.78 0.13 70)', 'oklch(0.70 0.13 70 / 0.18)'],
+                    emerald: ['oklch(0.60 0.13 160)','oklch(0.65 0.13 180)','oklch(0.70 0.13 160)','oklch(0.60 0.13 160 / 0.18)'],
+                    slate:   ['oklch(0.50 0.04 260)','oklch(0.62 0.04 240)','oklch(0.60 0.04 260)','oklch(0.50 0.04 260 / 0.20)'],
+                    rose:    ['oklch(0.60 0.17 15)', 'oklch(0.62 0.17 350)','oklch(0.70 0.17 15)', 'oklch(0.60 0.17 15 / 0.18)'],
+                    cyan:    ['oklch(0.65 0.14 200)','oklch(0.70 0.13 220)','oklch(0.72 0.14 200)','oklch(0.65 0.14 200 / 0.18)'],
+                    teal:    ['oklch(0.58 0.12 180)','oklch(0.65 0.12 175)','oklch(0.66 0.12 180)','oklch(0.58 0.12 180 / 0.18)'],
+                    indigo:  ['oklch(0.55 0.16 270)','oklch(0.60 0.18 260)','oklch(0.65 0.16 270)','oklch(0.55 0.16 270 / 0.18)'],
+                    pink:    ['oklch(0.65 0.20 350)','oklch(0.62 0.18 5)',  'oklch(0.72 0.20 350)','oklch(0.65 0.20 350 / 0.18)'],
+                    lime:    ['oklch(0.78 0.18 130)','oklch(0.72 0.18 120)','oklch(0.83 0.18 130)','oklch(0.78 0.18 130 / 0.18)'],
+                    orange:  ['oklch(0.68 0.18 50)', 'oklch(0.62 0.18 35)', 'oklch(0.74 0.18 50)', 'oklch(0.68 0.18 50 / 0.18)'],
+                    sky:     ['oklch(0.70 0.14 230)','oklch(0.72 0.14 215)','oklch(0.76 0.14 230)','oklch(0.70 0.14 230 / 0.18)']
+                };
+                var a = prefs && accentMap[prefs.accent];
+                if (a) {
+                    // Apply to <html> so the cascade lights up the page
+                    // before <body> exists; the React store re-applies
+                    // these to <body> later (same values, no flash).
+                    html.style.setProperty('--accent-primary', a[0]);
+                    html.style.setProperty('--accent-secondary', a[1]);
+                    html.style.setProperty('--accent-hover', a[2]);
+                    html.style.setProperty('--accent-muted', a[3]);
+                }
+                // Mirror data-accent onto <body> as soon as it parses, so
+                // any `body[data-accent="..."]` rules in the theme block
+                // pick up before paint.
+                if (prefs && prefs.accent) {
+                    document.addEventListener('DOMContentLoaded', function () {
+                        if (document.body) document.body.dataset.accent = prefs.accent;
+                    });
+                }
+            } catch (_) { /* fall through to React-side hydrate */ }
+        })();
+    </script>
 </head>
 <body>
 <noscript>You need to enable JavaScript to run this app.</noscript>

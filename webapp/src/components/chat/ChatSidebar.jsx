@@ -92,7 +92,7 @@ export default function ChatSidebar({
             sx={{
                 width: { xs: 280, sm: 240 },
                 minWidth: { xs: 280, sm: 240 },
-                borderRight: isMobile ? 'none' : '1px solid rgba(255, 255, 255, 0.1)',
+                borderRight: isMobile ? 'none' : '1px solid var(--border-hover)',
                 display: 'flex',
                 flexDirection: 'column',
                 backgroundColor: 'background.paper',
@@ -103,7 +103,7 @@ export default function ChatSidebar({
             <Box
                 sx={{
                     p: 1.5,
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderBottom: '1px solid var(--border-hover)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
@@ -134,7 +134,7 @@ export default function ChatSidebar({
                         width: '4px',
                     },
                     '&::-webkit-scrollbar-thumb': {
-                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                        backgroundColor: 'var(--border-hover)',
                         borderRadius: '2px',
                     },
                 }}
@@ -161,7 +161,7 @@ export default function ChatSidebar({
                                     borderColor: 'primary.main',
                                 },
                                 '&:hover': {
-                                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                                    backgroundColor: 'var(--bg-hover)',
                                 },
                                 '&:hover .conversation-actions': {
                                     opacity: 1,
@@ -294,7 +294,7 @@ export default function ChatSidebar({
                         zIndex: 1100,
                         color: 'text.secondary',
                         backgroundColor: 'background.paper',
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        border: '1px solid var(--border-hover)',
                         '&:hover': {
                             backgroundColor: 'background.paper',
                         },
@@ -324,7 +324,7 @@ export default function ChatSidebar({
             <Box
                 sx={{
                     width: 44,
-                    borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRight: '1px solid var(--border-hover)',
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',

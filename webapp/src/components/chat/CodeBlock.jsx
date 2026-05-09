@@ -45,7 +45,7 @@ export default React.memo(function CodeBlock({ code, language = 'text' }) {
                 borderRadius: '8px',
                 overflow: 'hidden',
                 backgroundColor: '#1e1e2e',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
+                border: '1px solid var(--border-hover)',
             }}
         >
             {/* Header with language and copy button */}
@@ -56,8 +56,8 @@ export default React.memo(function CodeBlock({ code, language = 'text' }) {
                     alignItems: 'center',
                     px: 2,
                     py: 0.75,
-                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                    backgroundColor: 'var(--bg-hover)',
+                    borderBottom: '1px solid var(--border-hover)',
                 }}
             >
                 <Typography
@@ -78,7 +78,7 @@ export default React.memo(function CodeBlock({ code, language = 'text' }) {
                         sx={{
                             color: copied ? 'success.main' : 'text.secondary',
                             '&:hover': {
-                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                backgroundColor: 'var(--border-hover)',
                             },
                         }}
                     >

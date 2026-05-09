@@ -15,7 +15,7 @@ export default function WebSearchIndicator({ searching, sites, query }) {
             sx={{
                 px: 2,
                 py: 1.5,
-                borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                borderTop: '1px solid var(--border-hover)',
                 backgroundColor: 'rgba(99, 102, 241, 0.05)',
             }}
         >

@@ -53,7 +53,7 @@ export default React.memo(function MessageContent({ content }) {
                                 px: 0.75,
                                 py: 0.25,
                                 mx: 0.25,
-                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                backgroundColor: 'var(--border-hover)',
                                 borderRadius: '4px',
                                 fontFamily: '"JetBrains Mono", "Fira Code", monospace',
                                 fontSize: '0.85em',
@@ -193,13 +193,13 @@ export default React.memo(function MessageContent({ content }) {
                                     width: '100%',
                                     borderCollapse: 'collapse',
                                     '& th, & td': {
-                                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                                        border: '1px solid var(--border-hover)',
                                         px: 2,
                                         py: 1,
                                         textAlign: 'left',
                                     },
                                     '& th': {
-                                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                                        backgroundColor: 'var(--bg-hover)',
                                         fontWeight: 600,
                                     },
                                 }}
@@ -217,7 +217,7 @@ export default React.memo(function MessageContent({ content }) {
                             component="hr"
                             sx={{
                                 border: 'none',
-                                borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                                borderTop: '1px solid var(--border-hover)',
                                 my: 2,
                             }}
                         />

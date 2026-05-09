@@ -35,7 +35,7 @@ export default function ChatHeader({
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 p: 2,
-                borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                borderBottom: '1px solid var(--border-hover)',
                 backgroundColor: 'background.paper',
             }}
         >
@@ -47,7 +47,7 @@ export default function ChatHeader({
                         sx={{
                             color: 'text.secondary',
                             '&:hover': {
-                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                backgroundColor: 'var(--border-hover)',
                             },
                         }}
                     >
@@ -63,9 +63,9 @@ export default function ChatHeader({
                         displayEmpty
                         disabled={!hasRunningModels || isLoading}
                         sx={{
-                            backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                            backgroundColor: 'var(--bg-hover)',
                             '& .MuiOutlinedInput-notchedOutline': {
-                                borderColor: 'rgba(255, 255, 255, 0.1)',
+                                borderColor: 'var(--border-hover)',
                             },
                             '&:hover .MuiOutlinedInput-notchedOutline': {
                                 borderColor: 'rgba(255, 255, 255, 0.2)',
@@ -119,7 +119,7 @@ export default function ChatHeader({
                             '&:hover': {
                                 backgroundColor: webSearchEnabled
                                     ? 'rgba(99, 102, 241, 0.2)'
-                                    : 'rgba(255, 255, 255, 0.1)',
+                                    : 'var(--border-hover)',
                             },
                         }}
                     >
@@ -134,7 +134,7 @@ export default function ChatHeader({
                         sx={{
                             color: 'text.secondary',
                             '&:hover': {
-                                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                backgroundColor: 'var(--border-hover)',
                             },
                         }}
                     >

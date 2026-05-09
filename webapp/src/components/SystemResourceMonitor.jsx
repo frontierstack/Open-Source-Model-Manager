@@ -21,7 +21,9 @@ const SPARKLINE_HEIGHT = 38;
 
 // Draws a single series. `values` are assumed to be numbers in the 0..100
 // range (percentages). We normalize and map to SVG coordinates.
-function Sparkline({ values, color, fillOpacity = 0.15 }) {
+// `color` is any CSS color string — we accept "var(--accent-primary)" so
+// the strokes follow the active accent picker.
+function Sparkline({ values, color, gradientId, fillOpacity = 0.15 }) {
     const width = SPARKLINE_WIDTH;
     const height = SPARKLINE_HEIGHT;
 
@@ -62,12 +64,12 @@ function Sparkline({ values, color, fillOpacity = 0.15 }) {
     return (
         <svg width={width} height={height} style={{ display: 'block' }}>
             <defs>
-                <linearGradient id={`grad-${color.replace('#', '')}`} x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={color} stopOpacity={fillOpacity * 2} />
                     <stop offset="100%" stopColor={color} stopOpacity={0} />
                 </linearGradient>
             </defs>
-            <path d={areaPath} fill={`url(#grad-${color.replace('#', '')})`} />
+            <path d={areaPath} fill={`url(#${gradientId})`} />
             <path
                 d={linePath}
                 fill="none"
@@ -80,8 +82,12 @@ function Sparkline({ values, color, fillOpacity = 0.15 }) {
     );
 }
 
-// Compact stat card: icon + label + current value + bar + sparkline
-function StatCard({ icon, label, valueText, percent, color, series, subline }) {
+// Compact stat card: icon + label + current value + bar + sparkline.
+// `accent` is a theme-token string (e.g. 'var(--accent-primary)') so the
+// chrome follows the active accent picker. `tintBg` is the matching
+// 0.12-alpha fill for the icon chip — we can't compose `bg / 0.12` from a
+// CSS-var color in a portable way, so callers pass both.
+function StatCard({ icon, label, valueText, percent, accent, tintBg, series, sparkId, subline }) {
     return (
         <Box
             sx={{
@@ -89,9 +95,8 @@ function StatCard({ icon, label, valueText, percent, color, series, subline }) {
                 minWidth: 240,
                 p: 1.5,
                 borderRadius: 1.5,
-                border: '1px solid',
-                borderColor: 'divider',
-                bgcolor: 'rgba(255,255,255,0.02)',
+                border: '1px solid var(--border-primary)',
+                bgcolor: 'var(--bg-tertiary)',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 0.75,
@@ -101,16 +106,16 @@ function StatCard({ icon, label, valueText, percent, color, series, subline }) {
                 <Box sx={{
                     width: 26, height: 26, borderRadius: 1,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    bgcolor: `${color}22`, color,
+                    bgcolor: tintBg, color: accent,
                 }}>
                     {icon}
                 </Box>
-                <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: '0.7rem' }}>
+                <Typography variant="caption" sx={{ color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: '0.7rem' }}>
                     {label}
                 </Typography>
                 <Typography
                     variant="body2"
-                    sx={{ ml: 'auto', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color }}
+                    sx={{ ml: 'auto', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: accent }}
                 >
                     {valueText}
                 </Typography>
@@ -121,13 +126,13 @@ function StatCard({ icon, label, valueText, percent, color, series, subline }) {
                 sx={{
                     height: 4,
                     borderRadius: 2,
-                    backgroundColor: 'rgba(255,255,255,0.06)',
-                    '& .MuiLinearProgress-bar': { backgroundColor: color, borderRadius: 2 },
+                    backgroundColor: 'var(--bg-hover)',
+                    '& .MuiLinearProgress-bar': { backgroundColor: accent, borderRadius: 2 },
                 }}
             />
-            <Sparkline values={series} color={color} />
+            <Sparkline values={series} color={accent} gradientId={sparkId} />
             {subline && (
-                <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.68rem', fontVariantNumeric: 'tabular-nums' }}>
+                <Typography variant="caption" sx={{ color: 'var(--text-secondary)', fontSize: '0.68rem', fontVariantNumeric: 'tabular-nums' }}>
                     {subline}
                 </Typography>
             )}
@@ -174,14 +179,21 @@ function SystemResourceMonitor({ current, history }) {
     const gpuError = current?.gpuError || null;
     const models = current?.models || [];
 
+    // All cards share the active accent so the panel responds to the
+    // user's accent picker. Hue separation between CPU/RAM/GPU is gone —
+    // labels carry the meaning and shipping three different hardcoded
+    // hues fought every theme.
+    const accent = 'var(--accent-primary)';
+    const tintBg = 'var(--accent-muted)';
+
     return (
-        <Card sx={{ flexShrink: 0 }}>
+        <Card sx={{ flexShrink: 0, bgcolor: 'var(--surface-primary)', border: '1px solid var(--border-primary)' }}>
             <CardContent sx={{ p: 2 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
-                    <SpeedIcon sx={{ fontSize: 22, color: 'primary.main' }} />
+                    <SpeedIcon sx={{ fontSize: 22, color: 'var(--accent-primary)' }} />
                     <Box>
-                        <Typography sx={{ fontWeight: 600, fontSize: '1rem' }}>System Resources</Typography>
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                        <Typography sx={{ fontWeight: 600, fontSize: '1rem', color: 'var(--text-primary)' }}>System Resources</Typography>
+                        <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>
                             Live CPU, RAM and GPU usage — updated every 3s
                         </Typography>
                     </Box>
@@ -189,16 +201,24 @@ function SystemResourceMonitor({ current, history }) {
                         <Chip
                             label="Waiting for data..."
                             size="small"
-                            sx={{ ml: 'auto', fontSize: '0.7rem' }}
+                            sx={{
+                                ml: 'auto', fontSize: '0.7rem',
+                                bgcolor: 'var(--bg-hover)',
+                                color: 'var(--text-secondary)',
+                                border: '1px solid var(--border-primary)',
+                            }}
                         />
                     )}
                     {hasData && models.length > 0 && (
                         <Chip
                             label={`${models.length} model${models.length === 1 ? '' : 's'} loaded`}
                             size="small"
-                            color="primary"
-                            variant="outlined"
-                            sx={{ ml: 'auto', fontSize: '0.7rem' }}
+                            sx={{
+                                ml: 'auto', fontSize: '0.7rem',
+                                bgcolor: 'transparent',
+                                color: 'var(--accent-primary)',
+                                border: '1px solid var(--accent-muted)',
+                            }}
                         />
                     )}
                 </Box>
@@ -210,8 +230,10 @@ function SystemResourceMonitor({ current, history }) {
                         label="CPU"
                         valueText={cpu?.percent != null ? `${cpu.percent.toFixed(0)}%` : '—'}
                         percent={cpu?.percent}
-                        color="#60a5fa"
+                        accent={accent}
+                        tintBg={tintBg}
                         series={cpuSeries}
+                        sparkId="srm-spark-cpu"
                         subline={cpu ? `${cpu.cores} cores` : null}
                     />
 
@@ -221,8 +243,10 @@ function SystemResourceMonitor({ current, history }) {
                         label="RAM"
                         valueText={mem?.percent != null ? `${mem.percent.toFixed(0)}%` : '—'}
                         percent={mem?.percent}
-                        color="#a78bfa"
+                        accent={accent}
+                        tintBg={tintBg}
                         series={memSeries}
+                        sparkId="srm-spark-ram"
                         subline={
                             mem
                                 ? `${formatBytes(mem.usedBytes)} / ${formatBytes(mem.totalBytes)}`
@@ -240,8 +264,10 @@ function SystemResourceMonitor({ current, history }) {
                                 label={`GPU ${gpu.index} · ${gpu.name}`}
                                 valueText={`${gpu.utilizationPct}%`}
                                 percent={gpu.utilizationPct}
-                                color="#34d399"
+                                accent={accent}
+                                tintBg={tintBg}
                                 series={seriesPair?.util || []}
+                                sparkId={`srm-spark-gpu-${gpu.index}`}
                                 subline={
                                     `VRAM ${(gpu.vramUsedMb / 1024).toFixed(1)} / ${(gpu.vramTotalMb / 1024).toFixed(1)} GB (${gpu.vramUsedPct}%)` +
                                     `  ·  ${gpu.temperatureC}°C  ·  ${gpu.powerW.toFixed(0)}W`
@@ -258,9 +284,8 @@ function SystemResourceMonitor({ current, history }) {
                                 minWidth: 240,
                                 p: 1.5,
                                 borderRadius: 1.5,
-                                border: '1px solid',
-                                borderColor: gpuError ? 'warning.dark' : 'divider',
-                                bgcolor: gpuError ? 'rgba(245,158,11,0.04)' : 'rgba(255,255,255,0.02)',
+                                border: '1px solid var(--border-primary)',
+                                bgcolor: 'var(--bg-tertiary)',
                                 display: 'flex',
                                 flexDirection: 'column',
                                 gap: 0.75,
@@ -270,22 +295,22 @@ function SystemResourceMonitor({ current, history }) {
                                 <Box sx={{
                                     width: 26, height: 26, borderRadius: 1,
                                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    bgcolor: gpuError ? 'rgba(245,158,11,0.15)' : 'rgba(107,114,128,0.15)',
-                                    color: gpuError ? '#f59e0b' : '#6b7280',
+                                    bgcolor: 'var(--bg-hover)',
+                                    color: 'var(--text-tertiary)',
                                 }}>
                                     <BoltIcon sx={{ fontSize: 16 }} />
                                 </Box>
-                                <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: '0.7rem' }}>
+                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: '0.7rem' }}>
                                     GPU
                                 </Typography>
                                 <Typography
                                     variant="body2"
-                                    sx={{ ml: 'auto', fontWeight: 600, color: gpuError ? '#f59e0b' : '#6b7280' }}
+                                    sx={{ ml: 'auto', fontWeight: 600, color: 'var(--text-tertiary)' }}
                                 >
                                     {gpuError ? 'Unavailable' : 'Not detected'}
                                 </Typography>
                             </Box>
-                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.68rem', lineHeight: 1.4 }}>
+                            <Typography variant="caption" sx={{ color: 'var(--text-secondary)', fontSize: '0.68rem', lineHeight: 1.4 }}>
                                 {gpuError || 'No NVIDIA GPU found. GPU monitoring requires nvidia-smi inside the container.'}
                             </Typography>
                         </Box>
@@ -303,12 +328,12 @@ function SystemResourceMonitor({ current, history }) {
                                     <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
                                         <Box component="span" sx={{
                                             width: 7, height: 7, borderRadius: '50%',
-                                            bgcolor: m.status === 'running' ? '#22c55e'
-                                                : m.status === 'loading' ? '#f59e0b'
-                                                : '#6b7280',
+                                            bgcolor: m.status === 'running' ? 'var(--accent-primary)'
+                                                : m.status === 'loading' ? 'var(--accent-hover)'
+                                                : 'var(--text-muted)',
                                         }} />
                                         {m.name}
-                                        <Box component="span" sx={{ color: 'text.secondary', ml: 0.5 }}>
+                                        <Box component="span" sx={{ color: 'var(--text-secondary)', ml: 0.5 }}>
                                             · {m.backend} · {m.contextSize ?? '—'} ctx · :{m.port}
                                         </Box>
                                     </Box>
@@ -316,9 +341,9 @@ function SystemResourceMonitor({ current, history }) {
                                 sx={{
                                     fontSize: '0.7rem',
                                     height: 22,
-                                    bgcolor: 'rgba(255,255,255,0.03)',
-                                    border: '1px solid',
-                                    borderColor: 'divider',
+                                    bgcolor: 'var(--bg-hover)',
+                                    color: 'var(--text-primary)',
+                                    border: '1px solid var(--border-primary)',
                                 }}
                             />
                         ))}

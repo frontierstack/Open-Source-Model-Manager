@@ -82,7 +82,7 @@ export default function ChatSettings({
                     width: { xs: '100%', sm: 380 },
                     maxWidth: '100vw',
                     backgroundColor: 'background.paper',
-                    borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderLeft: '1px solid var(--border-hover)',
                 },
             }}
         >
@@ -93,7 +93,7 @@ export default function ChatSettings({
                     alignItems: 'center',
                     justifyContent: 'space-between',
                     p: 2,
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderBottom: '1px solid var(--border-hover)',
                 }}
             >
                 <Typography variant="h6">Settings</Typography>
@@ -106,7 +106,7 @@ export default function ChatSettings({
             <Tabs
                 value={activeTab}
                 onChange={(_, v) => setActiveTab(v)}
-                sx={{ px: 2, borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}
+                sx={{ px: 2, borderBottom: '1px solid var(--border-hover)' }}
             >
                 <Tab icon={<TuneIcon sx={{ fontSize: 18 }} />} label="Chat" sx={{ minHeight: 48 }} />
                 <Tab icon={<PaletteIcon sx={{ fontSize: 18 }} />} label="Appearance" sx={{ minHeight: 48 }} />
@@ -188,8 +188,8 @@ export default function ChatSettings({
                                         sx={{
                                             p: 1.5,
                                             borderRadius: 1,
-                                            border: '1px solid rgba(255, 255, 255, 0.1)',
-                                            backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                                            border: '1px solid var(--border-hover)',
+                                            backgroundColor: 'var(--bg-tertiary)',
                                         }}
                                     >
                                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
@@ -429,12 +429,12 @@ function PresetButton({ label, onClick }) {
                 px: 1.5,
                 py: 0.75,
                 borderRadius: '6px',
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
+                backgroundColor: 'var(--bg-hover)',
+                border: '1px solid var(--border-hover)',
                 cursor: 'pointer',
                 fontSize: '0.8125rem',
                 '&:hover': {
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                    backgroundColor: 'var(--border-hover)',
                     borderColor: 'primary.main',
                 },
                 transition: 'all 0.2s',
@@ -467,11 +467,11 @@ function ThemeCard({ theme, selected, onClick }) {
                 borderRadius: 1,
                 border: '2px solid',
                 borderColor: selected ? 'primary.main' : 'transparent',
-                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                backgroundColor: 'var(--bg-tertiary)',
                 cursor: 'pointer',
                 transition: 'all 0.2s',
                 '&:hover': {
-                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                    backgroundColor: 'var(--bg-hover)',
                 },
             }}
         >

@@ -10,11 +10,9 @@ import { darkTheme } from './theme';
 // fontLoader.js is for additional fonts the user picks at runtime.
 import './index.css';
 
-// Default the document to chat's "dark" theme so the new CSS variables
-// resolve sanely until the user-prefs store applies whatever's saved.
-if (typeof document !== 'undefined' && !document.documentElement.classList.contains('theme-dark')) {
-    document.documentElement.classList.add('theme-dark');
-}
+// Theme + accent are applied pre-mount by the inline script in
+// public/index.template.html (reads localStorage `app-storage`).
+// usePreferencesStore.hydrate() refreshes from the server after mount.
 
 ReactDOM.render(
     <ThemeProvider theme={darkTheme}>

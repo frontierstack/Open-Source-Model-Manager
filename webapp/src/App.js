@@ -64,9 +64,8 @@ import Paper from '@mui/material/Paper';
 import Box from '@mui/material/Box';
 import Grid from '@mui/material/Grid';
 import Snackbar from '@mui/material/Snackbar';
-import Accordion from '@mui/material/Accordion';
-import AccordionSummary from '@mui/material/AccordionSummary';
-import AccordionDetails from '@mui/material/AccordionDetails';
+// MUI Accordion / AccordionSummary / AccordionDetails imports were
+// removed — Docs tab no longer uses chevron-driven accordions.
 import Alert from '@mui/material/Alert';
 import Chip from '@mui/material/Chip';
 import Card from '@mui/material/Card';
@@ -246,7 +245,7 @@ const CollapsibleSection = ({ title, icon, children, defaultExpanded = true }) =
                     py: 1,
                     px: 1,
                     borderRadius: 1,
-                    '&:hover': { bgcolor: 'rgba(255,255,255,0.02)' }
+                    '&:hover': { bgcolor: 'var(--bg-tertiary)' }
                 }}
             >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -283,68 +282,89 @@ const DocIcon = ({ icon, color = 'primary' }) => {
     );
 };
 
-// Docs accordion — minimal disclosure pattern. No chunky border boxes,
-// no surface fill at rest. Each section is a flat row separated by a
-// thin divider; expanding reveals content below with a subtle accent
-// chevron rotation. Inspired by Stripe / Linear / Vercel docs.
-const docAccordionSx = {
-    bgcolor: 'transparent',
-    color: 'var(--text-primary)',
-    boxShadow: 'none',
-    border: 'none',
-    borderRadius: 0,
-    margin: '0 !important',
-    borderBottom: '1px solid var(--border-primary)',
-    '&:first-of-type': {
-        borderTop: '1px solid var(--border-primary)',
-    },
-    '&:before': { display: 'none' },
-    '&.Mui-expanded': {
-        margin: '0 !important',
-        bgcolor: 'var(--bg-hover)',
-    },
-    '& .MuiAccordionSummary-root': {
-        minHeight: 56,
-        padding: '0 4px',
-        transition: 'background-color 0.12s ease',
-        '&:hover': { bgcolor: 'var(--bg-hover)' },
-        '&.Mui-expanded': { minHeight: 56 },
-    },
-    '& .MuiAccordionSummary-content': {
-        margin: '14px 0',
-        gap: '14px',
-        alignItems: 'center',
-        '&.Mui-expanded': { margin: '14px 0' },
-    },
-    '& .MuiAccordionSummary-expandIconWrapper': {
-        color: 'var(--text-tertiary)',
-        transition: 'transform 0.2s ease, color 0.12s ease',
-        '&.Mui-expanded': {
-            color: 'var(--accent-primary)',
-        },
-    },
-    '& .MuiAccordionDetails-root': {
-        pt: 1,
-        pb: 3,
-        px: 0.5,
-    },
+// Docs sections — left-rail navigation pattern. The previous accordion
+// design had been polished repeatedly without losing its accordion-y
+// feel; this commit drops MUI Accordion entirely and shows one section
+// at a time, picked from a vertical nav. No chevrons, no expand icons.
+const docSectionSx = {
+    bgcolor: 'var(--bg-tertiary)',
+    border: '1px solid var(--border-primary)',
+    borderRadius: 2,
+    overflow: 'hidden',
 };
+const docSectionHeaderSx = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 1.5,
+    px: 2.5,
+    py: 2,
+    bgcolor: 'var(--bg-elevated)',
+    borderBottom: '1px solid var(--border-primary)',
+    borderLeft: '3px solid var(--accent-primary)',
+};
+const docSectionBodySx = {
+    px: 2.5,
+    py: 2.5,
+    color: 'var(--text-primary)',
+};
+// Left-rail nav — vertical pill list. Active item gets accent border-left
+// + accent-tinted bg; inactive items get hover bg + accent border on hover.
+const docNavItemSx = (active) => ({
+    display: 'flex',
+    alignItems: 'center',
+    gap: 1.25,
+    width: '100%',
+    px: 1.5,
+    py: 1,
+    borderRadius: 1.5,
+    border: '1px solid',
+    borderColor: active ? 'var(--accent-muted)' : 'transparent',
+    bgcolor: active ? 'var(--accent-muted)' : 'transparent',
+    color: active ? 'var(--accent-primary)' : 'var(--text-secondary)',
+    cursor: 'pointer',
+    textAlign: 'left',
+    fontFamily: 'inherit',
+    fontSize: '0.85rem',
+    fontWeight: active ? 600 : 500,
+    transition: 'background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease',
+    '&:hover': {
+        bgcolor: active ? 'var(--accent-muted)' : 'var(--bg-hover)',
+        color: active ? 'var(--accent-primary)' : 'var(--text-primary)',
+        borderColor: active ? 'var(--accent-muted)' : 'var(--border-primary)',
+    },
+});
+const DOC_SECTIONS = [
+    { id: 'quick-start',     label: 'Quick Start',          iconName: 'play'   },
+    { id: 'api-builder',     label: 'API Code Builder',     iconName: 'code'   },
+    { id: 'pi-setup',        label: 'Pi setup',             iconName: 'term'   },
+    { id: 'web-search',      label: 'Web Search & Fetch',   iconName: 'search' },
+    { id: 'sandbox-skills',  label: 'Sandbox Skills',       iconName: 'star'   },
+    { id: 'config-flags',    label: 'Configuration Flags',  iconName: 'tune'   },
+    { id: 'api-permissions', label: 'API Permissions',      iconName: 'key'    },
+    { id: 'api-endpoints',   label: 'API Endpoints',        iconName: 'storage'},
+    { id: 'utility-scripts', label: 'Utility Scripts',      iconName: 'term'   },
+    { id: 'system-reset',    label: 'System Reset',         iconName: 'warn'   },
+];
 
-// Compact table styling for docs
+// Compact table styling for docs — uses theme tokens so it reads correctly
+// on light themes (the previous rgba(255,255,255,...) literals washed out
+// to invisible borders against a white background).
 const compactTableSx = {
     '& .MuiTableCell-root': {
-        py: 1,
+        py: 0.75,
         px: 1.5,
         fontSize: '0.8rem',
-        borderBottom: '1px solid rgba(255,255,255,0.04)',
+        color: 'var(--text-primary)',
+        borderBottom: '1px solid var(--border-secondary)',
     },
     '& .MuiTableCell-head': {
         fontWeight: 600,
-        color: 'text.secondary',
+        color: 'var(--text-secondary)',
         fontSize: '0.7rem',
         textTransform: 'uppercase',
         letterSpacing: '0.5px',
-        bgcolor: 'rgba(255,255,255,0.02)',
+        bgcolor: 'var(--bg-hover)',
+        borderBottom: '1px solid var(--border-primary)',
     },
 };
 
@@ -594,6 +614,10 @@ const App = () => {
     const [toolsSearchQuery, setToolsSearchQuery] = useState('');
     const [toolsEnabledFilter, setToolsEnabledFilter] = useState('all'); // all | enabled | disabled
     const [toolsTypeFilter, setToolsTypeFilter] = useState('all'); // 'all' or specific type
+    // Tools Library opens collapsed — the catalog is long enough that the
+    // tab landed on a wall of cards; collapsing keeps the page scannable
+    // and the user opts in when they actually want to browse.
+    const [toolsLibraryExpanded, setToolsLibraryExpanded] = useState(false);
 
     // Skills sub-tab UI state (search/filter)
     const [skillsSearchQuery, setSkillsSearchQuery] = useState('');
@@ -630,6 +654,17 @@ const App = () => {
         const saved = localStorage.getItem('docsAccordionOrder');
         return saved ? JSON.parse(saved) : [0, 1, 2, 3, 4, 5];
     });
+    // Docs left-rail selection. Single-section disclosure, no MUI Accordion
+    // chrome — the previous chevron-driven UI had been polished repeatedly
+    // and still felt accordion-y; left rail nav is a fundamentally different
+    // affordance.
+    const [activeDocSection, setActiveDocSection] = useState(() => {
+        const saved = localStorage.getItem('docsActiveSection');
+        return saved || 'quick-start';
+    });
+    useEffect(() => {
+        try { localStorage.setItem('docsActiveSection', activeDocSection); } catch (_) {}
+    }, [activeDocSection]);
 
     // API Builder state
     const [apiBuilderEndpoint, setApiBuilderEndpoint] = useState('/api/chat');
@@ -7986,7 +8021,7 @@ console.log(await res.json());`
                                                     sx={{
                                                         '& .MuiOutlinedInput-root': {
                                                             borderRadius: 2,
-                                                            bgcolor: 'rgba(255,255,255,0.03)',
+                                                            bgcolor: 'var(--bg-hover)',
                                                         },
                                                     }}
                                                     InputProps={{
@@ -8178,7 +8213,7 @@ console.log(await res.json());`
                                                                             cursor: 'pointer',
                                                                             position: 'relative',
                                                                             transition: 'transform 0.2s, box-shadow 0.2s',
-                                                                            borderColor: 'rgba(255,255,255,0.08)',
+                                                                            borderColor: 'var(--border-primary)',
                                                                             '&::before': {
                                                                                 content: '""',
                                                                                 position: 'absolute',
@@ -8289,7 +8324,7 @@ console.log(await res.json());`
                                                                                                             sx={{
                                                                                                                 height: 18,
                                                                                                                 fontSize: '0.62rem',
-                                                                                                                bgcolor: 'rgba(255,255,255,0.08)',
+                                                                                                                bgcolor: 'var(--border-primary)',
                                                                                                                 color: 'text.primary',
                                                                                                                 fontWeight: 700,
                                                                                                                 letterSpacing: 0.3,
@@ -9814,7 +9849,7 @@ console.log(await res.json());`
                                                                                 <Box>
                                                                                     {key.stats?.dailyTokens?.toLocaleString() || 0} / {(key.rateLimitTokens / 1000).toFixed(0)}k
                                                                                 </Box>
-                                                                                <Box sx={{ width: '100%', bgcolor: 'rgba(255,255,255,0.05)', borderRadius: 1, height: 4, overflow: 'hidden' }}>
+                                                                                <Box sx={{ width: '100%', bgcolor: 'var(--bg-hover)', borderRadius: 1, height: 4, overflow: 'hidden' }}>
                                                                                     <Box sx={{
                                                                                         width: `${Math.min(100, key.stats?.tokenUsagePercentage || 0)}%`,
                                                                                         height: '100%',
@@ -9918,21 +9953,63 @@ console.log(await res.json());`
                                         </div>
                                     </div>
                                 </div>
-                            <Box>
-                                {/* Legacy SectionHeader retained guarded `false`
-                                    for one cycle for A/B verification. */}
-                                {false && (
-                                    <SectionHeader
-                                        icon={<MenuBookIcon />}
-                                        title="Documentation & API Reference"
-                                        subtitle="Complete guide to getting started, API usage, and configuration"
-                                    />
-                                )}
+                            <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 2.5, alignItems: 'flex-start' }}>
+                                {/* Left rail — section list. Sticky on desktop so the
+                                    nav stays visible while the user reads a section. */}
+                                <Box
+                                    component="nav"
+                                    aria-label="Documentation sections"
+                                    sx={{
+                                        width: { xs: '100%', md: 220 },
+                                        flexShrink: 0,
+                                        position: { xs: 'static', md: 'sticky' },
+                                        top: { xs: 'auto', md: 16 },
+                                        bgcolor: 'var(--bg-tertiary)',
+                                        border: '1px solid var(--border-primary)',
+                                        borderRadius: 2,
+                                        p: 1,
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 0.25,
+                                    }}
+                                >
+                                    {DOC_SECTIONS.map((s) => {
+                                        const active = activeDocSection === s.id;
+                                        const iconNode = ({
+                                            play:    <PlayArrowIcon sx={{ fontSize: 18 }} />,
+                                            code:    <CodeIcon sx={{ fontSize: 18 }} />,
+                                            term:    <TerminalIcon sx={{ fontSize: 18 }} />,
+                                            search:  <SearchIcon sx={{ fontSize: 18 }} />,
+                                            star:    <AutoAwesomeIcon sx={{ fontSize: 18 }} />,
+                                            tune:    <TuneIcon sx={{ fontSize: 18 }} />,
+                                            key:     <VpnKeyIcon sx={{ fontSize: 18 }} />,
+                                            storage: <StorageIcon sx={{ fontSize: 18 }} />,
+                                            warn:    <WarningIcon sx={{ fontSize: 18 }} />,
+                                        })[s.iconName];
+                                        return (
+                                            <Box
+                                                key={s.id}
+                                                component="button"
+                                                type="button"
+                                                onClick={() => setActiveDocSection(s.id)}
+                                                sx={docNavItemSx(active)}
+                                            >
+                                                <Box sx={{ display: 'inline-flex', color: active ? 'var(--accent-primary)' : 'var(--text-tertiary)' }}>
+                                                    {iconNode}
+                                                </Box>
+                                                <span>{s.label}</span>
+                                            </Box>
+                                        );
+                                    })}
+                                </Box>
 
-                                
+                                {/* Section pane — only the active section renders
+                                    below; everything else is unmounted. */}
+                                <Box sx={{ flex: 1, minWidth: 0, width: '100%' }}>
                                 {/* Quick Start Guide */}
-                                <Accordion sx={{ ...docAccordionSx, mt: 2 }} defaultExpanded>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'quick-start' && (
+                                <Box sx={docSectionSx}>
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<PlayArrowIcon />} color="success" />
                                             <Box>
@@ -9940,8 +10017,9 @@ console.log(await res.json());`
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Get up and running in 3 steps</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+                                    </Box>
+                                    <Box sx={docSectionBodySx}>
                                         {/* Condensed 3-step flow */}
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={4}>
@@ -9980,7 +10058,7 @@ console.log(await res.json());`
                                         </Grid>
 
                                         {/* Interface quick reference */}
-                                        <Box sx={{ mt: 2.5, p: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                        <Box sx={{ mt: 2.5, p: 2, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <TableContainer>
                                                 <Table size="small" sx={compactTableSx}>
                                                     <TableHead>
@@ -10010,12 +10088,17 @@ console.log(await res.json());`
                                                 </Table>
                                             </TableContainer>
                                         </Box>
-                                    </AccordionDetails>
-                                </Accordion>
+
+                                    </Box>
+                                </Box>
+                                )}
 
                                 {/* API Builder */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'api-builder' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<CodeIcon />} color="secondary" />
                                             <Box>
@@ -10023,9 +10106,12 @@ console.log(await res.json());`
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Generate code snippets for any endpoint</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
-                                        <Box sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
+                                        <Box sx={{ p: 2, bgcolor: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)', borderRadius: 2 }}>
                                             <Grid container spacing={2}>
                                                 <Grid item xs={12} md={6}>
                                                     <FormControl fullWidth size="small">
@@ -10201,25 +10287,55 @@ console.log(await res.json());`
                                                     </FormControl>
                                                 </Grid>
                                             </Grid>
-                                            <Box sx={{ mt: 2, bgcolor: '#09090b', p: 2, borderRadius: 1, position: 'relative' }}>
+                                            <Box sx={{
+                                                mt: 2,
+                                                bgcolor: 'var(--bg-primary)',
+                                                border: '1px solid var(--border-primary)',
+                                                p: 2,
+                                                borderRadius: 1,
+                                                position: 'relative',
+                                            }}>
                                                 <IconButton
                                                     size="small"
-                                                    sx={{ position: 'absolute', top: 8, right: 8 }}
+                                                    sx={{
+                                                        position: 'absolute', top: 8, right: 8,
+                                                        color: 'var(--text-tertiary)',
+                                                        '&:hover': {
+                                                            color: 'var(--accent-primary)',
+                                                            bgcolor: 'var(--bg-hover)',
+                                                        },
+                                                    }}
                                                     onClick={() => copyToClipboard(getApiBuilderCode())}
                                                 >
                                                     <ContentCopyIcon sx={{ fontSize: 16 }} />
                                                 </IconButton>
-                                                <pre style={{ margin: 0, color: '#22c55e', fontSize: '0.75rem', overflow: 'auto', paddingRight: 40 }}>
+                                                <pre style={{
+                                                    margin: 0,
+                                                    color: 'var(--accent-primary)',
+                                                    fontSize: '0.75rem',
+                                                    fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+                                                    overflow: 'auto',
+                                                    paddingRight: 40,
+                                                }}>
                                                     {getApiBuilderCode()}
                                                 </pre>
                                             </Box>
                                         </Box>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* Pi setup */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'pi-setup' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<TerminalIcon />} color="primary" />
                                             <Box>
@@ -10227,8 +10343,11 @@ console.log(await res.json());`
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Install Pi (pi.dev) and connect it to this server</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
                                                 <strong style={{ color: '#fafafa' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
@@ -10247,7 +10366,7 @@ console.log(await res.json());`
                                             const missingAgents = selectedKey && !(selectedKey.permissions || []).includes('agents');
                                             return (
                                                 <>
-                                                    <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                                    <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Pick a bearer-mode API key</Typography>
                                                         {bearerKeys.length === 0 ? (
                                                             <Box sx={{ p: 1.25, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, border: '1px solid rgba(251,191,36,0.2)' }}>
@@ -10298,7 +10417,7 @@ console.log(await res.json());`
                                                         )}
                                                     </Box>
 
-                                                    <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                                    <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
                                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. One-liner install (curl | bash)</Typography>
                                                             {selectedKey && (
@@ -10325,14 +10444,14 @@ console.log(await res.json());`
                                             );
                                         })()}
 
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Run</Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
                                                 <span>{`pi  # picks up MODELSERVER_BASE_URL + MODELSERVER_API_KEY automatically`}</span>
                                             </Box>
                                         </Box>
 
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>What gets registered</Typography>
                                             <Table size="small" sx={compactTableSx}>
                                                 <TableBody>
@@ -10343,7 +10462,7 @@ console.log(await res.json());`
                                             </Table>
                                         </Box>
 
-                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                        <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Manual install</Typography>
                                             <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
                                                 Don&apos;t want to pipe to bash? Fetch the files directly and edit <code>~/.pi/agent/settings.json</code> by hand:
@@ -10358,12 +10477,21 @@ ${baseUrl}/api/pi/extension/package.json
 ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Box>
                                         </Box>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* Chat Web Search & URL Fetch */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'web-search' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<SearchIcon />} color="secondary" />
                                             <Box>
@@ -10371,8 +10499,11 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Web search, URL fetching, and content extraction</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
                                             <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
                                             <Typography sx={{ fontSize: '0.85rem' }}>Native tools — model invokes web_search / fetch_url / crawl_pages / playwright_fetch / playwright_interact / scrapling_fetch / fetch_timeseries / render_chart automatically when the query warrants it. No UI toggle. (render_chart returns a chartSpec the chat UI mounts inline as a real Recharts SVG; fetch_timeseries pulls free OHLC data from Yahoo Finance for stocks / indexes / forex / crypto.)</Typography>
@@ -10380,7 +10511,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How to Use</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
                                                         <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Open the Chat interface (port 3002).</Typography>
@@ -10392,7 +10523,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search Engine Stack</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="DuckDuckGo (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
@@ -10404,7 +10535,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Content Fetching Stack</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="Scrapling StealthyFetcher (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
@@ -10417,7 +10548,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL Fetch Feature</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
                                                         <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'var(--bg-hover)' }}>POST /api/url/fetch</code> (admin/debug)</Typography>
@@ -10428,7 +10559,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="5 results with full content" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
@@ -10443,12 +10574,21 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 </Box>
                                             </Grid>
                                         </Grid>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* Sandbox Skills & Artifacts */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'sandbox-skills' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<AutoAwesomeIcon />} color="success" />
                                             <Box>
@@ -10456,15 +10596,18 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Workspace-scoped Python skills, artifact downloads, optional GPU image generation</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
                                             <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
                                             <Typography sx={{ fontSize: '0.85rem' }}>The skills below run inside the sandbox container with a per-conversation <code>/workspace</code> mount. Anything they write to <code>/workspace/artifacts/</code> is auto-promoted by <code>sandboxRunner.runPythonSkill</code> to a downloadable chip on the tool result (mtime-filtered so prior-turn files don't re-surface).</Typography>
                                         </Box>
 
                                         {/* Sandbox skill catalog */}
-                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                        <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Sandbox-Executed Skills (model-invoked)</Typography>
                                             <Table size="small" sx={compactTableSx}>
                                                 <TableBody>
@@ -10496,7 +10639,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         </Box>
 
                                         {/* Auto-download surface */}
-                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
+                                        <Box sx={{ mt: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How auto-downloads work</Typography>
                                             <Box sx={{ fontSize: '0.8rem' }}>
                                                 <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>Any file a sandbox skill writes to <code>/workspace/artifacts/</code> during a run is picked up automatically. The runner attaches an <code>_artifacts</code> array to the tool result and the chat UI renders one download chip per file.</Typography>
@@ -10505,12 +10648,21 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Box>
                                         </Box>
 
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* Configuration Flags */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'config-flags' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<TuneIcon />} color="warning" />
                                             <Box>
@@ -10518,8 +10670,11 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>llama.cpp and vLLM backend settings</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
                                         <Grid container spacing={2}>
                                             {/* llama.cpp Settings */}
                                             <Grid item xs={12} lg={6}>
@@ -10576,12 +10731,21 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 </Box>
                                             </Grid>
                                         </Grid>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* API Key Permissions */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'api-permissions' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<VpnKeyIcon />} color="primary" />
                                             <Box>
@@ -10589,8 +10753,11 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Permission scopes for API keys</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                 <Chip label="query" size="small" sx={{ mb: 1, bgcolor: 'primary.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
@@ -10617,12 +10784,21 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             <WarningIcon sx={{ fontSize: 14, color: 'warning.main' }} />
                                             <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Auth endpoints use session auth only.</Typography>
                                         </Box>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* API Endpoints */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'api-endpoints' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<StorageIcon />} color="secondary" />
                                             <Box>
@@ -10630,9 +10806,12 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Complete endpoint reference by category</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
-                                        <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, overflow: 'hidden' }}>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
+                                        <Box sx={{ bgcolor: 'var(--bg-tertiary)', borderRadius: 2, overflow: 'hidden' }}>
                                         <TableContainer>
                                             <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.75, px: 1.5, fontSize: '0.75rem' } }}>
                                                 <TableBody>
@@ -10805,12 +10984,21 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Table>
                                         </TableContainer>
                                         </Box>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* Utility Scripts */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'utility-scripts' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <DocIcon icon={<TerminalIcon sx={{ fontSize: 16 }} />} color="secondary" />
                                             <Box>
@@ -10818,8 +11006,11 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Management scripts and custom patches</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
                                         {/* Management Scripts */}
                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'primary.main' }}>
                                             Management Scripts
@@ -10851,7 +11042,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             Internal Scripts
                                         </Typography>
                                         <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', mb: 1.5 }}>
-                                            Scripts in the <code style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>scripts/</code> folder for specific tasks.
+                                            Scripts in the <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>scripts/</code> folder for specific tasks.
                                         </Typography>
                                         <TableContainer component={Paper} variant="outlined" sx={{ mb: 2.5 }}>
                                             <Table size="small" sx={compactTableSx}>
@@ -10880,12 +11071,21 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 ./build.sh --retry 3     # Set retry attempts (default: 2)
                                             </Typography>
                                         </Box>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
 
                                 {/* System Reset */}
-                                <Accordion sx={docAccordionSx}>
-                                    <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ color: 'text.secondary' }} />}>
+                                {activeDocSection === 'system-reset' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box sx={{
                                                 display: 'inline-flex',
@@ -10904,8 +11104,11 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Delete models and clean up resources</Typography>
                                             </Box>
                                         </Box>
-                                    </AccordionSummary>
-                                    <AccordionDetails>
+
+
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
                                         <Box sx={{ p: 2, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.2)', mb: 2 }}>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
                                                 Stops all instances and cleans up Docker resources. By default downloaded models, API keys, and configuration are preserved. The shell equivalent <code style={{ fontSize: '0.7rem' }}>./reset.sh --full</code> additionally wipes downloaded models for a true factory reset.
@@ -10920,8 +11123,15 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         >
                                             Reset System
                                         </Button>
-                                    </AccordionDetails>
-                                </Accordion>
+
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
+                                </Box>
                             </Box>
                             </div>
                         )}
@@ -11315,19 +11525,51 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                         });
                                                         return (
                                                         <Box>
-                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
-                                                                <Box>
-                                                                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                                                                        Tools Library
-                                                                    </Typography>
-                                                                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                                                                        Showing {filteredTools.length} of {skills.length}
-                                                                    </Typography>
+                                                            <Box
+                                                                onClick={() => setToolsLibraryExpanded(v => !v)}
+                                                                role="button"
+                                                                tabIndex={0}
+                                                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setToolsLibraryExpanded(v => !v); } }}
+                                                                sx={{
+                                                                    display: 'flex',
+                                                                    justifyContent: 'space-between',
+                                                                    mb: toolsLibraryExpanded ? 2 : 0,
+                                                                    alignItems: 'center',
+                                                                    gap: 2,
+                                                                    flexWrap: 'wrap',
+                                                                    cursor: 'pointer',
+                                                                    p: 1.25,
+                                                                    borderRadius: 1.5,
+                                                                    border: '1px solid var(--border-primary)',
+                                                                    bgcolor: 'var(--bg-tertiary)',
+                                                                    transition: 'background-color 0.15s, border-color 0.15s',
+                                                                    '&:hover': { bgcolor: 'var(--bg-hover)', borderColor: 'var(--border-hover)' },
+                                                                }}
+                                                            >
+                                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flex: 1, minWidth: 0 }}>
+                                                                    <ExpandMoreIcon
+                                                                        sx={{
+                                                                            fontSize: 20,
+                                                                            color: 'var(--text-tertiary)',
+                                                                            transform: toolsLibraryExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                                                                            transition: 'transform 0.18s ease',
+                                                                        }}
+                                                                    />
+                                                                    <Box>
+                                                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                                                                            Tools Library
+                                                                        </Typography>
+                                                                        <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>
+                                                                            {skills.length} tool{skills.length === 1 ? '' : 's'}
+                                                                            {toolsLibraryExpanded ? ` · showing ${filteredTools.length}` : ''}
+                                                                        </Typography>
+                                                                    </Box>
                                                                 </Box>
                                                                 <Button
                                                                     variant="contained"
                                                                     size="small"
-                                                                    onClick={() => {
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
                                                                         setEditingSkill(null);
                                                                         setSkillFormData({ name: '', description: '', type: 'tool', parameters: {}, code: '' });
                                                                         setSkillDialogOpen(true);
@@ -11337,6 +11579,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                                 </Button>
                                                             </Box>
 
+                                                            <Collapse in={toolsLibraryExpanded} timeout="auto" unmountOnExit>
+                                                            <Box sx={{ pt: 1 }}>
                                                             {skills.length === 0 ? (
                                                                 <Alert severity="info">No tools created yet. Click "Create Tool" to get started.</Alert>
                                                             ) : (
@@ -11478,6 +11722,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                                     )}
                                                                 </>
                                                             )}
+                                                            </Box>
+                                                            </Collapse>
                                                         </Box>
                                                         );
                                                     })()}

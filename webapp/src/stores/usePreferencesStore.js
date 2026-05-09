@@ -37,15 +37,14 @@ function mirrorPatchToLegacyStore(patch) {
 }
 
 /**
- * Preferences Store — UI prefs (theme, accent, bubble, density, font, layout)
- * shared between webapp:3001 and chat:3002 via /api/me/preferences.
+ * Preferences Store — UI prefs (theme, accent, bubble, density, font, layout).
  *
- * On hydrate(): GET /api/me/preferences and apply to <html>/<body>.
- * On set(): write to local state + apply to DOM + debounced PUT.
- *
- * The same store shape lives in chat/src/stores/usePreferencesStore.js so a
- * theme picked in either app is reflected in the other on next mount.
+ * Scoped per-app via `?app=webapp` so webapp:3001 and chat:3002 hold their
+ * own choices. The server seeds first read from the legacy flat shape, then
+ * each app diverges into its own bucket.
  */
+
+const PREFS_URL = '/api/me/preferences?app=webapp';
 
 const VALID_THEMES = [
     // Originals (chat-imported)
@@ -152,7 +151,7 @@ const debouncedSync = makeDebouncer(350);
 
 async function pushToServer(patch) {
     try {
-        await fetch('/api/me/preferences', {
+        await fetch(PREFS_URL, {
             method: 'PUT',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -176,7 +175,7 @@ export const usePreferencesStore = create(
             if (get().loading) return;
             set({ loading: true });
             try {
-                const r = await fetch('/api/me/preferences', { credentials: 'include' });
+                const r = await fetch(PREFS_URL, { credentials: 'include' });
                 if (!r.ok) {
                     // Not logged in or endpoint unavailable — keep defaults
                     // and apply them so the page still renders themed.

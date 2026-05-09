@@ -175,10 +175,10 @@ export default React.memo(function ChatMessage({
                     py: 1.5,
                     background: isUser
                         ? 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)'
-                        : 'rgba(255, 255, 255, 0.05)',
+                        : 'var(--bg-hover)',
                     border: isUser
                         ? 'none'
-                        : '1px solid rgba(255, 255, 255, 0.08)',
+                        : '1px solid var(--border-primary)',
                     color: 'text.primary',
                     '&:hover .message-actions': {
                         opacity: 1,
@@ -217,8 +217,8 @@ export default React.memo(function ChatMessage({
                                     mt: 0.75,
                                     p: 1,
                                     borderRadius: '6px',
-                                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                                    backgroundColor: 'var(--bg-hover)',
+                                    border: '1px solid var(--border-primary)',
                                 }}
                             >
                                 <Typography
@@ -266,7 +266,7 @@ export default React.memo(function ChatMessage({
                                     p: 0.5,
                                     color: copied ? 'success.main' : 'text.secondary',
                                     '&:hover': {
-                                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                        backgroundColor: 'var(--border-hover)',
                                     },
                                 }}
                             >
@@ -286,7 +286,7 @@ export default React.memo(function ChatMessage({
                                         p: 0.5,
                                         color: 'text.secondary',
                                         '&:hover': {
-                                            backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                                            backgroundColor: 'var(--border-hover)',
                                         },
                                     }}
                                 >
@@ -306,7 +306,7 @@ export default React.memo(function ChatMessage({
                 PaperProps={{
                     sx: {
                         backgroundColor: 'background.paper',
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        border: '1px solid var(--border-hover)',
                     },
                 }}
             >

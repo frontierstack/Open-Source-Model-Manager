@@ -234,7 +234,7 @@ export default function ChatInput({
         <Box
             sx={{
                 p: { xs: 1, sm: 1.5 },
-                borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                borderTop: '1px solid var(--border-hover)',
                 backgroundColor: 'background.paper',
             }}
         >
@@ -308,10 +308,10 @@ export default function ChatInput({
                     gap: 0.5,
                     p: 0.75,
                     borderRadius: '10px',
-                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    backgroundColor: 'var(--bg-hover)',
                     border: isDragOver
                         ? '2px dashed rgba(99, 102, 241, 0.5)'
-                        : '1px solid rgba(255, 255, 255, 0.08)',
+                        : '1px solid var(--border-primary)',
                     transition: 'all 0.2s',
                     position: 'relative',
                 }}
@@ -350,7 +350,7 @@ export default function ChatInput({
                                 color: webSearchEnabled ? 'secondary.main' : 'text.secondary',
                                 backgroundColor: webSearchEnabled ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
                                 '&:hover': {
-                                    backgroundColor: webSearchEnabled ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.08)',
+                                    backgroundColor: webSearchEnabled ? 'rgba(99, 102, 241, 0.2)' : 'var(--border-primary)',
                                 },
                             }}
                         >
@@ -426,7 +426,7 @@ export default function ChatInput({
                                         backgroundColor: 'primary.dark',
                                     },
                                     '&.Mui-disabled': {
-                                        backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                                        backgroundColor: 'var(--border-primary)',
                                         color: 'rgba(255, 255, 255, 0.3)',
                                     },
                                 }}

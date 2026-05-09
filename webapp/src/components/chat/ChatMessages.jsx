@@ -94,7 +94,7 @@ export default function ChatMessages({
                     backgroundColor: 'transparent',
                 },
                 '&::-webkit-scrollbar-thumb': {
-                    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                    backgroundColor: 'var(--border-hover)',
                     borderRadius: '4px',
                     '&:hover': {
                         backgroundColor: 'rgba(255, 255, 255, 0.2)',
