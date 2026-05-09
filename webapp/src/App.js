@@ -9985,7 +9985,7 @@ console.log(await res.json());`
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Quick Start</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Get up and running in 3 steps</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Get up and running in 3 steps</Typography>
                                             </Box>
                                         </Box>
 
@@ -9999,8 +9999,8 @@ console.log(await res.json());`
                                                         <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'var(--accent-primary)', color: 'var(--accent-ink, #fff)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700 }}>1</Box>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Load Model</Typography>
                                                     </Box>
-                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
-                                                        <strong style={{ color: '#fafafa' }}>Discover</strong> → Download → <strong style={{ color: '#fafafa' }}>My Models</strong> → Load
+                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                                        <strong style={{ color: 'var(--text-primary)' }}>Discover</strong> → Download → <strong style={{ color: 'var(--text-primary)' }}>My Models</strong> → Load
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -10010,8 +10010,8 @@ console.log(await res.json());`
                                                         <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'var(--accent-primary)', color: 'var(--accent-ink, #fff)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700 }}>2</Box>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
                                                     </Box>
-                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
-                                                        <strong style={{ color: '#fafafa' }}>AI Chat</strong> for web • <strong style={{ color: '#fafafa' }}>Pi</strong> for terminal • <strong style={{ color: '#fafafa' }}>API</strong> for code
+                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                                        <strong style={{ color: 'var(--text-primary)' }}>AI Chat</strong> for web • <strong style={{ color: 'var(--text-primary)' }}>Pi</strong> for terminal • <strong style={{ color: 'var(--text-primary)' }}>API</strong> for code
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -10021,8 +10021,8 @@ console.log(await res.json());`
                                                         <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'var(--accent-primary)', color: 'var(--accent-ink, #fff)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700 }}>3</Box>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Create API Key</Typography>
                                                     </Box>
-                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'text.secondary', lineHeight: 1.5 }}>
-                                                        <strong style={{ color: '#fafafa' }}>API Keys</strong> tab → Create → Copy credentials
+                                                    <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                                        <strong style={{ color: 'var(--text-primary)' }}>API Keys</strong> tab → Create → Copy credentials
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -10043,17 +10043,17 @@ console.log(await res.json());`
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'var(--accent-primary)' }}>AI Chat</TableCell>
                                                             <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>https://localhost:3002</TableCell>
-                                                            <TableCell sx={{ color: 'text.secondary' }}>Web chat interface with streaming</TableCell>
+                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Web chat interface with streaming</TableCell>
                                                         </TableRow>
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'var(--accent-primary)' }}>Pi</TableCell>
                                                             <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>npm install -g @earendil-works/pi-coding-agent</TableCell>
-                                                            <TableCell sx={{ color: 'text.secondary' }}>Terminal, automation (see Pi section below)</TableCell>
+                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Terminal, automation (see Pi section below)</TableCell>
                                                         </TableRow>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600, color: 'success.main' }}>Direct API</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'var(--success)' }}>Direct API</TableCell>
                                                             <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{baseUrl}/api/chat</TableCell>
-                                                            <TableCell sx={{ color: 'text.secondary' }}>Integrations</TableCell>
+                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Integrations</TableCell>
                                                         </TableRow>
                                                     </TableBody>
                                                 </Table>
@@ -10073,7 +10073,7 @@ console.log(await res.json());`
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Code Builder</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Generate code snippets for any endpoint</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Generate code snippets for any endpoint</Typography>
                                             </Box>
                                         </Box>
 
@@ -10309,7 +10309,7 @@ console.log(await res.json());`
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Pi setup</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Install Pi (pi.dev) and connect it to this server</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Install Pi (pi.dev) and connect it to this server</Typography>
                                             </Box>
                                         </Box>
 
@@ -10318,8 +10318,8 @@ console.log(await res.json());`
 
                                     <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
-                                            <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
-                                                <strong style={{ color: '#fafafa' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                                <strong style={{ color: 'var(--text-primary)' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
                                             </Typography>
                                         </Box>
 
@@ -10336,14 +10336,14 @@ console.log(await res.json());`
                                             return (
                                                 <>
                                                     <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Pick a bearer-mode API key</Typography>
+                                                        <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Pick a bearer-mode API key</Typography>
                                                         {bearerKeys.length === 0 ? (
                                                             <Box sx={{ p: 1.25, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, border: '1px solid rgba(251,191,36,0.2)' }}>
-                                                                <Typography sx={{ fontSize: '0.78rem', color: 'warning.main', mb: 0.5 }}>
+                                                                <Typography sx={{ fontSize: '0.78rem', color: 'var(--warning)', mb: 0.5 }}>
                                                                     No bearer-mode keys yet.
                                                                 </Typography>
-                                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>
-                                                                    Open the <strong style={{ color: '#fafafa' }}>API Keys</strong> tab → create a key with the <code>Bearer Only</code> flag and the <code>agents</code> permission (Pi sends <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch).
+                                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                                                    Open the <strong style={{ color: 'var(--text-primary)' }}>API Keys</strong> tab → create a key with the <code>Bearer Only</code> flag and the <code>agents</code> permission (Pi sends <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch).
                                                                 </Typography>
                                                             </Box>
                                                         ) : (
@@ -10363,7 +10363,7 @@ console.log(await res.json());`
                                                                                 <MenuItem key={k.id} value={k.id} sx={{ fontSize: '0.8rem' }}>
                                                                                     {k.name}
                                                                                     {!(k.permissions || []).includes('agents') && (
-                                                                                        <Chip label="no agents perm" size="small" sx={{ ml: 1, height: 18, fontSize: '0.6rem', bgcolor: 'rgba(251,191,36,0.2)', color: 'warning.main' }} />
+                                                                                        <Chip label="no agents perm" size="small" sx={{ ml: 1, height: 18, fontSize: '0.6rem', bgcolor: 'rgba(251,191,36,0.2)', color: 'var(--warning)' }} />
                                                                                     )}
                                                                                 </MenuItem>
                                                                             ))}
@@ -10378,7 +10378,7 @@ console.log(await res.json());`
                                                                     )}
                                                                 </Box>
                                                                 {missingAgents && (
-                                                                    <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'warning.main' }}>
+                                                                    <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--warning)' }}>
                                                                         ⚠ This key lacks the <code>agents</code> permission. Pi will register the model provider but <code>/api/skills</code> will return 403 — the skill catalog won&apos;t load. Edit the key (API Keys tab) to add it.
                                                                     </Typography>
                                                                 )}
@@ -10388,7 +10388,7 @@ console.log(await res.json());`
 
                                                     <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-                                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. One-liner install (curl | bash)</Typography>
+                                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. One-liner install (curl | bash)</Typography>
                                                             {selectedKey && (
                                                                 <Tooltip title="Copy full command (with cleartext key)">
                                                                     <IconButton size="small" onClick={() => copyToClipboard(cmdFull)}>
@@ -10400,12 +10400,12 @@ console.log(await res.json());`
                                                         <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
                                                             <span>{cmdReveal}</span>
                                                         </Box>
-                                                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
                                                             {selectedKey
                                                                 ? <>The copy button grabs the full command with the cleartext key. The key is masked in the displayed snippet by default — click <VisibilityIcon sx={{ fontSize: 12, verticalAlign: 'middle' }} /> above to reveal.</>
                                                                 : <>Pick a key above and the command auto-populates. Or replace <code>&lt;your-bearer-key&gt;</code> by hand.</>}
                                                         </Typography>
-                                                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
                                                             One script handles every common failure: corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
                                                         </Typography>
                                                     </Box>
@@ -10414,26 +10414,26 @@ console.log(await res.json());`
                                         })()}
 
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Run</Typography>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Run</Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
                                                 <span>{`pi  # picks up MODELSERVER_BASE_URL + MODELSERVER_API_KEY automatically`}</span>
                                             </Box>
                                         </Box>
 
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>What gets registered</Typography>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>What gets registered</Typography>
                                             <Table size="small" sx={compactTableSx}>
                                                 <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>provider</TableCell><TableCell sx={{ color: 'text.secondary' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>tools</TableCell><TableCell sx={{ color: 'text.secondary' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>auth</TableCell><TableCell sx={{ color: 'text.secondary' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>auth</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </Box>
 
                                         <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Manual install</Typography>
-                                            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Manual install</Typography>
+                                            <Typography variant="caption" sx={{ display: 'block', color: 'var(--text-secondary)', mb: 1 }}>
                                                 Don&apos;t want to pipe to bash? Fetch the files directly and edit <code>~/.pi/agent/settings.json</code> by hand:
                                             </Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
@@ -10464,7 +10464,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Chat Web Search & URL Fetch</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Web search, URL fetching, and content extraction</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Web search, URL fetching, and content extraction</Typography>
                                             </Box>
                                         </Box>
 
@@ -10473,14 +10473,14 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
-                                            <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
+                                            <CheckCircleIcon sx={{ fontSize: 18, color: 'var(--success)' }} />
                                             <Typography sx={{ fontSize: '0.85rem' }}>Native tools — model invokes web_search / fetch_url / crawl_pages / playwright_fetch / playwright_interact / scrapling_fetch / fetch_timeseries / render_chart automatically when the query warrants it. No UI toggle. (render_chart returns a chartSpec the chat UI mounts inline as a real Recharts SVG; fetch_timeseries pulls free OHLC data from Yahoo Finance for stocks / indexes / forex / crypto.)</Typography>
                                         </Box>
 
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How to Use</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How to Use</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
                                                         <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Open the Chat interface (port 3002).</Typography>
                                                         <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Just ask. The chat model decides when to search the web or fetch a URL — there's no globe or link button to toggle.</Typography>
@@ -10492,7 +10492,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search Engine Stack</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search Engine Stack</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="DuckDuckGo (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="Scrapling fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
@@ -10504,7 +10504,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Content Fetching Stack</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Content Fetching Stack</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="Scrapling StealthyFetcher (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                         <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
@@ -10517,7 +10517,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Grid>
                                             <Grid item xs={12} md={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL Fetch Feature</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL Fetch Feature</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
                                                         <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'var(--bg-hover)' }}>POST /api/url/fetch</code> (admin/debug)</Typography>
                                                         <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Up to 3 URLs per request, 50k chars/URL for files, 12k for HTML</Typography>
@@ -10528,7 +10528,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Grid>
                                             <Grid item xs={12}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="5 results with full content" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="24k char content budget" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
@@ -10560,7 +10560,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Sandbox Skills &amp; Artifacts</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Workspace-scoped Python skills, artifact downloads, optional GPU image generation</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Workspace-scoped Python skills, artifact downloads, optional GPU image generation</Typography>
                                             </Box>
                                         </Box>
 
@@ -10569,45 +10569,45 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
-                                            <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />
+                                            <CheckCircleIcon sx={{ fontSize: 18, color: 'var(--success)' }} />
                                             <Typography sx={{ fontSize: '0.85rem' }}>The skills below run inside the sandbox container with a per-conversation <code>/workspace</code> mount. Anything they write to <code>/workspace/artifacts/</code> is auto-promoted by <code>sandboxRunner.runPythonSkill</code> to a downloadable chip on the tool result (mtime-filtered so prior-turn files don't re-surface).</Typography>
                                         </Box>
 
                                         {/* Sandbox skill catalog */}
                                         <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Sandbox-Executed Skills (model-invoked)</Typography>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Sandbox-Executed Skills (model-invoked)</Typography>
                                             <Table size="small" sx={compactTableSx}>
                                                 <TableBody>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>make_downloadable</TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>Copy any file in <code>/workspace</code> into <code>/workspace/artifacts/</code> so the chat UI surfaces it as a download chip. Params: <code>sourcePath</code>, <code>filename</code>. Use after <code>run_python</code>/<code>create_file</code> when the user asks to download.</TableCell>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>make_downloadable</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Copy any file in <code>/workspace</code> into <code>/workspace/artifacts/</code> so the chat UI surfaces it as a download chip. Params: <code>sourcePath</code>, <code>filename</code>. Use after <code>run_python</code>/<code>create_file</code> when the user asks to download.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>transform_image</TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>Pillow-backed image transforms. Params: <code>sourcePath</code>, <code>operation</code> (resize | crop | thumbnail | rotate | convert | grayscale), plus op-specific <code>width</code> / <code>height</code> / <code>x</code> / <code>y</code> / <code>angle</code> / <code>maxWidth</code> / <code>maxHeight</code> / <code>format</code> / <code>quality</code> / <code>outputName</code>. Output written to <code>/workspace/artifacts/</code>.</TableCell>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>transform_image</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Pillow-backed image transforms. Params: <code>sourcePath</code>, <code>operation</code> (resize | crop | thumbnail | rotate | convert | grayscale), plus op-specific <code>width</code> / <code>height</code> / <code>x</code> / <code>y</code> / <code>angle</code> / <code>maxWidth</code> / <code>maxHeight</code> / <code>format</code> / <code>quality</code> / <code>outputName</code>. Output written to <code>/workspace/artifacts/</code>.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>read_xlsx</TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>openpyxl reader — returns <code>{`{ headers, rows, sheetNames, rowCount, truncated }`}</code> with rows as dicts keyed by header. Params: <code>path</code>, <code>sheet</code> (name or 0-based index), <code>maxRows</code> (default 1000), <code>header</code> (default <code>true</code>), <code>formulas</code> (raw formula text vs cached values; default <code>false</code>). Counterpart to <code>create_xlsx</code>.</TableCell>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>read_xlsx</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>openpyxl reader — returns <code>{`{ headers, rows, sheetNames, rowCount, truncated }`}</code> with rows as dicts keyed by header. Params: <code>path</code>, <code>sheet</code> (name or 0-based index), <code>maxRows</code> (default 1000), <code>header</code> (default <code>true</code>), <code>formulas</code> (raw formula text vs cached values; default <code>false</code>). Counterpart to <code>create_xlsx</code>.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>query_sqlite</TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>Run SQL against a workspace SQLite DB. Params: <code>path</code>, <code>query</code>, <code>params</code> (bind list for <code>?</code> placeholders), <code>maxRows</code> (default 500), <code>readonly</code> (default <code>true</code> — opens with <code>mode=ro</code> URI; pass <code>false</code> to mutate). Returns <code>{`{ columns, rows, rowCount, truncated, affectedRows }`}</code> with rows as dicts.</TableCell>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>query_sqlite</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Run SQL against a workspace SQLite DB. Params: <code>path</code>, <code>query</code>, <code>params</code> (bind list for <code>?</code> placeholders), <code>maxRows</code> (default 500), <code>readonly</code> (default <code>true</code> — opens with <code>mode=ro</code> URI; pass <code>false</code> to mutate). Returns <code>{`{ columns, rows, rowCount, truncated, affectedRows }`}</code> with rows as dicts.</TableCell>
                                                     </TableRow>
                                                     <TableRow>
-                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'success.main', whiteSpace: 'nowrap' }}>transcribe_audio</TableCell>
-                                                        <TableCell sx={{ color: 'text.secondary' }}>faster-whisper transcription. Bundled <code>tiny.en</code> model (CPU, int8) under <code>/opt/whisper-models/</code>. Params: <code>path</code>, <code>model</code> (default <code>tiny.en</code>), <code>language</code>, <code>wordTimestamps</code>, <code>beamSize</code> (default 1 = greedy). Returns <code>{`{ text, segments, language, durationSec }`}</code>. ~5-15s for a 1-min clip.</TableCell>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>transcribe_audio</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>faster-whisper transcription. Bundled <code>tiny.en</code> model (CPU, int8) under <code>/opt/whisper-models/</code>. Params: <code>path</code>, <code>model</code> (default <code>tiny.en</code>), <code>language</code>, <code>wordTimestamps</code>, <code>beamSize</code> (default 1 = greedy). Returns <code>{`{ text, segments, language, durationSec }`}</code>. ~5-15s for a 1-min clip.</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>
-                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.secondary' }}>
+                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
                                                 Defined in <code>webapp/default-skills.json</code>. All run with <code>sandbox: true</code>, <code>workspace: true</code>, <code>network: "none"</code>.
                                             </Typography>
                                         </Box>
 
                                         {/* Auto-download surface */}
                                         <Box sx={{ mt: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How auto-downloads work</Typography>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How auto-downloads work</Typography>
                                             <Box sx={{ fontSize: '0.8rem' }}>
                                                 <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>Any file a sandbox skill writes to <code>/workspace/artifacts/</code> during a run is picked up automatically. The runner attaches an <code>_artifacts</code> array to the tool result and the chat UI renders one download chip per file.</Typography>
                                                 <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}>Files are <strong>mtime-filtered</strong> — only files modified during the current skill invocation are surfaced, so previous-turn artifacts won't re-appear. If a user asks to download a file from an earlier turn, call <code>make_downloadable</code> again (it touches the mtime so the file re-qualifies).</Typography>
@@ -10633,7 +10633,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Configuration Flags</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>llama.cpp and vLLM backend settings</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>llama.cpp and vLLM backend settings</Typography>
                                             </Box>
                                         </Box>
 
@@ -10644,29 +10644,29 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Grid container spacing={2}>
                                             {/* llama.cpp Settings */}
                                             <Grid item xs={12} lg={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.1)' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                        <Chip label="llama.cpp" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'rgba(255, 255, 255, 0.15)', color: '#ffffff', fontWeight: 600 }} />
-                                                        <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Maxwell 5.2+</Typography>
+                                                        <Chip label="llama.cpp" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Maxwell 5.2+</Typography>
                                                     </Box>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
                                                         <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 110 }}>nGpuLayers</TableCell><TableCell sx={{ color: 'text.secondary' }}>-1</TableCell><TableCell sx={{ color: 'text.secondary' }}>GPU layers (-1=all)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>4096</TableCell><TableCell sx={{ color: 'text.secondary' }}>Context window size</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>flashAttention</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Flash attention (faster)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cacheTypeK/V</TableCell><TableCell sx={{ color: 'text.secondary' }}>f16</TableCell><TableCell sx={{ color: 'text.secondary' }}>KV cache (f16/q8_0/q4_0)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>threads</TableCell><TableCell sx={{ color: 'text.secondary' }}>0</TableCell><TableCell sx={{ color: 'text.secondary' }}>CPU threads (0=auto)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>parallelSlots</TableCell><TableCell sx={{ color: 'text.secondary' }}>1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Concurrent requests</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>batchSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>2048</TableCell><TableCell sx={{ color: 'text.secondary' }}>Prompt batch size</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>ubatchSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>512</TableCell><TableCell sx={{ color: 'text.secondary' }}>Micro-batch size</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatPenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>1.1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Repetition penalty</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatLastN</TableCell><TableCell sx={{ color: 'text.secondary' }}>64</TableCell><TableCell sx={{ color: 'text.secondary' }}>Repetition penalty window</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>presencePenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>0.0</TableCell><TableCell sx={{ color: 'text.secondary' }}>Presence penalty</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>frequencyPenalty</TableCell><TableCell sx={{ color: 'text.secondary' }}>0.0</TableCell><TableCell sx={{ color: 'text.secondary' }}>Frequency penalty</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>ctxCheckpoints</TableCell><TableCell sx={{ color: 'text.secondary' }}>2</TableCell><TableCell sx={{ color: 'text.secondary' }}>Context checkpoint count</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'text.secondary' }}>true</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recycle context window when full</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>AIMem conversation compression</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip reasoning mode</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 110 }}>nGpuLayers</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>-1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GPU layers (-1=all)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Context window size</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>flashAttention</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Flash attention (faster)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cacheTypeK/V</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>f16</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>KV cache (f16/q8_0/q4_0)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>threads</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>CPU threads (0=auto)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>parallelSlots</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Concurrent requests</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>batchSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>2048</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Prompt batch size</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>ubatchSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>512</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Micro-batch size</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatPenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1.1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Repetition penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>repeatLastN</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>64</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Repetition penalty window</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>presencePenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Presence penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>frequencyPenalty</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Frequency penalty</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>ctxCheckpoints</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>2</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Context checkpoint count</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>AIMem conversation compression</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Skip reasoning mode</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
                                                 </Box>
@@ -10674,24 +10674,24 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                             {/* vLLM Settings */}
                                             <Grid item xs={12} lg={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.05)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.1)' }}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                        <Chip label="vLLM" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'rgba(255, 255, 255, 0.15)', color: '#ffffff', fontWeight: 600 }} />
-                                                        <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Pascal 6.0+</Typography>
+                                                        <Chip label="vLLM" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Pascal 6.0+</Typography>
                                                     </Box>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
                                                         <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130 }}>maxModelLen</TableCell><TableCell sx={{ color: 'text.secondary' }}>4096</TableCell><TableCell sx={{ color: 'text.secondary' }}>Max context length</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cpuOffloadGb</TableCell><TableCell sx={{ color: 'text.secondary' }}>0</TableCell><TableCell sx={{ color: 'text.secondary' }}>CPU offload (GB)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>gpuMemoryUtil</TableCell><TableCell sx={{ color: 'text.secondary' }}>0.9</TableCell><TableCell sx={{ color: 'text.secondary' }}>GPU memory fraction</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>tensorParallelSize</TableCell><TableCell sx={{ color: 'text.secondary' }}>1</TableCell><TableCell sx={{ color: 'text.secondary' }}>Multi-GPU parallelism</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxNumSeqs</TableCell><TableCell sx={{ color: 'text.secondary' }}>256</TableCell><TableCell sx={{ color: 'text.secondary' }}>Max concurrent seqs</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'text.secondary' }}>auto</TableCell><TableCell sx={{ color: 'text.secondary' }}>Cache dtype (auto/fp8)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'text.secondary' }}>true</TableCell><TableCell sx={{ color: 'text.secondary' }}>Trust HF code</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>enforceEager</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Disable CUDA graphs</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'text.secondary' }}>true</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recycle context window when full</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>AIMem conversation compression</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'text.secondary' }}>false</TableCell><TableCell sx={{ color: 'text.secondary' }}>Skip reasoning mode</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130 }}>maxModelLen</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Max context length</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cpuOffloadGb</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>CPU offload (GB)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>gpuMemoryUtil</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.9</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GPU memory fraction</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>tensorParallelSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Multi-GPU parallelism</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxNumSeqs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>256</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Max concurrent seqs</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Cache dtype (auto/fp8)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Trust HF code</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>enforceEager</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Disable CUDA graphs</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>AIMem conversation compression</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Skip reasoning mode</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
                                                 </Box>
@@ -10715,7 +10715,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Permissions</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Permission scopes for API keys</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Permission scopes for API keys</Typography>
                                             </Box>
                                         </Box>
 
@@ -10726,28 +10726,28 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                 <Chip label="query" size="small" sx={{ mb: 1, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Chat, completions, web search, Playwright</Typography>
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Chat, completions, web search, Playwright</Typography>
                                             </Box>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                 <Chip label="models" size="small" sx={{ mb: 1, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>List, download, load/unload, configs</Typography>
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>List, download, load/unload, configs</Typography>
                                             </Box>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.08)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.15)' }}>
                                                 <Chip label="instances" size="small" sx={{ mb: 1, bgcolor: 'rgba(34,197,94,0.18)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.30)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>List, stop, slots, clear KV cache</Typography>
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>List, stop, slots, clear KV cache</Typography>
                                             </Box>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(59, 130, 246, 0.08)', borderRadius: 2, border: '1px solid rgba(59, 130, 246, 0.15)' }}>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                 <Chip label="agents" size="small" sx={{ mb: 1, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Agents, tools, tasks, file ops</Typography>
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Agents, tools, tasks, file ops</Typography>
                                             </Box>
                                             <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.15)' }}>
                                                 <Chip label="admin" size="small" sx={{ mb: 1, bgcolor: 'rgba(239,68,68,0.18)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.30)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>API keys, backend, system, apps</Typography>
+                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>API keys, backend, system, apps</Typography>
                                             </Box>
                                         </Box>
                                         <Box sx={{ mt: 2, p: 1, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <WarningIcon sx={{ fontSize: 14, color: 'warning.main' }} />
-                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>Auth endpoints use session auth only.</Typography>
+                                            <WarningIcon sx={{ fontSize: 14, color: 'var(--warning)' }} />
+                                            <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Auth endpoints use session auth only.</Typography>
                                         </Box>
 
 
@@ -10767,7 +10767,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Endpoints</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Complete endpoint reference by category</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Complete endpoint reference by category</Typography>
                                             </Box>
                                         </Box>
 
@@ -10788,25 +10788,25 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat</TableCell><TableCell sx={{ color: 'text.secondary', width: 50 }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Chat with streaming support</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/stream</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>SSE streaming chat</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/upload</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Upload files for chat (returns attachmentId for PDFs / xlsx)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/attachments/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch raw attachment bytes (PDF, etc.)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/attachments/:id/meta</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch attachment metadata (xlsx sheets[], etc.)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/complete</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Text completion</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create conversations</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage conversation</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/messages</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Append a message</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/streaming</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Background-stream status / cancel</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/memories</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Per-conversation memory entries</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/memories/:memId</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Edit / delete a single memory</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Chunked-content queue status</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Web search with content fetch</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Fetch URLs for chat context</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stealth browser fetch</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Page interaction</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/status</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Browser status</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/docs</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>DevDocs reference lookup</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat</TableCell><TableCell sx={{ color: 'var(--text-secondary)', width: 50 }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Chat with streaming support</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/stream</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>SSE streaming chat</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/upload</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Upload files for chat (returns attachmentId for PDFs / xlsx)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/attachments/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Fetch raw attachment bytes (PDF, etc.)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/attachments/:id/meta</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Fetch attachment metadata (xlsx sheets[], etc.)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/complete</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Text completion</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create conversations</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage conversation</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/messages</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Append a message</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/streaming</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Background-stream status / cancel</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-conversation memory entries</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/memories/:memId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Edit / delete a single memory</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Chunked-content queue status</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Web search with content fetch</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Fetch URLs for chat context</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/fetch</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stealth browser fetch</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/interact</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Page interaction</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/playwright/status</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Browser status</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/docs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DevDocs reference lookup</TableCell></TableRow>
 
                                                     {/* Models Permission */}
                                                     <TableRow>
@@ -10817,26 +10817,26 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List all models</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/pull</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Download from HuggingFace</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start model instance</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Load HuggingFace repo directly into vLLM</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Delete model</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List HuggingFace cache contents (vLLM downloads)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache/:dirName</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Delete a cached HF repo</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List all model configs</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get/update model config</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Search HF models (format filter: gguf/safetensors/awq/gptq/fp8/nvfp4/bnb/any)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/files/:repo</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List repo files</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/repo-size/:repo</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Total size of an HF repo (pre-download size check)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List active downloads</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Cancel download</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/resources</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Hardware info</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/optimal-settings</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Calculate optimal settings</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/tools-catalog</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List native tools the chat model can invoke</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/egress-proxy</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Egress-proxy status / sandbox info</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/sandbox/run-code</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Execute code in the sandboxed runner</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/tool-artifacts/:runId/:filename</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Download artifacts produced by a tool run</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List all models</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/pull</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download from HuggingFace</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start model instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Load HuggingFace repo directly into vLLM</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete model</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List HuggingFace cache contents (vLLM downloads)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache/:dirName</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete a cached HF repo</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List all model configs</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get/update model config</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Search HF models (format filter: gguf/safetensors/awq/gptq/fp8/nvfp4/bnb/any)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/files/:repo</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List repo files</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/repo-size/:repo</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Total size of an HF repo (pre-download size check)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List active downloads</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Cancel download</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/resources</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Hardware info</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/optimal-settings</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Calculate optimal settings</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/tools-catalog</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List native tools the chat model can invoke</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/egress-proxy</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Egress-proxy status / sandbox info</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/sandbox/run-code</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Execute code in the sandboxed runner</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/tool-artifacts/:runId/:filename</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download artifacts produced by a tool run</TableCell></TableRow>
 
                                                     {/* Instances Permission */}
                                                     <TableRow>
@@ -10847,43 +10847,43 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/vllm/instances</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List vLLM instances</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/vllm/instances/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop vLLM instance</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/vllm/instances/:name/slots</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get KV cache slots</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/vllm/instances/:name/slots/clear</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Clear KV cache</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/llamacpp/instances</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List llama.cpp instances</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/llamacpp/instances/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>DELETE</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop llama.cpp instance</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/system-prompts</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List system prompts</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>/api/system-prompts/:name</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage system prompt</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List vLLM instances</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop vLLM instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances/:name/slots</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get KV cache slots</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances/:name/slots/clear</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Clear KV cache</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/llamacpp/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List llama.cpp instances</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/llamacpp/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop llama.cpp instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/system-prompts</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List system prompts</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/system-prompts/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage system prompt</TableCell></TableRow>
 
                                                     {/* Agents Permission */}
                                                     <TableRow>
-                                                        <TableCell colSpan={3} sx={{ bgcolor: 'rgba(59, 130, 246, 0.1)', py: 0.75 }}>
+                                                        <TableCell colSpan={3} sx={{ bgcolor: 'var(--accent-muted)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                                                 <Chip label="agents" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
                                                                 <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Agent System</Typography>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create agents</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage agent</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/:id/regenerate-key</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Regenerate agent key</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-permissions</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage permissions</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/skills</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create skills</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/skills/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage skill</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/skills/:skillName/execute</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Execute skill</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/markdown-skills</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create markdown skills</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/markdown-skills/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage markdown skill</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/skills/available</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List skills available to an agent</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/skills/discover</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Discover skills</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/skills/recommend</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Recommend skills for a task</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/tasks</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create tasks</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/tasks/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Manage task</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/read</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Read file</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/write</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Write file</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/delete</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Delete file</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/list</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List directory</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/move</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Move/rename file</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create agents</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage agent</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/:id/regenerate-key</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Regenerate agent key</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent-permissions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage permissions</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/skills</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/skills/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage skill</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/skills/:skillName/execute</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Execute skill</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/markdown-skills</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create markdown skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/markdown-skills/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage markdown skill</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/skills/available</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List skills available to an agent</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/skills/discover</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Discover skills</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agents/skills/recommend</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recommend skills for a task</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/tasks</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create tasks</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/tasks/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage task</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/read</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Read file</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/write</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Write file</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/delete</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete file</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/list</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List directory</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/agent/file/move</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Move/rename file</TableCell></TableRow>
 
                                                     {/* Admin Permission */}
                                                     <TableRow>
@@ -10894,29 +10894,29 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/has-users</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Check if users exist</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/register</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Register user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/login</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Login</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/logout</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Logout</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/me</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get current user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/password</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Change password (session auth only)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/auth/reset-password</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Self-service password reset</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create users</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Update/delete user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:id/disable</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Disable user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:id/enable</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT</TableCell><TableCell sx={{ color: 'text.secondary' }}>Enable user</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/:username/reset-password</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Admin resets a user&apos;s password</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/users/invite</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Generate user invite link</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET/POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>List/create API keys</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id</TableCell><TableCell sx={{ color: 'text.secondary' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Update/delete key</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/revoke</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Revoke API key</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/stats</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Get key stats</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/api-keys/:id/clear-usage</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Reset usage counters</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>List apps</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/start</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start app</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/stop</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop app</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/apps/:name/restart</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Restart app</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>/api/system/reset</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>Reset system</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/has-users</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Check if users exist</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/register</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Register user</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/login</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Login</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/logout</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Logout</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/me</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get current user</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Change password (session auth only)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/reset-password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Self-service password reset</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create users</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Update/delete user</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id/disable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Disable user</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:id/enable</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Enable user</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/:username/reset-password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Admin resets a user&apos;s password</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users/invite</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Generate user invite link</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create API keys</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Update/delete key</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys/:id/revoke</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Revoke API key</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys/:id/stats</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get key stats</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/api-keys/:id/clear-usage</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Reset usage counters</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List apps</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/start</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start app</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/stop</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop app</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/apps/:name/restart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Restart app</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/system/reset</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Reset system</TableCell></TableRow>
 
                                                     {/* OpenAI Compatible */}
                                                     <TableRow>
@@ -10927,22 +10927,22 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible chat (proxied to first running instance)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/completions</TableCell><TableCell sx={{ color: 'text.secondary' }}>POST</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible text completion</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/models</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>OpenAI-compatible model list (used by Pi extension)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>/v1/*</TableCell><TableCell sx={{ color: 'text.secondary' }}>ALL</TableCell><TableCell sx={{ color: 'text.secondary' }}>Catch-all proxy: any other vLLM/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible chat (proxied to first running instance)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible text completion</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible model list (used by Pi extension)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/*</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>ALL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Catch-all proxy: any other vLLM/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
 
                                                     {/* Pi Terminal Agent */}
                                                     <TableRow>
                                                         <TableCell colSpan={3} sx={{ bgcolor: 'rgba(168, 85, 247, 0.1)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <Chip label="Pi" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--border-focus)', color: '#fafafa' }} />
+                                                                <Chip label="Pi" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--border-focus)', color: 'var(--text-primary)' }} />
                                                                 <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Pi Terminal Agent (bearer-only auth)</Typography>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/pi/install</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Bash auto-installer (curl | bash). Self-corrects MITM TLS, missing/old Node, missing Pi.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'text.primary' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'text.secondary' }}>GET</TableCell><TableCell sx={{ color: 'text.secondary' }}>Serves modelserver.ts, package.json, README.md, install.sh</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bash auto-installer (curl | bash). Self-corrects MITM TLS, missing/old Node, missing Pi.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver.ts, package.json, README.md, install.sh</TableCell></TableRow>
 
                                                 </TableBody>
                                             </Table>
@@ -10966,7 +10966,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Utility Scripts</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Management scripts and custom patches</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Management scripts and custom patches</Typography>
                                             </Box>
                                         </Box>
 
@@ -10978,7 +10978,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>
                                             Management Scripts
                                         </Typography>
-                                        <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', mb: 1.5 }}>
+                                        <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1.5 }}>
                                             Shell scripts for service lifecycle management. Run from project root directory.
                                         </Typography>
                                         <TableContainer component={Paper} variant="outlined" sx={{ mb: 2.5 }}>
@@ -10990,12 +10990,12 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     </TableRow>
                                                 </TableHead>
                                                 <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'success.main' }}>./start.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Start all services (webapp and model backends).</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./stop.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Stop all services and cleanup running model instances.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./build.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Build Docker images with parallel builds, auto-resume, and state tracking.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'warning.main' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'text.secondary' }}>Rebuild and restart services without data loss. Options: webapp, all</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./update.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Quick rebuild of webapp only (for code updates).</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'error.main' }}>./reset.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Full system reset. Removes all data except downloaded models. Options: --force (skip confirmation), --rebuild (rebuild Docker images), --full (also delete models)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>./start.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start all services (webapp and model backends).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>./stop.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop all services and cleanup running model instances.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./build.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Build Docker images with parallel builds, auto-resume, and state tracking.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Rebuild and restart services without data loss. Options: webapp, all</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./update.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Quick rebuild of webapp only (for code updates).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>./reset.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Full system reset. Removes all data except downloaded models. Options: --force (skip confirmation), --rebuild (rebuild Docker images), --full (also delete models)</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -11004,7 +11004,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>
                                             Internal Scripts
                                         </Typography>
-                                        <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', mb: 1.5 }}>
+                                        <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1.5 }}>
                                             Scripts in the <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>scripts/</code> folder for specific tasks.
                                         </Typography>
                                         <TableContainer component={Paper} variant="outlined" sx={{ mb: 2.5 }}>
@@ -11016,10 +11016,10 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     </TableRow>
                                                 </TableHead>
                                                 <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/manage-users.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Interactive user account management: list users, create admin, reset passwords, delete accounts.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/download_model.py</TableCell><TableCell sx={{ color: 'text.secondary' }}>Python script for downloading GGUF models from HuggingFace (used internally by webapp).</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/download_model.sh</TableCell><TableCell sx={{ color: 'text.secondary' }}>Shell wrapper for downloading models (delegates to the Python script).</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/migrate-to-multiuser.js</TableCell><TableCell sx={{ color: 'text.secondary' }}>One-time migration: convert single-user data layout to per-user.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/manage-users.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Interactive user account management: list users, create admin, reset passwords, delete accounts.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/download_model.py</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Python script for downloading GGUF models from HuggingFace (used internally by webapp).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/download_model.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Shell wrapper for downloading models (delegates to the Python script).</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>scripts/migrate-to-multiuser.js</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One-time migration: convert single-user data layout to per-user.</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
@@ -11027,7 +11027,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         {/* Build Options */}
                                         <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 1.5, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, mb: 0.5, color: 'var(--accent-primary)' }}>Build Script Options</Typography>
-                                            <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', fontFamily: 'monospace' }}>
+                                            <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
                                                 ./build.sh --no-cache    # Force rebuild without Docker cache<br/>
                                                 ./build.sh --no-parallel # Sequential builds (for low RAM)<br/>
                                                 ./build.sh --no-resume   # Clear build state, start fresh<br/>
@@ -11052,7 +11052,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>System Reset</Typography>
-                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Delete models and clean up resources</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Delete models and clean up resources</Typography>
                                             </Box>
                                         </Box>
 
@@ -11061,7 +11061,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionBodySx}>
                                         <Box sx={{ p: 2, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.2)', mb: 2 }}>
-                                            <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                                                 Stops all instances and cleans up Docker resources. By default downloaded models, API keys, and configuration are preserved. The shell equivalent <code style={{ fontSize: '0.7rem' }}>./reset.sh --full</code> additionally wipes downloaded models for a true factory reset.
                                             </Typography>
                                         </Box>
