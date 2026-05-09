@@ -111,6 +111,7 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
+import UsersPanel from './components/UsersPanel';
 import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
@@ -9163,6 +9164,25 @@ console.log(await res.json());`
 
                         {/* Users Tab */}
                         {visibleTabOrder[activeTab] === 2 && (
+                            <UsersPanel
+                                users={users}
+                                user={user}
+                                usersLoading={usersLoading}
+                                isAdmin={user?.role === 'admin'}
+                                isMobile={isMobile}
+                                onInvite={() => {
+                                    setUserDialogMode('invite');
+                                    setNewUserData({ username: '', email: '', password: '', role: 'user' });
+                                    setUserDialogOpen(true);
+                                }}
+                                onEdit={(u) => handleOpenUserDialog('edit', u)}
+                                onResetPassword={(u) => handleOpenUserDialog('resetPassword', u)}
+                                onDelete={(id) => handleDeleteUser(id)}
+                                onToggleStatus={(id, nextDisabled) => handleToggleUserStatus(id, nextDisabled)}
+                            />
+                        )}
+                        {/* Legacy inline Users JSX retained one cycle for A/B */}
+                        {false && visibleTabOrder[activeTab] === 2 && (
                             <Grid container spacing={3}>
                                 <Grid item xs={12}>
                                     <Card>
