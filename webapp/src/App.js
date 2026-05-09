@@ -110,6 +110,7 @@ import Menu from '@mui/material/Menu';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
+import LogsPanel from './components/LogsPanel';
 import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
@@ -10918,8 +10919,30 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                             </Box>
                         )}
 
-                        {/* Logs Tab */}
-                        {visibleTabOrder[activeTab] === 5 && (() => {
+                        {/* Logs Tab — Phase 2 Tailwind rewrite. Component lives at
+                            src/components/LogsPanel.jsx; data + refs flow through
+                            from App's existing state. */}
+                        {visibleTabOrder[activeTab] === 5 && (
+                            <LogsPanel
+                                logs={logs}
+                                setLogs={setLogs}
+                                logFilter={logFilter}
+                                setLogFilter={setLogFilter}
+                                logSearch={logSearch}
+                                setLogSearch={setLogSearch}
+                                logsContainerRef={logsContainerRef}
+                                logsEndRef={logsEndRef}
+                                handleLogsScroll={handleLogsScroll}
+                                isMobile={isMobile}
+                                systemStats={systemStats}
+                                systemStatsHistory={systemStatsHistory}
+                            />
+                        )}
+
+                        {/* Legacy inline Logs JSX retained briefly during Phase 2
+                            verification — guarded `false` so React skips it.
+                            Drop on Phase 2 follow-up after a few sessions. */}
+                        {false && visibleTabOrder[activeTab] === 5 && (() => {
                             const logCounts = { all: logs.length, error: 0, warning: 0, success: 0, info: 0 };
                             logs.forEach(l => { const lv = (typeof l === 'string' ? 'info' : l.level) || 'info'; if (logCounts[lv] !== undefined) logCounts[lv]++; });
                             const filteredLogs = logs.filter(log => {
