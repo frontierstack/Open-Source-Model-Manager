@@ -290,32 +290,52 @@ const DocIcon = ({ icon, color = 'primary' }) => {
     );
 };
 
-// Modern styled accordion for docs
+// Modern styled accordion for docs — surface card aesthetic matching
+// the Tailwind page-header tile + LogsPanel/UsersPanel/AppsPanel cards.
+// Theme-aware via CSS vars; expanded state gets an accent ring instead
+// of the default MUI box-shadow.
 const docAccordionSx = {
-    bgcolor: 'transparent',
+    bgcolor: 'var(--surface-primary)',
+    color: 'var(--text-primary)',
     boxShadow: 'none',
-    border: '1px solid rgba(255,255,255,0.06)',
+    border: '1px solid var(--border-primary)',
     borderRadius: '12px !important',
-    mb: 1.5,
+    mb: 1.25,
+    overflow: 'hidden',
+    transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
     '&:before': { display: 'none' },
+    '&:hover': {
+        borderColor: 'var(--border-hover)',
+    },
     '&.Mui-expanded': {
-        margin: '0 0 12px 0 !important',
-        border: '1px solid var(--accent-muted)',
+        margin: '0 0 10px 0 !important',
+        borderColor: 'var(--border-focus)',
+        boxShadow: '0 0 0 1px var(--accent-muted) inset',
     },
     '& .MuiAccordionSummary-root': {
-        minHeight: 56,
-        borderRadius: '12px',
-        '&:hover': { bgcolor: 'rgba(255,255,255,0.02)' },
-        '&.Mui-expanded': { minHeight: 56 },
+        minHeight: 52,
+        padding: '0 16px',
+        '&:hover': { bgcolor: 'var(--bg-hover)' },
+        '&.Mui-expanded': { minHeight: 52 },
     },
     '& .MuiAccordionSummary-content': {
-        margin: '12px 0',
-        '&.Mui-expanded': { margin: '12px 0' },
+        margin: '10px 0',
+        gap: '12px',
+        alignItems: 'center',
+        '&.Mui-expanded': { margin: '10px 0' },
+    },
+    '& .MuiAccordionSummary-expandIconWrapper': {
+        color: 'var(--text-tertiary)',
+        transition: 'transform 0.2s ease, color 0.15s ease',
+        '&.Mui-expanded': {
+            color: 'var(--accent-primary)',
+        },
     },
     '& .MuiAccordionDetails-root': {
         pt: 0,
-        pb: 2,
-        px: 2,
+        pb: 2.5,
+        px: 2.5,
+        borderTop: '1px solid var(--border-primary)',
     },
 };
 
