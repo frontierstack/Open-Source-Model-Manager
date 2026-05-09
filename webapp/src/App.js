@@ -7734,7 +7734,7 @@ console.log(await res.json());`
                                     <MenuIcon />
                                 </IconButton>
                                 <Typography variant="h1" sx={{
-                                    background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
+                                    background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%)',
                                     WebkitBackgroundClip: 'text',
                                     WebkitTextFillColor: 'transparent',
                                     fontSize: { xs: '1.05rem', md: 'inherit' },
@@ -7854,7 +7854,7 @@ console.log(await res.json());`
                     >
                         <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
                             <Typography variant="h6" sx={{
-                                background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
+                                background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 fontWeight: 700,
@@ -8164,7 +8164,7 @@ console.log(await res.json());`
                                                                                 boxShadow: '0 4px 20px rgba(99,102,241,0.15)',
                                                                                 borderColor: 'transparent',
                                                                                 '&::before': {
-                                                                                    background: 'linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #6366f1 100%)',
+                                                                                    background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 50%, var(--accent-primary) 100%)',
                                                                                 },
                                                                             },
                                                                         }}

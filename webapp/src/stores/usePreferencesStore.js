@@ -49,6 +49,49 @@ const VALID_ACCENTS = ['violet', 'amber', 'emerald', 'slate', 'rose'];
 const VALID_BUBBLES = ['bubbles', 'cards', 'rows'];
 const VALID_DENSITIES = ['comfortable', 'compact'];
 
+// Override the theme's --accent-* variables when an accent is picked.
+// Chat's body[data-accent="..."] rules only set --accent / --accent-soft /
+// --accent-ink — the rest of the UI (gradient title, primary buttons,
+// active sidebar item, focus ring) reads --accent-primary / -secondary /
+// -hover / -muted from the theme block, which never changes per-accent.
+// Without this map, the accent picker was a visual no-op.
+//
+// Values are tuned to match chat's oklch palette; secondary is shifted in
+// hue ~20° for the gradient endpoint, hover is 1 step lighter, muted is
+// the primary at 18% opacity.
+const ACCENT_OVERRIDES = {
+    violet: {
+        primary:   'oklch(0.55 0.13 290)',
+        secondary: 'oklch(0.62 0.13 270)',
+        hover:     'oklch(0.65 0.13 290)',
+        muted:     'oklch(0.55 0.13 290 / 0.18)',
+    },
+    amber: {
+        primary:   'oklch(0.70 0.13 70)',
+        secondary: 'oklch(0.62 0.14 45)',
+        hover:     'oklch(0.78 0.13 70)',
+        muted:     'oklch(0.70 0.13 70 / 0.18)',
+    },
+    emerald: {
+        primary:   'oklch(0.60 0.13 160)',
+        secondary: 'oklch(0.65 0.13 180)',
+        hover:     'oklch(0.70 0.13 160)',
+        muted:     'oklch(0.60 0.13 160 / 0.18)',
+    },
+    slate: {
+        primary:   'oklch(0.50 0.04 260)',
+        secondary: 'oklch(0.62 0.04 240)',
+        hover:     'oklch(0.60 0.04 260)',
+        muted:     'oklch(0.50 0.04 260 / 0.20)',
+    },
+    rose: {
+        primary:   'oklch(0.60 0.17 15)',
+        secondary: 'oklch(0.62 0.17 350)',
+        hover:     'oklch(0.70 0.17 15)',
+        muted:     'oklch(0.60 0.17 15 / 0.18)',
+    },
+};
+
 const DEFAULTS = {
     theme: 'dark',
     accent: 'violet',
@@ -81,6 +124,23 @@ function applyPreferencesToDom(prefs) {
         if (prefs.accent && VALID_ACCENTS.includes(prefs.accent)) body.dataset.accent = prefs.accent;
         if (prefs.bubble && VALID_BUBBLES.includes(prefs.bubble)) body.dataset.bubble = prefs.bubble;
         if (prefs.density && VALID_DENSITIES.includes(prefs.density)) body.dataset.density = prefs.density;
+
+        // Override the theme's accent variables so the gradient title,
+        // primary buttons, active nav state etc. shift hue with the
+        // accent picker. Inline body styles win against the theme
+        // block's :root selector via specificity.
+        const a = prefs.accent && ACCENT_OVERRIDES[prefs.accent];
+        if (a) {
+            body.style.setProperty('--accent-primary',   a.primary);
+            body.style.setProperty('--accent-secondary', a.secondary);
+            body.style.setProperty('--accent-hover',     a.hover);
+            body.style.setProperty('--accent-muted',     a.muted);
+        } else {
+            body.style.removeProperty('--accent-primary');
+            body.style.removeProperty('--accent-secondary');
+            body.style.removeProperty('--accent-hover');
+            body.style.removeProperty('--accent-muted');
+        }
     }
 }
 
