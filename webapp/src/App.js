@@ -622,6 +622,9 @@ const App = () => {
     // Skills sub-tab UI state (search/filter)
     const [skillsSearchQuery, setSkillsSearchQuery] = useState('');
     const [skillsEnabledFilter, setSkillsEnabledFilter] = useState('all'); // all | enabled | disabled
+    // Skills Library: same collapsed-by-default behavior as Tools — both
+    // sub-tabs render long catalogs that smother the page on first visit.
+    const [skillsLibraryExpanded, setSkillsLibraryExpanded] = useState(false);
 
     // System reset state
     const [resetDialogOpen, setResetDialogOpen] = useState(false);
@@ -11745,27 +11748,58 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                         });
                                                         return (
                                                         <Box>
-                                                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
-                                                                <Box>
-                                                                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                                                                        Skills Library
-                                                                    </Typography>
-                                                                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
-                                                                        Showing {filteredMdSkills.length} of {mdSkills.length}
-                                                                    </Typography>
-                                                                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                                                                        Markdown guides the chat model loads on demand via <code>load_skill</code>. Not executable — tools do the work.
-                                                                    </Typography>
+                                                            <Box
+                                                                onClick={() => setSkillsLibraryExpanded(v => !v)}
+                                                                role="button"
+                                                                tabIndex={0}
+                                                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSkillsLibraryExpanded(v => !v); } }}
+                                                                sx={{
+                                                                    display: 'flex',
+                                                                    justifyContent: 'space-between',
+                                                                    mb: skillsLibraryExpanded ? 2 : 0,
+                                                                    alignItems: 'center',
+                                                                    gap: 2,
+                                                                    flexWrap: 'wrap',
+                                                                    cursor: 'pointer',
+                                                                    p: 1.25,
+                                                                    borderRadius: 1.5,
+                                                                    border: '1px solid var(--border-primary)',
+                                                                    bgcolor: 'var(--bg-tertiary)',
+                                                                    transition: 'background-color 0.15s, border-color 0.15s',
+                                                                    '&:hover': { bgcolor: 'var(--bg-hover)', borderColor: 'var(--border-hover)' },
+                                                                }}
+                                                            >
+                                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flex: 1, minWidth: 0 }}>
+                                                                    <ExpandMoreIcon
+                                                                        sx={{
+                                                                            fontSize: 20,
+                                                                            color: 'var(--text-tertiary)',
+                                                                            transform: skillsLibraryExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                                                                            transition: 'transform 0.18s ease',
+                                                                        }}
+                                                                    />
+                                                                    <Box sx={{ minWidth: 0 }}>
+                                                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                                                                            Skills Library
+                                                                        </Typography>
+                                                                        <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>
+                                                                            {mdSkills.length} skill{mdSkills.length === 1 ? '' : 's'}
+                                                                            {skillsLibraryExpanded ? ` · showing ${filteredMdSkills.length}` : ''}
+                                                                            {' · '}markdown guides the chat model loads on demand
+                                                                        </Typography>
+                                                                    </Box>
                                                                 </Box>
                                                                 <Button
                                                                     variant="contained"
                                                                     size="small"
-                                                                    onClick={() => openMdSkillEditor(null)}
+                                                                    onClick={(e) => { e.stopPropagation(); openMdSkillEditor(null); }}
                                                                 >
                                                                     New Skill
                                                                 </Button>
                                                             </Box>
 
+                                                            <Collapse in={skillsLibraryExpanded} timeout="auto" unmountOnExit>
+                                                            <Box sx={{ pt: 1 }}>
                                                             {mdSkills.length === 0 ? (
                                                                 <Alert severity="info">
                                                                     No skills yet. Click "New Skill" to write your first one — describe a procedure the model should follow when a task matches the triggers.
@@ -11879,6 +11913,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                                     )}
                                                                 </>
                                                             )}
+                                                            </Box>
+                                                            </Collapse>
                                                         </Box>
                                                         );
                                                     })()}

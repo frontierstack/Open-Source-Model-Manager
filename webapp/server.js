@@ -17154,10 +17154,24 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         if (isStreaming) {
             // Handle streaming response
             console.log('[Proxy] Streaming request detected');
+
+            // Ask the backend to emit a final usage chunk so we can attribute
+            // tokens to the API key. vLLM + llama.cpp's OpenAI-compatible
+            // modes both honor `stream_options.include_usage`; backends that
+            // don't recognize it ignore the field. Without this, streaming
+            // calls record `tokens: 0` and the per-key usage stays at 0/max.
+            const upstreamBody = (req.body && typeof req.body === 'object') ? { ...req.body } : req.body;
+            if (upstreamBody && typeof upstreamBody === 'object') {
+                upstreamBody.stream_options = {
+                    ...(upstreamBody.stream_options || {}),
+                    include_usage: true,
+                };
+            }
+
             const response = await axios({
                 method: req.method,
                 url: targetUrl,
-                data: req.body,
+                data: upstreamBody,
                 headers: {
                     'Content-Type': req.headers['content-type'] || 'application/json',
                 },
@@ -17188,8 +17202,31 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             // Set status code
             res.status(response.status);
 
-            // Pipe the streaming response
-            response.data.pipe(res);
+            // Manually forward each chunk and tap the SSE for the final
+            // `usage.total_tokens` value. We track the last seen usage and
+            // commit it once on stream end so multiple incremental usage
+            // chunks (some backends emit them) don't double-count the key.
+            let lineBuffer = '';
+            let lastSeenTotalTokens = null;
+            response.data.on('data', (chunk) => {
+                try { res.write(chunk); } catch (_) { /* client disconnected */ }
+                try {
+                    lineBuffer += chunk.toString('utf8');
+                    let nlIdx;
+                    while ((nlIdx = lineBuffer.indexOf('\n')) >= 0) {
+                        const line = lineBuffer.slice(0, nlIdx).trimEnd();
+                        lineBuffer = lineBuffer.slice(nlIdx + 1);
+                        if (!line.startsWith('data:')) continue;
+                        const payload = line.slice(5).trim();
+                        if (!payload || payload === '[DONE]') continue;
+                        try {
+                            const obj = JSON.parse(payload);
+                            const t = obj?.usage?.total_tokens;
+                            if (typeof t === 'number') lastSeenTotalTokens = t;
+                        } catch (_) { /* skip malformed chunk */ }
+                    }
+                } catch (_) { /* parsing must never break the pipe */ }
+            });
 
             // Handle stream errors
             response.data.on('error', (error) => {
@@ -17201,8 +17238,20 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 }
             });
 
-            // Handle stream end
+            // Handle stream end — commit token usage now that we've seen the
+            // final chunk. This is the missing leg that left /v1/* streaming
+            // requests recording 0 tokens against the API key.
             response.data.on('end', () => {
+                if (lastSeenTotalTokens != null && req.apiKeyData) {
+                    const stats = apiKeyUsageStats.get(req.apiKeyData.id);
+                    if (stats && stats.requests.length > 0) {
+                        const lastReq = stats.requests[stats.requests.length - 1];
+                        lastReq.tokens = lastSeenTotalTokens;
+                        stats.tokenCount += lastSeenTotalTokens;
+                        apiKeyUsageStats.set(req.apiKeyData.id, stats);
+                        console.log(`[Proxy] Tracked ${lastSeenTotalTokens} tokens (stream) for ${req.apiKeyData.name}`);
+                    }
+                }
                 if (!res.writableEnded) {
                     res.end();
                 }
