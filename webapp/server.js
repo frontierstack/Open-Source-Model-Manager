@@ -2379,38 +2379,60 @@ function safeToolName(name) {
     return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
 }
 
-// Returns a Set<string> of safe-named skills the request is allowed to call,
-// or null when no whitelist applies (= unrestricted, which is the default).
-// Resolution order: explicit agentId in ctx → API key's allowedSkills → user's allowedSkills.
-// An empty array in any of those scopes means "block all skills" (intentional lockdown).
-async function resolveSkillWhitelist(ctx) {
-    if (!ctx) return null;
-    // 1. Explicit agent
+// Returns the access policy for a request: { allow, deny } where
+//   allow: Set<string> | null  - if non-null, only these names are permitted
+//   deny:  Set<string>         - any name in here is blocked (always merged in)
+// Resolution order:
+//   1. agent (whitelist) — if set, scopes the call to the agent's skill list.
+//   2. API key — disabledSkills (denylist) AND legacy allowedSkills (whitelist).
+//      The denylist is the user-facing semantic in the UI; allowedSkills is
+//      retained for backwards compatibility with older keys/scripted setups.
+//   3. user — legacy allowedSkills (whitelist).
+async function resolveSkillPolicy(ctx) {
+    const empty = { allow: null, deny: new Set() };
+    if (!ctx) return empty;
+    let allow = null;
+    const deny = new Set();
+    // 1. Explicit agent — strongest scope
     if (ctx.agentId) {
         try {
             const agents = await loadAgents();
             const ag = agents.find(a => a.id === ctx.agentId);
             if (ag && Array.isArray(ag.skills)) {
-                return new Set(ag.skills.map(n => safeToolName(n)));
+                allow = new Set(ag.skills.map(n => safeToolName(n)));
             }
         } catch (_) { /* fall through */ }
     }
-    // 2. API key scope
-    const apiAllowed = ctx?.apiKeyData?.allowedSkills;
-    if (Array.isArray(apiAllowed)) {
-        return new Set(apiAllowed.map(n => safeToolName(n)));
+    // 2. API key — denylist always merged; legacy whitelist only if no agent scope.
+    const apiDisabled = ctx?.apiKeyData?.disabledSkills;
+    if (Array.isArray(apiDisabled)) {
+        for (const n of apiDisabled) deny.add(safeToolName(n));
     }
-    // 3. User scope
-    if (ctx.userId) {
+    if (!allow) {
+        const apiAllowed = ctx?.apiKeyData?.allowedSkills;
+        if (Array.isArray(apiAllowed) && apiAllowed.length > 0) {
+            allow = new Set(apiAllowed.map(n => safeToolName(n)));
+        }
+    }
+    // 3. User scope (legacy whitelist)
+    if (!allow && ctx.userId) {
         try {
             const users = await getAllUsers();
             const u = users.find(x => x.id === ctx.userId);
-            if (u && Array.isArray(u.allowedSkills)) {
-                return new Set(u.allowedSkills.map(n => safeToolName(n)));
+            if (u && Array.isArray(u.allowedSkills) && u.allowedSkills.length > 0) {
+                allow = new Set(u.allowedSkills.map(n => safeToolName(n)));
             }
         } catch (_) { /* fall through */ }
     }
-    return null;
+    return { allow, deny };
+}
+
+function isSkillBlocked(policy, skillName) {
+    if (!policy) return false;
+    const safe = safeToolName(skillName);
+    if (policy.deny && policy.deny.has(safe)) return true;
+    if (policy.allow && !policy.allow.has(safe)) return true;
+    return false;
 }
 
 // Check if any users exist (for first admin setup)
@@ -6470,7 +6492,7 @@ app.get('/api/api-keys', requireAdmin, async (req, res) => {
 
 // Create a new API key - Admin only
 app.post('/api/api-keys', requireAdmin, async (req, res) => {
-    const { name, permissions, rateLimitRequests, rateLimitTokens, bearerOnly, allowedSkills } = req.body;
+    const { name, permissions, rateLimitRequests, rateLimitTokens, bearerOnly, allowedSkills, disabledSkills } = req.body;
 
     if (!name) {
         return res.status(400).json({ error: 'Name is required' });
@@ -6479,6 +6501,11 @@ app.post('/api/api-keys', requireAdmin, async (req, res) => {
     if (allowedSkills !== undefined && allowedSkills !== null) {
         if (!Array.isArray(allowedSkills) || !allowedSkills.every(s => typeof s === 'string')) {
             return res.status(400).json({ error: 'allowedSkills must be an array of strings' });
+        }
+    }
+    if (disabledSkills !== undefined && disabledSkills !== null) {
+        if (!Array.isArray(disabledSkills) || !disabledSkills.every(s => typeof s === 'string')) {
+            return res.status(400).json({ error: 'disabledSkills must be an array of strings' });
         }
     }
 
@@ -6493,7 +6520,9 @@ app.post('/api/api-keys', requireAdmin, async (req, res) => {
             permissions: permissions || ['query', 'models'],
             rateLimitRequests: (rateLimitRequests !== undefined && rateLimitRequests !== null && rateLimitRequests > 0) ? rateLimitRequests : 60,
             rateLimitTokens: (rateLimitTokens !== undefined && rateLimitTokens !== null && rateLimitTokens > 0) ? rateLimitTokens : 100000,
+            // Legacy whitelist (still honored). New UI uses disabledSkills (denylist).
             allowedSkills: Array.isArray(allowedSkills) ? allowedSkills : null,
+            disabledSkills: Array.isArray(disabledSkills) ? disabledSkills : [],
             userId: req.userId || null, // Associate key with creating user
             active: true,
             createdAt: new Date().toISOString()
@@ -6511,11 +6540,16 @@ app.post('/api/api-keys', requireAdmin, async (req, res) => {
 // Update an API key - Admin only
 app.put('/api/api-keys/:id', requireAdmin, async (req, res) => {
     const { id } = req.params;
-    const { name, permissions, rateLimitRequests, rateLimitTokens, active, allowedSkills } = req.body;
+    const { name, permissions, rateLimitRequests, rateLimitTokens, active, allowedSkills, disabledSkills } = req.body;
 
     if (allowedSkills !== undefined && allowedSkills !== null) {
         if (!Array.isArray(allowedSkills) || !allowedSkills.every(s => typeof s === 'string')) {
             return res.status(400).json({ error: 'allowedSkills must be an array of strings' });
+        }
+    }
+    if (disabledSkills !== undefined && disabledSkills !== null) {
+        if (!Array.isArray(disabledSkills) || !disabledSkills.every(s => typeof s === 'string')) {
+            return res.status(400).json({ error: 'disabledSkills must be an array of strings' });
         }
     }
 
@@ -6533,6 +6567,9 @@ app.put('/api/api-keys/:id', requireAdmin, async (req, res) => {
         if (active !== undefined) keys[keyIndex].active = active;
         if (allowedSkills !== undefined) {
             keys[keyIndex].allowedSkills = Array.isArray(allowedSkills) ? allowedSkills : null;
+        }
+        if (disabledSkills !== undefined) {
+            keys[keyIndex].disabledSkills = Array.isArray(disabledSkills) ? disabledSkills : [];
         }
 
         await saveApiKeys(keys);
@@ -7308,16 +7345,20 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
             return res.status(404).json({ error: 'Skill not found' });
         }
 
-        // Whitelist enforcement (per-agent → per-API-key → per-user).
-        // Returns null when no whitelist applies; admin keys still get
-        // checked because admin status is orthogonal to skill scoping.
-        const whitelist = await resolveSkillWhitelist({
+        // Skill access policy: agent-scoped whitelist + API-key denylist
+        // (disabledSkills) + legacy allowedSkills whitelist on key/user.
+        const policy = await resolveSkillPolicy({
             userId: req.userId,
             apiKeyData: req.apiKeyData,
             agentId
         });
-        if (whitelist && !whitelist.has(safeToolName(skill.name))) {
-            return res.status(403).json({ error: 'Skill is not in the allowed-skills list for this scope.' });
+        if (isSkillBlocked(policy, skill.name)) {
+            const inDeny = policy.deny && policy.deny.has(safeToolName(skill.name));
+            return res.status(403).json({
+                error: inDeny
+                    ? `Skill "${skill.name}" is disabled for this API key.`
+                    : 'Skill is not in the allowed-skills list for this scope.'
+            });
         }
 
         if (!skill.enabled) {
@@ -18283,14 +18324,14 @@ app.use((req, res) => {
         };
     }
 
-    // `resolveSkillWhitelist` is also module-scope — see the helper near the
-    // auth destructure at the top of this file.
+    // `resolveSkillPolicy` and `isSkillBlocked` are module-scope — see the
+    // helper near the auth destructure at the top of this file.
 
     tools.setDynamicToolProvider(async (ctx) => {
         try {
             const all = await loadSkills();
             const scoped = filterByUserId(all, ctx?.userId);
-            const whitelist = await resolveSkillWhitelist(ctx);
+            const policy = await resolveSkillPolicy(ctx);
             const out = [];
             // Tool names must be unique — load_skill / web_search /
             // fetch_url are already in the static registry. Dedupe.
@@ -18298,7 +18339,7 @@ app.use((req, res) => {
             for (const s of scoped) {
                 if (!s || s.enabled === false || !s.name) continue;
                 const name = safeToolName(s.name);
-                if (whitelist && !whitelist.has(name)) continue;
+                if (isSkillBlocked(policy, s.name)) continue;
                 if (!name || taken.has(name)) continue;
                 taken.add(name);
                 // Description is the primary selection signal — most skills
@@ -18363,9 +18404,15 @@ app.use((req, res) => {
         if (!skill) {
             return { success: false, error: `Unknown skill: ${toolName}` };
         }
-        const whitelist = await resolveSkillWhitelist(ctx);
-        if (whitelist && !whitelist.has(safeToolName(skill.name))) {
-            return { success: false, error: `Skill "${toolName}" is not in the allowed-skills list for this scope.` };
+        const policy = await resolveSkillPolicy(ctx);
+        if (isSkillBlocked(policy, skill.name)) {
+            const inDeny = policy.deny && policy.deny.has(safeToolName(skill.name));
+            return {
+                success: false,
+                error: inDeny
+                    ? `Skill "${toolName}" is disabled for this API key.`
+                    : `Skill "${toolName}" is not in the allowed-skills list for this scope.`
+            };
         }
         if (skill.enabled === false) {
             return { success: false, error: `Skill "${toolName}" is disabled` };

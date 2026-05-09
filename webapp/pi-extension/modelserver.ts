@@ -29,7 +29,37 @@ interface Skill {
     systemPrompt?: string;
     parameters?: SkillParam;
     enabled?: boolean;
+    code?: string;
 }
+
+// A few catalog entries are stubs (no def execute) because the real
+// implementation is a chat-side native registered in webapp/services/
+// chatTools.js, reachable only via /api/chat/stream. From Pi we route
+// around the stub and hit the relevant first-party endpoint directly.
+type NativeRoute = {
+    method: "GET" | "POST";
+    path: string | ((args: any) => string);
+    mapBody?: (args: any) => any;
+};
+const NATIVE_TOOL_ROUTES: Record<string, NativeRoute> = {
+    web_search: {
+        method: "GET",
+        path: (a: any) => {
+            const q = encodeURIComponent(String(a?.query ?? a?.q ?? ""));
+            const limit = Number(a?.maxResults ?? a?.limit ?? 5);
+            const fc = a?.fetchContent === false ? "false" : "true";
+            return `/api/search?q=${q}&limit=${limit}&fetchContent=${fc}`;
+        }
+    },
+    playwright_fetch: {
+        method: "POST",
+        path: "/api/playwright/fetch"
+    },
+    playwright_interact: {
+        method: "POST",
+        path: "/api/playwright/interact"
+    },
+};
 
 interface ModelInfo {
     id: string;
@@ -109,8 +139,22 @@ export default async function (pi: ExtensionAPI) {
         return;
     }
 
+    let registered = 0;
+    let skipped = 0;
     for (const skill of skills) {
         if (!skill || !skill.name || skill.enabled === false) continue;
+
+        const nativeRoute = NATIVE_TOOL_ROUTES[skill.name];
+        const code = String(skill.code || "");
+        const hasExecute = /\bdef\s+execute\s*\(/.test(code);
+
+        // Skip stub catalog entries that have no working Python and no
+        // native HTTP fallback — registering them would just give the
+        // model "name 'execute' is not defined" on dispatch.
+        if (!hasExecute && !nativeRoute) {
+            skipped++;
+            continue;
+        }
 
         const params = toTypeboxSchema(skill.parameters || {});
         const description = skill.description
@@ -124,12 +168,24 @@ export default async function (pi: ExtensionAPI) {
                 promptSnippet: skill.systemPrompt || undefined,
                 parameters: params,
                 async execute(_toolCallId: string, args: unknown, signal: AbortSignal | undefined) {
-                    const body = JSON.stringify(args ?? {});
-                    const r = await authedFetch(`/api/skills/${encodeURIComponent(skill.name)}/execute`, {
-                        method: "POST",
-                        body,
-                        signal
-                    });
+                    let r: Response;
+                    if (nativeRoute) {
+                        const path = typeof nativeRoute.path === "function"
+                            ? nativeRoute.path(args)
+                            : nativeRoute.path;
+                        const init: RequestInit = { method: nativeRoute.method, signal };
+                        if (nativeRoute.method === "POST") {
+                            const body = nativeRoute.mapBody ? nativeRoute.mapBody(args) : args;
+                            init.body = JSON.stringify(body ?? {});
+                        }
+                        r = await authedFetch(path, init);
+                    } else {
+                        r = await authedFetch(`/api/skills/${encodeURIComponent(skill.name)}/execute`, {
+                            method: "POST",
+                            body: JSON.stringify(args ?? {}),
+                            signal
+                        });
+                    }
                     const raw = await r.text();
                     let parsed: any;
                     try { parsed = JSON.parse(raw); } catch { parsed = { raw }; }
@@ -143,10 +199,15 @@ export default async function (pi: ExtensionAPI) {
                     };
                 }
             });
+            registered++;
         } catch (e) {
             console.error(`[modelserver] failed to register skill ${skill.name}:`, e);
         }
     }
+    if (skipped > 0) {
+        console.warn(`[modelserver] skipped ${skipped} stub skill(s) with no def execute and no native route`);
+    }
+    void registered;
 }
 
 // Self-hosted modelserver deployments typically use a self-signed cert.

@@ -485,7 +485,8 @@ const App = () => {
     const [piRevealKey, setPiRevealKey] = useState(false);
     const [newKeyName, setNewKeyName] = useState('');
     const [newKeyPermissions, setNewKeyPermissions] = useState(['query', 'models']);
-    const [newKeyAllowedSkills, setNewKeyAllowedSkills] = useState([]);
+    // Denylist of skills the new key is forbidden from calling. Empty = allow all.
+    const [newKeyDisabledSkills, setNewKeyDisabledSkills] = useState([]);
     const [newKeyRateLimitRequests, setNewKeyRateLimitRequests] = useState(60);
     const [newKeyRateLimitTokens, setNewKeyRateLimitTokens] = useState(100000);
     const [noRateLimit, setNoRateLimit] = useState(false);
@@ -498,7 +499,7 @@ const App = () => {
     const [editingKey, setEditingKey] = useState(null);
     const [editKeyName, setEditKeyName] = useState('');
     const [editKeyPermissions, setEditKeyPermissions] = useState([]);
-    const [editKeyAllowedSkills, setEditKeyAllowedSkills] = useState([]);
+    const [editKeyDisabledSkills, setEditKeyDisabledSkills] = useState([]);
     const [editKeyRateLimitRequests, setEditKeyRateLimitRequests] = useState(60);
     const [editKeyRateLimitTokens, setEditKeyRateLimitTokens] = useState(100000);
     const [editNoRateLimit, setEditNoRateLimit] = useState(false);
@@ -1052,11 +1053,8 @@ const App = () => {
             body: JSON.stringify({
                 name: newKeyName,
                 permissions: newKeyPermissions,
-                // Empty list = "no restriction" per the UI helper text.
-                // Sending [] would mean explicit deny-all per the server-
-                // side resolver, which is almost never what a user picking
-                // zero options actually wants.
-                allowedSkills: (newKeyAllowedSkills && newKeyAllowedSkills.length > 0) ? newKeyAllowedSkills : null,
+                // Denylist semantics — empty = all skills allowed.
+                disabledSkills: newKeyDisabledSkills || [],
                 rateLimitRequests: noRateLimit ? null : newKeyRateLimitRequests,
                 rateLimitTokens: noTokenLimit ? null : newKeyRateLimitTokens,
                 bearerOnly: bearerOnly
@@ -1067,7 +1065,7 @@ const App = () => {
             setCreatedKeyData(data);
             setNewKeyName('');
             setNewKeyPermissions(['query', 'models']);
-            setNewKeyAllowedSkills([]);
+            setNewKeyDisabledSkills([]);
             setNewKeyRateLimitRequests(60);
             setNewKeyRateLimitTokens(100000);
             setNoRateLimit(false);
@@ -1141,7 +1139,7 @@ const App = () => {
         setEditingKey(key);
         setEditKeyName(key.name);
         setEditKeyPermissions(key.permissions || []);
-        setEditKeyAllowedSkills(Array.isArray(key.allowedSkills) ? key.allowedSkills : []);
+        setEditKeyDisabledSkills(Array.isArray(key.disabledSkills) ? key.disabledSkills : []);
         setEditKeyRateLimitRequests(key.rateLimitRequests || 60);
         setEditKeyRateLimitTokens(key.rateLimitTokens || 100000);
         setEditNoRateLimit(key.rateLimitRequests === null);
@@ -1162,9 +1160,12 @@ const App = () => {
             body: JSON.stringify({
                 name: editKeyName,
                 permissions: editKeyPermissions,
-                // See create-key path: [] means deny-all to the server, which
-                // is almost never what unselecting all chips is meant to do.
-                allowedSkills: (editKeyAllowedSkills && editKeyAllowedSkills.length > 0) ? editKeyAllowedSkills : null,
+                // Denylist semantics — empty = all skills allowed.
+                disabledSkills: editKeyDisabledSkills || [],
+                // Clear any legacy whitelist when the user edits through the
+                // new UI; otherwise an old allowedSkills:[non-empty] would keep
+                // overriding the new disabledSkills picker.
+                allowedSkills: null,
                 rateLimitRequests: editNoRateLimit ? null : editKeyRateLimitRequests,
                 rateLimitTokens: editNoTokenLimit ? null : editKeyRateLimitTokens
             }),
@@ -9461,20 +9462,20 @@ console.log(await res.json());`
                                                                 multiple
                                                                 size="small"
                                                                 options={skills.map(s => s.name).filter(Boolean)}
-                                                                value={newKeyAllowedSkills}
-                                                                onChange={(e, v) => setNewKeyAllowedSkills(v)}
+                                                                value={newKeyDisabledSkills}
+                                                                onChange={(e, v) => setNewKeyDisabledSkills(v)}
                                                                 renderTags={(value, getTagProps) =>
                                                                     value.map((option, index) => (
-                                                                        <Chip variant="outlined" label={option} size="small" {...getTagProps({ index })} key={option} />
+                                                                        <Chip variant="outlined" color="warning" label={option} size="small" {...getTagProps({ index })} key={option} />
                                                                     ))
                                                                 }
                                                                 renderInput={(params) => (
                                                                     <TextField
                                                                         {...params}
                                                                         size="small"
-                                                                        label="Allowed Skills"
-                                                                        placeholder="Select tools"
-                                                                        helperText="Leave empty = no restriction (key can call every enabled skill). Pick one or more to lock the key down to that subset."
+                                                                        label="Disabled Skills"
+                                                                        placeholder="Block specific tools (optional)"
+                                                                        helperText="By default the key can call every enabled skill. Pick one or more here to BLOCK them for this key (e.g. disable file-write skills for a read-only Pi key)."
                                                                     />
                                                                 )}
                                                             />
@@ -9627,20 +9628,20 @@ console.log(await res.json());`
                                                                 multiple
                                                                 size="small"
                                                                 options={skills.map(s => s.name).filter(Boolean)}
-                                                                value={editKeyAllowedSkills}
-                                                                onChange={(e, v) => setEditKeyAllowedSkills(v)}
+                                                                value={editKeyDisabledSkills}
+                                                                onChange={(e, v) => setEditKeyDisabledSkills(v)}
                                                                 renderTags={(value, getTagProps) =>
                                                                     value.map((option, index) => (
-                                                                        <Chip variant="outlined" label={option} size="small" {...getTagProps({ index })} key={option} />
+                                                                        <Chip variant="outlined" color="warning" label={option} size="small" {...getTagProps({ index })} key={option} />
                                                                     ))
                                                                 }
                                                                 renderInput={(params) => (
                                                                     <TextField
                                                                         {...params}
                                                                         size="small"
-                                                                        label="Allowed Skills"
-                                                                        placeholder="Select tools"
-                                                                        helperText="Leave empty = no restriction (key can call every enabled skill). Pick one or more to lock the key down to that subset."
+                                                                        label="Disabled Skills"
+                                                                        placeholder="Block specific tools (optional)"
+                                                                        helperText="By default the key can call every enabled skill. Pick one or more here to BLOCK them for this key."
                                                                     />
                                                                 )}
                                                             />
