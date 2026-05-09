@@ -112,6 +112,7 @@ import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
+import AppsPanel from './components/AppsPanel';
 import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
@@ -11281,100 +11282,17 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                         {/* Apps Tab (Admin Only) */}
                         {visibleTabOrder[activeTab] === 6 && isAdmin && (
-                            <Box>
-                                <SectionHeader
-                                    icon={<AppsIcon />}
-                                    title="Apps Management"
-                                    subtitle="Manage integrated applications and agent systems"
-                                />
-
-                                <Grid container spacing={3} sx={{ mt: 1 }}>
-                                    {apps.filter(app => !app.integrated).map(app => (
-                                        <Grid item xs={12} md={6} key={app.name}>
-                                            <Card>
-                                                <CardContent>
-                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
-                                                        <Box>
-                                                            <Typography variant="h6" sx={{ mb: 0.5 }}>
-                                                                {app.displayName}
-                                                            </Typography>
-                                                            <Typography variant="body2" color="text.secondary">
-                                                                {app.description}
-                                                            </Typography>
-                                                        </Box>
-                                                        <Chip
-                                                            label={app.status?.status || 'unknown'}
-                                                            size="small"
-                                                            color={app.status?.status === 'running' ? 'success' : app.status?.status === 'stopped' ? 'default' : 'error'}
-                                                        />
-                                                    </Box>
-
-                                                    <Divider sx={{ my: 2 }} />
-
-                                                    {app.url && (
-                                                        <Box sx={{ mb: 2 }}>
-                                                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                                                                Access URL:
-                                                            </Typography>
-                                                            <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'primary.main' }}>
-                                                                {app.url}
-                                                            </Typography>
-                                                        </Box>
-                                                    )}
-
-                                                    {app.ports && app.ports.length > 0 && (
-                                                        <Box sx={{ mb: 2 }}>
-                                                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                                                                Ports:
-                                                            </Typography>
-                                                            {app.ports.map((port, idx) => (
-                                                                <Chip
-                                                                    key={idx}
-                                                                    label={`${port.external} (${port.protocol.toUpperCase()})`}
-                                                                    size="small"
-                                                                    variant="outlined"
-                                                                    sx={{ mr: 0.5 }}
-                                                                />
-                                                            ))}
-                                                        </Box>
-                                                    )}
-
-                                                    <CardActions sx={{ p: 0, gap: 1, flexWrap: 'wrap' }}>
-                                                        <Button
-                                                            size="small"
-                                                            variant="outlined"
-                                                            color="success"
-                                                            startIcon={<PlayArrowIcon />}
-                                                            onClick={() => handleAppStart(app.name)}
-                                                            disabled={app.status?.status === 'running'}
-                                                        >
-                                                            Start
-                                                        </Button>
-                                                        <Button
-                                                            size="small"
-                                                            variant="outlined"
-                                                            color="error"
-                                                            startIcon={<StopIcon />}
-                                                            onClick={() => handleAppStop(app.name)}
-                                                            disabled={app.status?.status === 'stopped' || app.status?.status === 'not_found'}
-                                                        >
-                                                            Stop
-                                                        </Button>
-                                                        <Button
-                                                            size="small"
-                                                            variant="outlined"
-                                                            startIcon={<RestartAltIcon />}
-                                                            onClick={() => handleAppRestart(app.name)}
-                                                            disabled={app.status?.status === 'stopped' || app.status?.status === 'not_found'}
-                                                        >
-                                                            Restart
-                                                        </Button>
-                                                    </CardActions>
-                                                </CardContent>
-                                            </Card>
-                                        </Grid>
-                                    ))}
-
+                            <AppsPanel
+                                apps={apps}
+                                onStart={handleAppStart}
+                                onStop={handleAppStop}
+                                onRestart={handleAppRestart}
+                            >
+                                {/* Integrated open-model-agents block stays
+                                    MUI for now (Tools/Skills sub-tabs are
+                                    heavy forms; deferred). Renders inside
+                                    AppsPanel via {children}. */}
+                                <Grid container spacing={3} sx={{ mt: 0 }}>
                                     {apps.filter(app => app.integrated && app.name === 'open-model-agents').map(app => (
                                         <Grid item xs={12} key={app.name}>
                                             <Card>
@@ -11709,7 +11627,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         </Grid>
                                     ))}
                                 </Grid>
-                            </Box>
+                            </AppsPanel>
                         )}
                     </Box>
                 </Box>
