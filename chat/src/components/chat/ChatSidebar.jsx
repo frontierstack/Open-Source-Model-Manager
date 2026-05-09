@@ -719,11 +719,15 @@ export default function ChatSidebar({
         );
     };
 
-    // User-folder renderer (with rename + menu)
+    // User-folder renderer (with rename + menu).
+    // User folders default to *collapsed* — the user explicitly asked for
+    // this, and a long folder list of expanded buckets buries the active
+    // chat list. Convention here is inverted vs renderSimpleGroup: only
+    // an explicit `false` means "open"; undefined or `true` means closed.
     const renderUserFolder = (folder) => {
         const items = folderBuckets[folder.id] || [];
         const key = `folder:${folder.id}`;
-        const open = !collapsedGroups[key];
+        const open = collapsedGroups[key] === false;
         const Icon = open ? FolderOpen : Folder;
         const isRenaming = editingFolderId === folder.id;
         const isDropTarget = dragOverTarget === folder.id;
@@ -804,7 +808,12 @@ export default function ChatSidebar({
                         style={{ position: 'relative' }}
                     >
                         <button
-                            onClick={() => toggleGroup(key)}
+                            // Folders default closed; toggle flips between
+                            // explicit-open (false) and explicit-closed (true).
+                            // Plain `!prev[key]` would land on `true` after the
+                            // first click against an undefined entry, leaving
+                            // the folder still closed.
+                            onClick={() => setCollapsedGroups(prev => ({ ...prev, [key]: prev[key] === false }))}
                             style={folderHeader}
                             onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-3, var(--bg))'}
                             onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
