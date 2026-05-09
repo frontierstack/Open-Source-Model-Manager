@@ -323,7 +323,6 @@ const DOC_SECTIONS = [
     { id: 'web-search',      label: 'Web Search & Fetch'  },
     { id: 'sandbox-skills',  label: 'Sandbox Skills'      },
     { id: 'config-flags',    label: 'Configuration Flags' },
-    { id: 'api-permissions', label: 'API Permissions'     },
     { id: 'api-endpoints',   label: 'API Endpoints'       },
     { id: 'utility-scripts', label: 'Utility Scripts'     },
     { id: 'system-reset',    label: 'System Reset'        },
@@ -646,6 +645,9 @@ const App = () => {
     // affordance.
     const [activeDocSection, setActiveDocSection] = useState(() => {
         const saved = localStorage.getItem('docsActiveSection');
+        // api-permissions was folded into api-endpoints — redirect any
+        // stale-localStorage users so they don't land on a missing section.
+        if (saved === 'api-permissions') return 'api-endpoints';
         return saved || 'quick-start';
     });
     useEffect(() => {
@@ -10706,59 +10708,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                 )}
 
 
-                                {/* API Key Permissions */}
-                                {activeDocSection === 'api-permissions' && (
-
-                                <Box sx={docSectionSx}>
-
-                                    <Box sx={docSectionHeaderSx}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Permissions</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Permission scopes for API keys</Typography>
-                                            </Box>
-                                        </Box>
-
-
-                                    </Box>
-
-                                    <Box sx={docSectionBodySx}>
-                                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
-                                                <Chip label="query" size="small" sx={{ mb: 1, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Chat, completions, web search, Playwright</Typography>
-                                            </Box>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
-                                                <Chip label="models" size="small" sx={{ mb: 1, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>List, download, load/unload, configs</Typography>
-                                            </Box>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.08)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.15)' }}>
-                                                <Chip label="instances" size="small" sx={{ mb: 1, bgcolor: 'rgba(34,197,94,0.18)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.30)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>List, stop, slots, clear KV cache</Typography>
-                                            </Box>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
-                                                <Chip label="agents" size="small" sx={{ mb: 1, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Agents, tools, tasks, file ops</Typography>
-                                            </Box>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, border: '1px solid rgba(239, 68, 68, 0.15)' }}>
-                                                <Chip label="admin" size="small" sx={{ mb: 1, bgcolor: 'rgba(239,68,68,0.18)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.30)', fontWeight: 600, fontSize: '0.7rem' }} />
-                                                <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>API keys, backend, system, apps</Typography>
-                                            </Box>
-                                        </Box>
-                                        <Box sx={{ mt: 2, p: 1, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <WarningIcon sx={{ fontSize: 14, color: 'var(--warning)' }} />
-                                            <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Auth endpoints use session auth only.</Typography>
-                                        </Box>
-
-
-                                    </Box>
-
-                                </Box>
-
-                                )}
-
-
-                                {/* API Endpoints */}
+                                {/* API Endpoints (also subsumes API Permissions —
+                                    the scope legend now sits at the top of the body). */}
                                 {activeDocSection === 'api-endpoints' && (
 
                                 <Box sx={docSectionSx}>
@@ -10767,7 +10718,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Endpoints</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Complete endpoint reference by category</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Permission scopes and endpoint reference</Typography>
                                             </Box>
                                         </Box>
 
@@ -10775,6 +10726,68 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                     </Box>
 
                                     <Box sx={docSectionBodySx}>
+                                        {/* Permission scope legend — what each scope grants on an
+                                            API key. The endpoint table below is grouped by the
+                                            same scopes, so the legend reads as a key. */}
+                                        {(() => {
+                                            const accentScope = {
+                                                chip: { bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)' },
+                                                row:  { bgcolor: 'var(--accent-muted)', border: '1px solid var(--accent-muted)' },
+                                            };
+                                            const successScope = {
+                                                chip: { bgcolor: 'rgba(34,197,94,0.18)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.30)' },
+                                                row:  { bgcolor: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.15)' },
+                                            };
+                                            const errorScope = {
+                                                chip: { bgcolor: 'rgba(239,68,68,0.18)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.30)' },
+                                                row:  { bgcolor: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)' },
+                                            };
+                                            const SCOPES = [
+                                                { label: 'query',     desc: 'Chat, completions, web search, Playwright', style: accentScope  },
+                                                { label: 'models',    desc: 'List, download, load/unload, configs',      style: accentScope  },
+                                                { label: 'instances', desc: 'List, stop, slots, clear KV cache',         style: successScope },
+                                                { label: 'agents',    desc: 'Agents, tools, tasks, file ops',            style: accentScope  },
+                                                { label: 'admin',     desc: 'API keys, backend, system, apps',           style: errorScope   },
+                                            ];
+                                            return (
+                                                <Box sx={{ mb: 2 }}>
+                                                    <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-primary)', mb: 1 }}>
+                                                        Permission scopes
+                                                    </Typography>
+                                                    <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 1 }}>
+                                                        {SCOPES.map((s) => (
+                                                            <Box
+                                                                key={s.label}
+                                                                sx={{
+                                                                    display: 'flex',
+                                                                    alignItems: 'center',
+                                                                    gap: 1,
+                                                                    px: 1.25,
+                                                                    py: 0.75,
+                                                                    borderRadius: 1.5,
+                                                                    ...s.style.row,
+                                                                }}
+                                                            >
+                                                                <Chip
+                                                                    label={s.label}
+                                                                    size="small"
+                                                                    sx={{ height: 20, fontSize: '0.65rem', fontWeight: 600, ...s.style.chip }}
+                                                                />
+                                                                <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                                                                    {s.desc}
+                                                                </Typography>
+                                                            </Box>
+                                                        ))}
+                                                    </Box>
+                                                    <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                        <WarningIcon sx={{ fontSize: 14, color: 'var(--warning)' }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                                                            Auth endpoints use session auth only.
+                                                        </Typography>
+                                                    </Box>
+                                                </Box>
+                                            );
+                                        })()}
                                         <Box sx={{ bgcolor: 'var(--bg-tertiary)', borderRadius: 2, overflow: 'hidden' }}>
                                         <TableContainer>
                                             <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.75, px: 1.5, fontSize: '0.75rem' } }}>
