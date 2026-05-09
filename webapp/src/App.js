@@ -263,25 +263,6 @@ const CollapsibleSection = ({ title, icon, children, defaultExpanded = true }) =
     );
 };
 
-// Inline doc-section icon — no colored container, no gradient. Just a
-// monoline lucide glyph next to the accordion title in the appropriate
-// semantic tint. Earlier version wrapped each icon in a 32px pill with
-// a gradient background which read as "cheesy" against the chat
-// aesthetic.
-const DocIcon = ({ icon, color = 'primary' }) => {
-    const colorMap = {
-        primary:   'var(--text-secondary)',
-        secondary: 'var(--text-secondary)',
-        success:   '#22c55e',
-        warning:   '#f59e0b',
-    };
-    return (
-        <span style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: colorMap[color] || colorMap.primary }}>
-            {React.cloneElement(icon, { sx: { fontSize: 18, color: 'inherit' } })}
-        </span>
-    );
-};
-
 // Docs sections — left-rail navigation pattern. The previous accordion
 // design had been polished repeatedly without losing its accordion-y
 // feel; this commit drops MUI Accordion entirely and shows one section
@@ -10002,7 +9983,6 @@ console.log(await res.json());`
                                 <Box sx={docSectionSx}>
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<PlayArrowIcon />} color="success" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Quick Start</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Get up and running in 3 steps</Typography>
@@ -10091,7 +10071,6 @@ console.log(await res.json());`
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<CodeIcon />} color="secondary" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Code Builder</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Generate code snippets for any endpoint</Typography>
@@ -10328,7 +10307,6 @@ console.log(await res.json());`
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<TerminalIcon />} color="primary" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Pi setup</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Install Pi (pi.dev) and connect it to this server</Typography>
@@ -10484,7 +10462,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<SearchIcon />} color="secondary" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Chat Web Search & URL Fetch</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Web search, URL fetching, and content extraction</Typography>
@@ -10581,7 +10558,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<AutoAwesomeIcon />} color="success" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Sandbox Skills &amp; Artifacts</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Workspace-scoped Python skills, artifact downloads, optional GPU image generation</Typography>
@@ -10655,7 +10631,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<TuneIcon />} color="warning" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Configuration Flags</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>llama.cpp and vLLM backend settings</Typography>
@@ -10738,7 +10713,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<VpnKeyIcon />} color="primary" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Permissions</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Permission scopes for API keys</Typography>
@@ -10791,7 +10765,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<StorageIcon />} color="secondary" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>API Endpoints</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Complete endpoint reference by category</Typography>
@@ -10991,7 +10964,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <DocIcon icon={<TerminalIcon sx={{ fontSize: 16 }} />} color="secondary" />
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Utility Scripts</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Management scripts and custom patches</Typography>
@@ -11078,18 +11050,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <Box sx={{
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                width: 32,
-                                                height: 32,
-                                                borderRadius: '10px',
-                                                background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, transparent 100%)',
-                                                border: '1px solid rgba(239, 68, 68, 0.3)',
-                                            }}>
-                                                <WarningIcon sx={{ fontSize: 16, color: '#ef4444' }} />
-                                            </Box>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>System Reset</Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>Delete models and clean up resources</Typography>
