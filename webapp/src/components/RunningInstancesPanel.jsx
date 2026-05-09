@@ -1,0 +1,194 @@
+import React from 'react';
+import MemoryIcon from '@mui/icons-material/Memory';
+import StopIcon from '@mui/icons-material/Stop';
+import Tooltip from '@mui/material/Tooltip';
+
+// Phase 7: Tailwind rewrite of the Running Instances section in
+// the My Models tab. Replaces the densest remaining MUI surface —
+// ~260 lines of nested Card/Box/Chip/Tooltip — with a single
+// component and a small set of pill primitives.
+//
+// Keeps the green semantic accent on the section card border (running
+// = healthy state, not theme accent), but the inner pill rows and
+// surfaces use the theme CSS variables so themes/accent switching
+// repaints the rest of the chrome.
+
+function Pill({ label, tooltip, tone = 'neutral' }) {
+    // tone: neutral | success | warning | accent | brand
+    let style;
+    switch (tone) {
+        case 'success':
+            style = { color: '#22c55e', borderColor: 'rgba(34,197,94,0.45)', backgroundColor: 'rgba(34,197,94,0.10)' };
+            break;
+        case 'warning':
+            style = { color: '#f59e0b', borderColor: 'rgba(245,158,11,0.45)', backgroundColor: 'rgba(245,158,11,0.10)' };
+            break;
+        case 'info':
+            style = { color: '#0ea5e9', borderColor: 'rgba(14,165,233,0.45)', backgroundColor: 'rgba(14,165,233,0.10)' };
+            break;
+        case 'accent':
+            style = { color: 'var(--accent-primary)', borderColor: 'var(--border-focus)', backgroundColor: 'var(--accent-muted)' };
+            break;
+        case 'brand':
+            // Brand-tinted pill (e.g., backend type) — strong, neutral white
+            style = { color: 'var(--text-primary)', borderColor: 'var(--border-hover)', backgroundColor: 'var(--bg-hover)', fontWeight: 600 };
+            break;
+        case 'neutral':
+        default:
+            style = { color: 'var(--text-secondary)', borderColor: 'var(--border-primary)', backgroundColor: 'transparent' };
+            break;
+    }
+    const pill = (
+        <span
+            className="inline-flex h-6 items-center rounded-full border px-2 text-[0.7rem] font-medium whitespace-nowrap"
+            style={style}
+        >
+            {label}
+        </span>
+    );
+    return tooltip ? <Tooltip title={tooltip}>{pill}</Tooltip> : pill;
+}
+
+function VllmPills({ cfg }) {
+    // vLLM-specific runtime config pills. Each renders only when
+    // the config differs from the runtime default so the row stays
+    // information-dense rather than cluttered.
+    return (
+        <>
+            <Pill tooltip="GPU memory utilization" label={`GPU: ${Math.round((cfg?.gpuMemoryUtilization ?? 0.9) * 100)}%`} />
+            <Pill tooltip="Tensor parallel size (GPUs)" label={`TP: ${cfg?.tensorParallelSize ?? 1}`} />
+            <Pill tooltip="Max concurrent sequences" label={`Seqs: ${cfg?.maxNumSeqs ?? 256}`} />
+            {cfg?.kvCacheDtype && cfg.kvCacheDtype !== 'auto' && (
+                <Pill tooltip="KV cache data type" label={`KV: ${cfg.kvCacheDtype}`} tone="warning" />
+            )}
+            {cfg?.enforceEager && <Pill tooltip="CUDA graphs disabled" label="Eager" />}
+            {cfg?.contextShift && <Pill tooltip="Context shifting enabled" label="CtxShift" tone="success" />}
+            {cfg?.compressMemory && <Pill tooltip="AIMem memory compression enabled" label="AIMem" tone="accent" />}
+        </>
+    );
+}
+
+function LlamacppPills({ cfg }) {
+    return (
+        <>
+            <Pill tooltip="GPU layers (-1 = all)" label={`Layers: ${cfg?.nGpuLayers === -1 ? 'All' : (cfg?.nGpuLayers ?? 'All')}`} />
+            <Pill tooltip="Parallel slots" label={`Slots: ${cfg?.parallelSlots ?? 1}`} />
+            {cfg?.threads > 0 && <Pill tooltip="CPU threads" label={`Threads: ${cfg.threads}`} />}
+            {cfg?.batchSize && cfg.batchSize !== 2048 && <Pill tooltip="Batch size" label={`Batch: ${cfg.batchSize}`} />}
+            {cfg?.cacheTypeK && cfg.cacheTypeK !== 'f16' && (
+                <Pill tooltip="KV cache quantization" label={`Cache: ${cfg.cacheTypeK}`} tone="warning" />
+            )}
+            {cfg?.flashAttention && <Pill tooltip="Flash attention enabled" label="Flash" tone="info" />}
+            {cfg?.swaFull && <Pill tooltip="Full SWA cache — prompt cache reuses across turns" label="SWA-Full" tone="success" />}
+            {cfg?.contextShift && <Pill tooltip="Context shifting enabled" label="CtxShift" tone="success" />}
+            {cfg?.compressMemory && <Pill tooltip="AIMem memory compression enabled" label="AIMem" tone="accent" />}
+            {/* Always show the reasoning state so it's unambiguous at a glance */}
+            <Pill
+                tooltip={cfg?.disableThinking
+                    ? 'Reasoning disabled — model will not emit <think> blocks'
+                    : 'Reasoning enabled — model may use <think> blocks for chain-of-thought'}
+                label={cfg?.disableThinking ? 'Reasoning: Off' : 'Reasoning: On'}
+                tone={cfg?.disableThinking ? 'neutral' : 'success'}
+            />
+        </>
+    );
+}
+
+function InstanceCard({ instance, onStop }) {
+    const cfg = instance.config || {};
+    const isVllm = instance.backend === 'vllm';
+    const ctx = isVllm ? (cfg.maxModelLen || 4096) : (cfg.contextSize || 4096);
+    return (
+        <div
+            className="flex flex-col rounded-xl border p-3"
+            style={{
+                backgroundColor: 'rgba(34,197,94,0.05)',
+                borderColor: 'rgba(34,197,94,0.30)',
+            }}
+        >
+            <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                    <div
+                        className="text-sm font-semibold truncate mb-1.5"
+                        style={{ color: 'var(--text-primary)' }}
+                        title={instance.name}
+                    >
+                        {instance.name}
+                    </div>
+
+                    {/* Top pill row: identity + general config */}
+                    <div className="flex flex-wrap gap-1 mb-1">
+                        <Pill label={`Port ${instance.port}`} tone="success" />
+                        <Pill
+                            tooltip={`Backend: ${isVllm ? 'vLLM' : 'llama.cpp'}`}
+                            label={isVllm ? 'vLLM' : 'llama.cpp'}
+                            tone="brand"
+                        />
+                        <Pill tooltip="Context size" label={`${ctx} ctx`} />
+                        {isVllm && cfg.cpuOffloadGb > 0 && (
+                            <Pill tooltip="CPU offload enabled" label={`CPU: ${cfg.cpuOffloadGb}GB`} tone="info" />
+                        )}
+                    </div>
+
+                    {/* Second row: backend-specific runtime details */}
+                    <div className="flex flex-wrap gap-1">
+                        {isVllm ? <VllmPills cfg={cfg} /> : <LlamacppPills cfg={cfg} />}
+                    </div>
+                </div>
+
+                {/* Stop control — stays MUI Tooltip + IconButton for parity
+                    with the rest of the page's icon-button vocabulary. */}
+                <Tooltip title="Stop Instance">
+                    <button
+                        type="button"
+                        onClick={() => onStop(instance.name, instance.backend)}
+                        aria-label={`Stop ${instance.name}`}
+                        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md transition"
+                        style={{ color: '#f87171' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(248,113,113,0.12)'; e.currentTarget.style.color = '#ef4444'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#f87171'; }}
+                    >
+                        <StopIcon style={{ fontSize: 18 }} />
+                    </button>
+                </Tooltip>
+            </div>
+        </div>
+    );
+}
+
+export default function RunningInstancesPanel({ instances = [], onStop }) {
+    if (!instances.length) return null;
+    return (
+        <div
+            className="rounded-xl border p-4"
+            style={{
+                backgroundColor: 'var(--surface-primary)',
+                borderColor: 'rgba(34,197,94,0.45)',
+            }}
+        >
+            {/* Section header */}
+            <div className="mb-3 flex items-center gap-3">
+                <span
+                    className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
+                    style={{ backgroundColor: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
+                >
+                    <MemoryIcon style={{ fontSize: 20 }} />
+                </span>
+                <div>
+                    <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        Running Instances
+                    </div>
+                    <div className="text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
+                        {instances.length} model{instances.length > 1 ? 's' : ''} currently loaded
+                    </div>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {instances.map((instance) => (
+                    <InstanceCard key={instance.name} instance={instance} onStop={onStop} />
+                ))}
+            </div>
+        </div>
+    );
+}

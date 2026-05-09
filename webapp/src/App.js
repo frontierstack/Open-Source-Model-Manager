@@ -114,6 +114,7 @@ import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
 import AppsPanel from './components/AppsPanel';
 import MyModelsPanel from './components/MyModelsPanel';
+import RunningInstancesPanel from './components/RunningInstancesPanel';
 import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
@@ -8687,8 +8688,19 @@ console.log(await res.json());`
                         {visibleTabOrder[activeTab] === 1 && (
                             <MyModelsPanel instancesLoaded={liveInstances.length}>
                             <Grid container spacing={3}>
-                                {/* Running Instances */}
+                                {/* Running Instances — Phase 7 Tailwind port */}
                                 {liveInstances.length > 0 && (
+                                    <Grid item xs={12}>
+                                        <RunningInstancesPanel
+                                            instances={liveInstances}
+                                            onStop={handleStopInstance}
+                                        />
+                                    </Grid>
+                                )}
+                                {/* Legacy inline Running Instances JSX kept guarded
+                                    `false` for one cycle for A/B during verification.
+                                    Drop on follow-up. */}
+                                {false && liveInstances.length > 0 && (
                                     <Grid item xs={12}>
                                         <Card sx={{ borderColor: 'success.dark', borderWidth: 1 }}>
                                             <CardContent>
