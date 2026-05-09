@@ -362,9 +362,10 @@ const App = () => {
         return createAppTheme(
             preferences.theme || 'dark',
             preferences.fontFamily || 'default',
-            preferences.fontSize || 'medium'
+            preferences.fontSize || 'medium',
+            preferences.accent || null
         );
-    }, [preferences.theme, preferences.fontFamily, preferences.fontSize]);
+    }, [preferences.theme, preferences.accent, preferences.fontFamily, preferences.fontSize]);
 
     // 'md' (<900px) so phone-landscape (~812px), iPad mini portrait (768px),
     // and any narrow desktop window also flip to mobile-friendly behavior

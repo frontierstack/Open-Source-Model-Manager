@@ -54,7 +54,18 @@ export default function ThemePicker() {
                 ref={btnRef}
                 type="button"
                 onClick={() => setOpen((v) => !v)}
-                className="inline-flex items-center gap-2 rounded-lg border border-dark-700/60 bg-dark-900/40 px-3 py-1.5 text-xs font-medium text-dark-100 hover:border-dark-600 hover:bg-dark-800/60 transition"
+                // Match MUI Chip variant="outlined" size="medium" — height 32px,
+                // 1px border, ~14px horizontal padding, 0.75rem font. Keeps the
+                // header row consistent with the Connected / Active / username
+                // chips that sit beside this picker.
+                className="inline-flex h-8 items-center gap-2 rounded-2xl border px-3 text-xs font-medium transition"
+                style={{
+                    borderColor: 'var(--border-primary)',
+                    backgroundColor: 'transparent',
+                    color: 'var(--text-primary)',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--bg-hover)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
                 aria-expanded={open}
                 aria-haspopup="menu"
             >

@@ -20,6 +20,9 @@ function mirrorPatchToLegacyStore(patch) {
         if (patch.theme != null && typeof legacy.setTheme === 'function') {
             legacy.setTheme(patch.theme);
         }
+        if (patch.accent != null && typeof legacy.setAccent === 'function') {
+            legacy.setAccent(patch.accent);
+        }
         if (patch.fontFamily != null && typeof legacy.setFontFamily === 'function') {
             legacy.setFontFamily(FONT_FAMILY_MAP[patch.fontFamily] || 'default');
         }

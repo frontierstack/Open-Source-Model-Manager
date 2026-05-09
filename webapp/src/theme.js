@@ -150,6 +150,18 @@ const themes = {
     },
 };
 
+// Accent palettes — when an accent is picked, these override the active
+// theme's `secondary` palette (MUI's accent color). Hex values chosen to
+// match the oklch values written into --accent-primary on body so the
+// MUI side and the Tailwind/CSS-var side render the same hue.
+const ACCENT_PALETTES = {
+    violet:  { main: '#8b5cf6', light: '#a78bfa', dark: '#7c3aed' },
+    amber:   { main: '#f59e0b', light: '#fbbf24', dark: '#d97706' },
+    emerald: { main: '#10b981', light: '#34d399', dark: '#059669' },
+    slate:   { main: '#64748b', light: '#94a3b8', dark: '#475569' },
+    rose:    { main: '#f43f5e', light: '#fb7185', dark: '#e11d48' },
+};
+
 // Font configurations
 const fontConfigs = {
     default: {
@@ -169,8 +181,16 @@ const fontConfigs = {
 // Font size is now numeric (pixels) instead of preset strings
 
 // Create theme function
-export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontSize = 14) => {
-    const colors = themes[themeName] || themes.dark;
+export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontSize = 14, accentName = null) => {
+    const baseColors = themes[themeName] || themes.dark;
+    // When an accent is chosen, override the theme's secondary palette
+    // and `accent` shorthand so MUI's chips/buttons/focus rings track
+    // the picker. `primary` is left alone (it's the neutral surface
+    // accent in most themes), and bg/text/divider stay theme-defined.
+    const accentOverride = accentName && ACCENT_PALETTES[accentName];
+    const colors = accentOverride
+        ? { ...baseColors, secondary: accentOverride, accent: accentOverride.main }
+        : baseColors;
     const fonts = fontConfigs[fontFamily] || fontConfigs.default;
     // fontSize is now numeric pixels (10-24), default 14
     const baseFontSize = typeof fontSize === 'number' ? fontSize : 14;

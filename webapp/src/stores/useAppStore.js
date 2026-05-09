@@ -31,6 +31,7 @@ export const useAppStore = create(
                 // UI preferences with theme support
                 preferences: {
                     theme: 'dark',
+                    accent: null,                  // null = theme's default secondary; one of violet|amber|emerald|slate|rose otherwise
                     fontFamily: 'default',
                     fontSize: 14, // Now numeric (10-24px) instead of 'small'/'medium'/'large'
                     docsAccordionOrder: [0, 1, 2, 3, 4, 5]
@@ -92,6 +93,13 @@ export const useAppStore = create(
                     preferences: {
                         ...state.preferences,
                         theme
+                    }
+                })),
+
+                setAccent: (accent) => set((state) => ({
+                    preferences: {
+                        ...state.preferences,
+                        accent
                     }
                 })),
 
