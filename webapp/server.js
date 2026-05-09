@@ -17144,6 +17144,43 @@ app.all('/v1/*', requireAuth, async (req, res) => {
 
         console.log(`[Proxy] Forwarding to ${targetUrl}`);
 
+        // Special handling for GET /v1/models — vLLM and llama.cpp both
+        // omit context_window from this response, so Pi (and any other
+        // OpenAI-compatible client that reads it) defaults to 32768 and
+        // throttles itself even when the loaded model has a much larger
+        // window. Augment each entry with contextSize from the matched
+        // instance config so Pi's status line reflects reality.
+        if (req.method === 'GET' && req.path === '/v1/models') {
+            try {
+                const upstream = await axios.get(targetUrl, { timeout: 8000 });
+                const ctxFromConfig = firstInstance.config?.contextSize
+                    || firstInstance.config?.maxModelLen
+                    || null;
+                const data = upstream.data;
+                if (data && Array.isArray(data.data) && ctxFromConfig) {
+                    data.data = data.data.map((m) => ({
+                        context_window: ctxFromConfig,
+                        max_tokens: Math.max(1024, Math.floor(ctxFromConfig / 8)),
+                        ...m,
+                        // Re-set after spread so a backend-supplied value
+                        // doesn't override our authoritative one when it's
+                        // the stale 32768 default.
+                        context_window: ctxFromConfig,
+                        max_tokens: Math.max(1024, Math.floor(ctxFromConfig / 8)),
+                    }));
+                }
+                Object.entries(upstream.headers || {}).forEach(([k, v]) => {
+                    if (!['transfer-encoding','content-length','connection','keep-alive'].includes(k.toLowerCase())) {
+                        res.setHeader(k, v);
+                    }
+                });
+                return res.status(upstream.status).json(data);
+            } catch (err) {
+                console.warn(`[Proxy] /v1/models augmentation failed (${err.message}); falling through to passthrough`);
+                // fall through to the generic non-streaming path below
+            }
+        }
+
         // Check if this is a streaming request (handle both boolean and string "true")
         const streamParam = req.body?.stream;
         const isStreaming = streamParam === true || streamParam === 'true';
