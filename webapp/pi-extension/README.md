@@ -45,12 +45,14 @@ cp modelserver.ts package.json ~/.pi/agent/extensions/modelserver/
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MODELSERVER_BASE_URL` | `https://localhost:3001` | Webapp HTTPS endpoint |
+| `MODELSERVER_BASE_URL` | baked-in at serve time | Webapp HTTPS endpoint |
 | `MODELSERVER_API_KEY` | — | Bearer-mode API key (required) |
-| `MODELSERVER_INSECURE_TLS` | auto for `localhost`/`127.*`/`[::1]` | `1` to accept self-signed certs |
+| `MODELSERVER_INSECURE_TLS` | auto for localhost/RFC-1918 | `1` to accept self-signed certs |
+| `MODELSERVER_INCLUDE_LOCAL_SHADOW` | off | `1` to also register file/git/code-nav/shell skills (default off — they execute inside the webapp container's `/workspace`, not your local `$PWD`, which surprises most users) |
 
 ## Notes
 
+- By default the extension skips skills that shadow Pi's built-in local tools (`read`, `bash`, `edit`, `write`, search). Pi handles your local files via its built-ins; the extension contributes server-side specialty work (`web_search`, `playwright_*`, `render_chart`, `query_sqlite`, `transcribe_audio`, `transform_image`, `parse_*`, etc.). Set `MODELSERVER_INCLUDE_LOCAL_SHADOW=1` if you actually want server-side filesystem access (e.g. inspecting `/workspace/` artifacts).
 - Skill parameters are mapped to Typebox schemas with every field marked optional. The skill execution layer already accepts multiple parameter-name aliases per field, so loose tool calls tend to dispatch correctly.
 - Tool results larger than ~12 KB are truncated in the rendered text, but the full JSON payload is attached as `details` for inspection.
 - Disabling a skill in the webapp removes it from the tool catalog after the next `pi` restart.

@@ -13,7 +13,17 @@
 //   MODELSERVER_API_KEY    bearer-mode key created in the API Keys tab
 //
 // Optional:
-//   MODELSERVER_INSECURE_TLS=1  accept self-signed certs (default for localhost)
+//   MODELSERVER_INSECURE_TLS=1         accept self-signed certs (default for
+//                                      localhost / RFC-1918 addresses)
+//   MODELSERVER_INCLUDE_LOCAL_SHADOW=1 also register skills that shadow Pi's
+//                                      built-in local tools (read_file,
+//                                      list_directory, git_status, run_*, …).
+//                                      Off by default so Pi operates on the
+//                                      user's $PWD via Pi's own bash/read/
+//                                      edit/write — the modelserver versions
+//                                      target /workspace inside the webapp
+//                                      container, which is rarely what you
+//                                      want when running pi as a CLI agent.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -72,6 +82,44 @@ interface ModelInfo {
 // (/api/pi/extension/modelserver.ts) so the file already knows where
 // to phone home even when the user forgets to export the env var.
 const SERVER_BAKED_BASE_URL = "__MODELSERVER_BASE_URL__";
+
+// Skills that look like local-cwd ops but actually execute inside the
+// webapp container's sandbox — the model would call list_directory and
+// see /workspace, not the user's $PWD. Pi already ships built-in tools
+// (read, bash, edit, write, search) for local files; skipping these
+// keeps the model on Pi's local-file path by default.
+//
+// Set MODELSERVER_INCLUDE_LOCAL_SHADOW=1 to register these too. Useful
+// when running pi on the same box as the modelserver and you actually
+// want server-side fs access (e.g. to inspect /workspace artifacts).
+const LOCAL_SHADOW_SKILLS = new Set<string>([
+    // file r/w
+    "read_file", "tail_file", "head_file",
+    "create_file", "update_file", "append_to_file", "write_to_file",
+    "delete_file", "delete_directory", "create_directory",
+    "move_file", "copy_file",
+    "list_directory", "search_files",
+    "get_file_metadata", "hash_file",
+    // edit
+    "search_replace_file", "replace_lines",
+    // code navigation (server fs)
+    "grep_code", "outline_file", "scan_source_files", "analyze_code",
+    // shell / exec
+    "run_python", "run_node", "run_npm", "run_powershell",
+    // git (operates on server-side repos cloned via git_clone_shallow)
+    "git_status", "git_diff", "git_log", "git_branch",
+    "git_clone_shallow", "git_show_commit", "git_blame",
+    "git_file_history", "git_list_tree",
+    // archives (server fs)
+    "tar_extract", "tar_create", "unzip_file", "zip_files",
+    "diff_files",
+    // host inventory — server's, not user's
+    "system_info", "list_processes", "disk_usage", "get_uptime",
+    "list_ports", "list_services", "which_command",
+    "get_env_var", "set_env_var",
+    // chat-only artifact plumbing
+    "make_downloadable", "screenshot", "download_file",
+]);
 
 export default async function (pi: ExtensionAPI) {
     const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
@@ -139,8 +187,10 @@ export default async function (pi: ExtensionAPI) {
         return;
     }
 
+    const includeLocalShadow = process.env.MODELSERVER_INCLUDE_LOCAL_SHADOW === "1";
     let registered = 0;
-    let skipped = 0;
+    let skippedStub = 0;
+    let skippedShadow = 0;
     for (const skill of skills) {
         if (!skill || !skill.name || skill.enabled === false) continue;
 
@@ -152,7 +202,17 @@ export default async function (pi: ExtensionAPI) {
         // native HTTP fallback — registering them would just give the
         // model "name 'execute' is not defined" on dispatch.
         if (!hasExecute && !nativeRoute) {
-            skipped++;
+            skippedStub++;
+            continue;
+        }
+
+        // Skip server-fs / host-inventory skills that shadow Pi's
+        // built-in local tools. Without this, the model sees both
+        // bash/read/edit and read_file/list_directory, and routinely
+        // picks the modelserver one — operating on /workspace inside
+        // the webapp container instead of the user's $PWD.
+        if (!includeLocalShadow && LOCAL_SHADOW_SKILLS.has(skill.name)) {
+            skippedShadow++;
             continue;
         }
 
@@ -204,8 +264,11 @@ export default async function (pi: ExtensionAPI) {
             console.error(`[modelserver] failed to register skill ${skill.name}:`, e);
         }
     }
-    if (skipped > 0) {
-        console.warn(`[modelserver] skipped ${skipped} stub skill(s) with no def execute and no native route`);
+    if (skippedStub > 0) {
+        console.warn(`[modelserver] skipped ${skippedStub} stub skill(s) with no def execute and no native route`);
+    }
+    if (skippedShadow > 0) {
+        console.warn(`[modelserver] skipped ${skippedShadow} skill(s) that shadow Pi's local tools (set MODELSERVER_INCLUDE_LOCAL_SHADOW=1 to register them)`);
     }
     void registered;
 }
