@@ -13,24 +13,42 @@ import Tooltip from '@mui/material/Tooltip';
 // repaints the rest of the chrome.
 
 function Pill({ label, tooltip, tone = 'neutral' }) {
-    // tone: neutral | success | warning | accent | brand
+    // All tones now resolve through CSS vars so the pills track theme +
+    // accent picks. Earlier version had hardcoded green/amber/cyan/etc.
+    // for "semantic" effect; user's read on it was that the pills
+    // ignored theme overall. Real semantic states (warning/error)
+    // still pop, but the rest of the dimensions just tint with the
+    // active accent.
+    //
+    // tones:
+    //   neutral — muted text, no fill (default config dimensions)
+    //   accent  — accent-primary text on accent-muted (e.g. AIMem,
+    //             CtxShift, Reasoning On — feature-on pills)
+    //   info    — accent-primary text, transparent fill (e.g. Port,
+    //             Backend label, CPU offload — identifying pills)
+    //   warning — kept fixed amber for actual quantization warnings
+    //             (KV cache type, cache type) since those carry
+    //             semantic information about resource tradeoffs.
     let style;
     switch (tone) {
-        case 'success':
-            style = { color: '#22c55e', borderColor: 'rgba(34,197,94,0.45)', backgroundColor: 'rgba(34,197,94,0.10)' };
-            break;
         case 'warning':
-            style = { color: '#f59e0b', borderColor: 'rgba(245,158,11,0.45)', backgroundColor: 'rgba(245,158,11,0.10)' };
+            style = { color: 'var(--warning, #f59e0b)', borderColor: 'rgba(245,158,11,0.45)', backgroundColor: 'rgba(245,158,11,0.10)' };
             break;
         case 'info':
-            style = { color: '#0ea5e9', borderColor: 'rgba(14,165,233,0.45)', backgroundColor: 'rgba(14,165,233,0.10)' };
+            style = { color: 'var(--accent-primary)', borderColor: 'var(--border-focus)', backgroundColor: 'transparent' };
             break;
         case 'accent':
             style = { color: 'var(--accent-primary)', borderColor: 'var(--border-focus)', backgroundColor: 'var(--accent-muted)' };
             break;
         case 'brand':
-            // Brand-tinted pill (e.g., backend type) — strong, neutral white
+            // Backend label (vLLM / llama.cpp): strong text on hover bg.
             style = { color: 'var(--text-primary)', borderColor: 'var(--border-hover)', backgroundColor: 'var(--bg-hover)', fontWeight: 600 };
+            break;
+        case 'success':
+            // Was hardcoded green. Repoint to accent so theme picks recolor it
+            // — keeps the "feature is on" semantics (CtxShift, SWA-Full,
+            // Reasoning On) but in the active accent rather than a fixed hue.
+            style = { color: 'var(--accent-primary)', borderColor: 'var(--border-focus)', backgroundColor: 'var(--accent-muted)' };
             break;
         case 'neutral':
         default:
@@ -99,11 +117,19 @@ function InstanceCard({ instance, onStop }) {
     const ctx = isVllm ? (cfg.maxModelLen || 4096) : (cfg.contextSize || 4096);
     return (
         <div
-            className="flex flex-col rounded-xl border p-3"
+            // Card surface tracks the active theme/accent. Earlier version
+            // forced a green-tinted bg + border to signal "running"; that
+            // ran on top of every theme regardless. The Running Instances
+            // section header still has a subtle green border at the
+            // section-card level so the page-level "healthy" semantic
+            // remains, but each instance card uses the standard surface.
+            className="flex flex-col rounded-xl border p-3 transition"
             style={{
-                backgroundColor: 'rgba(34,197,94,0.05)',
-                borderColor: 'rgba(34,197,94,0.30)',
+                backgroundColor: 'var(--bg-secondary)',
+                borderColor: 'var(--border-primary)',
             }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--border-hover)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-primary)'; }}
         >
             <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
@@ -115,9 +141,10 @@ function InstanceCard({ instance, onStop }) {
                         {instance.name}
                     </div>
 
-                    {/* Top pill row: identity + general config */}
+                    {/* Top pill row: identity + general config — all
+                        accent-themed so theme/accent picks repaint them. */}
                     <div className="flex flex-wrap gap-1 mb-1">
-                        <Pill label={`Port ${instance.port}`} tone="success" />
+                        <Pill label={`Port ${instance.port}`} tone="accent" />
                         <Pill
                             tooltip={`Backend: ${isVllm ? 'vLLM' : 'llama.cpp'}`}
                             label={isVllm ? 'vLLM' : 'llama.cpp'}
@@ -162,14 +189,15 @@ export default function RunningInstancesPanel({ instances = [], onStop }) {
             className="rounded-xl border p-4"
             style={{
                 backgroundColor: 'var(--surface-primary)',
-                borderColor: 'rgba(34,197,94,0.45)',
+                borderColor: 'var(--border-primary)',
             }}
         >
-            {/* Section header */}
+            {/* Section header — accent tile matches the rest of the page's
+                page-header pattern. */}
             <div className="mb-3 flex items-center gap-3">
                 <span
                     className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
-                    style={{ backgroundColor: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
+                    style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
                 >
                     <MemoryIcon size={20} strokeWidth={1.75} />
                 </span>

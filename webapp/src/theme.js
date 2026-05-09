@@ -507,15 +507,15 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                     },
                 },
             },
-            // Switches need a much clearer on/off visual. The MUI default
-            // uses color=primary, and in dark/light themes primary.main is
-            // a grey — so checked switches were indistinguishable from
-            // unchecked ones. Force color=success globally (green palette)
-            // and override the track opacity/contrast so the state reads
-            // unambiguously from across the room.
+            // Switches use the active theme's secondary (= accent) palette
+            // for the checked-state track. Earlier this was hardcoded to
+            // success/green to maximize on-vs-off contrast, but the user
+            // wants toggles to track theme + accent picks. Track-on still
+            // uses a strong opaque fill (not a 30% alpha overlay) so the
+            // on/off state remains unambiguous across all themes.
             MuiSwitch: {
                 defaultProps: {
-                    color: 'success',
+                    color: 'secondary',
                 },
                 styleOverrides: {
                     root: {
@@ -527,7 +527,7 @@ export const createAppTheme = (themeName = 'dark', fontFamily = 'default', fontS
                             '&.Mui-checked': {
                                 transform: 'translateX(20px)',
                                 '& + .MuiSwitch-track': {
-                                    backgroundColor: colors.success.main,
+                                    backgroundColor: colors.secondary.main,
                                     opacity: 1,
                                     border: 'none',
                                 },

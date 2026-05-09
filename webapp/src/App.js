@@ -7778,10 +7778,14 @@ console.log(await res.json());`
                                         than the static product title); on desktop the product title
                                         sits above the tab strip as before. */}
                                     <Box component="span" sx={{ display: { xs: 'inline', md: 'none' } }}>
-                                        {tabDefinitions.find(t => t.id === visibleTabOrder[activeTab])?.label || 'Model Manager'}
+                                        {tabDefinitions.find(t => t.id === visibleTabOrder[activeTab])?.label || ''}
                                     </Box>
+                                    {/* Desktop slot: show the active tab's label so the header is
+                                        contextual, not a static brand string. The brand "Model
+                                        Server" lives in the sidebar; repeating it here was
+                                        redundant. */}
                                     <Box component="span" sx={{ display: { xs: 'none', md: 'inline' } }}>
-                                        Open Source Model Manager
+                                        {tabDefinitions.find(t => t.id === visibleTabOrder[activeTab])?.label || ''}
                                     </Box>
                                 </Typography>
                             </Box>
@@ -7891,7 +7895,7 @@ console.log(await res.json());`
                                 fontWeight: 700,
                                 fontSize: '1rem',
                             }}>
-                                Open Source Model Manager
+                                Model Server
                             </Typography>
                         </Box>
                         <List sx={{ pt: 1 }}>
@@ -11449,10 +11453,21 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                                                                         setSkillFormData(skill);
                                                                                                         setSkillDialogOpen(true);
                                                                                                     }}
+                                                                                                    sx={{
+                                                                                                        color: 'var(--accent-primary)',
+                                                                                                        '&:hover': { bgcolor: 'var(--accent-muted)' },
+                                                                                                    }}
                                                                                                 >
                                                                                                     Edit
                                                                                                 </Button>
-                                                                                                <Button size="small" color="error" onClick={() => handleDeleteSkill(skill.id)}>
+                                                                                                <Button
+                                                                                                    size="small"
+                                                                                                    onClick={() => handleDeleteSkill(skill.id)}
+                                                                                                    sx={{
+                                                                                                        color: 'var(--error, #f87171)',
+                                                                                                        '&:hover': { bgcolor: 'rgba(248,113,113,0.10)' },
+                                                                                                    }}
+                                                                                                >
                                                                                                     Delete
                                                                                                 </Button>
                                                                                             </CardActions>
@@ -11590,8 +11605,26 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                                                                 </Typography>
                                                                                             </CardContent>
                                                                                             <CardActions sx={{ pt: 0, px: 1 }}>
-                                                                                                <Button size="small" onClick={() => openMdSkillEditor(skill)}>Edit</Button>
-                                                                                                <Button size="small" color="error" onClick={() => handleDeleteMdSkill(skill)}>Delete</Button>
+                                                                                                <Button
+                                                                                                    size="small"
+                                                                                                    onClick={() => openMdSkillEditor(skill)}
+                                                                                                    sx={{
+                                                                                                        color: 'var(--accent-primary)',
+                                                                                                        '&:hover': { bgcolor: 'var(--accent-muted)' },
+                                                                                                    }}
+                                                                                                >
+                                                                                                    Edit
+                                                                                                </Button>
+                                                                                                <Button
+                                                                                                    size="small"
+                                                                                                    onClick={() => handleDeleteMdSkill(skill)}
+                                                                                                    sx={{
+                                                                                                        color: 'var(--error, #f87171)',
+                                                                                                        '&:hover': { bgcolor: 'rgba(248,113,113,0.10)' },
+                                                                                                    }}
+                                                                                                >
+                                                                                                    Delete
+                                                                                                </Button>
                                                                                             </CardActions>
                                                                                         </Card>
                                                                                     </Grid>
