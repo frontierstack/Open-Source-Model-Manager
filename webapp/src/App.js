@@ -253,8 +253,8 @@ const CollapsibleSection = ({ title, icon, children, defaultExpanded = true }) =
 // Modern Doc Icon Component - sleek pill-shaped icon container
 const DocIcon = ({ icon, color = 'primary' }) => {
     const colorMap = {
-        primary: { bg: 'rgba(99, 102, 241, 0.15)', border: 'rgba(99, 102, 241, 0.3)', icon: '#6366f1' },
-        secondary: { bg: 'rgba(99, 102, 241, 0.15)', border: 'rgba(99, 102, 241, 0.3)', icon: '#6366f1' },
+        primary: { bg: 'var(--accent-muted)', border: 'var(--border-focus)', icon: 'var(--accent-primary)' },
+        secondary: { bg: 'var(--accent-muted)', border: 'var(--border-focus)', icon: 'var(--accent-primary)' },
         success: { bg: 'rgba(34, 197, 94, 0.15)', border: 'rgba(34, 197, 94, 0.3)', icon: '#22c55e' },
         warning: { bg: 'rgba(251, 191, 36, 0.15)', border: 'rgba(251, 191, 36, 0.3)', icon: '#fbbf24' },
     };
@@ -286,7 +286,7 @@ const docAccordionSx = {
     '&:before': { display: 'none' },
     '&.Mui-expanded': {
         margin: '0 0 12px 0 !important',
-        border: '1px solid rgba(99, 102, 241, 0.2)',
+        border: '1px solid var(--accent-muted)',
     },
     '& .MuiAccordionSummary-root': {
         minHeight: 56,
@@ -7994,11 +7994,11 @@ console.log(await res.json());`
                                                         onClick={() => setSearchSortBy(opt.value)}
                                                         sx={{
                                                             height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
-                                                            bgcolor: searchSortBy === opt.value ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
+                                                            bgcolor: searchSortBy === opt.value ? 'var(--accent-muted)' : 'var(--bg-tertiary)',
                                                             border: '1px solid',
-                                                            borderColor: searchSortBy === opt.value ? 'rgba(99,102,241,0.5)' : 'transparent',
-                                                            color: searchSortBy === opt.value ? 'primary.main' : 'text.secondary',
-                                                            '&:hover': { bgcolor: searchSortBy === opt.value ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                            borderColor: searchSortBy === opt.value ? 'var(--border-focus)' : 'transparent',
+                                                            color: searchSortBy === opt.value ? 'var(--accent-primary)' : 'text.secondary',
+                                                            '&:hover': { bgcolor: searchSortBy === opt.value ? 'var(--accent-muted)' : 'var(--bg-hover)' },
                                                         }}
                                                     />
                                                 ))}
@@ -8020,11 +8020,11 @@ console.log(await res.json());`
                                                         onClick={() => setSearchSizeFilter(opt.value)}
                                                         sx={{
                                                             height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
-                                                            bgcolor: searchSizeFilter === opt.value ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
+                                                            bgcolor: searchSizeFilter === opt.value ? 'var(--accent-muted)' : 'var(--bg-tertiary)',
                                                             border: '1px solid',
-                                                            borderColor: searchSizeFilter === opt.value ? 'rgba(168,85,247,0.5)' : 'transparent',
-                                                            color: searchSizeFilter === opt.value ? '#a855f7' : 'text.secondary',
-                                                            '&:hover': { bgcolor: searchSizeFilter === opt.value ? 'rgba(168,85,247,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                            borderColor: searchSizeFilter === opt.value ? 'var(--border-focus)' : 'transparent',
+                                                            color: searchSizeFilter === opt.value ? 'var(--accent-primary)' : 'text.secondary',
+                                                            '&:hover': { bgcolor: searchSizeFilter === opt.value ? 'var(--accent-muted)' : 'var(--bg-hover)' },
                                                         }}
                                                     />
                                                 ))}
@@ -8049,11 +8049,11 @@ console.log(await res.json());`
                                                             onClick={() => setSearchFormat(opt.value)}
                                                             sx={{
                                                                 height: 26, fontSize: '0.72rem', cursor: 'pointer', fontWeight: 500,
-                                                                bgcolor: searchFormat === opt.value ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.04)',
+                                                                bgcolor: searchFormat === opt.value ? 'var(--accent-muted)' : 'var(--bg-tertiary)',
                                                                 border: '1px solid',
-                                                                borderColor: searchFormat === opt.value ? 'rgba(34,197,94,0.5)' : 'transparent',
-                                                                color: searchFormat === opt.value ? '#22c55e' : 'text.secondary',
-                                                                '&:hover': { bgcolor: searchFormat === opt.value ? 'rgba(34,197,94,0.25)' : 'rgba(255,255,255,0.08)' },
+                                                                borderColor: searchFormat === opt.value ? 'var(--border-focus)' : 'transparent',
+                                                                color: searchFormat === opt.value ? 'var(--accent-primary)' : 'text.secondary',
+                                                                '&:hover': { bgcolor: searchFormat === opt.value ? 'var(--accent-muted)' : 'var(--bg-hover)' },
                                                             }}
                                                         />
                                                     </Tooltip>
@@ -8107,7 +8107,7 @@ console.log(await res.json());`
 
                                                     // Embedding models
                                                     if (name.includes('embed') || tagSet.has('embeddings') || tagSet.has('feature-extraction')) {
-                                                        typeTags.push({ label: 'Embed', color: 'rgba(99,102,241,0.3)', textColor: '#6366f1' });
+                                                        typeTags.push({ label: 'Embed', color: 'var(--border-focus)', textColor: '#6366f1' });
                                                     }
 
                                                     return typeTags;
@@ -8163,7 +8163,7 @@ console.log(await res.json());`
                                                                             },
                                                                             '&:hover': {
                                                                                 transform: 'translateY(-2px)',
-                                                                                boxShadow: '0 4px 20px rgba(99,102,241,0.15)',
+                                                                                boxShadow: '0 4px 20px var(--accent-muted)',
                                                                                 borderColor: 'transparent',
                                                                                 '&::before': {
                                                                                     background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 50%, var(--accent-primary) 100%)',
@@ -8188,7 +8188,7 @@ console.log(await res.json());`
                                                                                 {paramSize && (
                                                                                     <Chip label={paramSize} size="small" sx={{
                                                                                         height: 22, fontWeight: 700, fontSize: '0.72rem', flexShrink: 0,
-                                                                                        bgcolor: 'rgba(168,85,247,0.15)', color: '#a855f7', border: 'none',
+                                                                                        bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: 'none',
                                                                                     }} />
                                                                                 )}
                                                                             </Box>
@@ -8199,7 +8199,7 @@ console.log(await res.json());`
                                                                             {(() => {
                                                                                 const FORMAT_STYLES = {
                                                                                     gguf:                 { label: 'GGUF',     color: 'rgba(20,184,166,0.3)',  textColor: '#14b8a6', tip: 'llama.cpp + vLLM (experimental)' },
-                                                                                    safetensors:          { label: 'safetensors', color: 'rgba(99,102,241,0.3)', textColor: '#818cf8', tip: 'vLLM full-precision' },
+                                                                                    safetensors:          { label: 'safetensors', color: 'var(--border-focus)', textColor: '#818cf8', tip: 'vLLM full-precision' },
                                                                                     awq:                  { label: 'AWQ',      color: 'rgba(34,197,94,0.3)',   textColor: '#22c55e', tip: 'vLLM 4-bit, NVIDIA-optimized' },
                                                                                     gptq:                 { label: 'GPTQ',     color: 'rgba(234,179,8,0.3)',   textColor: '#eab308', tip: 'vLLM 4-bit (Marlin kernels)' },
                                                                                     fp8:                  { label: 'FP8',      color: 'rgba(244,114,182,0.3)', textColor: '#f472b6', tip: 'vLLM Hopper/Ada/Blackwell' },
@@ -8294,7 +8294,7 @@ console.log(await res.json());`
                                                                                                 sx={{
                                                                                                     height: 18,
                                                                                                     fontSize: '0.62rem',
-                                                                                                    bgcolor: 'rgba(255,255,255,0.04)',
+                                                                                                    bgcolor: 'var(--bg-tertiary)',
                                                                                                     color: 'text.secondary',
                                                                                                     letterSpacing: 0.3,
                                                                                                 }}
@@ -8459,11 +8459,11 @@ console.log(await res.json());`
                                                             onClick={() => setFileFilter(opt.value)}
                                                             sx={{
                                                                 height: 28, fontSize: '0.8rem', cursor: 'pointer', fontWeight: 500,
-                                                                bgcolor: fileFilter === opt.value ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
+                                                                bgcolor: fileFilter === opt.value ? 'var(--accent-muted)' : 'var(--bg-tertiary)',
                                                                 border: '1px solid',
-                                                                borderColor: fileFilter === opt.value ? 'rgba(99,102,241,0.5)' : 'transparent',
-                                                                color: fileFilter === opt.value ? 'primary.main' : 'text.secondary',
-                                                                '&:hover': { bgcolor: 'rgba(255,255,255,0.08)' },
+                                                                borderColor: fileFilter === opt.value ? 'var(--border-focus)' : 'transparent',
+                                                                color: fileFilter === opt.value ? 'var(--accent-primary)' : 'text.secondary',
+                                                                '&:hover': { bgcolor: 'var(--bg-hover)' },
                                                             }}
                                                         />
                                                     ))}
@@ -8479,11 +8479,11 @@ console.log(await res.json());`
                                                                 sx={{
                                                                     height: 26, fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600,
                                                                     fontFamily: '"Fira Code", monospace',
-                                                                    bgcolor: activeQuantFilter === q ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
+                                                                    bgcolor: activeQuantFilter === q ? 'var(--accent-muted)' : 'var(--bg-tertiary)',
                                                                     border: '1px solid',
-                                                                    borderColor: activeQuantFilter === q ? 'rgba(168,85,247,0.5)' : 'transparent',
-                                                                    color: activeQuantFilter === q ? '#a855f7' : 'text.secondary',
-                                                                    '&:hover': { bgcolor: 'rgba(255,255,255,0.08)' },
+                                                                    borderColor: activeQuantFilter === q ? 'var(--border-focus)' : 'transparent',
+                                                                    color: activeQuantFilter === q ? 'var(--accent-primary)' : 'text.secondary',
+                                                                    '&:hover': { bgcolor: 'var(--bg-hover)' },
                                                                 }}
                                                             />
                                                         ))}
@@ -8510,10 +8510,10 @@ console.log(await res.json());`
                                                                 borderRadius: 1.5, cursor: 'pointer',
                                                                 borderLeft: '3px solid',
                                                                 borderLeftColor: isSelected ? 'primary.main' : 'transparent',
-                                                                bgcolor: isSelected ? 'rgba(99,102,241,0.08)' : 'transparent',
+                                                                bgcolor: isSelected ? 'var(--bg-hover)' : 'transparent',
                                                                 transition: 'all 0.15s',
                                                                 '&:hover': {
-                                                                    bgcolor: isSelected ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.04)',
+                                                                    bgcolor: isSelected ? 'var(--bg-hover)' : 'var(--bg-tertiary)',
                                                                 },
                                                             }}
                                                         >
@@ -8961,8 +8961,8 @@ console.log(await res.json());`
                                                     {hfCacheEntries.map(entry => (
                                                         <Grid item xs={12} sm={6} md={4} key={entry.dirName}>
                                                             <Card variant="outlined" sx={{
-                                                                bgcolor: entry.loaded ? 'rgba(34,197,94,0.05)' : 'rgba(99,102,241,0.04)',
-                                                                borderColor: entry.loaded ? 'success.dark' : 'rgba(99,102,241,0.3)'
+                                                                bgcolor: entry.loaded ? 'rgba(34,197,94,0.05)' : 'var(--bg-hover)',
+                                                                borderColor: entry.loaded ? 'success.dark' : 'var(--border-focus)'
                                                             }}>
                                                                 <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
                                                                     {/* Header row mirrors GGUF Available Models card:
@@ -9621,7 +9621,7 @@ console.log(await res.json());`
 
                                             {/* Edit Key Dialog */}
                                             {editingKey && (
-                                                <Card variant="outlined" sx={{ mb: 3, p: 2, bgcolor: 'rgba(99, 102, 241, 0.05)', border: '1px solid rgba(99, 102, 241, 0.3)' }}>
+                                                <Card variant="outlined" sx={{ mb: 3, p: 2, bgcolor: 'rgba(99, 102, 241, 0.05)', border: '1px solid var(--border-focus)' }}>
                                                     <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 600, color: 'primary.main' }}>
                                                         Edit API Key: {editingKey.name}
                                                     </Typography>
@@ -9939,7 +9939,7 @@ console.log(await res.json());`
                                         {/* Condensed 3-step flow */}
                                         <Grid container spacing={2}>
                                             <Grid item xs={12} md={4}>
-                                                <Box sx={{ p: 2, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                                                <Box sx={{ p: 2, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, height: '100%', border: '1px solid var(--accent-muted)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
                                                         <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'primary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700 }}>1</Box>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Load Model</Typography>
@@ -9950,7 +9950,7 @@ console.log(await res.json());`
                                                 </Box>
                                             </Grid>
                                             <Grid item xs={12} md={4}>
-                                                <Box sx={{ p: 2, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, height: '100%', border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                                                <Box sx={{ p: 2, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, height: '100%', border: '1px solid var(--accent-muted)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
                                                         <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: 'secondary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, color: '#ffffff' }}>2</Box>
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
@@ -10223,9 +10223,9 @@ console.log(await res.json());`
                                         </Box>
                                     </AccordionSummary>
                                     <AccordionDetails>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'text.secondary' }}>
-                                                <strong style={{ color: '#fafafa' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: '#818cf8' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
+                                                <strong style={{ color: '#fafafa' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
                                             </Typography>
                                         </Box>
 
@@ -10389,10 +10389,10 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search Engine Stack</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="DuckDuckGo (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="DuckDuckGo (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="Scrapling fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                         <Chip label="Brave Search fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                        <Chip label="Smart query extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Smart query extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="Time-range filtering" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                     </Box>
                                                 </Box>
@@ -10402,10 +10402,10 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Content Fetching Stack</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                                                         <Chip label="Scrapling StealthyFetcher (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="Axios fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
                                                         <Chip label="CAPTCHA evasion" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="XHR/SPA interception" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="XHR/SPA interception" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="Smart content extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
                                                     </Box>
                                                 </Box>
@@ -10414,7 +10414,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2, height: '100%' }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL Fetch Feature</Typography>
                                                     <Box sx={{ fontSize: '0.8rem' }}>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'rgba(99,102,241,0.12)' }}>POST /api/url/fetch</code> (admin/debug)</Typography>
+                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'var(--bg-hover)' }}>POST /api/url/fetch</code> (admin/debug)</Typography>
                                                         <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Up to 3 URLs per request, 50k chars/URL for files, 12k for HTML</Typography>
                                                         <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Smart truncation: 30% beginning + 70% end</Typography>
                                                         <Typography variant="body2" sx={{ fontSize: '0.78rem' }}>In chat: model invokes <code>fetch_url</code> as a native tool — no toggle</Typography>
@@ -10425,12 +10425,12 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <Box sx={{ p: 1.5, bgcolor: 'rgba(255,255,255,0.02)', borderRadius: 2 }}>
                                                     <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
                                                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="5 results with full content" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
-                                                        <Chip label="24k char content budget" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="5 results with full content" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
+                                                        <Chip label="24k char content budget" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="Smart query extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                         <Chip label="Content condensation" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                         <Chip label="Source citations" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                        <Chip label="Article body extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(99,102,241,0.15)' }} />
+                                                        <Chip label="Article body extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
                                                         <Chip label="Shadow DOM traversal" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
                                                         <Chip label="Smart truncation (30/70 split)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
                                                     </Box>
@@ -10586,11 +10586,11 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                     </AccordionSummary>
                                     <AccordionDetails>
                                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5 }}>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                 <Chip label="query" size="small" sx={{ mb: 1, bgcolor: 'primary.main', color: '#09090b', fontWeight: 600, fontSize: '0.7rem' }} />
                                                 <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>Chat, completions, web search, Playwright</Typography>
                                             </Box>
-                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                                            <Box sx={{ flex: '1 1 180px', p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                 <Chip label="models" size="small" sx={{ mb: 1, bgcolor: 'secondary.main', color: '#ffffff', fontWeight: 600, fontSize: '0.7rem' }} />
                                                 <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>List, download, load/unload, configs</Typography>
                                             </Box>
@@ -10787,7 +10787,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <TableRow>
                                                         <TableCell colSpan={3} sx={{ bgcolor: 'rgba(168, 85, 247, 0.1)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <Chip label="Pi" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'rgba(168,85,247,0.5)', color: '#fafafa' }} />
+                                                                <Chip label="Pi" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--border-focus)', color: '#fafafa' }} />
                                                                 <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Pi Terminal Agent (bearer-only auth)</Typography>
                                                             </Box>
                                                         </TableCell>
@@ -10865,7 +10865,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         </TableContainer>
 
                                         {/* Build Options */}
-                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 1.5, border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+                                        <Box sx={{ p: 1.5, bgcolor: 'rgba(99, 102, 241, 0.08)', borderRadius: 1.5, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, mb: 0.5, color: 'info.main' }}>Build Script Options</Typography>
                                             <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', fontFamily: 'monospace' }}>
                                                 ./build.sh --no-cache    # Force rebuild without Docker cache<br/>
@@ -11011,8 +11011,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 onClick={() => setLogFilter(f.key)}
                                                 sx={{
                                                     fontSize: '0.7rem', height: 24, cursor: 'pointer',
-                                                    bgcolor: logFilter === f.key ? (f.color === 'default' ? 'rgba(99,102,241,0.2)' : `${f.color}22`) : 'rgba(255,255,255,0.04)',
-                                                    border: logFilter === f.key ? `1px solid ${f.color === 'default' ? 'rgba(99,102,241,0.5)' : f.color + '66'}` : '1px solid transparent',
+                                                    bgcolor: logFilter === f.key ? (f.color === 'default' ? 'var(--accent-muted)' : `${f.color}22`) : 'var(--bg-tertiary)',
+                                                    border: logFilter === f.key ? `1px solid ${f.color === 'default' ? 'var(--border-focus)' : f.color + '66'}` : '1px solid transparent',
                                                     color: logFilter === f.key ? (f.color === 'default' ? 'primary.main' : f.color) : 'text.secondary',
                                                     '&:hover': { bgcolor: f.color === 'default' ? 'rgba(99,102,241,0.1)' : `${f.color}15` }
                                                 }}
@@ -11119,7 +11119,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                         // Step N/M: → indigo badge
                                                         match = remaining.match(/^(Step \d+\/\d+:)/i);
                                                         if (match) {
-                                                            parts.push(<span key={key++} style={{ color: '#a5b4fc', backgroundColor: 'rgba(99,102,241,0.15)', padding: '1px 6px', borderRadius: 3, fontSize: '0.72rem', fontWeight: 600 }}>{match[1]}</span>);
+                                                            parts.push(<span key={key++} style={{ color: '#a5b4fc', backgroundColor: 'var(--accent-muted)', padding: '1px 6px', borderRadius: 3, fontSize: '0.72rem', fontWeight: 600 }}>{match[1]}</span>);
                                                             remaining = remaining.slice(match[0].length);
                                                             continue;
                                                         }
@@ -11212,7 +11212,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             py: isStepMsg ? 0.6 : isSeparator ? 0.8 : 0.35,
                                                             mt: isStepMsg ? 0.5 : 0,
                                                             bgcolor: isStepMsg ? 'rgba(99,102,241,0.04)' : isSeparator ? 'rgba(255,255,255,0.02)' : levelConfig.bg,
-                                                            borderLeft: `2px solid ${isStepMsg ? 'rgba(99,102,241,0.3)' : levelConfig.border}`,
+                                                            borderLeft: `2px solid ${isStepMsg ? 'var(--border-focus)' : levelConfig.border}`,
                                                             borderTop: isStepMsg ? '1px solid rgba(255,255,255,0.04)' : 'none',
                                                             '&:hover': { bgcolor: 'rgba(255,255,255,0.03)' },
                                                             transition: 'background-color 0.15s',
