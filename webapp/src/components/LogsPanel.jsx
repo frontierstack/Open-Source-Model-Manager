@@ -84,10 +84,15 @@ function FilterPill({ active, label, count, color, onClick }) {
 // pale blue, alpha-white separator) to their darker counterparts so
 // the spans stay readable on the slate surface used in light mode.
 function formatMessageInline(msg, isLight = false) {
+    // Accent-driven hues — brackets like [Chat], [Sandbox], step badges and
+    // container names ride the active accent so the log feed visibly
+    // belongs to the user's theme. Semantic level colors (error/warning/
+    // success) stay fixed because they carry meaning the accent shouldn't
+    // override.
     const C = isLight
         ? {
-              bracket:    '#0e7490',  // cyan-700
-              step:       '#4338ca',  // indigo-700
+              bracket:    'var(--accent-primary)',
+              step:       'var(--accent-primary)',
               percent:    '#b45309',  // amber-700
               size:       '#7e22ce',  // purple-700
               path:       '#1d4ed8',  // blue-700
@@ -95,17 +100,17 @@ function formatMessageInline(msg, isLight = false) {
               keyword:    '#0f172a',  // slate-900
               errFg:      '#b91c1c',  // red-700
               warnFg:     '#b45309',  // amber-700
-              container:  '#0e7490',
+              container:  'var(--accent-primary)',
               apiKey:     '#7e22ce',
               separator:  'rgba(15,23,42,0.30)',
-              bracketBg:  'rgba(14,116,144,0.10)',
-              stepBg:     'rgba(99,102,241,0.14)',
+              bracketBg:  'var(--accent-muted)',
+              stepBg:     'var(--accent-muted)',
               errBg:      'rgba(185,28,28,0.10)',
               warnBg:     'rgba(180,83,9,0.10)',
           }
         : {
-              bracket:    '#22d3ee',
-              step:       '#a5b4fc',
+              bracket:    'var(--accent-primary)',
+              step:       'var(--accent-primary)',
               percent:    '#fbbf24',
               size:       '#c084fc',
               path:       '#93c5fd',
@@ -113,11 +118,11 @@ function formatMessageInline(msg, isLight = false) {
               keyword:    '#e2e8f0',
               errFg:      '#f87171',
               warnFg:     '#fbbf24',
-              container:  '#22d3ee',
+              container:  'var(--accent-primary)',
               apiKey:     '#c084fc',
               separator:  'rgba(255,255,255,0.35)',
-              bracketBg:  'rgba(34,211,238,0.08)',
-              stepBg:     'rgba(99,102,241,0.15)',
+              bracketBg:  'var(--accent-muted)',
+              stepBg:     'var(--accent-muted)',
               errBg:      'rgba(239,68,68,0.12)',
               warnBg:     'rgba(245,158,11,0.12)',
           };

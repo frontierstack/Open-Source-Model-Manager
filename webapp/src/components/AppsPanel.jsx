@@ -170,30 +170,6 @@ export default function AppsPanel({
     const externalApps = apps.filter((a) => !a.integrated);
     return (
         <div className="flex flex-col gap-4">
-            {/* Page header */}
-            <div
-                className="flex items-center gap-3 rounded-xl border px-4 py-3"
-                style={{
-                    backgroundColor: 'var(--surface-primary)',
-                    borderColor: 'var(--border-primary)',
-                }}
-            >
-                <span
-                    className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
-                    style={{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent-primary)' }}
-                >
-                    <AppsIcon size={20} strokeWidth={1.75} />
-                </span>
-                <div className="min-w-0">
-                    <div className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                        Apps Management
-                    </div>
-                    <div className="text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
-                        Manage integrated applications and agent systems
-                    </div>
-                </div>
-            </div>
-
             {/* External apps grid */}
             {externalApps.length > 0 && (
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
