@@ -264,29 +264,22 @@ const CollapsibleSection = ({ title, icon, children, defaultExpanded = true }) =
     );
 };
 
-// Modern Doc Icon Component - sleek pill-shaped icon container
+// Inline doc-section icon — no colored container, no gradient. Just a
+// monoline lucide glyph next to the accordion title in the appropriate
+// semantic tint. Earlier version wrapped each icon in a 32px pill with
+// a gradient background which read as "cheesy" against the chat
+// aesthetic.
 const DocIcon = ({ icon, color = 'primary' }) => {
     const colorMap = {
-        primary: { bg: 'var(--accent-muted)', border: 'var(--border-focus)', icon: 'var(--accent-primary)' },
-        secondary: { bg: 'var(--accent-muted)', border: 'var(--border-focus)', icon: 'var(--accent-primary)' },
-        success: { bg: 'rgba(34, 197, 94, 0.15)', border: 'rgba(34, 197, 94, 0.3)', icon: '#22c55e' },
-        warning: { bg: 'rgba(251, 191, 36, 0.15)', border: 'rgba(251, 191, 36, 0.3)', icon: '#fbbf24' },
+        primary:   'var(--text-secondary)',
+        secondary: 'var(--text-secondary)',
+        success:   '#22c55e',
+        warning:   '#f59e0b',
     };
-    const colors = colorMap[color] || colorMap.primary;
     return (
-        <Box sx={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 32,
-            height: 32,
-            borderRadius: '10px',
-            background: `linear-gradient(135deg, ${colors.bg} 0%, transparent 100%)`,
-            border: `1px solid ${colors.border}`,
-            flexShrink: 0,
-        }}>
-            {React.cloneElement(icon, { sx: { fontSize: 16, color: colors.icon } })}
-        </Box>
+        <span style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: colorMap[color] || colorMap.primary }}>
+            {React.cloneElement(icon, { sx: { fontSize: 18, color: 'inherit' } })}
+        </span>
     );
 };
 
