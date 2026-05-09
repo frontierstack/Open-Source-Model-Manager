@@ -108,6 +108,8 @@ import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
 import Menu from '@mui/material/Menu';
 import useMediaQuery from '@mui/material/useMediaQuery';
+import ThemePicker from './components/ThemePicker';
+import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
 
@@ -692,6 +694,14 @@ const App = () => {
             fetchUsers();
         }
     }, [activeTab, user?.role, tabOrder]);
+
+    // Hydrate UI preferences (theme/accent/bubble/density) from the
+    // server on mount. The store applies them to <html>/<body> so chat's
+    // CSS variables resolve. Runs once; subsequent updates are pushed
+    // back to the server by the store itself.
+    useEffect(() => {
+        usePreferencesStore.getState().hydrate();
+    }, []);
 
     // Initial data fetch and WebSocket setup
     useEffect(() => {
@@ -7733,6 +7743,11 @@ console.log(await res.json());`
                                 </Typography>
                             </Box>
                             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexShrink: 0 }}>
+                                {/* Tailwind-based theme picker. Reads/writes
+                                    /api/me/preferences and applies the same
+                                    CSS variables chat:3002 uses, so theme
+                                    choice syncs across both apps. */}
+                                <ThemePicker />
                                 <Chip
                                     icon={wsConnected ? <CheckCircleIcon sx={{ fontSize: 18 }} /> : <WarningIcon sx={{ fontSize: 18 }} />}
                                     label={wsConnected ? "Connected" : "Disconnected"}

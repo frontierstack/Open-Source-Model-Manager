@@ -5,6 +5,7 @@ import { useChatStore } from './stores/useChatStore';
 import { ToastProvider, useShowSnackbar } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
 import { loadGoogleFont } from './fontLoader';
+import { hydrateFromServer as hydratePreferencesFromServer, watchAndSync as watchPreferenceSync } from './serverPreferencesSync';
 
 // Password Reset Form
 function PasswordResetForm({ onBack, onSuccess }) {
@@ -357,11 +358,17 @@ function AppContent() {
         checkAuth();
     }, []);
 
-    // Load models and system prompts when authenticated
+    // Load models and system prompts when authenticated. Also hydrate
+    // UI preferences from the server (theme/font/layout shared with
+    // webapp:3001) and start watching local store changes to push them
+    // back. localStorage stays the per-device source of truth between
+    // sessions; the server endpoint is the cross-device/app one.
     useEffect(() => {
         if (user) {
             loadModels();
             loadSystemPrompts();
+            hydratePreferencesFromServer();
+            watchPreferenceSync();
         }
     }, [user]);
 

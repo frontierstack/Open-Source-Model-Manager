@@ -2655,6 +2655,70 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
     }
 });
 
+// ============================================================================
+// USER PREFERENCES — UI state shared between webapp:3001 and chat:3002
+// (theme, accent, bubble, density, font, layout). Session-auth only;
+// API key / bearer callers don't have UI prefs to sync.
+// ============================================================================
+
+const PREF_FIELDS = new Set([
+    'theme',         // dark | midnight | ocean | sunset | matrix | solarized | kanagawa | palenight | research | research-dark | light
+    'accent',        // violet | amber | emerald | slate | rose
+    'bubble',        // bubbles | cards | rows
+    'density',       // comfortable | compact
+    'fontFamily',    // any value from the chat font list
+    'fontSize',      // small | medium | large
+    'layout',        // default | centered | timeline | bubbles | slack | minimal
+    'codePreviewEnabled', // boolean — controls code-block preview rendering in chat
+    'compactSidebar', // boolean — webapp left rail collapsed
+]);
+
+function sanitizePreferencesPatch(patch) {
+    if (!patch || typeof patch !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(patch)) {
+        if (!PREF_FIELDS.has(k)) continue;
+        if (typeof v === 'string') {
+            if (v.length > 100) continue;
+            out[k] = v;
+        } else if (typeof v === 'boolean' || typeof v === 'number') {
+            out[k] = v;
+        }
+    }
+    return out;
+}
+
+app.get('/api/me/preferences', requireAuth, async (req, res) => {
+    if (!req.user || !req.user.id) {
+        return res.status(401).json({ error: 'Session authentication required' });
+    }
+    try {
+        const user = await getUserById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        res.json({ preferences: user.preferences || {} });
+    } catch (err) {
+        console.error('[preferences] get error:', err);
+        res.status(500).json({ error: 'Failed to load preferences' });
+    }
+});
+
+app.put('/api/me/preferences', requireAuth, async (req, res) => {
+    if (!req.user || !req.user.id) {
+        return res.status(401).json({ error: 'Session authentication required' });
+    }
+    const sanitized = sanitizePreferencesPatch(req.body);
+    try {
+        const user = await getUserById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        const merged = { ...(user.preferences || {}), ...sanitized };
+        await updateUser(req.user.id, { preferences: merged });
+        res.json({ preferences: merged });
+    } catch (err) {
+        console.error('[preferences] put error:', err);
+        res.status(500).json({ error: 'Failed to save preferences' });
+    }
+});
+
 // Change password (rate limited to prevent brute force)
 app.put('/api/auth/password', authRateLimiter, requireAuth, async (req, res) => {
     // Require session authentication only - API keys cannot change passwords

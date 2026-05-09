@@ -1,0 +1,3977 @@
+@import url('https://fonts.googleapis.com/css2?family=Anonymous+Pro:wght@400;700&family=Assistant:wght@300;400;500;600&family=Atkinson+Hyperlegible:wght@400;700&family=Barlow:wght@300;400;500;600&family=Comfortaa:wght@300;400;500;600&family=Cascadia+Code:wght@400;500&family=Inconsolata:wght@400;500&family=Crimson+Pro:wght@300;400;600&family=DM+Sans:wght@300;400;500;600&family=Exo+2:wght@300;400;500;600&family=Figtree:wght@300;400;500;600&family=Fira+Code:wght@400;500&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&family=Intel+One+Mono:wght@400;500&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Karla:wght@300;400;500;600&family=Lato:wght@300;400;700&family=Lexend:wght@300;400;500;600&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;600&family=Manrope:wght@300;400;500;600&family=Martian+Mono:wght@400;500&family=Merriweather:wght@300;400;700&family=Source+Code+Pro:wght@400;500&family=Nunito:wght@300;400;600&family=Onest:wght@300;400;500;600&family=Open+Sans:wght@300;400;600&family=Outfit:wght@300;400;500;600&family=Overpass:wght@300;400;500;600&family=Playfair+Display:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Poppins:wght@300;400;500;600&family=Public+Sans:wght@300;400;500;600&family=Quicksand:wght@300;400;500;600&family=Readex+Pro:wght@300;400;500;600&family=Red+Hat+Display:wght@300;400;500;600&family=Roboto:wght@300;400;500&family=Rubik:wght@300;400;500;600&family=Sora:wght@300;400;500;600&family=Source+Sans+Pro:wght@300;400;600&family=Source+Serif+Pro:wght@300;400;600&family=Space+Grotesk:wght@300;400;500;600&family=Space+Mono:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Urbanist:wght@300;400;500;600&family=Victor+Mono:wght@400;500&family=Work+Sans:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   CSS Variables & Theme System
+   Modern ChatGPT/LMStudio-inspired design
+   ============================================ */
+
+:root {
+    /* Transition timing for smooth theme switching */
+    --theme-transition: 150ms ease-out;
+
+    /* Border radius tokens - slimmer, more refined */
+    --radius-sm: 0.25rem;
+    --radius-md: 0.375rem;
+    --radius-lg: 0.5rem;
+    --radius-xl: 0.625rem;
+    --radius-2xl: 0.75rem;
+
+    /* Shadow tokens - more subtle */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.03);
+    --shadow-md: 0 2px 4px -1px rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+    --shadow-lg: 0 4px 8px -2px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.04);
+    --shadow-xl: 0 8px 16px -4px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.05);
+
+    /* Typography - sleeker fonts */
+    --font-weight-light: 300;
+    --font-weight-normal: 400;
+    --font-weight-medium: 500;
+    --font-weight-semibold: 600;
+}
+
+/* ============================================
+   Design Palette Bridge
+   Exposes the research-UI design tokens (--ink, --accent, --rule,
+   --bubble-*) so new components read from one system regardless of
+   which existing theme class is applied.
+
+   Declared on `body` (same level as theme-X classes) so all vars
+   resolve in the same cascade — avoids multi-level var() lookup
+   flakiness in some browsers.
+   ============================================ */
+body {
+    /* Text scale (bridge to existing theme --text-* tokens) */
+    --ink:   var(--text-primary);
+    --ink-2: var(--text-secondary);
+    --ink-3: var(--text-tertiary);
+    --ink-4: var(--text-muted);
+
+    /* Background + surface */
+    --bg:      var(--bg-primary);
+    --bg-2:    var(--bg-secondary);
+    --surface: var(--bg-elevated, var(--bg-secondary));
+
+    /* Rules */
+    --rule:   var(--border-primary);
+    --rule-2: var(--border-secondary);
+
+    /* Accent */
+    --accent:      var(--accent-primary);
+    --accent-soft: var(--accent-muted);
+    --accent-ink:  #ffffff;
+
+    /* ---- Message bubbles — FLAT by default (match test HTML) ----
+       AI messages render as clean prose. The border uses
+       --message-border-opacity so the slider in Settings actually
+       controls border visibility even in flat mode (slider at 0 =
+       invisible, slider at 100 = solid --ink border). */
+    --bubble-ai-bg:     transparent;
+    --bubble-ai-ink:    var(--ink);
+    --bubble-border:    1px solid color-mix(in oklab, var(--ink) calc(var(--message-border-opacity, 0) * 100%), transparent);
+    --bubble-radius:    0;
+    --bubble-pad-y:     0;
+    --bubble-pad-x:     0;
+    --bubble-shadow:    none;
+
+    /* User bubble uses the theme's muted --user-msg-from so messages
+       feel distinct from the bright accent used by buttons/chips,
+       reducing the "background too strong" problem. */
+    --bubble-user-bg:   var(--user-msg-from);
+    --bubble-user-ink:  var(--user-msg-text);
+
+    /* Status */
+    --ok:      var(--success);
+    --danger:  var(--error);
+    --warning: #f59e0b;
+
+    /* Spacing — design uses 28px between messages (was 18px, too tight) */
+    --msg-gap:   28px;
+    --density-y: 18px;
+    --density-x: 22px;
+
+    /* Radius tokens from the design */
+    --radius-sm: 6px;
+    --radius:    10px;
+    --radius-lg: 14px;
+
+    /* Fonts — sans inherits from the body font-family-* class so the
+       font picker still applies. Mono uses a curated stack. Serif
+       variants are available via data-font overrides below. */
+    --font-sans:  inherit;
+    --font-serif: 'Fraunces', 'Lora', Georgia, serif;
+    --font-mono:  ui-monospace, 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace;
+}
+
+/* Per-theme contrast overrides for accent-ink */
+.theme-light   { --accent-ink: #ffffff; }
+.theme-matrix  { --accent-ink: #050a05; }
+
+/* ---- Anti-haze guard ----
+   Kill any inherited filter / backdrop-filter on the page chrome and
+   force an opaque body background. Some themes (Solarized, Andromeda,
+   Kanagawa, etc.) used semi-transparent rgba surface values that
+   leaked through the chat layout as a page-wide haze. */
+html, body, #root {
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+body {
+    background-color: var(--bg-primary) !important;
+}
+
+/* ---- Bubble density variants ----
+   Users can switch via body[data-bubble="..."] for different message
+   styling without losing the theme/accent. */
+body[data-bubble="bubbles"] {
+    --bubble-ai-bg:   var(--bg-2);
+    --bubble-border:  1px solid color-mix(in oklab, var(--ink) calc(var(--message-border-opacity, 0.15) * 100%), transparent);
+    --bubble-radius:  14px;
+    --bubble-pad-y:   14px;
+    --bubble-pad-x:   18px;
+    --bubble-shadow:  none;
+}
+body[data-bubble="cards"] {
+    --bubble-ai-bg:   var(--surface);
+    --bubble-border:  1px solid color-mix(in oklab, var(--ink) calc(var(--message-border-opacity, 0.15) * 100%), transparent);
+    --bubble-radius:  14px;
+    --bubble-pad-y:   18px;
+    --bubble-pad-x:   22px;
+    --bubble-shadow:  0 1px 0 rgba(0,0,0,0.02), 0 8px 20px -12px rgba(0,0,0,0.08);
+}
+.theme-dark body[data-bubble="cards"],
+.theme-midnight body[data-bubble="cards"],
+.theme-ocean body[data-bubble="cards"],
+.theme-sunset body[data-bubble="cards"],
+.theme-matrix body[data-bubble="cards"],
+.theme-solarized body[data-bubble="cards"],
+.theme-kanagawa body[data-bubble="cards"],
+.theme-palenight body[data-bubble="cards"] {
+    --bubble-shadow: 0 1px 0 rgba(0,0,0,0.2), 0 8px 24px -10px rgba(0,0,0,0.5);
+}
+
+/* ---- Density variants ---- */
+body[data-density="compact"] {
+    --density-y: 10px;
+    --density-x: 16px;
+    --msg-gap:   18px;
+}
+
+/* ---- Accent variants (override theme's accent) ----
+   Match the test HTML's OKLCH accent palette. */
+body[data-accent="violet"]  { --accent: oklch(0.55 0.13 290); --accent-ink: oklch(0.98 0.01 290); --accent-soft: oklch(0.95 0.04 290); }
+body[data-accent="amber"]   { --accent: oklch(0.7  0.13 70);  --accent-ink: oklch(0.2  0.02 70);  --accent-soft: oklch(0.94 0.04 70);  }
+body[data-accent="emerald"] { --accent: oklch(0.6  0.13 160); --accent-ink: oklch(0.98 0.01 160); --accent-soft: oklch(0.94 0.04 160); }
+body[data-accent="slate"]   { --accent: oklch(0.48 0.04 260); --accent-ink: oklch(0.98 0.005 260); --accent-soft: oklch(0.93 0.015 260); }
+body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklch(0.98 0.01 15);  --accent-soft: oklch(0.95 0.04 15);  }
+
+/* Dark-theme variants of accent-soft need more saturation to be visible */
+.theme-dark body[data-accent="violet"], .theme-midnight body[data-accent="violet"] { --accent-soft: oklch(0.32 0.05 290); }
+.theme-dark body[data-accent="amber"]                                               { --accent-soft: oklch(0.32 0.05 70);  }
+.theme-dark body[data-accent="emerald"]                                             { --accent-soft: oklch(0.3  0.05 160); }
+.theme-dark body[data-accent="slate"]                                               { --accent-soft: oklch(0.32 0.02 260); }
+.theme-dark body[data-accent="rose"]                                                { --accent-soft: oklch(0.32 0.06 15);  }
+
+/* ============================================
+   Theme: Dark (Default)
+   Clean dark theme with blue accents
+   ============================================ */
+:root,
+.theme-dark {
+    /* RGB values for Tailwind rgba() */
+    --primary-rgb: 59, 130, 246;
+
+    /* Background colors */
+    --bg-primary: #111113;
+    --bg-secondary: #1a1a1e;
+    --bg-tertiary: #252529;
+    --bg-elevated: #161618;
+    --bg-hover: rgba(255, 255, 255, 0.05);
+    --bg-active: rgba(255, 255, 255, 0.08);
+
+    /* Surface colors for cards/panels */
+    --surface-primary: rgba(26, 26, 30, 0.9);
+    --surface-secondary: rgba(37, 37, 41, 0.8);
+    --surface-glass: rgba(17, 17, 19, 0.9);
+
+    /* Text colors */
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --text-muted: #52525b;
+
+    /* Border colors */
+    --border-primary: rgba(255, 255, 255, 0.08);
+    --border-secondary: rgba(255, 255, 255, 0.04);
+    --border-hover: rgba(255, 255, 255, 0.12);
+    --border-focus: rgba(59, 130, 246, 0.4);
+
+    /* Accent/Brand colors - blue */
+    --accent-primary: #3b82f6;
+    --accent-secondary: #2563eb;
+    --accent-hover: #60a5fa;
+    --accent-muted: rgba(59, 130, 246, 0.15);
+
+    /* User message - muted blue, readable */
+    --user-msg-from: #2a3a50;
+    --user-msg-to: #1e2d42;
+    --user-msg-hover-from: #334763;
+    --user-msg-hover-to: #2a3a50;
+    --user-msg-text: #e8f0fc;
+
+    /* Assistant message */
+    --assistant-bg: rgba(26, 26, 30, 0.7);
+    --assistant-border: rgba(255, 255, 255, 0.06);
+    --assistant-text: #e4e4e7;
+
+    /* Status colors */
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --info: #3b82f6;
+
+    /* Scrollbar */
+    --scrollbar-track: transparent;
+    --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+
+    /* Code blocks */
+    --code-bg: #0a0a0c;
+    --code-header-bg: rgba(26, 26, 30, 0.6);
+    --code-border: rgba(255, 255, 255, 0.05);
+
+    /* Input */
+    --input-bg: rgba(17, 17, 19, 0.7);
+    --input-border: rgba(255, 255, 255, 0.1);
+    --input-focus-border: rgba(59, 130, 246, 0.5);
+    --input-focus-ring: rgba(59, 130, 246, 0.15);
+
+    /* Shadow colors */
+    --shadow-accent: rgba(59, 130, 246, 0.25);
+    --shadow-accent-hover: rgba(59, 130, 246, 0.35);
+}
+
+/* ============================================
+   Theme: Midnight
+   Purple-accented dark theme
+   ============================================ */
+.theme-midnight {
+    --primary-rgb: 139, 92, 246;
+    --bg-primary: #18181b;
+    --bg-secondary: #27272a;
+    --bg-tertiary: #3f3f46;
+    --bg-elevated: #1f1f23;
+    --bg-hover: rgba(255, 255, 255, 0.05);
+    --bg-active: rgba(255, 255, 255, 0.08);
+
+    --surface-primary: rgba(39, 39, 42, 0.8);
+    --surface-secondary: rgba(63, 63, 70, 0.6);
+    --surface-glass: rgba(24, 24, 27, 0.85);
+
+    --text-primary: #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --text-muted: #52525b;
+
+    --border-primary: rgba(255, 255, 255, 0.08);
+    --border-secondary: rgba(255, 255, 255, 0.04);
+    --border-hover: rgba(255, 255, 255, 0.12);
+    --border-focus: rgba(139, 92, 246, 0.4);
+
+    --accent-primary: #8b5cf6;
+    --accent-secondary: #7c3aed;
+    --accent-hover: #a78bfa;
+    --accent-muted: rgba(139, 92, 246, 0.2);
+
+    /* User message - muted purple */
+    --user-msg-from: #3d2a5c;
+    --user-msg-to: #2e1f4a;
+    --user-msg-hover-from: #4a3570;
+    --user-msg-hover-to: #3d2a5c;
+    --user-msg-text: #e8e0f8;
+
+    --assistant-bg: rgba(39, 39, 42, 0.6);
+    --assistant-border: rgba(255, 255, 255, 0.08);
+    --assistant-text: #e4e4e7;
+
+    --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
+
+    --code-bg: #09090b;
+    --code-header-bg: rgba(39, 39, 42, 0.5);
+    --code-border: rgba(255, 255, 255, 0.05);
+
+    --input-bg: rgba(24, 24, 27, 0.6);
+    --input-border: rgba(255, 255, 255, 0.1);
+    --input-focus-border: rgba(139, 92, 246, 0.5);
+    --input-focus-ring: rgba(139, 92, 246, 0.2);
+
+    --shadow-accent: rgba(139, 92, 246, 0.3);
+    --shadow-accent-hover: rgba(139, 92, 246, 0.4);
+}
+
+/* ============================================
+   Theme: Ocean
+   Deep blue nautical theme
+   ============================================ */
+.theme-ocean {
+    --primary-rgb: 59, 130, 246;
+    --bg-primary: #0c1929;
+    --bg-secondary: #132238;
+    --bg-tertiary: #1a2e4a;
+    --bg-elevated: #0f1e32;
+    --bg-hover: rgba(59, 130, 246, 0.08);
+    --bg-active: rgba(59, 130, 246, 0.12);
+
+    --surface-primary: rgba(19, 34, 56, 0.85);
+    --surface-secondary: rgba(26, 46, 74, 0.7);
+    --surface-glass: rgba(12, 25, 41, 0.9);
+
+    --text-primary: #f0f9ff;
+    --text-secondary: #7dd3fc;
+    --text-tertiary: #38bdf8;
+    --text-muted: #0284c7;
+
+    --border-primary: rgba(59, 130, 246, 0.2);
+    --border-secondary: rgba(59, 130, 246, 0.1);
+    --border-hover: rgba(59, 130, 246, 0.3);
+    --border-focus: rgba(59, 130, 246, 0.6);
+
+    --accent-primary: #3b82f6;
+    --accent-secondary: #2563eb;
+    --accent-hover: #60a5fa;
+    --accent-muted: rgba(59, 130, 246, 0.2);
+
+    /* User message - deep ocean blue */
+    --user-msg-from: #1a3554;
+    --user-msg-to: #122640;
+    --user-msg-hover-from: #234468;
+    --user-msg-hover-to: #1a3554;
+    --user-msg-text: #d6e8fc;
+
+    --assistant-bg: rgba(19, 34, 56, 0.7);
+    --assistant-border: rgba(59, 130, 246, 0.15);
+    --assistant-text: #d0e8ff;
+
+    --scrollbar-thumb: rgba(59, 130, 246, 0.2);
+    --scrollbar-thumb-hover: rgba(59, 130, 246, 0.35);
+
+    --code-bg: #081421;
+    --code-header-bg: rgba(19, 34, 56, 0.6);
+    --code-border: rgba(59, 130, 246, 0.1);
+
+    --input-bg: rgba(15, 30, 50, 0.7);
+    --input-border: rgba(59, 130, 246, 0.2);
+    --input-focus-border: rgba(59, 130, 246, 0.6);
+    --input-focus-ring: rgba(59, 130, 246, 0.2);
+
+    --shadow-accent: rgba(59, 130, 246, 0.3);
+    --shadow-accent-hover: rgba(59, 130, 246, 0.4);
+}
+
+/* ============================================
+   Theme: Sunset
+   Warm orange/brown dusk theme
+   ============================================ */
+.theme-sunset {
+    --primary-rgb: 249, 115, 22;
+    --bg-primary: #1a1412;
+    --bg-secondary: #291e1a;
+    --bg-tertiary: #3d2c25;
+    --bg-elevated: #211916;
+    --bg-hover: rgba(249, 115, 22, 0.08);
+    --bg-active: rgba(249, 115, 22, 0.12);
+
+    --surface-primary: rgba(41, 30, 26, 0.85);
+    --surface-secondary: rgba(61, 44, 37, 0.7);
+    --surface-glass: rgba(26, 20, 18, 0.9);
+
+    --text-primary: #fff7ed;
+    --text-secondary: #fdba74;
+    --text-tertiary: #fb923c;
+    --text-muted: #ea580c;
+
+    --border-primary: rgba(249, 115, 22, 0.2);
+    --border-secondary: rgba(249, 115, 22, 0.1);
+    --border-hover: rgba(249, 115, 22, 0.3);
+    --border-focus: rgba(249, 115, 22, 0.6);
+
+    --accent-primary: #f97316;
+    --accent-secondary: #ea580c;
+    --accent-hover: #fb923c;
+    --accent-muted: rgba(249, 115, 22, 0.2);
+
+    /* User message - warm sunset orange */
+    --user-msg-from: #4a2a18;
+    --user-msg-to: #3a1f10;
+    --user-msg-hover-from: #5c3520;
+    --user-msg-hover-to: #4a2a18;
+    --user-msg-text: #fce8d8;
+
+    --assistant-bg: rgba(41, 30, 26, 0.7);
+    --assistant-border: rgba(249, 115, 22, 0.15);
+    --assistant-text: #f5e0d0;
+
+    --scrollbar-thumb: rgba(249, 115, 22, 0.2);
+    --scrollbar-thumb-hover: rgba(249, 115, 22, 0.35);
+
+    --code-bg: #14100e;
+    --code-header-bg: rgba(41, 30, 26, 0.6);
+    --code-border: rgba(249, 115, 22, 0.1);
+
+    --input-bg: rgba(33, 25, 22, 0.7);
+    --input-border: rgba(249, 115, 22, 0.2);
+    --input-focus-border: rgba(249, 115, 22, 0.6);
+    --input-focus-ring: rgba(249, 115, 22, 0.2);
+
+    --shadow-accent: rgba(249, 115, 22, 0.3);
+    --shadow-accent-hover: rgba(249, 115, 22, 0.4);
+}
+
+/* ============================================
+   Theme: Matrix
+   Classic green terminal hacker theme
+   ============================================ */
+.theme-matrix {
+    --primary-rgb: 80, 200, 80;
+    --bg-primary: #050a05;
+    --bg-secondary: #0a120a;
+    --bg-tertiary: #101810;
+    --bg-elevated: #071007;
+    --bg-hover: rgba(80, 200, 80, 0.07);
+    --bg-active: rgba(80, 200, 80, 0.12);
+
+    --surface-primary: rgba(8, 20, 8, 0.9);
+    --surface-secondary: rgba(12, 30, 12, 0.8);
+    --surface-glass: rgba(5, 14, 5, 0.95);
+
+    --text-primary: #b8e6b8;
+    --text-secondary: #7dca7d;
+    --text-tertiary: #55a855;
+    --text-muted: #3a7a3a;
+
+    --border-primary: rgba(80, 200, 80, 0.18);
+    --border-secondary: rgba(80, 200, 80, 0.08);
+    --border-hover: rgba(80, 200, 80, 0.28);
+    --border-focus: rgba(100, 210, 100, 0.5);
+
+    --accent-primary: #50c850;
+    --accent-secondary: #3da83d;
+    --accent-hover: #70d870;
+    --accent-muted: rgba(0, 255, 0, 0.15);
+
+    /* User message - dark matrix green */
+    --user-msg-from: #0a2a0a;
+    --user-msg-to: #051a05;
+    --user-msg-hover-from: #103a10;
+    --user-msg-hover-to: #0a2a0a;
+    --user-msg-text: #c8e8c8;
+
+    --assistant-bg: rgba(8, 20, 8, 0.8);
+    --assistant-border: rgba(80, 200, 80, 0.12);
+    --assistant-text: #a8d8a8;
+
+    --scrollbar-thumb: rgba(0, 255, 0, 0.2);
+    --scrollbar-thumb-hover: rgba(0, 255, 0, 0.35);
+
+    --code-bg: #000000;
+    --code-header-bg: rgba(0, 30, 0, 0.7);
+    --code-border: rgba(0, 255, 0, 0.15);
+
+    --input-bg: rgba(0, 15, 0, 0.8);
+    --input-border: rgba(0, 255, 0, 0.25);
+    --input-focus-border: rgba(0, 255, 0, 0.6);
+    --input-focus-ring: rgba(0, 255, 0, 0.2);
+
+    --shadow-accent: rgba(0, 255, 0, 0.3);
+    --shadow-accent-hover: rgba(0, 255, 0, 0.4);
+
+    --success: #00ff00;
+    --warning: #ffff00;
+    --error: #ff0000;
+    --info: #00ffff;
+}
+
+/* ============================================
+   Theme: Solarized
+   Solarized Dark color scheme
+   ============================================ */
+.theme-solarized {
+    --primary-rgb: 38, 139, 210;
+    --bg-primary: #00141a;
+    --bg-secondary: #021c23;
+    --bg-tertiary: #04242d;
+    --bg-elevated: #001a20;
+    --bg-hover: rgba(147, 161, 161, 0.08);
+    --bg-active: rgba(147, 161, 161, 0.12);
+
+    --surface-primary: rgba(7, 54, 66, 0.9);
+    --surface-secondary: rgba(9, 71, 86, 0.8);
+    --surface-glass: rgba(0, 43, 54, 0.95);
+
+    --text-primary: #fdf6e3;
+    --text-secondary: #93a1a1;
+    --text-tertiary: #839496;
+    --text-muted: #657b83;
+
+    --border-primary: rgba(147, 161, 161, 0.15);
+    --border-secondary: rgba(147, 161, 161, 0.08);
+    --border-hover: rgba(147, 161, 161, 0.25);
+    --border-focus: rgba(38, 139, 210, 0.5);
+
+    --accent-primary: #268bd2;
+    --accent-secondary: #2aa198;
+    --accent-hover: #6c71c4;
+    --accent-muted: rgba(38, 139, 210, 0.15);
+
+    /* User message - solarized blue accent */
+    --user-msg-from: #0a4a5c;
+    --user-msg-to: #073642;
+    --user-msg-hover-from: #0d5a70;
+    --user-msg-hover-to: #0a4a5c;
+    --user-msg-text: #d0e8f0;
+
+    --assistant-bg: rgba(7, 54, 66, 0.8);
+    --assistant-border: rgba(147, 161, 161, 0.12);
+    --assistant-text: #93a1a1;
+
+    --scrollbar-thumb: rgba(147, 161, 161, 0.2);
+    --scrollbar-thumb-hover: rgba(147, 161, 161, 0.35);
+
+    --code-bg: #00232c;
+    --code-header-bg: rgba(7, 54, 66, 0.7);
+    --code-border: rgba(147, 161, 161, 0.1);
+
+    --input-bg: rgba(7, 54, 66, 0.8);
+    --input-border: rgba(147, 161, 161, 0.2);
+    --input-focus-border: rgba(38, 139, 210, 0.5);
+    --input-focus-ring: rgba(38, 139, 210, 0.15);
+
+    --shadow-accent: rgba(38, 139, 210, 0.3);
+    --shadow-accent-hover: rgba(38, 139, 210, 0.4);
+
+    --success: #859900;
+    --warning: #b58900;
+    --error: #dc322f;
+    --info: #268bd2;
+}
+
+/* ============================================
+   Theme: Kanagawa
+   Japanese wave-inspired palette
+   ============================================ */
+.theme-kanagawa {
+    --primary-rgb: 126, 156, 216;
+    --bg-primary: #0d0e12;
+    --bg-secondary: #12131a;
+    --bg-tertiary: #181a23;
+    --bg-elevated: #101118;
+    --bg-hover: rgba(126, 156, 216, 0.06);
+    --bg-active: rgba(126, 156, 216, 0.10);
+
+    --surface-primary: rgba(42, 42, 55, 0.9);
+    --surface-secondary: rgba(54, 54, 70, 0.8);
+    --surface-glass: rgba(31, 31, 40, 0.95);
+
+    --text-primary: #dcd7ba;
+    --text-secondary: #c8c093;
+    --text-tertiary: #727169;
+    --text-muted: #54546d;
+
+    --border-primary: rgba(126, 156, 216, 0.12);
+    --border-secondary: rgba(126, 156, 216, 0.06);
+    --border-hover: rgba(126, 156, 216, 0.22);
+    --border-focus: rgba(126, 156, 216, 0.5);
+
+    --accent-primary: #7e9cd8;
+    --accent-secondary: #957fb8;
+    --accent-hover: #a3b8e8;
+    --accent-muted: rgba(126, 156, 216, 0.15);
+
+    --user-msg-from: #2a3050;
+    --user-msg-to: #222840;
+    --user-msg-hover-from: #343c60;
+    --user-msg-hover-to: #2a3050;
+    --user-msg-text: #dcd7e8;
+
+    --assistant-bg: rgba(42, 42, 55, 0.8);
+    --assistant-border: rgba(126, 156, 216, 0.10);
+    --assistant-text: #dcd7ba;
+
+    --scrollbar-thumb: rgba(126, 156, 216, 0.18);
+    --scrollbar-thumb-hover: rgba(126, 156, 216, 0.30);
+
+    --code-bg: #1a1a22;
+    --code-header-bg: rgba(42, 42, 55, 0.7);
+    --code-border: rgba(126, 156, 216, 0.08);
+
+    --input-bg: rgba(36, 36, 46, 0.8);
+    --input-border: rgba(126, 156, 216, 0.15);
+    --input-focus-border: rgba(126, 156, 216, 0.5);
+    --input-focus-ring: rgba(126, 156, 216, 0.12);
+
+    --shadow-accent: rgba(126, 156, 216, 0.2);
+    --shadow-accent-hover: rgba(149, 127, 184, 0.3);
+
+    --success: #98bb6c;
+    --warning: #e6c384;
+    --error: #e82424;
+    --info: #7fb4ca;
+}
+
+/* ============================================
+   Theme: Palenight
+   Material palenight soft purple-blue
+   ============================================ */
+.theme-palenight {
+    --primary-rgb: 199, 146, 234;
+    --bg-primary: #141624;
+    --bg-secondary: #181a29;
+    --bg-tertiary: #1d1f2f;
+    --bg-elevated: #161828;
+    --bg-hover: rgba(199, 146, 234, 0.06);
+    --bg-active: rgba(199, 146, 234, 0.10);
+
+    --surface-primary: rgba(44, 48, 67, 0.9);
+    --surface-secondary: rgba(50, 55, 77, 0.8);
+    --surface-glass: rgba(41, 45, 62, 0.95);
+
+    --text-primary: #a6accd;
+    --text-secondary: #959dcb;
+    --text-tertiary: #676e95;
+    --text-muted: #4e5579;
+
+    --border-primary: rgba(199, 146, 234, 0.12);
+    --border-secondary: rgba(199, 146, 234, 0.06);
+    --border-hover: rgba(199, 146, 234, 0.22);
+    --border-focus: rgba(199, 146, 234, 0.5);
+
+    --accent-primary: #c792ea;
+    --accent-secondary: #82aaff;
+    --accent-hover: #d8acf0;
+    --accent-muted: rgba(199, 146, 234, 0.15);
+
+    --user-msg-from: #362e4a;
+    --user-msg-to: #2c263e;
+    --user-msg-hover-from: #42385a;
+    --user-msg-hover-to: #362e4a;
+    --user-msg-text: #e0d4f0;
+
+    --assistant-bg: rgba(44, 48, 67, 0.8);
+    --assistant-border: rgba(199, 146, 234, 0.10);
+    --assistant-text: #a6accd;
+
+    --scrollbar-thumb: rgba(199, 146, 234, 0.18);
+    --scrollbar-thumb-hover: rgba(199, 146, 234, 0.30);
+
+    --code-bg: #242837;
+    --code-header-bg: rgba(44, 48, 67, 0.7);
+    --code-border: rgba(199, 146, 234, 0.08);
+
+    --input-bg: rgba(43, 47, 64, 0.8);
+    --input-border: rgba(199, 146, 234, 0.15);
+    --input-focus-border: rgba(199, 146, 234, 0.5);
+    --input-focus-ring: rgba(199, 146, 234, 0.12);
+
+    --shadow-accent: rgba(199, 146, 234, 0.2);
+    --shadow-accent-hover: rgba(130, 170, 255, 0.3);
+
+    --success: #c3e88d;
+    --warning: #ffcb6b;
+    --error: #f07178;
+    --info: #82aaff;
+}
+
+/* ============================================
+   Theme: Research
+   The design-reference palette — warm cream light mode with violet
+   accent using OKLCH. Editorial feel, serif-friendly, flat bubbles.
+   ============================================ */
+.theme-research {
+    --primary-rgb: 138, 92, 245;
+
+    --bg-primary:   oklch(0.985 0.004 85);
+    --bg-secondary: oklch(0.965 0.005 85);
+    --bg-tertiary:  oklch(0.945 0.006 85);
+    --bg-elevated:  oklch(1    0     0);
+    --bg-hover:     oklch(0.93 0.01 85 / 0.6);
+    --bg-active:    oklch(0.90 0.015 85 / 0.7);
+
+    --surface-primary:   oklch(1 0 0);
+    --surface-secondary: oklch(0.985 0.004 85);
+    --surface-glass:     oklch(1 0 0 / 0.95);
+
+    --text-primary:   oklch(0.22 0.008 60);
+    --text-secondary: oklch(0.40 0.008 60);
+    --text-tertiary:  oklch(0.55 0.008 60);
+    --text-muted:     oklch(0.72 0.006 60);
+
+    --border-primary:   oklch(0.82 0.006 75);
+    --border-secondary: oklch(0.88 0.008 75);
+    --border-hover:     oklch(0.75 0.008 75);
+    --border-focus:     oklch(0.50 0.20 290);
+
+    --accent-primary:   oklch(0.50 0.22 290);
+    --accent-secondary: oklch(0.44 0.24 290);
+    --accent-hover:     oklch(0.56 0.22 290);
+    --accent-muted:     oklch(0.94 0.06 290);
+
+    --user-msg-from: oklch(0.50 0.22 290);
+    --user-msg-to:   oklch(0.44 0.24 290);
+    --user-msg-hover-from: oklch(0.53 0.22 290);
+    --user-msg-hover-to:   oklch(0.47 0.24 290);
+    --user-msg-text: oklch(0.98 0.01 290);
+
+    --assistant-bg:     transparent;
+    --assistant-border: transparent;
+    --assistant-text:   oklch(0.22 0.008 60);
+
+    --scrollbar-track:       transparent;
+    --scrollbar-thumb:       oklch(0.78 0.008 75);
+    --scrollbar-thumb-hover: oklch(0.68 0.01 75);
+
+    --code-bg:        oklch(0.96 0.005 85);
+    --code-header-bg: oklch(0.965 0.005 85);
+    --code-border:    oklch(0.88 0.008 75);
+
+    --input-bg:            oklch(1 0 0);
+    --input-border:        oklch(0.82 0.006 75);
+    --input-focus-border:  oklch(0.55 0.13 290);
+    --input-focus-ring:    oklch(0.55 0.13 290 / 0.15);
+
+    --shadow-accent:       oklch(0.55 0.13 290 / 0.22);
+    --shadow-accent-hover: oklch(0.55 0.13 290 / 0.32);
+
+    --success: oklch(0.62 0.13 155);
+    --warning: oklch(0.7  0.15 65);
+    --error:   oklch(0.58 0.17 25);
+    --info:    oklch(0.55 0.13 290);
+}
+
+/* Research theme — dark variant. Same design language, dark ground. */
+.theme-research-dark {
+    --primary-rgb: 158, 124, 252;
+
+    --bg-primary:   oklch(0.17 0.008 60);
+    --bg-secondary: oklch(0.21 0.008 60);
+    --bg-tertiary:  oklch(0.25 0.008 60);
+    --bg-elevated:  oklch(0.215 0.008 60);
+    --bg-hover:     oklch(0.27 0.009 60 / 0.6);
+    --bg-active:    oklch(0.30 0.01 60 / 0.7);
+
+    --surface-primary:   oklch(0.215 0.008 60);
+    --surface-secondary: oklch(0.25 0.008 60);
+    --surface-glass:     oklch(0.19 0.008 60 / 0.95);
+
+    --text-primary:   oklch(0.985 0.003 85);
+    --text-secondary: oklch(0.92  0.004 85);
+    --text-tertiary:  oklch(0.78  0.005 85);
+    --text-muted:     oklch(0.62  0.006 85);
+
+    --border-primary:   oklch(0.34 0.008 60);
+    --border-secondary: oklch(0.40 0.008 60);
+    --border-hover:     oklch(0.44 0.008 60);
+    --border-focus:     oklch(0.72 0.20 290);
+
+    --accent-primary:   oklch(0.72 0.20 290);
+    --accent-secondary: oklch(0.64 0.22 290);
+    --accent-hover:     oklch(0.78 0.19 290);
+    --accent-muted:     oklch(0.34 0.09 290);
+
+    --user-msg-from: oklch(0.72 0.20 290);
+    --user-msg-to:   oklch(0.64 0.22 290);
+    --user-msg-hover-from: oklch(0.75 0.19 290);
+    --user-msg-hover-to:   oklch(0.68 0.21 290);
+    --user-msg-text: oklch(0.12 0.02 290);
+
+    --assistant-bg:     transparent;
+    --assistant-border: transparent;
+    --assistant-text:   oklch(0.985 0.003 85);
+
+    --scrollbar-thumb:       oklch(0.38 0.008 60);
+    --scrollbar-thumb-hover: oklch(0.48 0.008 60);
+
+    --code-bg:        oklch(0.13 0.008 60);
+    --code-header-bg: oklch(0.215 0.008 60);
+    --code-border:    oklch(0.34 0.008 60);
+
+    --input-bg:            oklch(0.215 0.008 60);
+    --input-border:        oklch(0.34 0.008 60);
+    --input-focus-border:  oklch(0.70 0.14 290);
+    --input-focus-ring:    oklch(0.70 0.14 290 / 0.15);
+
+    --success: oklch(0.70 0.13 155);
+    --warning: oklch(0.75 0.14 65);
+    --error:   oklch(0.68 0.16 25);
+    --info:    oklch(0.70 0.14 290);
+}
+
+/* ============================================
+   Theme: Light
+   Clean white theme with pure black text, no purple
+   ============================================ */
+.theme-light {
+    --primary-rgb: 99, 102, 241;
+
+    /* Clean, warm white backgrounds with subtle depth */
+    --bg-primary: #fafafa;
+    --bg-secondary: #f5f5f5;
+    --bg-tertiary: #eeeeee;
+    --bg-elevated: #ffffff;
+    --bg-hover: rgba(0, 0, 0, 0.03);
+    --bg-active: rgba(0, 0, 0, 0.06);
+
+    --surface-primary: #ffffff;
+    --surface-secondary: #f5f5f5;
+    --surface-glass: rgba(255, 255, 255, 0.95);
+
+    /* High contrast readable text - neutral, no blue */
+    --text-primary: #171717;
+    --text-secondary: #404040;
+    --text-tertiary: #737373;
+    --text-muted: #a3a3a3;
+
+    /* Subtle, refined borders */
+    --border-primary: #e5e5e5;
+    --border-secondary: #f0f0f0;
+    --border-hover: #d4d4d4;
+    --border-focus: #6366f1;
+
+    /* Indigo accent — vivid but not loud on white, matches the
+       research-UI aesthetic. */
+    --accent-primary: #6366f1;
+    --accent-secondary: #4f46e5;
+    --accent-hover: #818cf8;
+    --accent-muted: rgba(99, 102, 241, 0.10);
+
+    /* User messages — soft indigo tint, clearly accented but not loud */
+    --user-msg-from: #e0e2ff;
+    --user-msg-to: #d3d5fc;
+    --user-msg-hover-from: #d5d8ff;
+    --user-msg-hover-to: #c8cbfb;
+    --user-msg-text: #1e1e42;
+
+    /* Assistant message styling - visible distinction from page background */
+    --assistant-bg: #f0f1f4;
+    --assistant-border: #d4d6dc;
+    --assistant-text: #1f1f1f;
+
+    /* Minimal scrollbar */
+    --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
+
+    /* Code block styling - subtle distinction */
+    --code-bg: #f5f5f5;
+    --code-header-bg: #eeeeee;
+    --code-border: #e5e5e5;
+
+    /* Input styling */
+    --input-bg: #ffffff;
+    --input-border: #e5e5e5;
+    --input-focus-border: #52525b;
+    --input-focus-ring: rgba(82, 82, 91, 0.15);
+
+    /* Shadows */
+    --shadow-accent: rgba(0, 0, 0, 0.08);
+    --shadow-accent-hover: rgba(0, 0, 0, 0.14);
+
+    /* Status colors */
+    --success: #16a34a;
+    --warning: #d97706;
+    --error: #dc2626;
+    --info: #52525b;
+}
+
+/* Light theme specific overrides for Tailwind dark classes */
+
+/* === Backgrounds === */
+.theme-light .bg-dark-950,
+.theme-light .bg-dark-900,
+.theme-light .bg-dark-850 {
+    background-color: #fafafa !important;
+}
+
+/* Opacity variants of dark backgrounds */
+.theme-light .bg-dark-900\/80,
+.theme-light .bg-dark-900\/90,
+.theme-light .bg-dark-900\/95,
+.theme-light .bg-dark-900\/98 {
+    background-color: #fafafa !important;
+}
+
+.theme-light .bg-dark-800,
+.theme-light .bg-dark-800\/80,
+.theme-light .bg-dark-800\/60,
+.theme-light .bg-dark-800\/50,
+.theme-light .bg-dark-800\/70,
+.theme-light .bg-dark-800\/40 {
+    background-color: #f5f5f5 !important;
+}
+
+.theme-light .bg-dark-700,
+.theme-light .bg-dark-700\/50 {
+    background-color: #eeeeee !important;
+}
+
+/* White-opacity overlays → black-opacity on light backgrounds */
+.theme-light .bg-white\/5,
+.theme-light .bg-white\/8,
+.theme-light .bg-white\/\[0\.06\] {
+    background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+.theme-light .bg-white\/10 {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+.theme-light .bg-dark-950\/90 {
+    background-color: rgba(250, 250, 250, 0.92) !important;
+}
+
+/* === Text === */
+.theme-light .text-dark-100 {
+    color: #171717 !important;
+}
+
+.theme-light .text-dark-200 {
+    color: #262626 !important;
+}
+
+.theme-light .text-dark-300 {
+    color: #404040 !important;
+}
+
+.theme-light .text-dark-400 {
+    color: #737373 !important;
+}
+
+.theme-light .text-dark-500 {
+    color: #a3a3a3 !important;
+}
+
+.theme-light .text-dark-600 {
+    color: #b5b5b5 !important;
+}
+
+.theme-light .text-white {
+    color: #ffffff !important;
+}
+
+/* === Borders === */
+.theme-light .border-dark-700,
+.theme-light .border-dark-700\/50,
+.theme-light .border-dark-700\/60 {
+    border-color: #e5e5e5 !important;
+}
+
+.theme-light .border-white\/5,
+.theme-light .border-white\/8,
+.theme-light .border-white\/10,
+.theme-light .border-white\/\[0\.06\] {
+    border-color: #e0e0e0 !important;
+}
+
+.theme-light .border-white\/15,
+.theme-light .border-white\/20 {
+    border-color: #d4d4d4 !important;
+}
+
+.theme-light .divide-white\/5 > * + * {
+    border-color: #e5e5e5 !important;
+}
+
+.theme-light .border-transparent {
+    border-color: transparent !important;
+}
+
+/* === Gradients (sidebar, input area) === */
+.theme-light .from-dark-900,
+.theme-light .from-dark-950 {
+    --tw-gradient-from: #f5f5f5 !important;
+}
+
+.theme-light .to-dark-950,
+.theme-light .to-dark-900 {
+    --tw-gradient-to: #eeeeee !important;
+}
+
+.theme-light .via-dark-950,
+.theme-light .via-dark-950\/95 {
+    --tw-gradient-via: #fafafa !important;
+}
+
+/* Tailwind hardcodes via color in --tw-gradient-stops, so variable overrides don't work.
+   Override the entire gradient for the input area bottom fade. */
+.theme-light .bg-gradient-to-t.from-dark-950.via-dark-950\/95 {
+    background-image: none !important;
+    background-color: transparent !important;
+}
+
+/* === Shadows === */
+.theme-light .shadow-dark-950\/30,
+.theme-light .shadow-dark-950\/50 {
+    --tw-shadow-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* === Placeholders === */
+.theme-light .placeholder-dark-500::placeholder,
+.theme-light .placeholder\\:text-dark-500::placeholder {
+    color: #a3a3a3 !important;
+}
+
+.theme-light select option {
+    background-color: #ffffff;
+    color: #171717;
+}
+
+/* === Hover states === */
+.theme-light .hover\\:bg-white\\/5:hover,
+.theme-light .hover\\:bg-white\\/8:hover,
+.theme-light .hover\\:bg-white\\/\[0\\.04\]:hover,
+.theme-light .hover\\:bg-white\\/\[0\\.05\]:hover,
+.theme-light .hover\\:bg-white\\/\[0\\.06\]:hover {
+    background-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+.theme-light .hover\\:bg-white\\/10:hover {
+    background-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+.theme-light .hover\\:bg-dark-700\\/50:hover,
+.theme-light .hover\\:bg-dark-700:hover,
+.theme-light .hover\\:bg-dark-800:hover {
+    background-color: #eeeeee !important;
+}
+
+.theme-light .hover\\:text-dark-100:hover,
+.theme-light .hover\\:text-dark-200:hover {
+    color: #171717 !important;
+}
+
+.theme-light .hover\\:border-white\\/15:hover,
+.theme-light .hover\\:border-white\\/20:hover {
+    border-color: #d4d4d4 !important;
+}
+
+/* === Focus states === */
+.theme-light .focus\\:border-white\\/15:focus {
+    border-color: #c4c4c4 !important;
+}
+
+/* === Primary accent === */
+.theme-light .bg-primary-500\/15,
+.theme-light .bg-primary-500\/10,
+.theme-light .bg-primary-500\/20 {
+    background-color: rgba(82, 82, 91, 0.08) !important;
+}
+
+.theme-light .text-primary-300,
+.theme-light .text-primary-400 {
+    color: #52525b !important;
+}
+
+.theme-light .border-primary-500,
+.theme-light .border-primary-500\/40,
+.theme-light .border-primary-500\/50 {
+    border-color: #52525b !important;
+}
+
+/* === Sidebar-specific: active/selected conversation highlight === */
+.theme-light .hover\\:border-white\\/20 {
+    border-color: transparent !important;
+}
+
+/* === Backdrop blur panels (dropdowns, modals) === */
+.theme-light .backdrop-blur-xl,
+.theme-light .backdrop-blur-md {
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+}
+
+/* === Settings modal / font dropdown on light === */
+.theme-light .bg-dark-900\/98 {
+    background-color: #fafafa !important;
+}
+
+/* Light theme table overrides */
+.theme-light .markdown-content table {
+    border: 1px solid #e5e5e5;
+}
+
+.theme-light .markdown-content thead {
+    background-color: #eeeeee;
+}
+
+.theme-light .markdown-content th {
+    color: #171717;
+    border-bottom-color: #e5e5e5;
+}
+
+.theme-light .markdown-content td {
+    color: #404040;
+    border-bottom-color: #f0f0f0;
+}
+
+.theme-light .markdown-content tr:hover td {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
+/* Light theme code block overrides */
+.theme-light .code-block,
+.theme-light pre {
+    background-color: #f5f5f5 !important;
+    border-color: #e5e5e5 !important;
+}
+
+.theme-light .code-header {
+    background-color: #eeeeee !important;
+}
+
+.theme-light .code-content {
+    color: #171717;
+}
+
+/* Light theme additional refinements */
+.theme-light .ring-primary-500\/20 {
+    --tw-ring-color: rgba(82, 82, 91, 0.12) !important;
+}
+
+.theme-light .shadow-lg {
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03) !important;
+}
+
+.theme-light .shadow-2xl {
+    box-shadow: 0 8px 16px -4px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04) !important;
+}
+
+/* === Light theme: new opacity classes from modernized layout === */
+.theme-light .bg-white\/\[0\.04\],
+.theme-light .bg-white\/\[0\.05\] {
+    background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+.theme-light .bg-dark-700\/30,
+.theme-light .bg-dark-700\/40 {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+.theme-light .bg-dark-800\/70 {
+    background-color: #f0f0f0 !important;
+}
+
+.theme-light .border-dark-700\/40,
+.theme-light .border-white\/\[0\.04\] {
+    border-color: #d4d4d4 !important;
+}
+
+.theme-light .border-dark-600\/40 {
+    border-color: #c4c4c4 !important;
+}
+
+.theme-light .text-dark-600 {
+    color: #8a8a8a !important;
+}
+
+.theme-light .hover\\:border-dark-600\\/40:hover {
+    border-color: #b0b0b0 !important;
+}
+
+.theme-light .focus-within\\:border-primary-500\\/30:focus-within {
+    border-color: #3b82f6 !important;
+}
+
+.theme-light .placeholder\\:text-dark-600::placeholder {
+    color: #a3a3a3 !important;
+}
+
+/* === Light theme: input bar toggle buttons === */
+.theme-light .bg-blue-500\/12 {
+    background-color: rgba(59, 130, 246, 0.12) !important;
+}
+
+.theme-light .bg-emerald-500\/12 {
+    background-color: rgba(16, 185, 129, 0.12) !important;
+}
+
+/* === Light theme: file attachment tag text (dark enough to read on white) === */
+.theme-light .text-blue-300 {
+    color: #2563eb !important;
+}
+
+.theme-light .text-purple-300 {
+    color: #7c3aed !important;
+}
+
+.theme-light .text-emerald-300 {
+    color: #059669 !important;
+}
+
+.theme-light .text-amber-300 {
+    color: #d97706 !important;
+}
+
+.theme-light .text-gray-300 {
+    color: #6b7280 !important;
+}
+
+.theme-light .text-blue-400 {
+    color: #2563eb !important;
+}
+
+.theme-light .text-primary-300 {
+    color: #3b82f6 !important;
+}
+
+/* === Light theme: file attachment borders & backgrounds more visible === */
+.theme-light .border-blue-500\/30 {
+    border-color: rgba(37, 99, 235, 0.3) !important;
+}
+
+.theme-light .border-purple-500\/30 {
+    border-color: rgba(124, 58, 237, 0.3) !important;
+}
+
+.theme-light .border-emerald-500\/30 {
+    border-color: rgba(5, 150, 105, 0.3) !important;
+}
+
+.theme-light .border-amber-500\/30 {
+    border-color: rgba(217, 119, 6, 0.3) !important;
+}
+
+.theme-light .border-gray-500\/30 {
+    border-color: rgba(107, 114, 128, 0.3) !important;
+}
+
+.theme-light .border-primary-500\/20 {
+    border-color: rgba(59, 130, 246, 0.25) !important;
+}
+
+.theme-light .bg-primary-500\/15 {
+    background-color: rgba(59, 130, 246, 0.08) !important;
+}
+
+/* === Light theme: stop button === */
+.theme-light .bg-red-500\/15 {
+    background-color: rgba(239, 68, 68, 0.12) !important;
+}
+
+/* ============================================
+   Theme: Ayu Dark
+   Clean modern dark with warm accents
+   ============================================ */
+.theme-ayu {
+    --primary-rgb: 230, 180, 80;
+    --bg-primary: #0b0e14;
+    --bg-secondary: #0d1017;
+    --bg-tertiary: #131721;
+    --bg-elevated: #0c0f15;
+    --bg-hover: rgba(230, 180, 80, 0.06);
+    --bg-active: rgba(230, 180, 80, 0.10);
+
+    --surface-primary: rgba(13, 16, 23, 0.9);
+    --surface-secondary: rgba(19, 23, 33, 0.8);
+    --surface-glass: rgba(11, 14, 20, 0.95);
+
+    --text-primary: #bfbdb6;
+    --text-secondary: #acb6bf;
+    --text-tertiary: #636a72;
+    --text-muted: #484e57;
+
+    --border-primary: rgba(230, 180, 80, 0.12);
+    --border-secondary: rgba(230, 180, 80, 0.06);
+    --border-hover: rgba(230, 180, 80, 0.22);
+    --border-focus: rgba(230, 180, 80, 0.5);
+
+    --accent-primary: #e6b450;
+    --accent-secondary: #ffb454;
+    --accent-hover: #f0c575;
+    --accent-muted: rgba(230, 180, 80, 0.15);
+
+    --user-msg-from: #2a2210;
+    --user-msg-to: #201a0c;
+    --user-msg-hover-from: #352b15;
+    --user-msg-hover-to: #2a2210;
+    --user-msg-text: #f0e4c8;
+
+    --assistant-bg: rgba(13, 16, 23, 0.8);
+    --assistant-border: rgba(230, 180, 80, 0.10);
+    --assistant-text: #bfbdb6;
+
+    --scrollbar-thumb: rgba(230, 180, 80, 0.18);
+    --scrollbar-thumb-hover: rgba(230, 180, 80, 0.30);
+
+    --code-bg: #080a0f;
+    --code-header-bg: rgba(13, 16, 23, 0.7);
+    --code-border: rgba(230, 180, 80, 0.08);
+
+    --input-bg: rgba(12, 15, 21, 0.8);
+    --input-border: rgba(230, 180, 80, 0.15);
+    --input-focus-border: rgba(230, 180, 80, 0.5);
+    --input-focus-ring: rgba(230, 180, 80, 0.12);
+
+    --shadow-accent: rgba(230, 180, 80, 0.2);
+    --shadow-accent-hover: rgba(255, 180, 84, 0.3);
+
+    --success: #7fd962;
+    --warning: #e6b450;
+    --error: #d95757;
+    --info: #73b8ff;
+}
+
+/* ============================================
+   Theme: Mocha
+   Deep espresso background with warm honey-tan accents. Cozy cafe
+   aesthetic — distinct from Copper (metallic orange) and Sunset
+   (bright pink/orange); sits in the Warm Tones group as the muted,
+   grounded counterpart to Copper's brightness.
+   ============================================ */
+.theme-mocha {
+    --primary-rgb: 207, 168, 122;
+    --bg-primary: #130e0a;
+    --bg-secondary: #1c1510;
+    --bg-tertiary: #261c16;
+    --bg-elevated: #1a130e;
+    --bg-hover: rgba(207, 168, 122, 0.06);
+    --bg-active: rgba(207, 168, 122, 0.11);
+
+    --surface-primary: rgba(28, 21, 16, 0.92);
+    --surface-secondary: rgba(38, 28, 22, 0.82);
+    --surface-glass: rgba(19, 14, 10, 0.95);
+
+    --text-primary: #f2e6d4;
+    --text-secondary: #d1bfa6;
+    --text-tertiary: #a38d73;
+    --text-muted: #665443;
+
+    --border-primary: rgba(207, 168, 122, 0.14);
+    --border-secondary: rgba(207, 168, 122, 0.07);
+    --border-hover: rgba(207, 168, 122, 0.26);
+    --border-focus: rgba(207, 168, 122, 0.52);
+
+    --accent-primary: #cfa87a;
+    --accent-secondary: #a8845a;
+    --accent-hover: #e3bc8c;
+    --accent-muted: rgba(207, 168, 122, 0.16);
+
+    --user-msg-from: #2a1f16;
+    --user-msg-to: #1e160f;
+    --user-msg-hover-from: #362a1f;
+    --user-msg-hover-to: #2a1f16;
+    --user-msg-text: #f7ecd8;
+
+    --assistant-bg: rgba(28, 21, 16, 0.85);
+    --assistant-border: rgba(207, 168, 122, 0.10);
+    --assistant-text: #f2e6d4;
+
+    --scrollbar-thumb: rgba(207, 168, 122, 0.20);
+    --scrollbar-thumb-hover: rgba(207, 168, 122, 0.34);
+
+    --code-bg: #0e0907;
+    --code-header-bg: rgba(28, 21, 16, 0.75);
+    --code-border: rgba(207, 168, 122, 0.09);
+
+    --input-bg: rgba(22, 16, 12, 0.85);
+    --input-border: rgba(207, 168, 122, 0.16);
+    --input-focus-border: rgba(207, 168, 122, 0.52);
+    --input-focus-ring: rgba(207, 168, 122, 0.13);
+
+    --shadow-accent: rgba(207, 168, 122, 0.20);
+    --shadow-accent-hover: rgba(168, 132, 90, 0.30);
+
+    --success: #7fb369;
+    --warning: #e3bc8c;
+    --error: #d4625a;
+    --info: #8ab4c8;
+}
+
+/* ============================================
+   Theme: Synthwave
+   80s retro synthwave theme
+   ============================================ */
+.theme-synthwave {
+    --primary-rgb: 255, 110, 199;
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #262640;
+    --bg-tertiary: #333355;
+    --bg-elevated: #1f1f35;
+    --bg-hover: rgba(255, 110, 199, 0.1);
+    --bg-active: rgba(255, 110, 199, 0.15);
+
+    --surface-primary: rgba(38, 38, 64, 0.9);
+    --surface-secondary: rgba(51, 51, 85, 0.8);
+    --surface-glass: rgba(26, 26, 46, 0.95);
+
+    --text-primary: #f5f5f5;
+    --text-secondary: #ff6ec7;
+    --text-tertiary: #c97dff;
+    --text-muted: #6a6a8e;
+
+    --border-primary: rgba(255, 110, 199, 0.2);
+    --border-secondary: rgba(255, 110, 199, 0.1);
+    --border-hover: rgba(255, 110, 199, 0.35);
+    --border-focus: rgba(0, 255, 255, 0.5);
+
+    --accent-primary: #ff6ec7;
+    --accent-secondary: #00ffff;
+    --accent-hover: #ff9de6;
+    --accent-muted: rgba(255, 110, 199, 0.2);
+
+    /* User message - synthwave magenta */
+    --user-msg-from: #4a1a40;
+    --user-msg-to: #3a1030;
+    --user-msg-hover-from: #5c2252;
+    --user-msg-hover-to: #4a1a40;
+    --user-msg-text: #ffe0f8;
+
+    --assistant-bg: rgba(38, 38, 64, 0.8);
+    --assistant-border: rgba(0, 255, 255, 0.15);
+    --assistant-text: #e8e8e8;
+
+    --scrollbar-thumb: rgba(255, 110, 199, 0.25);
+    --scrollbar-thumb-hover: rgba(255, 110, 199, 0.4);
+
+    --code-bg: #12121f;
+    --code-header-bg: rgba(38, 38, 64, 0.7);
+    --code-border: rgba(0, 255, 255, 0.12);
+
+    --input-bg: rgba(31, 31, 53, 0.8);
+    --input-border: rgba(255, 110, 199, 0.25);
+    --input-focus-border: rgba(0, 255, 255, 0.5);
+    --input-focus-ring: rgba(0, 255, 255, 0.2);
+
+    --shadow-accent: rgba(255, 110, 199, 0.35);
+    --shadow-accent-hover: rgba(0, 255, 255, 0.4);
+
+    --success: #00ff88;
+    --warning: #ffff00;
+    --error: #ff3860;
+    --info: #00ffff;
+}
+
+/* ============================================
+   Theme: Andromeda
+   Purple and pink galaxy-inspired theme
+   ============================================ */
+.theme-andromeda {
+    --primary-rgb: 238, 93, 67;
+    --bg-primary: #0e1016;
+    --bg-secondary: #12151c;
+    --bg-tertiary: #171b23;
+    --bg-elevated: #10131a;
+    --bg-hover: rgba(238, 93, 67, 0.07);
+    --bg-active: rgba(238, 93, 67, 0.12);
+
+    --surface-primary: rgba(41, 44, 52, 0.9);
+    --surface-secondary: rgba(47, 50, 60, 0.8);
+    --surface-glass: rgba(35, 38, 46, 0.95);
+
+    --text-primary: #d5ced9;
+    --text-secondary: #b4a8bd;
+    --text-tertiary: #867b90;
+    --text-muted: #5a5265;
+
+    --border-primary: rgba(238, 93, 67, 0.15);
+    --border-secondary: rgba(238, 93, 67, 0.08);
+    --border-hover: rgba(238, 93, 67, 0.25);
+    --border-focus: rgba(238, 93, 67, 0.5);
+
+    --accent-primary: #ee5d43;
+    --accent-secondary: #c74ded;
+    --accent-hover: #f0836e;
+    --accent-muted: rgba(238, 93, 67, 0.15);
+
+    --user-msg-from: #3e2a2a;
+    --user-msg-to: #332020;
+    --user-msg-hover-from: #4a3232;
+    --user-msg-hover-to: #3e2a2a;
+    --user-msg-text: #f0dcd8;
+
+    --assistant-bg: rgba(41, 44, 52, 0.8);
+    --assistant-border: rgba(238, 93, 67, 0.12);
+    --assistant-text: #d5ced9;
+
+    --scrollbar-thumb: rgba(238, 93, 67, 0.2);
+    --scrollbar-thumb-hover: rgba(238, 93, 67, 0.35);
+
+    --code-bg: #1e2028;
+    --code-header-bg: rgba(41, 44, 52, 0.7);
+    --code-border: rgba(238, 93, 67, 0.1);
+
+    --input-bg: rgba(38, 41, 48, 0.8);
+    --input-border: rgba(238, 93, 67, 0.2);
+    --input-focus-border: rgba(238, 93, 67, 0.5);
+    --input-focus-ring: rgba(238, 93, 67, 0.15);
+
+    --shadow-accent: rgba(238, 93, 67, 0.25);
+    --shadow-accent-hover: rgba(199, 77, 237, 0.35);
+
+    --success: #96e072;
+    --warning: #ffe66d;
+    --error: #ee5d43;
+    --info: #7cb7ff;
+}
+
+/* ============================================
+   Theme: Poimandres
+   Teal and blue developer theme
+   ============================================ */
+.theme-poimandres {
+    --primary-rgb: 173, 215, 255;
+    --bg-primary: #1b1e28;
+    --bg-secondary: #1e2030;
+    --bg-tertiary: #252837;
+    --bg-elevated: #1c1f2a;
+    --bg-hover: rgba(93, 228, 199, 0.06);
+    --bg-active: rgba(93, 228, 199, 0.10);
+
+    --surface-primary: rgba(30, 32, 48, 0.9);
+    --surface-secondary: rgba(37, 40, 55, 0.8);
+    --surface-glass: rgba(27, 30, 40, 0.95);
+
+    --text-primary: #e4f0fb;
+    --text-secondary: #a6accd;
+    --text-tertiary: #767c9d;
+    --text-muted: #506477;
+
+    --border-primary: rgba(93, 228, 199, 0.12);
+    --border-secondary: rgba(93, 228, 199, 0.06);
+    --border-hover: rgba(93, 228, 199, 0.22);
+    --border-focus: rgba(93, 228, 199, 0.5);
+
+    --accent-primary: #5de4c7;
+    --accent-secondary: #add7ff;
+    --accent-hover: #89f0d8;
+    --accent-muted: rgba(93, 228, 199, 0.15);
+
+    --user-msg-from: #1a2e30;
+    --user-msg-to: #142428;
+    --user-msg-hover-from: #223a3c;
+    --user-msg-hover-to: #1a2e30;
+    --user-msg-text: #d4f0ea;
+
+    --assistant-bg: rgba(30, 32, 48, 0.8);
+    --assistant-border: rgba(93, 228, 199, 0.10);
+    --assistant-text: #e4f0fb;
+
+    --scrollbar-thumb: rgba(93, 228, 199, 0.18);
+    --scrollbar-thumb-hover: rgba(93, 228, 199, 0.30);
+
+    --code-bg: #161822;
+    --code-header-bg: rgba(30, 32, 48, 0.7);
+    --code-border: rgba(93, 228, 199, 0.08);
+
+    --input-bg: rgba(28, 31, 42, 0.8);
+    --input-border: rgba(93, 228, 199, 0.15);
+    --input-focus-border: rgba(93, 228, 199, 0.5);
+    --input-focus-ring: rgba(93, 228, 199, 0.12);
+
+    --shadow-accent: rgba(93, 228, 199, 0.2);
+    --shadow-accent-hover: rgba(173, 215, 255, 0.3);
+
+    --success: #5de4c7;
+    --warning: #fffac2;
+    --error: #d0679d;
+    --info: #add7ff;
+}
+
+/* ============================================
+   Theme: Slate
+   Neutral grays with subtle blue undertone
+   ============================================ */
+.theme-slate {
+    --primary-rgb: 100, 116, 139;
+    --bg-primary: #090b11;
+    --bg-secondary: #0e1118;
+    --bg-tertiary: #141823;
+    --bg-elevated: #0b0e16;
+    --bg-hover: rgba(100, 116, 139, 0.08);
+    --bg-active: rgba(100, 116, 139, 0.12);
+
+    --surface-primary: rgba(30, 41, 59, 0.9);
+    --surface-secondary: rgba(51, 65, 85, 0.8);
+    --surface-glass: rgba(15, 23, 42, 0.95);
+
+    --text-primary: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-tertiary: #94a3b8;
+    --text-muted: #64748b;
+
+    --border-primary: rgba(100, 116, 139, 0.2);
+    --border-secondary: rgba(100, 116, 139, 0.1);
+    --border-hover: rgba(100, 116, 139, 0.3);
+    --border-focus: rgba(148, 163, 184, 0.5);
+
+    --accent-primary: #64748b;
+    --accent-secondary: #475569;
+    --accent-hover: #94a3b8;
+    --accent-muted: rgba(100, 116, 139, 0.15);
+
+    /* User message - slate blue-gray */
+    --user-msg-from: #2d3a50;
+    --user-msg-to: #1e2a3d;
+    --user-msg-hover-from: #3a4a62;
+    --user-msg-hover-to: #2d3a50;
+    --user-msg-text: #e2e8f0;
+
+    --assistant-bg: rgba(30, 41, 59, 0.8);
+    --assistant-border: rgba(100, 116, 139, 0.15);
+    --assistant-text: #e2e8f0;
+
+    --scrollbar-thumb: rgba(100, 116, 139, 0.2);
+    --scrollbar-thumb-hover: rgba(100, 116, 139, 0.35);
+
+    --code-bg: #0a1020;
+    --code-header-bg: rgba(30, 41, 59, 0.7);
+    --code-border: rgba(100, 116, 139, 0.12);
+
+    --input-bg: rgba(23, 32, 51, 0.8);
+    --input-border: rgba(100, 116, 139, 0.2);
+    --input-focus-border: rgba(148, 163, 184, 0.5);
+    --input-focus-ring: rgba(148, 163, 184, 0.15);
+
+    --shadow-accent: rgba(100, 116, 139, 0.25);
+    --shadow-accent-hover: rgba(148, 163, 184, 0.35);
+
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --info: #3b82f6;
+}
+
+/* ============================================
+   Theme: Copper
+   Warm metallic copper tones
+   ============================================ */
+.theme-copper {
+    --primary-rgb: 184, 115, 51;
+    --bg-primary: #1a1210;
+    --bg-secondary: #2a1e1a;
+    --bg-tertiary: #3d2c25;
+    --bg-elevated: #211816;
+    --bg-hover: rgba(184, 115, 51, 0.08);
+    --bg-active: rgba(184, 115, 51, 0.12);
+
+    --surface-primary: rgba(42, 30, 26, 0.9);
+    --surface-secondary: rgba(61, 44, 37, 0.8);
+    --surface-glass: rgba(26, 18, 16, 0.95);
+
+    --text-primary: #fff5eb;
+    --text-secondary: #dda15e;
+    --text-tertiary: #bc6c25;
+    --text-muted: #945a1f;
+
+    --border-primary: rgba(184, 115, 51, 0.2);
+    --border-secondary: rgba(184, 115, 51, 0.1);
+    --border-hover: rgba(184, 115, 51, 0.3);
+    --border-focus: rgba(221, 161, 94, 0.5);
+
+    --accent-primary: #b87333;
+    --accent-secondary: #945a1f;
+    --accent-hover: #dda15e;
+    --accent-muted: rgba(184, 115, 51, 0.15);
+
+    /* User message - metallic copper */
+    --user-msg-from: #4a2c1a;
+    --user-msg-to: #3a2014;
+    --user-msg-hover-from: #5c3822;
+    --user-msg-hover-to: #4a2c1a;
+    --user-msg-text: #fce8d8;
+
+    --assistant-bg: rgba(42, 30, 26, 0.8);
+    --assistant-border: rgba(184, 115, 51, 0.15);
+    --assistant-text: #f0e0d0;
+
+    --scrollbar-thumb: rgba(184, 115, 51, 0.2);
+    --scrollbar-thumb-hover: rgba(184, 115, 51, 0.35);
+
+    --code-bg: #120c0a;
+    --code-header-bg: rgba(42, 30, 26, 0.7);
+    --code-border: rgba(184, 115, 51, 0.12);
+
+    --input-bg: rgba(33, 24, 22, 0.8);
+    --input-border: rgba(184, 115, 51, 0.2);
+    --input-focus-border: rgba(221, 161, 94, 0.5);
+    --input-focus-ring: rgba(221, 161, 94, 0.15);
+
+    --shadow-accent: rgba(184, 115, 51, 0.3);
+    --shadow-accent-hover: rgba(221, 161, 94, 0.4);
+
+    --success: #66bb6a;
+    --warning: #dda15e;
+    --error: #ef5350;
+    --info: #42a5f5;
+}
+
+/* ============================================
+   Theme: Sand
+   Warm beige and tan tones
+   ============================================ */
+.theme-sand {
+    --primary-rgb: 194, 154, 108;
+    --bg-primary: #1a1714;
+    --bg-secondary: #28231e;
+    --bg-tertiary: #38322a;
+    --bg-elevated: #201c18;
+    --bg-hover: rgba(194, 154, 108, 0.08);
+    --bg-active: rgba(194, 154, 108, 0.12);
+
+    --surface-primary: rgba(40, 35, 30, 0.9);
+    --surface-secondary: rgba(56, 50, 42, 0.8);
+    --surface-glass: rgba(26, 23, 20, 0.95);
+
+    --text-primary: #fdf6ee;
+    --text-secondary: #d4b896;
+    --text-tertiary: #c29a6c;
+    --text-muted: #a08060;
+
+    --border-primary: rgba(194, 154, 108, 0.2);
+    --border-secondary: rgba(194, 154, 108, 0.1);
+    --border-hover: rgba(194, 154, 108, 0.3);
+    --border-focus: rgba(212, 184, 150, 0.5);
+
+    --accent-primary: #c29a6c;
+    --accent-secondary: #a08060;
+    --accent-hover: #d4b896;
+    --accent-muted: rgba(194, 154, 108, 0.15);
+
+    /* User message - warm sand */
+    --user-msg-from: #40352a;
+    --user-msg-to: #30281f;
+    --user-msg-hover-from: #504538;
+    --user-msg-hover-to: #40352a;
+    --user-msg-text: #f8f0e4;
+
+    --assistant-bg: rgba(40, 35, 30, 0.8);
+    --assistant-border: rgba(194, 154, 108, 0.15);
+    --assistant-text: #ece0d0;
+
+    --scrollbar-thumb: rgba(194, 154, 108, 0.2);
+    --scrollbar-thumb-hover: rgba(194, 154, 108, 0.35);
+
+    --code-bg: #12100d;
+    --code-header-bg: rgba(40, 35, 30, 0.7);
+    --code-border: rgba(194, 154, 108, 0.12);
+
+    --input-bg: rgba(32, 28, 24, 0.8);
+    --input-border: rgba(194, 154, 108, 0.2);
+    --input-focus-border: rgba(212, 184, 150, 0.5);
+    --input-focus-ring: rgba(212, 184, 150, 0.15);
+
+    --shadow-accent: rgba(194, 154, 108, 0.25);
+    --shadow-accent-hover: rgba(212, 184, 150, 0.35);
+
+    --success: #66bb6a;
+    --warning: #f59e0b;
+    --error: #ef5350;
+    --info: #42a5f5;
+}
+
+/* ============================================
+   Theme: Oxocarbon
+   IBM Carbon Design inspired theme
+   ============================================ */
+.theme-oxocarbon {
+    --primary-rgb: 190, 149, 255;
+    --bg-primary: #161616;
+    --bg-secondary: #1e1e1e;
+    --bg-tertiary: #262626;
+    --bg-elevated: #1a1a1a;
+    --bg-hover: rgba(190, 149, 255, 0.07);
+    --bg-active: rgba(190, 149, 255, 0.12);
+
+    --surface-primary: rgba(30, 30, 30, 0.9);
+    --surface-secondary: rgba(38, 38, 38, 0.8);
+    --surface-glass: rgba(22, 22, 22, 0.95);
+
+    --text-primary: #f2f4f8;
+    --text-secondary: #dde1e6;
+    --text-tertiary: #a2a9b0;
+    --text-muted: #525252;
+
+    --border-primary: rgba(190, 149, 255, 0.15);
+    --border-secondary: rgba(190, 149, 255, 0.08);
+    --border-hover: rgba(190, 149, 255, 0.25);
+    --border-focus: rgba(190, 149, 255, 0.5);
+
+    --accent-primary: #be95ff;
+    --accent-secondary: #ff7eb6;
+    --accent-hover: #d4bbff;
+    --accent-muted: rgba(190, 149, 255, 0.15);
+
+    --user-msg-from: #2a2240;
+    --user-msg-to: #201a33;
+    --user-msg-hover-from: #352a50;
+    --user-msg-hover-to: #2a2240;
+    --user-msg-text: #ede4ff;
+
+    --assistant-bg: rgba(30, 30, 30, 0.8);
+    --assistant-border: rgba(190, 149, 255, 0.12);
+    --assistant-text: #f2f4f8;
+
+    --scrollbar-thumb: rgba(190, 149, 255, 0.2);
+    --scrollbar-thumb-hover: rgba(190, 149, 255, 0.35);
+
+    --code-bg: #111111;
+    --code-header-bg: rgba(30, 30, 30, 0.7);
+    --code-border: rgba(190, 149, 255, 0.1);
+
+    --input-bg: rgba(26, 26, 26, 0.8);
+    --input-border: rgba(190, 149, 255, 0.2);
+    --input-focus-border: rgba(190, 149, 255, 0.5);
+    --input-focus-ring: rgba(190, 149, 255, 0.15);
+
+    --shadow-accent: rgba(190, 149, 255, 0.25);
+    --shadow-accent-hover: rgba(255, 126, 182, 0.35);
+
+    --success: #42be65;
+    --warning: #f1c21b;
+    --error: #ff8389;
+    --info: #78a9ff;
+}
+
+/* ============================================
+   Theme: Crimson
+   Deep rich red theme
+   ============================================ */
+.theme-crimson {
+    --primary-rgb: 220, 38, 38;
+    --bg-primary: #0d0404;
+    --bg-secondary: #120707;
+    --bg-tertiary: #1a0b0b;
+    --bg-elevated: #100505;
+    --bg-hover: rgba(220, 38, 38, 0.08);
+    --bg-active: rgba(220, 38, 38, 0.12);
+
+    --surface-primary: rgba(35, 14, 14, 0.9);
+    --surface-secondary: rgba(45, 20, 20, 0.8);
+    --surface-glass: rgba(26, 8, 8, 0.95);
+
+    --text-primary: #f5d8d8;
+    --text-secondary: #c46c6c;
+    --text-tertiary: #a04848;
+    --text-muted: #7a3535;
+
+    --border-primary: rgba(220, 38, 38, 0.2);
+    --border-secondary: rgba(220, 38, 38, 0.1);
+    --border-hover: rgba(220, 38, 38, 0.3);
+    --border-focus: rgba(220, 38, 38, 0.5);
+
+    --accent-primary: #dc2626;
+    --accent-secondary: #ef4444;
+    --accent-hover: #b91c1c;
+    --accent-muted: rgba(220, 38, 38, 0.15);
+
+    /* User message - deep crimson red */
+    --user-msg-from: #7f1d1d;
+    --user-msg-to: #5c1414;
+    --user-msg-hover-from: #991b1b;
+    --user-msg-hover-to: #7f1d1d;
+    --user-msg-text: #fce4e4;
+
+    --assistant-bg: rgba(35, 14, 14, 0.8);
+    --assistant-border: rgba(220, 38, 38, 0.12);
+    --assistant-text: #f5d8d8;
+
+    --scrollbar-thumb: rgba(220, 38, 38, 0.3);
+    --scrollbar-thumb-hover: rgba(220, 38, 38, 0.45);
+
+    --code-bg: #140505;
+    --code-header-bg: rgba(26, 8, 8, 0.7);
+    --code-border: rgba(220, 38, 38, 0.1);
+
+    --input-bg: rgba(35, 14, 14, 0.8);
+    --input-border: rgba(220, 38, 38, 0.25);
+    --input-focus-border: rgba(220, 38, 38, 0.5);
+    --input-focus-ring: rgba(220, 38, 38, 0.15);
+
+    --shadow-accent: rgba(220, 38, 38, 0.3);
+    --shadow-accent-hover: rgba(239, 68, 68, 0.4);
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --info: #60a5fa;
+}
+
+/* ============================================
+   Theme: Storm
+   Dark blue-gray moody theme
+   ============================================ */
+.theme-storm {
+    --primary-rgb: 99, 118, 150;
+    --bg-primary: #111820;
+    --bg-secondary: #171f2a;
+    --bg-tertiary: #1d2735;
+    --bg-elevated: #141c26;
+    --bg-hover: rgba(99, 118, 150, 0.08);
+    --bg-active: rgba(99, 118, 150, 0.12);
+
+    --surface-primary: rgba(23, 31, 42, 0.9);
+    --surface-secondary: rgba(29, 39, 53, 0.8);
+    --surface-glass: rgba(17, 24, 32, 0.95);
+
+    --text-primary: #d4dbe6;
+    --text-secondary: #8898b0;
+    --text-tertiary: #5f7090;
+    --text-muted: #475570;
+
+    --border-primary: rgba(99, 118, 150, 0.2);
+    --border-secondary: rgba(99, 118, 150, 0.1);
+    --border-hover: rgba(99, 118, 150, 0.3);
+    --border-focus: rgba(99, 118, 150, 0.5);
+
+    --accent-primary: #637696;
+    --accent-secondary: #7b90b0;
+    --accent-hover: #4f6080;
+    --accent-muted: rgba(99, 118, 150, 0.15);
+
+    /* User message - stormy blue-gray */
+    --user-msg-from: #4f6080;
+    --user-msg-to: #3d4d68;
+    --user-msg-hover-from: #5a6d90;
+    --user-msg-hover-to: #4f6080;
+    --user-msg-text: #d4dbe6;
+
+    --assistant-bg: rgba(23, 31, 42, 0.8);
+    --assistant-border: rgba(99, 118, 150, 0.12);
+    --assistant-text: #d4dbe6;
+
+    --scrollbar-thumb: rgba(99, 118, 150, 0.3);
+    --scrollbar-thumb-hover: rgba(99, 118, 150, 0.45);
+
+    --code-bg: #0c1018;
+    --code-header-bg: rgba(17, 24, 32, 0.7);
+    --code-border: rgba(99, 118, 150, 0.1);
+
+    --input-bg: rgba(23, 31, 42, 0.8);
+    --input-border: rgba(99, 118, 150, 0.25);
+    --input-focus-border: rgba(99, 118, 150, 0.5);
+    --input-focus-ring: rgba(99, 118, 150, 0.15);
+
+    --shadow-accent: rgba(99, 118, 150, 0.3);
+    --shadow-accent-hover: rgba(123, 144, 176, 0.4);
+
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --info: #60a5fa;
+}
+
+/* ============================================
+   Base Styles
+   ============================================ */
+@layer base {
+    * {
+        transition: background-color var(--theme-transition),
+                    border-color var(--theme-transition),
+                    color var(--theme-transition),
+                    box-shadow var(--theme-transition);
+    }
+
+    html {
+        scroll-behavior: smooth;
+    }
+
+    body {
+        background-color: var(--bg-primary);
+        color: var(--text-primary);
+        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+        font-weight: var(--font-weight-normal);
+        letter-spacing: -0.01em;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Font Size Classes - applies to entire app including all elements */
+    body.font-size-small {
+        font-size: 13px !important;
+    }
+    body.font-size-small *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-size: inherit;
+    }
+    body.font-size-small .markdown-content,
+    body.font-size-small .input-chat,
+    body.font-size-small button,
+    body.font-size-small input,
+    body.font-size-small select,
+    body.font-size-small textarea,
+    body.font-size-small label,
+    body.font-size-small p,
+    body.font-size-small span:not(.code-content *),
+    body.font-size-small div:not(.code-content) {
+        font-size: 0.8125rem !important;
+    }
+    body.font-size-small h1 { font-size: 1.5rem !important; }
+    body.font-size-small h2 { font-size: 1.25rem !important; }
+    body.font-size-small h3 { font-size: 1.1rem !important; }
+
+    body.font-size-medium {
+        font-size: 15px !important;
+    }
+    body.font-size-medium .markdown-content,
+    body.font-size-medium .input-chat,
+    body.font-size-medium button,
+    body.font-size-medium input,
+    body.font-size-medium select,
+    body.font-size-medium textarea,
+    body.font-size-medium label,
+    body.font-size-medium p,
+    body.font-size-medium span:not(.code-content *),
+    body.font-size-medium div:not(.code-content) {
+        font-size: 0.9375rem !important;
+    }
+    body.font-size-medium h1 { font-size: 1.75rem !important; }
+    body.font-size-medium h2 { font-size: 1.5rem !important; }
+    body.font-size-medium h3 { font-size: 1.25rem !important; }
+
+    body.font-size-large {
+        font-size: 17px !important;
+    }
+    body.font-size-large .markdown-content,
+    body.font-size-large .input-chat,
+    body.font-size-large button,
+    body.font-size-large input,
+    body.font-size-large select,
+    body.font-size-large textarea,
+    body.font-size-large label,
+    body.font-size-large p,
+    body.font-size-large span:not(.code-content *),
+    body.font-size-large div:not(.code-content) {
+        font-size: 1.0625rem !important;
+    }
+    body.font-size-large h1 { font-size: 2rem !important; }
+    body.font-size-large h2 { font-size: 1.75rem !important; }
+    body.font-size-large h3 { font-size: 1.5rem !important; }
+
+    /* Font Family Classes - applies to all elements */
+    body.font-family-system,
+    body.font-family-system *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    }
+    body.font-family-inter,
+    body.font-family-inter *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Inter", -apple-system, sans-serif !important;
+    }
+    body.font-family-roboto,
+    body.font-family-roboto *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Roboto", -apple-system, sans-serif !important;
+    }
+    body.font-family-opensans,
+    body.font-family-opensans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Open Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-lato,
+    body.font-family-lato *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Lato", -apple-system, sans-serif !important;
+    }
+    body.font-family-poppins,
+    body.font-family-poppins *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Poppins", -apple-system, sans-serif !important;
+    }
+    body.font-family-nunito,
+    body.font-family-nunito *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Nunito", -apple-system, sans-serif !important;
+    }
+    body.font-family-sourcesans,
+    body.font-family-sourcesans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Source Sans 3", "Source Sans Pro", -apple-system, sans-serif !important;
+    }
+    body.font-family-merriweather,
+    body.font-family-merriweather *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Merriweather", Georgia, serif !important;
+    }
+    body.font-family-playfair,
+    body.font-family-playfair *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Playfair Display", Georgia, serif !important;
+    }
+    body.font-family-georgia,
+    body.font-family-georgia *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: Georgia, "Times New Roman", serif !important;
+    }
+    body.font-family-jetbrains,
+    body.font-family-jetbrains *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "JetBrains Mono", "Fira Code", monospace !important;
+    }
+    body.font-family-firacode,
+    body.font-family-firacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Fira Code", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-consolas,
+    body.font-family-consolas *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: Consolas, "Courier New", monospace !important;
+    }
+
+    /* New Sans-Serif Fonts */
+    body.font-family-dmsans,
+    body.font-family-dmsans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "DM Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-worksans,
+    body.font-family-worksans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Work Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-plusjakarta,
+    body.font-family-plusjakarta *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Plus Jakarta Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-lexend,
+    body.font-family-lexend *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Lexend", -apple-system, sans-serif !important;
+    }
+    body.font-family-outfit,
+    body.font-family-outfit *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Outfit", -apple-system, sans-serif !important;
+    }
+    body.font-family-spacegrotesk,
+    body.font-family-spacegrotesk *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Space Grotesk", -apple-system, sans-serif !important;
+    }
+    body.font-family-ibmplex,
+    body.font-family-ibmplex *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "IBM Plex Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-manrope,
+    body.font-family-manrope *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Manrope", -apple-system, sans-serif !important;
+    }
+    body.font-family-urbanist,
+    body.font-family-urbanist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Urbanist", -apple-system, sans-serif !important;
+    }
+    body.font-family-sora,
+    body.font-family-sora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Sora", -apple-system, sans-serif !important;
+    }
+
+    /* New Serif Fonts */
+    body.font-family-crimsonpro,
+    body.font-family-crimsonpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Crimson Pro", Georgia, serif !important;
+    }
+    body.font-family-librebaskerville,
+    body.font-family-librebaskerville *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Libre Baskerville", Georgia, serif !important;
+    }
+    body.font-family-lora,
+    body.font-family-lora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Lora", Georgia, serif !important;
+    }
+    body.font-family-sourceserpro,
+    body.font-family-sourceserpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Source Serif 4", "Source Serif Pro", Georgia, serif !important;
+    }
+
+    /* New Monospace Fonts */
+    body.font-family-spacemono,
+    body.font-family-spacemono *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Space Mono", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-ubuntumono,
+    body.font-family-ubuntumono *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Ubuntu Mono", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-anonymouspro,
+    body.font-family-anonymouspro *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Anonymous Pro", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-cascadiacode,
+    body.font-family-cascadiacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Cascadia Code", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-victormono,
+    body.font-family-victormono *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Victor Mono", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-geistmono,
+    body.font-family-geistmono *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Geist Mono", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-sourcecodepro,
+    body.font-family-sourcecodepro *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Source Code Pro", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-intelone,
+    body.font-family-intelone *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Intel One Mono", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-inconsolata,
+    body.font-family-inconsolata *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Inconsolata", "JetBrains Mono", monospace !important;
+    }
+    body.font-family-martianmono,
+    body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.code-header) {
+        font-family: "Martian Mono", "JetBrains Mono", monospace !important;
+    }
+
+    /* New Sans-Serif Fonts (Extended) */
+    body.font-family-atkinson,
+    body.font-family-atkinson *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", -apple-system, sans-serif !important;
+    }
+    body.font-family-geist,
+    body.font-family-geist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Geist", -apple-system, sans-serif !important;
+    }
+    body.font-family-figtree,
+    body.font-family-figtree *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Figtree", -apple-system, sans-serif !important;
+    }
+    body.font-family-onest,
+    body.font-family-onest *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Onest", -apple-system, sans-serif !important;
+    }
+    body.font-family-rubik,
+    body.font-family-rubik *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Rubik", -apple-system, sans-serif !important;
+    }
+    body.font-family-quicksand,
+    body.font-family-quicksand *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Quicksand", -apple-system, sans-serif !important;
+    }
+    body.font-family-comfortaa,
+    body.font-family-comfortaa *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Comfortaa", -apple-system, sans-serif !important;
+    }
+    body.font-family-overpass,
+    body.font-family-overpass *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Overpass", -apple-system, sans-serif !important;
+    }
+    body.font-family-karla,
+    body.font-family-karla *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Karla", -apple-system, sans-serif !important;
+    }
+    body.font-family-assistant,
+    body.font-family-assistant *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Assistant", -apple-system, sans-serif !important;
+    }
+    body.font-family-exo2,
+    body.font-family-exo2 *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Exo 2", -apple-system, sans-serif !important;
+    }
+    body.font-family-barlow,
+    body.font-family-barlow *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Barlow", -apple-system, sans-serif !important;
+    }
+    body.font-family-publicsans,
+    body.font-family-publicsans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Public Sans", -apple-system, sans-serif !important;
+    }
+    body.font-family-redhatdisplay,
+    body.font-family-redhatdisplay *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Red Hat Display", -apple-system, sans-serif !important;
+    }
+    body.font-family-readexpro,
+    body.font-family-readexpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+        font-family: "Readex Pro", -apple-system, sans-serif !important;
+    }
+
+    /* Selection styling */
+    ::selection {
+        background-color: var(--accent-muted);
+        color: var(--text-primary);
+    }
+
+    /* Focus visible styles */
+    :focus-visible {
+        outline: 1px solid var(--accent-primary);
+        outline-offset: 1px;
+    }
+
+    /* Custom scrollbar - slimmer */
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: var(--scrollbar-track);
+        border-radius: var(--radius-sm);
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb);
+        border-radius: var(--radius-sm);
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--scrollbar-thumb-hover);
+    }
+
+    /* Firefox scrollbar */
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    }
+
+    /* Placeholder styling */
+    ::placeholder {
+        color: var(--text-tertiary);
+        opacity: 0.7;
+    }
+}
+
+/* ============================================
+   Component Styles
+   ============================================ */
+@layer components {
+    /* Glass morphism card - refined */
+    .glass-card {
+        background: var(--surface-glass);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid var(--border-primary);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-md);
+    }
+
+    .glass-card-elevated {
+        background: var(--surface-primary);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid var(--border-primary);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-lg);
+    }
+
+    /* Message bubbles - compact and modern */
+    .message-user {
+        max-width: 75%;
+        background: linear-gradient(135deg, var(--user-msg-from), var(--user-msg-to));
+        color: var(--user-msg-text, #ffffff);
+        border-radius: var(--radius-md);
+        border-bottom-right-radius: 2px;
+        box-shadow: 0 1px 2px var(--shadow-accent);
+    }
+
+    .message-user:hover {
+        background: linear-gradient(135deg, var(--user-msg-hover-from), var(--user-msg-hover-to));
+        box-shadow: 0 1px 4px var(--shadow-accent-hover);
+    }
+
+    .message-assistant {
+        max-width: 90%;
+        min-width: 0;
+        /* Use the bridge bubble vars so theme-specific rgba assistant-bg
+           values don't bleed through as a "haze" on themes like
+           Solarized/Andromeda/Kanagawa. Chat-style rules (bubbles/cards)
+           still override with their own !important backgrounds. */
+        background: var(--bubble-ai-bg, transparent);
+        color: var(--ink, var(--assistant-text, var(--text-primary)));
+    }
+
+    /* System/error message */
+    .message-system {
+        background: var(--surface-secondary);
+        border: 1px solid var(--border-secondary);
+        border-radius: var(--radius-md);
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+    }
+
+    /* Input field styling - compact */
+    .input-field {
+        background: var(--input-bg);
+        border: 1px solid var(--input-border);
+        border-radius: var(--radius-md);
+        padding: 0.5rem 0.75rem;
+        color: var(--text-primary);
+        font-size: 0.875rem;
+        font-weight: var(--font-weight-normal);
+        line-height: 1.5;
+        transition: all 150ms ease-out;
+    }
+
+    .input-field::placeholder {
+        color: var(--text-tertiary);
+        font-weight: var(--font-weight-light);
+    }
+
+    .input-field:hover {
+        border-color: var(--border-hover);
+    }
+
+    .input-field:focus {
+        outline: none;
+        border-color: var(--input-focus-border);
+        box-shadow: 0 0 0 2px var(--input-focus-ring);
+    }
+
+    /* Large input (for chat) - slimmer */
+    .input-chat {
+        background: var(--surface-primary);
+        border: 1px solid var(--border-primary);
+        border-radius: var(--radius-lg);
+        padding: 0.625rem 0.875rem;
+        color: var(--text-primary);
+        font-size: 0.9375rem;
+        font-weight: var(--font-weight-normal);
+        line-height: 1.5;
+        resize: none;
+        min-height: 44px;
+        max-height: 180px;
+    }
+
+    .input-chat:focus {
+        outline: none;
+        border-color: var(--input-focus-border);
+        box-shadow: 0 0 0 2px var(--input-focus-ring);
+    }
+
+    /* Button variants - modern outline style */
+    .btn-primary {
+        background: var(--accent-primary);
+        color: #ffffff;
+        padding: 0.5rem 1rem;
+        border-radius: var(--radius-md);
+        font-weight: var(--font-weight-medium);
+        font-size: 0.8125rem;
+        box-shadow: var(--shadow-sm);
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: all 150ms ease-out;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+        box-shadow: var(--shadow-md);
+    }
+
+    .btn-primary:active:not(:disabled) {
+        transform: scale(0.98);
+    }
+
+    .btn-primary:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+    }
+
+    .btn-secondary {
+        background: transparent;
+        color: var(--text-secondary);
+        padding: 0.5rem 1rem;
+        border-radius: var(--radius-md);
+        font-weight: var(--font-weight-medium);
+        font-size: 0.8125rem;
+        border: 1px solid var(--border-primary);
+        cursor: pointer;
+        transition: all 150ms ease-out;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+        background: var(--bg-hover);
+        border-color: var(--border-hover);
+        color: var(--text-primary);
+    }
+
+    /* Chat input toolbar button - theme-aware hover that works in all modes */
+    .chat-tool-btn {
+        color: var(--text-tertiary);
+    }
+    .chat-tool-btn:hover {
+        color: var(--text-primary);
+        background-color: var(--bg-active);
+    }
+
+    /* Send button - uses accent color, guaranteed visible across all themes */
+    .send-btn-active {
+        background-color: var(--accent-primary);
+        color: #ffffff;
+    }
+    .send-btn-active:hover {
+        background-color: var(--accent-hover);
+    }
+    .send-btn-disabled {
+        background-color: var(--bg-hover);
+        color: var(--text-muted);
+    }
+
+    /* Light theme send button — use theme accent, not a hardcoded blue */
+    .theme-light .send-btn-active {
+        background-color: var(--accent-primary) !important;
+        color: #ffffff !important;
+    }
+    .theme-light .send-btn-active:hover {
+        background-color: var(--accent-hover) !important;
+    }
+    .theme-light .send-btn-disabled {
+        background-color: var(--bg-hover) !important;
+        color: var(--text-muted) !important;
+    }
+
+    .btn-secondary:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .btn-ghost {
+        background: transparent;
+        color: var(--text-secondary);
+        padding: 0.375rem 0.625rem;
+        border-radius: var(--radius-md);
+        font-size: 0.8125rem;
+        font-weight: var(--font-weight-normal);
+        border: none;
+        cursor: pointer;
+        transition: all 150ms ease-out;
+    }
+
+    .btn-ghost:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+    }
+
+    .btn-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        padding: 0;
+        border-radius: var(--radius-md);
+        background: transparent;
+        color: var(--text-tertiary);
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: all 150ms ease-out;
+    }
+
+    .btn-icon:hover {
+        background: var(--bg-hover);
+        border-color: var(--border-secondary);
+        color: var(--text-primary);
+    }
+
+    .btn-icon-sm {
+        width: 1.75rem;
+        height: 1.75rem;
+        border-radius: var(--radius-sm);
+    }
+
+    /* Send button - compact */
+    .btn-send {
+        background: var(--accent-primary);
+        color: #ffffff;
+        width: 2.25rem;
+        height: 2.25rem;
+        border-radius: var(--radius-md);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        cursor: pointer;
+        box-shadow: var(--shadow-sm);
+        transition: all 150ms ease-out;
+    }
+
+    .btn-send:hover:not(:disabled) {
+        background: var(--accent-hover);
+        box-shadow: var(--shadow-md);
+    }
+
+    .btn-send:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        transform: none;
+    }
+
+    /* Sidebar styling - compact */
+    .sidebar {
+        background: var(--bg-elevated);
+        border-right: 1px solid var(--border-secondary);
+    }
+
+    .sidebar-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        border-radius: var(--radius-md);
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        font-weight: var(--font-weight-normal);
+        cursor: pointer;
+        transition: all 150ms ease-out;
+        border: 1px solid transparent;
+    }
+
+    .sidebar-item:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+    }
+
+    .sidebar-item-active {
+        background: var(--accent-muted);
+        color: var(--accent-primary);
+        border-color: var(--border-focus);
+    }
+
+    .sidebar-item-active:hover {
+        background: var(--accent-muted);
+    }
+
+    /* Code block styling - compact */
+    .code-block {
+        background: var(--code-bg);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        border: 1px solid var(--code-border);
+    }
+
+    .code-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.375rem 0.75rem;
+        background: var(--code-header-bg);
+        border-bottom: 1px solid var(--code-border);
+    }
+
+    .code-header-title {
+        font-size: 0.75rem;
+        color: var(--text-tertiary);
+        font-weight: var(--font-weight-normal);
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    .code-content {
+        padding: 0.75rem;
+        overflow-x: auto;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 0.8125rem;
+        line-height: 1.5;
+    }
+
+    /* Thinking indicator - subtle */
+    .thinking-indicator {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.375rem;
+    }
+
+    .thinking-dot {
+        width: 0.375rem;
+        height: 0.375rem;
+        border-radius: 50%;
+        background: var(--accent-primary);
+        opacity: 0.7;
+        animation: thinking 1.4s ease-in-out infinite;
+    }
+
+    .thinking-dot:nth-child(2) {
+        animation-delay: 0.2s;
+    }
+
+    .thinking-dot:nth-child(3) {
+        animation-delay: 0.4s;
+    }
+
+    /* Gradient text */
+    .text-gradient {
+        background: linear-gradient(135deg, var(--accent-primary), var(--accent-hover));
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    /* Markdown content styling - refined typography */
+    .markdown-content {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        line-height: 1.65;
+        font-weight: var(--font-weight-normal);
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    /* Defense against runaway children: any direct descendant inside a
+       message response must stay within the bubble. Catches cases where
+       nested markdown (embedded HTML, tables, pre/code blocks, etc)
+       would otherwise force the bubble wider than its max-width via
+       intrinsic min-content sizing. */
+    .markdown-content > *,
+    .markdown-content pre,
+    .markdown-content code {
+        max-width: 100%;
+    }
+
+    .markdown-content pre {
+        overflow-x: auto;
+        white-space: pre;
+    }
+
+    .markdown-content p {
+        margin-bottom: 0.75rem;
+    }
+
+    .markdown-content p:last-child {
+        margin-bottom: 0;
+    }
+
+    .markdown-content strong {
+        color: var(--text-primary);
+        font-weight: var(--font-weight-semibold);
+    }
+
+    .markdown-content em {
+        font-style: italic;
+    }
+
+    .markdown-content a {
+        color: var(--accent-primary);
+        text-decoration: none;
+        font-weight: var(--font-weight-medium);
+        word-break: break-all;
+    }
+
+    .markdown-content a:hover {
+        color: var(--accent-hover);
+        text-decoration: underline;
+    }
+
+    .markdown-content code:not(pre code) {
+        background: var(--surface-secondary);
+        padding: 0.125rem 0.25rem;
+        border-radius: var(--radius-sm);
+        font-size: 0.8125em;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    .markdown-content ul,
+    .markdown-content ol {
+        margin: 0.5rem 0;
+        padding-left: 1.25rem;
+    }
+
+    .markdown-content li {
+        margin: 0.25rem 0;
+    }
+
+    .markdown-content h1,
+    .markdown-content h2,
+    .markdown-content h3,
+    .markdown-content h4 {
+        color: var(--text-primary);
+        font-weight: var(--font-weight-semibold);
+        letter-spacing: -0.02em;
+        margin: 1rem 0 0.5rem;
+    }
+
+    .markdown-content h1:first-child,
+    .markdown-content h2:first-child,
+    .markdown-content h3:first-child,
+    .markdown-content h4:first-child {
+        margin-top: 0;
+    }
+
+    .markdown-content blockquote {
+        border-left: 2px solid var(--accent-primary);
+        padding-left: 0.75rem;
+        margin: 0.75rem 0;
+        color: var(--text-tertiary);
+        font-style: italic;
+    }
+
+    .markdown-content hr {
+        border: none;
+        border-top: 1px solid var(--border-secondary);
+        margin: 1rem 0;
+    }
+
+    /* Table styling for markdown - compact */
+    .markdown-content table {
+        width: 100%;
+        border-collapse: collapse;
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        margin: 0.75rem 0;
+        font-size: 0.8125rem;
+    }
+
+    .markdown-content th {
+        background: var(--surface-secondary);
+        padding: 0.5rem 0.75rem;
+        text-align: left;
+        color: var(--text-primary);
+        font-weight: var(--font-weight-medium);
+        border-bottom: 1px solid var(--border-primary);
+    }
+
+    .markdown-content td {
+        padding: 0.5rem 0.75rem;
+        color: var(--text-secondary);
+        border-bottom: 1px solid var(--border-secondary);
+    }
+
+    .markdown-content tr:last-child td {
+        border-bottom: none;
+    }
+
+    .markdown-content tr:hover td {
+        background: var(--bg-hover);
+    }
+
+    /* Dropdown/Select styling - compact */
+    .select-field {
+        appearance: none;
+        background: var(--input-bg);
+        border: 1px solid var(--input-border);
+        border-radius: var(--radius-md);
+        padding: 0.375rem 2rem 0.375rem 0.625rem;
+        color: var(--text-primary);
+        font-size: 0.8125rem;
+        font-weight: var(--font-weight-normal);
+        cursor: pointer;
+        transition: all 150ms ease-out;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 0.5rem center;
+    }
+
+    .select-field:hover {
+        border-color: var(--border-hover);
+    }
+
+    .select-field:focus {
+        outline: none;
+        border-color: var(--input-focus-border);
+        box-shadow: 0 0 0 2px var(--input-focus-ring);
+    }
+
+    /* Badge/Tag styling - compact */
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.125rem 0.5rem;
+        border-radius: var(--radius-sm);
+        font-size: 0.6875rem;
+        font-weight: var(--font-weight-medium);
+        letter-spacing: 0.01em;
+    }
+
+    .badge-primary {
+        background: var(--accent-muted);
+        color: var(--accent-primary);
+    }
+
+    .badge-success {
+        background: rgba(34, 197, 94, 0.12);
+        color: var(--success);
+    }
+
+    .badge-warning {
+        background: rgba(245, 158, 11, 0.12);
+        color: var(--warning);
+    }
+
+    .badge-error {
+        background: rgba(239, 68, 68, 0.12);
+        color: var(--error);
+    }
+
+    /* Tooltip styling - refined */
+    .tooltip {
+        position: relative;
+    }
+
+    .tooltip::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 0.25rem 0.5rem;
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+        font-size: 0.6875rem;
+        font-weight: var(--font-weight-medium);
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+        opacity: 0;
+        visibility: hidden;
+        transition: all 150ms ease-out;
+        margin-bottom: 0.375rem;
+        box-shadow: var(--shadow-md);
+        border: 1px solid var(--border-secondary);
+    }
+
+    .tooltip:hover::after {
+        opacity: 1;
+        visibility: visible;
+    }
+
+    /* Avatar styling - compact */
+    .avatar {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        border-radius: var(--radius-md);
+        background: var(--accent-muted);
+        color: var(--accent-primary);
+        font-weight: var(--font-weight-medium);
+        font-size: 0.8125rem;
+    }
+
+    .avatar-sm {
+        width: 1.5rem;
+        height: 1.5rem;
+        font-size: 0.6875rem;
+        border-radius: var(--radius-sm);
+    }
+
+    .avatar-lg {
+        width: 2.5rem;
+        height: 2.5rem;
+        font-size: 1rem;
+    }
+
+    /* Divider - subtle */
+    .divider {
+        height: 1px;
+        background: var(--border-secondary);
+        margin: 0.75rem 0;
+    }
+
+    .divider-vertical {
+        width: 1px;
+        height: 100%;
+        background: var(--border-secondary);
+        margin: 0 0.5rem;
+    }
+
+    /* Loading skeleton */
+    .skeleton {
+        background: linear-gradient(
+            90deg,
+            var(--surface-secondary) 25%,
+            var(--bg-hover) 50%,
+            var(--surface-secondary) 75%
+        );
+        background-size: 200% 100%;
+        animation: skeleton-loading 1.5s ease-in-out infinite;
+        border-radius: var(--radius-md);
+    }
+
+    /* Empty state - compact */
+    .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        text-align: center;
+        color: var(--text-tertiary);
+    }
+
+    .empty-state-icon {
+        width: 3rem;
+        height: 3rem;
+        margin-bottom: 0.75rem;
+        color: var(--text-muted);
+        opacity: 0.6;
+    }
+
+    .empty-state-title {
+        font-size: 0.9375rem;
+        font-weight: var(--font-weight-medium);
+        color: var(--text-secondary);
+        margin-bottom: 0.375rem;
+    }
+
+    .empty-state-description {
+        font-size: 0.8125rem;
+        font-weight: var(--font-weight-light);
+        color: var(--text-tertiary);
+        max-width: 18rem;
+        line-height: 1.5;
+    }
+}
+
+/* ============================================
+   Utility Animations
+   ============================================ */
+@layer utilities {
+    .animate-in {
+        animation: fadeIn 0.3s ease-out;
+    }
+
+    .animate-slide-up {
+        animation: slideUp 0.3s ease-out;
+    }
+
+    .animate-slide-down {
+        animation: slideDown 0.3s ease-out;
+    }
+
+    .animate-scale-in {
+        animation: scaleIn 0.2s ease-out;
+    }
+
+    .animate-pulse-subtle {
+        animation: pulseSubtle 2s ease-in-out infinite;
+    }
+}
+
+/* Keyframe animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes scaleIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Chat input slide-down: centered position → bottom */
+@keyframes inputSlideDown {
+    0% {
+        transform: translateY(-35vh);
+        opacity: 0.5;
+    }
+    40% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Messages enter from slight offset */
+@keyframes messagesEnter {
+    from {
+        opacity: 0;
+        transform: translateY(12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-input-slide-down {
+    animation: inputSlideDown 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-messages-enter {
+    animation: messagesEnter 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes thinking {
+    0%, 80%, 100% {
+        transform: scale(0.8);
+        opacity: 0.5;
+    }
+    40% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+@keyframes pulseSubtle {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+
+/* Pulsing glow animation for model status indicator */
+@keyframes pulseGlow {
+    0%, 100% {
+        opacity: 1;
+        filter: drop-shadow(0 0 2px rgba(74, 222, 128, 0.6));
+    }
+    50% {
+        opacity: 0.7;
+        filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.9));
+    }
+}
+
+.animate-pulse-glow {
+    animation: pulseGlow 2s ease-in-out infinite;
+}
+
+/* Status indicator animations */
+@keyframes statusPulse {
+    0%, 100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+    50% {
+        transform: scale(1.15);
+        opacity: 0.8;
+    }
+}
+
+.animate-status-pulse {
+    animation: statusPulse 1.5s ease-in-out infinite;
+}
+
+/* Searching animation */
+@keyframes searching {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.animate-searching {
+    animation: searching 2s linear infinite;
+}
+
+/* Processing dots animation */
+@keyframes processingDots {
+    0%, 20% {
+        opacity: 0.3;
+    }
+    50% {
+        opacity: 1;
+    }
+    80%, 100% {
+        opacity: 0.3;
+    }
+}
+
+.animate-processing-dot {
+    animation: processingDots 1.4s ease-in-out infinite;
+}
+
+.animate-processing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.animate-processing-dot:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes skeleton-loading {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+/* Toast notification animations */
+@keyframes toastEnter {
+    from {
+        opacity: 0;
+        transform: translateX(100%) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+    }
+}
+
+@keyframes toastExit {
+    from {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+    }
+    to {
+        opacity: 0;
+        transform: translateX(100%) scale(0.95);
+    }
+}
+
+.animate-toast-enter {
+    animation: toastEnter 0.25s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
+}
+
+.animate-toast-exit {
+    animation: toastExit 0.2s cubic-bezier(0.06, 0.71, 0.55, 1) forwards;
+}
+
+/* Indeterminate progress bar for chunking */
+@keyframes indeterminate-progress {
+    0% { width: 15%; margin-left: 0; }
+    50% { width: 40%; margin-left: 30%; }
+    100% { width: 15%; margin-left: 85%; }
+}
+
+/* ============================================
+   Responsive Utilities
+   ============================================ */
+
+/* Small mobile (up to 480px) */
+@media (max-width: 480px) {
+    :root {
+        --radius-2xl: 0.5rem;
+    }
+
+    /* Header adjustments */
+    header {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+
+    /* Model dropdown - smaller on tiny screens */
+    header button span.truncate {
+        max-width: 100px !important;
+    }
+
+    /* Messages - full width on mobile */
+    .message-user,
+    .message-assistant {
+        max-width: 95% !important;
+        padding: 0.625rem 0.875rem;
+    }
+
+    /* Input area */
+    .input-chat {
+        font-size: 16px !important; /* Prevent zoom on iOS */
+    }
+}
+
+/* Tablet and small desktop (up to 768px) */
+@media (max-width: 768px) {
+    :root {
+        --radius-2xl: 0.625rem;
+    }
+
+    .glass-card,
+    .glass-card-elevated {
+        border-radius: var(--radius-md);
+    }
+
+    .message-user,
+    .message-assistant {
+        border-radius: var(--radius-md);
+        max-width: 92%;
+    }
+
+    .message-user {
+        border-bottom-right-radius: 2px;
+    }
+
+    .message-assistant {
+        border-bottom-left-radius: 2px;
+    }
+
+    /* Tighter spacing on mobile */
+    .sidebar-item {
+        padding: 0.375rem 0.625rem;
+        gap: 0.375rem;
+    }
+
+    .btn-primary,
+    .btn-secondary {
+        padding: 0.375rem 0.75rem;
+        font-size: 0.75rem;
+    }
+
+    .input-chat {
+        padding: 0.5rem 0.75rem;
+        min-height: 44px; /* Better touch target */
+        font-size: 16px !important; /* Prevent zoom on iOS */
+    }
+
+    /* Touch-friendly button sizing */
+    .btn-icon {
+        width: 2.5rem;
+        height: 2.5rem;
+    }
+
+    /* Better dropdown positioning on mobile */
+    .dropdown-menu {
+        max-width: calc(100vw - 1rem);
+        max-height: 60vh;
+    }
+
+    /* User menu - prevent overflow */
+    header .relative > div[class*="absolute"] {
+        right: 0;
+        left: auto;
+    }
+}
+
+/* Large mobile / small tablet (640px to 768px) */
+@media (min-width: 640px) and (max-width: 768px) {
+    .message-user,
+    .message-assistant {
+        max-width: 85%;
+    }
+}
+
+/* Safe area insets for notched devices */
+@supports (padding: env(safe-area-inset-bottom)) {
+    .input-area {
+        padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    }
+
+    header {
+        padding-top: calc(0.375rem + env(safe-area-inset-top));
+    }
+}
+
+/* Messages column — generous padding on desktop, tight on mobile so text doesn't get squeezed */
+.messages-column {
+    padding: 28px 28px 8px;
+}
+@media (max-width: 640px) {
+    .messages-column {
+        padding: 12px 12px 8px;
+    }
+}
+
+/* ============================================
+   Touch-device adaptations — reveal hover-only states + bump tap targets
+   `(hover: none)` matches phones/tablets without overriding desktop hover behavior
+   ============================================ */
+@media (hover: none), (max-width: 640px) {
+    /* Sidebar chat-row actions (favorite/move/edit/delete) — were opacity:0 until hover */
+    .chat-row-actions {
+        opacity: 1 !important;
+    }
+    .chat-row-actions button {
+        min-width: 28px !important;
+        min-height: 28px !important;
+    }
+
+    /* Message action row (copy/continue/timing) — was opacity:0 until message hover */
+    .message-actions-row {
+        opacity: 1 !important;
+    }
+    .message-actions-row button {
+        min-height: 32px;
+        padding: 6px 10px !important;
+    }
+
+    /* Collapse button on assistant messages — was 0.35 opacity until hover */
+    .message-collapse-btn {
+        opacity: 1 !important;
+        min-height: 28px;
+        padding: 4px 9px !important;
+    }
+}
+
+/* Artifacts panel — inline 420px on desktop, fullscreen overlay on mobile */
+.artifacts-panel {
+    width: 420px;
+}
+@media (max-width: 768px) {
+    .artifacts-panel {
+        position: fixed !important;
+        inset: 0 !important;
+        width: 100vw !important;
+        max-width: 100vw !important;
+        z-index: 50 !important;
+        border-left: 0 !important;
+    }
+}
+
+/* Header breadcrumb — on mobile, only show the last item (conversation title), drop "Chat /" prefix */
+@media (max-width: 640px) {
+    header .breadcrumb-item:not(:last-of-type) {
+        display: none !important;
+    }
+    header .breadcrumb-spacer {
+        display: none !important;
+    }
+    header .breadcrumb-item {
+        max-width: 60vw !important;
+    }
+    /* Hide the "Artifacts" text label on the right-side toggle, keep the eye icon */
+    header .artifacts-toggle-label {
+        display: none !important;
+    }
+}
+
+/* Chat composer wrapper — generous gutters on desktop, tight on mobile */
+.composer-wrapper {
+    padding: 10px 28px 16px;
+}
+@media (max-width: 640px) {
+    .composer-wrapper {
+        padding: 8px 10px 12px;
+    }
+    /* Tighten persona chip label on mobile (keep visible but truncate) */
+    .composer-chip-persona {
+        max-width: 110px !important;
+    }
+    /* Cap model chip so it can't push the send button off-screen */
+    .composer-chip-model {
+        max-width: 130px !important;
+    }
+    /* Persona / model popovers — cap to viewport so they don't overflow */
+    .composer-bottom-row [class*="popover"],
+    .composer-bottom-row .animate-slide-up {
+        max-width: calc(100vw - 32px) !important;
+        min-width: 240px !important;
+    }
+    /* (composer-box must NOT have overflow:hidden — it would clip the persona/model popovers) */
+}
+
+/* User bubble — narrower on desktop, wider on mobile so short messages don't wrap awkwardly */
+@media (max-width: 640px) {
+    .message-user {
+        max-width: 90% !important;
+    }
+}
+
+/* Chat composer textarea — 14.5px on desktop, 16px on mobile to prevent iOS zoom-on-focus */
+.chat-composer-textarea {
+    font-size: 14.5px;
+}
+@media (max-width: 768px) {
+    .chat-composer-textarea {
+        font-size: 16px;
+    }
+}
+
+/* Touch tap feedback for inline-styled buttons that only have hover transforms */
+.tap-feedback {
+    -webkit-tap-highlight-color: transparent;
+    transition: transform .12s ease;
+}
+.tap-feedback:active {
+    transform: scale(0.94) !important;
+}
+
+/* Reset default tap highlight on all buttons */
+button {
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+}
+
+/* ============================================
+   Print Styles
+   ============================================ */
+@media print {
+    body {
+        background: white;
+        color: black;
+    }
+
+    .sidebar,
+    .btn-icon,
+    .btn-send {
+        display: none !important;
+    }
+
+    .message-user,
+    .message-assistant {
+        box-shadow: none;
+        border: 1px solid #ccc;
+    }
+}
+
+/* ============================================
+   Chat Layout Styles
+   ============================================ */
+
+/* Default - Classic chat layout (no changes needed, base styles apply) */
+
+/* Centered - Both messages centered */
+.chat-style-centered .flex.flex-col.items-end,
+.chat-style-centered .flex.flex-col.items-start {
+    align-items: center !important;
+}
+
+.chat-style-centered .message-user,
+.chat-style-centered .message-assistant {
+    max-width: 80% !important;
+}
+
+/* Timeline - Vertical timeline with connected messages.
+   The line (::before) and dot (::after) are both centered on
+   --timeline-x so they're guaranteed to share the same vertical
+   axis regardless of rounding.
+
+   --msg-gap comes from the design bridge (28px). The line extends
+   half that gap above and below the message so adjacent messages'
+   lines meet edge-to-edge with no visible gap. */
+.chat-style-timeline .flex.flex-col.items-end,
+.chat-style-timeline .flex.flex-col.items-start {
+    align-items: flex-start !important;
+    padding-left: 2.25rem !important;
+    position: relative !important;
+    --timeline-x: 0.85rem;
+    --timeline-dot-size: 10px;
+    --timeline-line-width: 2px;
+}
+
+.chat-style-timeline .flex.flex-col.items-end::before,
+.chat-style-timeline .flex.flex-col.items-start::before {
+    content: '' !important;
+    position: absolute !important;
+    /* Center the line on --timeline-x */
+    left: calc(var(--timeline-x) - (var(--timeline-line-width) / 2)) !important;
+    top: calc(-1 * var(--msg-gap, 28px) / 2) !important;
+    bottom: calc(-1 * var(--msg-gap, 28px) / 2) !important;
+    width: var(--timeline-line-width) !important;
+    /* Line intensity tracks the Message Borders slider */
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.12) * 2 + 0.08)) !important;
+    z-index: 0 !important;
+}
+
+/* Fade the line at the very top/bottom of the list */
+.chat-style-timeline > div:first-child::before {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 1.25rem) !important;
+    mask-image: linear-gradient(to bottom, transparent, black 1.25rem) !important;
+}
+.chat-style-timeline > div:last-child::before {
+    -webkit-mask-image: linear-gradient(to top, transparent, black 1.25rem) !important;
+    mask-image: linear-gradient(to top, transparent, black 1.25rem) !important;
+}
+
+/* Timeline dot — same --timeline-x as the line so it sits dead-center. */
+.chat-style-timeline .flex.flex-col.items-end::after,
+.chat-style-timeline .flex.flex-col.items-start::after {
+    content: '' !important;
+    position: absolute !important;
+    left: calc(var(--timeline-x) - (var(--timeline-dot-size) / 2)) !important;
+    top: 0.5rem !important;
+    width: var(--timeline-dot-size) !important;
+    height: var(--timeline-dot-size) !important;
+    border-radius: 50% !important;
+    z-index: 1 !important;
+    box-sizing: border-box !important;
+}
+
+.chat-style-timeline .flex.flex-col.items-end::after {
+    background: var(--accent-primary, #6366f1) !important;
+    /* Dot halo tracks the Message Borders slider */
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.12) * 2)) !important;
+}
+
+.chat-style-timeline .flex.flex-col.items-start::after {
+    background: var(--bg-primary) !important;
+    /* Assistant dot ring opacity tracks the slider */
+    border: 2px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.12) * 3 + 0.2)) !important;
+}
+
+.chat-style-timeline .message-user,
+.chat-style-timeline .message-assistant {
+    max-width: 90% !important;
+    border-radius: 0.5rem !important;
+}
+
+/* Bubbles - iMessage / WhatsApp style rounded bubbles with strong
+   contrast. User messages sit on the right with a vivid primary-colored
+   bubble; assistant messages sit on the left with a soft neutral bubble.
+   Shapes use asymmetric corner radii so the "tail" side (the edge nearest
+   the user/assistant) is tighter — that's what makes it read as a
+   speech bubble rather than a plain card. */
+.chat-style-bubbles .flex.flex-col.items-end {
+    align-items: flex-end !important;
+}
+
+.chat-style-bubbles .flex.flex-col.items-start {
+    align-items: flex-start !important;
+}
+
+.chat-style-bubbles .message-user,
+.chat-style-bubbles .message-assistant {
+    max-width: 78% !important;
+    padding: 0.6rem 0.95rem !important;
+    border: none !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
+}
+
+.chat-style-bubbles .message-user {
+    background: linear-gradient(
+        135deg,
+        rgba(var(--primary-rgb, 99, 102, 241), 0.95),
+        rgba(var(--primary-rgb, 99, 102, 241), 0.78)
+    ) !important;
+    color: #ffffff !important;
+    border-radius: 1.1rem 1.1rem 0.25rem 1.1rem !important;
+}
+
+.chat-style-bubbles .message-user *,
+.chat-style-bubbles .message-user .prose,
+.chat-style-bubbles .message-user .prose * {
+    color: #ffffff !important;
+}
+
+.chat-style-bubbles .message-assistant {
+    background: rgba(255, 255, 255, 0.055) !important;
+    color: var(--text-primary) !important;
+    border-radius: 1.1rem 1.1rem 1.1rem 0.25rem !important;
+}
+
+.chat-style-bubbles .space-y-1 > * + * {
+    margin-top: 0.45rem !important;
+}
+
+/* Slack - Flat, left-aligned, full-width rows with a visible background
+   tint. Previously too transparent — the bubbles blended into the page
+   background and the text was hard to read. Bumped the user tint from
+   4% to 9% alpha and added a subtle assistant tint (3% white) so both
+   roles stand out from the ambient background. Border opacity
+   independent of --message-border-opacity so weak border settings don't
+   destroy readability. */
+.chat-style-slack .flex.flex-col.items-end,
+.chat-style-slack .flex.flex-col.items-start {
+    align-items: flex-start !important;
+}
+
+.chat-style-slack .message-user,
+.chat-style-slack .message-assistant {
+    max-width: 100% !important;
+    width: 100% !important;
+    padding: 0.625rem 0.875rem !important;
+    color: var(--text-primary) !important;
+}
+
+.chat-style-slack .message-user {
+    border: 0 !important;
+    border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 2 + 0.15)) !important;
+    border-radius: 0 0.5rem 0.5rem 0 !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.22) * 0.5)) !important;
+}
+
+.chat-style-slack .message-assistant {
+    border: 0 !important;
+    border-left: 3px solid rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 2 + 0.1)) !important;
+    border-radius: 0 0.5rem 0.5rem 0 !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.3)) !important;
+}
+
+.chat-style-slack .space-y-1 > * + * {
+    margin-top: 0.3rem !important;
+}
+
+/* Minimal - Clean dividers, weak bubble backgrounds. Bumped background
+   opacity from 0 (transparent) to a subtle tint so the response area is
+   distinguishable from the page background. Borders use a fixed higher
+   opacity so the outlines read clearly. Text always uses the theme
+   primary text color for consistency. */
+.chat-style-minimal .message-user {
+    max-width: 80% !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.5)) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.28)) !important;
+    border-radius: 0.55rem !important;
+    color: var(--text-primary) !important;
+    padding: 0.55rem 0.85rem !important;
+}
+
+.chat-style-minimal .message-assistant {
+    max-width: 90% !important;
+    background: rgba(var(--primary-rgb, 99, 102, 241), calc(var(--message-border-opacity, 0.10) * 0.2)) !important;
+    border: 1px solid rgba(var(--primary-rgb, 99, 102, 241), var(--message-border-opacity, 0.10)) !important;
+    border-radius: 0.55rem !important;
+    padding: 0.75rem 0.95rem !important;
+    color: var(--text-primary) !important;
+}
+
+/* ============================================
+   Unified text color baseline across all chat themes
+   ============================================
+   Different themes used to set their own message colors (or not at
+   all), producing inconsistent readability — some themes would show
+   dim grey prose while others were bright. This baseline ensures
+   every theme's assistant/user bubbles inherit a high-contrast
+   foreground. Individual themes that need a different color
+   (e.g. Bubbles user bubble on primary gradient) can still override
+   with higher specificity. */
+[class^="chat-style-"] .message-user,
+[class*=" chat-style-"] .message-user,
+[class^="chat-style-"] .message-assistant,
+[class*=" chat-style-"] .message-assistant {
+    color: var(--text-primary) !important;
+}
+
+[class^="chat-style-"] .message-user .prose,
+[class*=" chat-style-"] .message-user .prose,
+[class^="chat-style-"] .message-assistant .prose,
+[class*=" chat-style-"] .message-assistant .prose {
+    color: var(--text-primary) !important;
+}
+
+/* Default theme (no chat-style- class) baseline — same deal. */
+.message-user,
+.message-assistant {
+    color: var(--text-primary);
+}
+
+/* Bubbles user bubble overrides the baseline with explicit white text
+   because its gradient background is bright and needs high-contrast
+   foreground. Re-stated here after the baseline so specificity wins. */
+.chat-style-bubbles .message-user,
+.chat-style-bubbles .message-user *,
+.chat-style-bubbles .message-user .prose,
+.chat-style-bubbles .message-user .prose * {
+    color: #ffffff !important;
+}
+
+/* Chat input width is intentionally fixed in ChatInput.jsx at
+   max-w-2xl mx-auto across every theme. Do not add per-theme input
+   width overrides here — the user has explicitly asked for a compact
+   centered input that never expands, and per-theme width gymnastics
+   previously made it worse. */
+
+/* ============================================
+   Font Family Overrides (highest priority - outside @layer)
+   ============================================ */
+html body.font-family-system,
+html body.font-family-system *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+}
+html body.font-family-inter,
+html body.font-family-inter *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Inter", -apple-system, sans-serif !important;
+}
+html body.font-family-roboto,
+html body.font-family-roboto *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Roboto", -apple-system, sans-serif !important;
+}
+html body.font-family-opensans,
+html body.font-family-opensans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Open Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-lato,
+html body.font-family-lato *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Lato", -apple-system, sans-serif !important;
+}
+html body.font-family-poppins,
+html body.font-family-poppins *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Poppins", -apple-system, sans-serif !important;
+}
+html body.font-family-nunito,
+html body.font-family-nunito *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Nunito", -apple-system, sans-serif !important;
+}
+html body.font-family-sourcesans,
+html body.font-family-sourcesans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Source Sans 3", "Source Sans Pro", -apple-system, sans-serif !important;
+}
+html body.font-family-merriweather,
+html body.font-family-merriweather *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Merriweather", Georgia, serif !important;
+}
+html body.font-family-playfair,
+html body.font-family-playfair *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Playfair Display", Georgia, serif !important;
+}
+html body.font-family-georgia,
+html body.font-family-georgia *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: Georgia, "Times New Roman", serif !important;
+}
+html body.font-family-jetbrains,
+html body.font-family-jetbrains *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "JetBrains Mono", "Fira Code", monospace !important;
+}
+html body.font-family-firacode,
+html body.font-family-firacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Fira Code", "JetBrains Mono", monospace !important;
+}
+html body.font-family-consolas,
+html body.font-family-consolas *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: Consolas, "Courier New", monospace !important;
+}
+
+/* New Sans-Serif Fonts - High Specificity */
+html body.font-family-dmsans,
+html body.font-family-dmsans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "DM Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-worksans,
+html body.font-family-worksans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Work Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-plusjakarta,
+html body.font-family-plusjakarta *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Plus Jakarta Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-lexend,
+html body.font-family-lexend *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Lexend", -apple-system, sans-serif !important;
+}
+html body.font-family-outfit,
+html body.font-family-outfit *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Outfit", -apple-system, sans-serif !important;
+}
+html body.font-family-spacegrotesk,
+html body.font-family-spacegrotesk *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Space Grotesk", -apple-system, sans-serif !important;
+}
+html body.font-family-ibmplex,
+html body.font-family-ibmplex *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "IBM Plex Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-manrope,
+html body.font-family-manrope *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Manrope", -apple-system, sans-serif !important;
+}
+html body.font-family-urbanist,
+html body.font-family-urbanist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Urbanist", -apple-system, sans-serif !important;
+}
+html body.font-family-sora,
+html body.font-family-sora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Sora", -apple-system, sans-serif !important;
+}
+
+/* New Serif Fonts - High Specificity */
+html body.font-family-crimsonpro,
+html body.font-family-crimsonpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Crimson Pro", Georgia, serif !important;
+}
+html body.font-family-librebaskerville,
+html body.font-family-librebaskerville *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Libre Baskerville", Georgia, serif !important;
+}
+html body.font-family-lora,
+html body.font-family-lora *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Lora", Georgia, serif !important;
+}
+html body.font-family-sourceserpro,
+html body.font-family-sourceserpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Source Serif 4", "Source Serif Pro", Georgia, serif !important;
+}
+
+/* New Monospace Fonts - High Specificity */
+html body.font-family-spacemono,
+html body.font-family-spacemono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Space Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-ubuntumono,
+html body.font-family-ubuntumono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Ubuntu Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-anonymouspro,
+html body.font-family-anonymouspro *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Anonymous Pro", "JetBrains Mono", monospace !important;
+}
+html body.font-family-cascadiacode,
+html body.font-family-cascadiacode *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Cascadia Code", "JetBrains Mono", monospace !important;
+}
+html body.font-family-victormono,
+html body.font-family-victormono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Victor Mono", "JetBrains Mono", monospace !important;
+}
+
+/* Sans-Serif Fonts (Extended) - High Specificity */
+html body.font-family-atkinson,
+html body.font-family-atkinson *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", -apple-system, sans-serif !important;
+}
+html body.font-family-geist,
+html body.font-family-geist *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Geist", -apple-system, sans-serif !important;
+}
+html body.font-family-figtree,
+html body.font-family-figtree *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Figtree", -apple-system, sans-serif !important;
+}
+html body.font-family-onest,
+html body.font-family-onest *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Onest", -apple-system, sans-serif !important;
+}
+html body.font-family-rubik,
+html body.font-family-rubik *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Rubik", -apple-system, sans-serif !important;
+}
+html body.font-family-quicksand,
+html body.font-family-quicksand *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Quicksand", -apple-system, sans-serif !important;
+}
+html body.font-family-comfortaa,
+html body.font-family-comfortaa *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Comfortaa", -apple-system, sans-serif !important;
+}
+html body.font-family-overpass,
+html body.font-family-overpass *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Overpass", -apple-system, sans-serif !important;
+}
+html body.font-family-karla,
+html body.font-family-karla *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Karla", -apple-system, sans-serif !important;
+}
+html body.font-family-assistant,
+html body.font-family-assistant *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Assistant", -apple-system, sans-serif !important;
+}
+html body.font-family-exo2,
+html body.font-family-exo2 *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Exo 2", -apple-system, sans-serif !important;
+}
+html body.font-family-barlow,
+html body.font-family-barlow *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Barlow", -apple-system, sans-serif !important;
+}
+html body.font-family-publicsans,
+html body.font-family-publicsans *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Public Sans", -apple-system, sans-serif !important;
+}
+html body.font-family-redhatdisplay,
+html body.font-family-redhatdisplay *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Red Hat Display", -apple-system, sans-serif !important;
+}
+html body.font-family-readexpro,
+html body.font-family-readexpro *:not(code):not(pre):not(.code-content):not(.code-header):not(.font-mono) {
+    font-family: "Readex Pro", -apple-system, sans-serif !important;
+}
+
+/* New Monospace Fonts - High Specificity */
+html body.font-family-geistmono,
+html body.font-family-geistmono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Geist Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-sourcecodepro,
+html body.font-family-sourcecodepro *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Source Code Pro", "JetBrains Mono", monospace !important;
+}
+html body.font-family-intelone,
+html body.font-family-intelone *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Intel One Mono", "JetBrains Mono", monospace !important;
+}
+html body.font-family-inconsolata,
+html body.font-family-inconsolata *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Inconsolata", "JetBrains Mono", monospace !important;
+}
+html body.font-family-martianmono,
+html body.font-family-martianmono *:not(code):not(pre):not(.code-content):not(.code-header) {
+    font-family: "Martian Mono", "JetBrains Mono", monospace !important;
+}
