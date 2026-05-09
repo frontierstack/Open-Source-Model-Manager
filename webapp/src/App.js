@@ -109,6 +109,7 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import Menu from '@mui/material/Menu';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import ThemePicker from './components/ThemePicker';
+import AppSidebar from './components/AppSidebar';
 import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
@@ -7700,6 +7701,17 @@ console.log(await res.json());`
         <ThemeProvider theme={theme}>
             <CssBaseline />
             <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+                {/* Phase 1b sidebar (Tailwind, desktop only). Mobile uses
+                    the existing slide-in Drawer below. The sidebar reads
+                    from the same activeTab state the Drawer uses, so
+                    selecting in either path moves both in lock-step. */}
+                <AppSidebar
+                    tabs={tabDefinitions}
+                    visibleOrder={visibleTabOrder}
+                    activeIndex={activeTab}
+                    onSelectIndex={(idx) => setActiveTab(idx)}
+                />
+
                 {/* Main Content */}
                 <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                     {/* Header */}
@@ -7785,8 +7797,11 @@ console.log(await res.json());`
                             </Box>
                         </Box>
 
-                        {/* Tabs (desktop only — mobile uses the slide-in Drawer below) */}
-                        <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 1, mt: 2 }}>
+                        {/* Tabs (legacy desktop strip — replaced by AppSidebar
+                            in Phase 1b. Kept in tree for now so reorder
+                            handlers stay wired; rendered hidden. Drop in a
+                            later phase once sidebar drag-reorder lands.) */}
+                        <Box sx={{ display: 'none', alignItems: 'center', gap: 1, mt: 2 }}>
                             <Tabs
                                 value={activeTab}
                                 onChange={handleTabChange}
