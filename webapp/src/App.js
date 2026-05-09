@@ -115,6 +115,7 @@ import UsersPanel from './components/UsersPanel';
 import AppsPanel from './components/AppsPanel';
 import MyModelsPanel from './components/MyModelsPanel';
 import RunningInstancesPanel from './components/RunningInstancesPanel';
+import UserDialog from './components/UserDialog';
 import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
@@ -9349,107 +9350,19 @@ console.log(await res.json());`
                             </Grid>
                         )}
 
-                        {/* User Dialog */}
-                        <Dialog open={userDialogOpen} onClose={handleCloseUserDialog} maxWidth="sm" fullWidth fullScreen={isMobile}>
-                            <DialogTitle>
-                                {userDialogMode === 'create' ? 'Create New User' :
-                                 userDialogMode === 'edit' ? `Edit User: ${selectedUser?.username}` :
-                                 userDialogMode === 'invite' ? 'Invite User by Email' :
-                                 `Reset Password: ${selectedUser?.username}`}
-                            </DialogTitle>
-                            <DialogContent>
-                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
-                                    {userDialogMode === 'create' && (
-                                        <TextField
-                                            label="Username"
-                                            value={newUserData.username}
-                                            onChange={(e) => setNewUserData({ ...newUserData, username: e.target.value })}
-                                            fullWidth
-                                        />
-                                    )}
-                                    {(userDialogMode === 'create' || userDialogMode === 'edit') && (
-                                        <>
-                                            <TextField
-                                                label="Email"
-                                                type="email"
-                                                value={newUserData.email}
-                                                onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })}
-                                                fullWidth
-                                            />
-                                            <FormControl fullWidth>
-                                                <InputLabel>Role</InputLabel>
-                                                <Select
-                                                    value={newUserData.role}
-                                                    label="Role"
-                                                    onChange={(e) => setNewUserData({ ...newUserData, role: e.target.value })}
-                                                >
-                                                    <MenuItem value="user">User</MenuItem>
-                                                    <MenuItem value="admin">Admin</MenuItem>
-                                                </Select>
-                                            </FormControl>
-                                        </>
-                                    )}
-                                    {userDialogMode === 'invite' && (
-                                        <>
-                                            <TextField
-                                                autoFocus
-                                                label="Email Address"
-                                                type="email"
-                                                value={newUserData.email}
-                                                onChange={(e) => setNewUserData({ ...newUserData, email: e.target.value })}
-                                                fullWidth
-                                                required
-                                                helperText="User will receive an email to complete registration"
-                                            />
-                                            <FormControl fullWidth>
-                                                <InputLabel>Role</InputLabel>
-                                                <Select
-                                                    value={newUserData.role}
-                                                    label="Role"
-                                                    onChange={(e) => setNewUserData({ ...newUserData, role: e.target.value })}
-                                                >
-                                                    <MenuItem value="user">User</MenuItem>
-                                                    <MenuItem value="admin">Admin</MenuItem>
-                                                </Select>
-                                            </FormControl>
-                                        </>
-                                    )}
-                                    {(userDialogMode === 'create' || userDialogMode === 'resetPassword') && (
-                                        <TextField
-                                            label={userDialogMode === 'create' ? 'Password' : 'New Password'}
-                                            type="password"
-                                            value={newUserData.password}
-                                            onChange={(e) => setNewUserData({ ...newUserData, password: e.target.value })}
-                                            fullWidth
-                                            helperText="Minimum 8 characters"
-                                        />
-                                    )}
-                                </Box>
-                            </DialogContent>
-                            <DialogActions>
-                                <Button onClick={handleCloseUserDialog}>Cancel</Button>
-                                <Button
-                                    variant="contained"
-                                    onClick={
-                                        userDialogMode === 'create' ? handleCreateUser :
-                                        userDialogMode === 'edit' ? handleUpdateUser :
-                                        userDialogMode === 'invite' ? handleInviteUser :
-                                        handleResetPassword
-                                    }
-                                    disabled={
-                                        userDialogMode === 'create' ? (!newUserData.username || !newUserData.email || !newUserData.password || newUserData.password.length < 8) :
-                                        userDialogMode === 'edit' ? !newUserData.email :
-                                        userDialogMode === 'invite' ? !newUserData.email :
-                                        !newUserData.password || newUserData.password.length < 8
-                                    }
-                                >
-                                    {userDialogMode === 'create' ? 'Create' :
-                                     userDialogMode === 'edit' ? 'Save' :
-                                     userDialogMode === 'invite' ? 'Send Invite' :
-                                     'Reset Password'}
-                                </Button>
-                            </DialogActions>
-                        </Dialog>
+                        {/* User Dialog — Tailwind Modal port */}
+                        <UserDialog
+                            open={userDialogOpen}
+                            mode={userDialogMode}
+                            selectedUser={selectedUser}
+                            formData={newUserData}
+                            setFormData={setNewUserData}
+                            onClose={handleCloseUserDialog}
+                            onCreate={handleCreateUser}
+                            onUpdate={handleUpdateUser}
+                            onInvite={handleInviteUser}
+                            onResetPassword={handleResetPassword}
+                        />
 
                         {/* API Keys Tab (Admin Only) */}
                         {visibleTabOrder[activeTab] === 3 && isAdmin && (
