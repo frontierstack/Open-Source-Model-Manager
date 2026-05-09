@@ -113,6 +113,7 @@ import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
 import AppsPanel from './components/AppsPanel';
+import MyModelsPanel from './components/MyModelsPanel';
 import { usePreferencesStore } from './stores/usePreferencesStore';
 
 // Theme is now created dynamically using createAppTheme from ./theme.js
@@ -8684,6 +8685,7 @@ console.log(await res.json());`
 
                         {/* My Models Tab */}
                         {visibleTabOrder[activeTab] === 1 && (
+                            <MyModelsPanel instancesLoaded={liveInstances.length}>
                             <Grid container spacing={3}>
                                 {/* Running Instances */}
                                 {liveInstances.length > 0 && (
@@ -9161,6 +9163,7 @@ console.log(await res.json());`
                                 </Grid>
 
                             </Grid>
+                            </MyModelsPanel>
                         )}
 
                         {/* Users Tab */}
