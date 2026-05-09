@@ -283,52 +283,50 @@ const DocIcon = ({ icon, color = 'primary' }) => {
     );
 };
 
-// Modern styled accordion for docs — surface card aesthetic matching
-// the Tailwind page-header tile + LogsPanel/UsersPanel/AppsPanel cards.
-// Theme-aware via CSS vars; expanded state gets an accent ring instead
-// of the default MUI box-shadow.
+// Docs accordion — minimal disclosure pattern. No chunky border boxes,
+// no surface fill at rest. Each section is a flat row separated by a
+// thin divider; expanding reveals content below with a subtle accent
+// chevron rotation. Inspired by Stripe / Linear / Vercel docs.
 const docAccordionSx = {
-    bgcolor: 'var(--surface-primary)',
+    bgcolor: 'transparent',
     color: 'var(--text-primary)',
     boxShadow: 'none',
-    border: '1px solid var(--border-primary)',
-    borderRadius: '12px !important',
-    mb: 1.25,
-    overflow: 'hidden',
-    transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
-    '&:before': { display: 'none' },
-    '&:hover': {
-        borderColor: 'var(--border-hover)',
+    border: 'none',
+    borderRadius: 0,
+    margin: '0 !important',
+    borderBottom: '1px solid var(--border-primary)',
+    '&:first-of-type': {
+        borderTop: '1px solid var(--border-primary)',
     },
+    '&:before': { display: 'none' },
     '&.Mui-expanded': {
-        margin: '0 0 10px 0 !important',
-        borderColor: 'var(--border-focus)',
-        boxShadow: '0 0 0 1px var(--accent-muted) inset',
+        margin: '0 !important',
+        bgcolor: 'var(--bg-hover)',
     },
     '& .MuiAccordionSummary-root': {
-        minHeight: 52,
-        padding: '0 16px',
+        minHeight: 56,
+        padding: '0 4px',
+        transition: 'background-color 0.12s ease',
         '&:hover': { bgcolor: 'var(--bg-hover)' },
-        '&.Mui-expanded': { minHeight: 52 },
+        '&.Mui-expanded': { minHeight: 56 },
     },
     '& .MuiAccordionSummary-content': {
-        margin: '10px 0',
-        gap: '12px',
+        margin: '14px 0',
+        gap: '14px',
         alignItems: 'center',
-        '&.Mui-expanded': { margin: '10px 0' },
+        '&.Mui-expanded': { margin: '14px 0' },
     },
     '& .MuiAccordionSummary-expandIconWrapper': {
         color: 'var(--text-tertiary)',
-        transition: 'transform 0.2s ease, color 0.15s ease',
+        transition: 'transform 0.2s ease, color 0.12s ease',
         '&.Mui-expanded': {
             color: 'var(--accent-primary)',
         },
     },
     '& .MuiAccordionDetails-root': {
-        pt: 0,
-        pb: 2.5,
-        px: 2.5,
-        borderTop: '1px solid var(--border-primary)',
+        pt: 1,
+        pb: 3,
+        px: 0.5,
     },
 };
 
