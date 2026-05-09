@@ -1,5 +1,37 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
+import { useAppStore } from './useAppStore';
+
+// Phase 1a bridge: mirror server-synced prefs into the legacy
+// useAppStore so App.js's existing createAppTheme(useAppStore.preferences)
+// useMemo rebuilds the MUI theme on each pref change. Without this,
+// picking a theme in the new picker only swapped the CSS-variable class
+// on <html> — Tailwind utilities updated, but MUI components stayed on
+// the old hardcoded palette and looked unchanged. Drop this bridge in
+// Phase 5 when MUI is removed.
+const FONT_FAMILY_MAP = {
+    inter: 'default',
+    jetbrains: 'mono',
+    system: 'system',
+};
+function mirrorPatchToLegacyStore(patch) {
+    try {
+        const legacy = useAppStore.getState();
+        if (patch.theme != null && typeof legacy.setTheme === 'function') {
+            legacy.setTheme(patch.theme);
+        }
+        if (patch.fontFamily != null && typeof legacy.setFontFamily === 'function') {
+            legacy.setFontFamily(FONT_FAMILY_MAP[patch.fontFamily] || 'default');
+        }
+        if (patch.fontSize != null && typeof legacy.setFontSize === 'function') {
+            // Legacy expects numeric pixels; new store uses 'small'|'medium'|'large'.
+            const px = typeof patch.fontSize === 'number'
+                ? patch.fontSize
+                : ({ small: 12, medium: 14, large: 16 }[patch.fontSize] || 14);
+            legacy.setFontSize(px);
+        }
+    } catch (_) { /* legacy store may not be initialized yet on first paint */ }
+}
 
 /**
  * Preferences Store — UI prefs (theme, accent, bubble, density, font, layout)
@@ -99,6 +131,7 @@ export const usePreferencesStore = create(
                 const { preferences } = await r.json();
                 const merged = { ...DEFAULTS, ...(preferences || {}) };
                 applyPreferencesToDom(merged);
+                mirrorPatchToLegacyStore(merged);
                 set({ ...merged, hydrated: true, loading: false });
             } catch (err) {
                 console.warn('[preferences] hydrate failed (using defaults):', err);
@@ -112,6 +145,7 @@ export const usePreferencesStore = create(
         update: (patch) => {
             const next = { ...get(), ...patch };
             applyPreferencesToDom(next);
+            mirrorPatchToLegacyStore(patch);
             set(patch);
             debouncedSync(() => pushToServer(patch));
         },
