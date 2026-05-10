@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Copy, Check, Minimize2, Maximize2 } from 'lucide-react';
 import { Highlight, themes } from 'prism-react-renderer';
+import { useChatStore } from '../../stores/useChatStore';
 
 /**
  * CodeBlock - Syntax-highlighted code block with copy functionality (Tailwind)
@@ -11,6 +12,11 @@ import { Highlight, themes } from 'prism-react-renderer';
  */
 export default React.memo(function CodeBlock({ code, language = 'text', isStreaming = false }) {
     const [copied, setCopied] = useState(false);
+    // Pick a Prism theme that matches the chat theme. The default nightOwl
+    // is unreadable on the light theme's near-white code-block background.
+    const activeTheme = useChatStore((s) => s.theme);
+    const isLight = activeTheme === 'light';
+    const prismTheme = isLight ? themes.github : themes.nightOwl;
 
     // Compute line count from the raw code
     const lineCount = (code || '').split('\n').length;
@@ -99,7 +105,7 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
                         {code.trim()}
                     </pre>
                 ) : (
-                    <Highlight theme={themes.nightOwl} code={code.trim()} language={normalizedLanguage}>
+                    <Highlight theme={prismTheme} code={code.trim()} language={normalizedLanguage}>
                         {({ className, style, tokens, getLineProps, getTokenProps }) => (
                             <pre
                                 className="p-4 overflow-x-auto font-mono text-[0.8125rem] leading-relaxed"
@@ -107,7 +113,10 @@ export default React.memo(function CodeBlock({ code, language = 'text', isStream
                             >
                                 {tokens.map((line, i) => (
                                     <div key={i} {...getLineProps({ line })}>
-                                        <span className="inline-block w-8 text-right pr-4 text-white/20 select-none">
+                                        <span
+                                            className="inline-block w-8 text-right pr-4 select-none"
+                                            style={{ color: isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.2)' }}
+                                        >
                                             {i + 1}
                                         </span>
                                         {line.map((token, key) => (

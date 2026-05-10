@@ -815,7 +815,7 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
    Clean white theme with pure black text, no purple
    ============================================ */
 .theme-light {
-    --primary-rgb: 99, 102, 241;
+    --primary-rgb: 82, 82, 91;
 
     /* Clean, warm white backgrounds with subtle depth */
     --bg-primary: #fafafa;
@@ -839,21 +839,21 @@ body[data-accent="rose"]    { --accent: oklch(0.6  0.17 15);  --accent-ink: oklc
     --border-primary: #e5e5e5;
     --border-secondary: #f0f0f0;
     --border-hover: #d4d4d4;
-    --border-focus: #6366f1;
+    --border-focus: #52525b;
 
-    /* Indigo accent — vivid but not loud on white, matches the
-       research-UI aesthetic. */
-    --accent-primary: #6366f1;
-    --accent-secondary: #4f46e5;
-    --accent-hover: #818cf8;
-    --accent-muted: rgba(99, 102, 241, 0.10);
+    /* Neutral gray accent — keeps the UI legible without forcing
+       a colored hue onto every theme-token consumer. */
+    --accent-primary: #52525b;
+    --accent-secondary: #3f3f46;
+    --accent-hover: #71717a;
+    --accent-muted: rgba(82, 82, 91, 0.10);
 
-    /* User messages — soft indigo tint, clearly accented but not loud */
-    --user-msg-from: #e0e2ff;
-    --user-msg-to: #d3d5fc;
-    --user-msg-hover-from: #d5d8ff;
-    --user-msg-hover-to: #c8cbfb;
-    --user-msg-text: #1e1e42;
+    /* User messages — neutral gray tint, distinct from page bg without color cast */
+    --user-msg-from: #e7e7ea;
+    --user-msg-to: #dcdce0;
+    --user-msg-hover-from: #dcdce0;
+    --user-msg-hover-to: #d1d1d6;
+    --user-msg-text: #1f1f23;
 
     /* Assistant message styling - visible distinction from page background */
     --assistant-bg: #f0f1f4;

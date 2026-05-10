@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { X, FileText, Image as ImageIcon, FileCode, FileSpreadsheet, FileArchive, Mail, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Highlight, themes } from 'prism-react-renderer';
 import MessageContent from './MessageContent';
+import { useChatStore } from '../../stores/useChatStore';
 
 // Single source of truth for "is this attachment worth opening a modal
 // for?" — exported so the composer chips and persisted-message chips
@@ -402,9 +403,10 @@ function PlainText({ text, muted }) {
 }
 
 function CodePreview({ code, language }) {
+    const isLight = useChatStore((s) => s.theme) === 'light';
     return (
         <div style={{ background: 'var(--surface)', border: '1px solid var(--rule-2)', borderRadius: 8, overflow: 'hidden' }}>
-            <Highlight code={code} language={language} theme={themes.vsDark}>
+            <Highlight code={code} language={language} theme={isLight ? themes.vsLight : themes.vsDark}>
                 {({ className, style, tokens, getLineProps, getTokenProps }) => (
                     <pre
                         className={className}
