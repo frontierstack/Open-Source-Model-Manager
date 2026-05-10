@@ -24,6 +24,82 @@ const http = require('http');
 const net = require('net');
 const url = require('url');
 const crypto = require('crypto');
+const dns = require('dns');
+const dnsPromises = dns.promises;
+
+// ---------------------------------------------------------------------------
+// Private-network blocking — defense against the sandbox calling internal
+// services (Docker bridge IPs, host-only nets, loopback, link-local, etc).
+// Applied to every request regardless of allowlist tightness; the model
+// should never reach the host's intranet via this proxy.
+// ---------------------------------------------------------------------------
+
+function isPrivateOrLocalIp(addr) {
+    if (!addr) return true;
+    if (net.isIP(addr) === 4) {
+        const p = addr.split('.').map(Number);
+        if (p.some(n => Number.isNaN(n))) return true;
+        if (p[0] === 0)  return true;                              // 0.0.0.0/8
+        if (p[0] === 10) return true;                              // 10/8
+        if (p[0] === 127) return true;                             // 127/8 loopback
+        if (p[0] === 169 && p[1] === 254) return true;             // 169.254/16 link-local
+        if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true; // 172.16/12
+        if (p[0] === 192 && p[1] === 168) return true;             // 192.168/16
+        if (p[0] === 192 && p[1] === 0 && p[2] === 0) return true; // 192.0.0/24 IETF
+        if (p[0] === 192 && p[1] === 0 && p[2] === 2) return true; // 192.0.2/24 TEST-NET-1
+        if (p[0] === 198 && (p[1] === 18 || p[1] === 19)) return true; // 198.18/15 benchmark
+        if (p[0] === 198 && p[1] === 51 && p[2] === 100) return true; // TEST-NET-2
+        if (p[0] === 203 && p[1] === 0 && p[2] === 113) return true;  // TEST-NET-3
+        if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // 100.64/10 CGNAT
+        if (p[0] >= 224) return true;                              // 224+ multicast / reserved
+        return false;
+    }
+    if (net.isIP(addr) === 6) {
+        const lower = addr.toLowerCase();
+        if (lower === '::1' || lower === '::') return true;
+        if (lower.startsWith('fe80:') || lower.startsWith('fec0:')) return true;
+        if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;          // fc00::/7 ULA
+        if (lower.startsWith('ff')) return true;                     // ff00::/8 multicast
+        if (lower.startsWith('::ffff:')) {
+            const v4 = lower.slice(7);
+            if (net.isIP(v4) === 4) return isPrivateOrLocalIp(v4);
+        }
+        if (lower.startsWith('64:ff9b::')) return false;             // NAT64 — public-mapped
+        return false;
+    }
+    return true; // unknown format = treat as private
+}
+
+function isInternalLookingHost(host) {
+    host = String(host || '').toLowerCase().trim();
+    if (!host) return true;
+    // Single-label hostnames map to Docker-internal services ("webapp",
+    // "chat", or arbitrary user containers); no public DNS root for them.
+    if (!host.includes('.')) return true;
+    // Reserved/internal TLDs that should never leak out.
+    if (/\.(local|internal|localhost|home|lan|corp|intranet|alt|home\.arpa)$/i.test(host)) return true;
+    return false;
+}
+
+/** Resolve `host` and return true only if every resolved address is
+ *  publicly routable. Literal IPs are checked directly. Failures (DNS
+ *  error, no records) deny by default. */
+async function resolvesPublicly(host) {
+    host = String(host || '').toLowerCase().trim();
+    if (!host) return false;
+    if (net.isIP(host)) return !isPrivateOrLocalIp(host);
+    if (isInternalLookingHost(host)) return false;
+    try {
+        const addrs = await dnsPromises.lookup(host, { all: true, verbatim: true });
+        if (!addrs || addrs.length === 0) return false;
+        for (const a of addrs) {
+            if (isPrivateOrLocalIp(a.address)) return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 const PROXY_PORT = parseInt(process.env.EGRESS_PROXY_PORT || '3180', 10);
 
@@ -40,6 +116,7 @@ const stats = {
     rejectedBadToken: 0,
     rejectedExpired: 0,
     rejectedNotOnAllowlist: 0,
+    rejectedPrivateHost: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -64,10 +141,13 @@ function revokeGrant(token) {
 }
 
 /** Return true if `host` (case-insensitive) matches any pattern on allowlist.
- *  Patterns may be exact ("example.com") or subdomain wildcards
- *  ("*.example.com" which matches foo.example.com, a.b.example.com). */
+ *  Patterns may be exact ("example.com"), subdomain wildcards
+ *  ("*.example.com" which matches foo.example.com, a.b.example.com), or
+ *  the bare wildcard "*" (any public host — private/internal IPs still
+ *  blocked by the resolvesPublicly check applied separately). */
 function hostMatches(host, allow) {
     host = String(host).toLowerCase();
+    if (allow.has('*')) return true;
     if (allow.has(host)) return true;
     for (const pat of allow) {
         if (pat.startsWith('*.')) {
@@ -128,7 +208,7 @@ function deny(res, status, reason, detail) {
 // HTTP forward-proxy handler (plain HTTP)
 // ---------------------------------------------------------------------------
 
-function onHttpRequest(req, res) {
+async function onHttpRequest(req, res) {
     // Only absolute-form URLs are valid forward-proxy requests.
     let target;
     try { target = new url.URL(req.url); } catch { /* relative */ }
@@ -148,6 +228,13 @@ function onHttpRequest(req, res) {
     if (!hostMatches(hostname, check.grant.allow)) {
         stats.rejectedNotOnAllowlist++;
         return deny(res, 403, 'denied', `${hostname} not on allowlist`);
+    }
+    // Block private/internal targets (Docker-bridge IPs, RFC1918, link-local,
+    // single-label hostnames, .local/.internal). Applies even on narrow
+    // allowlists — defense in depth against DNS-rebinding or operator typos.
+    if (!(await resolvesPublicly(hostname))) {
+        stats.rejectedPrivateHost++;
+        return deny(res, 403, 'denied', `${hostname} resolves to a private/internal address`);
     }
 
     // Strip Proxy-Authorization before forwarding.
@@ -178,7 +265,7 @@ function onHttpRequest(req, res) {
 // HTTPS CONNECT handler (tunnel)
 // ---------------------------------------------------------------------------
 
-function onConnect(req, clientSocket, head) {
+async function onConnect(req, clientSocket, head) {
     const token = extractToken(req);
     const check = checkGrant(token);
     if (!check.ok) {
@@ -207,6 +294,17 @@ function onConnect(req, clientSocket, head) {
     if (!hostMatches(hostname, check.grant.allow)) {
         stats.rejectedNotOnAllowlist++;
         clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        clientSocket.destroy();
+        return;
+    }
+    // Resolve + private-network check. Done after the allowlist check so
+    // a narrow allowlist still gets the protection (defense in depth) and
+    // before we open a socket to the target — never even establish a TCP
+    // connection to a private IP.
+    if (!(await resolvesPublicly(hostname))) {
+        stats.rejectedPrivateHost++;
+        clientSocket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n' +
+            `egress proxy: ${hostname} resolves to a private/internal address\n`);
         clientSocket.destroy();
         return;
     }
@@ -264,6 +362,9 @@ module.exports = {
     issueGrant,
     revokeGrant,
     getStats,
-    hostMatches,  // exported for tests
+    hostMatches,            // exported for tests
+    isPrivateOrLocalIp,     // exported for tests + reuse
+    isInternalLookingHost,  // exported for tests
+    resolvesPublicly,       // exported for tests
     PROXY_PORT,
 };

@@ -5409,7 +5409,7 @@ ${code.split('\n').map(l => '        ' + l).join('\n')}
             return res.json({
                 success: false,
                 timedOut: true,
-                error: `Code timed out after ${Math.round(effectiveMs / 1000)}s. Common causes: infinite loop (e.g. while True, pygame game loop), waiting for input() (no stdin in sandbox), or network call on a snippet that tried to reach the internet (no network by default). Send timeoutMs in the request body to extend, up to 120000.`,
+                error: `Code timed out after ${Math.round(effectiveMs / 1000)}s. Common causes: infinite loop (e.g. while True, pygame game loop), waiting for input() (no stdin in sandbox), or a slow upstream HTTP call. Send timeoutMs in the request body to extend, up to 120000.`,
                 stdout: run.stdout?.slice(0, 4000) || '',
             });
         }
@@ -15602,6 +15602,13 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
 // NETWORK-requiring default skills. These get sandboxed with an allowlist
 // so the model can still use them. Each entry declares the egress hostnames
 // the skill actually needs — everything else is blocked by the egress proxy.
+// '*' means "any public host" — the egress proxy still blocks private/
+// internal IPs (RFC1918, loopback, link-local, single-label hostnames)
+// regardless of how wide the allowlist is.
+//
+// `legacyAllowlists` lists prior built-in defaults that should be auto-upgraded
+// when seen on existing installs. A user-customized allowlist that doesn't
+// match any legacy entry is preserved (operator intent wins).
 const NETWORK_SANDBOX_DEFAULTS = {
     download_file:   { allowlist: ['*'], note: 'arbitrary URL download; tighten if policy allows' },
     fetch_url:       { allowlist: ['*'], note: 'user-supplied URLs' },
@@ -15609,6 +15616,20 @@ const NETWORK_SANDBOX_DEFAULTS = {
     web_search:      { allowlist: ['duckduckgo.com', 'html.duckduckgo.com', 'www.bing.com'] },
     playwright_fetch: { allowlist: ['*'], note: 'user-supplied URLs; browser renders' },
     dns_lookup:      { allowlist: [] }, // doesn't use HTTP proxy; noop
+    // Code-execution skills — the model needs general public internet so it
+    // can pip install, fetch arbitrary APIs, run yt-dlp, etc. Private/internal
+    // network access still blocked by the egress proxy's resolvesPublicly check.
+    run_python:      { allowlist: ['*'], note: 'general code execution; pip + requests + yt-dlp' },
+    run_node:        { allowlist: ['*'], note: 'general code execution; npm install + fetch' },
+    run_npm:         {
+        allowlist: ['*'],
+        legacyAllowlists: [
+            // Pre-public-egress narrow default — postinstall scripts and
+            // git+https deps were silently failing. Auto-upgrade.
+            ['registry.npmjs.org', 'registry.npmjs.com', '*.npmjs.org', '*.npmjs.com'],
+        ],
+        note: 'npm registry + postinstall fetches + git+https deps',
+    },
 };
 
 /** Walk existing skills and opt-in known defaults to sandbox + workspace /
@@ -15625,15 +15646,46 @@ async function migrateDefaultSkillsToSandbox() {
             if (s.userId) continue;
             let changed = false;
 
-            if (WORKSPACE_SANDBOX_DEFAULTS.has(s.name)) {
+            if (NETWORK_SANDBOX_DEFAULTS[s.name]) {
+                // Network-requiring defaults take precedence over the
+                // workspace-only set: a skill may be in both lists (e.g.
+                // run_python is workspace=true AND needs egress) and we
+                // want the network policy applied.
+                const spec = NETWORK_SANDBOX_DEFAULTS[s.name];
+                if (s.sandbox !== true) { s.sandbox = true; changed = true; }
+                if (WORKSPACE_SANDBOX_DEFAULTS.has(s.name) && s.workspace !== true) {
+                    s.workspace = true; changed = true;
+                }
+                // Upgrade legacy network='none' to 'allowlist' so skills
+                // that recently gained egress (run_python with allowlist=['*'])
+                // actually receive it on existing installs. User-customized
+                // tiers (e.g. operator manually narrowed to specific hosts)
+                // are preserved.
+                if (!s.network || s.network === 'none') {
+                    s.network = 'allowlist';
+                    s.allowlist = spec.allowlist;
+                    changed = true;
+                } else if (!s.allowlist) {
+                    s.allowlist = spec.allowlist;
+                    changed = true;
+                } else if (Array.isArray(spec.legacyAllowlists) && Array.isArray(s.allowlist)) {
+                    // Upgrade legacy built-in default allowlists. Order-insensitive
+                    // exact-set match so a user who manually narrowed the list
+                    // (different entries) keeps their custom choice.
+                    const cur = [...s.allowlist].map(String).sort();
+                    for (const legacy of spec.legacyAllowlists) {
+                        const leg = [...legacy].map(String).sort();
+                        if (cur.length === leg.length && cur.every((v, i) => v === leg[i])) {
+                            s.allowlist = spec.allowlist;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            } else if (WORKSPACE_SANDBOX_DEFAULTS.has(s.name)) {
                 if (s.sandbox !== true)   { s.sandbox = true;   changed = true; }
                 if (s.workspace !== true) { s.workspace = true; changed = true; }
                 if (!s.network) { s.network = 'none'; changed = true; }
-            } else if (NETWORK_SANDBOX_DEFAULTS[s.name]) {
-                const spec = NETWORK_SANDBOX_DEFAULTS[s.name];
-                if (s.sandbox !== true) { s.sandbox = true; changed = true; }
-                if (!s.network)   { s.network = 'allowlist'; changed = true; }
-                if (!s.allowlist) { s.allowlist = spec.allowlist; changed = true; }
             }
             if (changed) dirty++;
         }
@@ -15747,6 +15799,9 @@ const REFRESH_STALE_SKILLS = new Set([
     'copy_file',
     'run_python',
     'run_node',
+    // run_npm — systemPrompt updated when egress widened from npmjs-only
+    // to public allowlist (postinstall scripts + git deps now succeed).
+    'run_npm',
 ]);
 
 async function refreshStaleDefaultSkills() {
