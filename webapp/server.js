@@ -14565,9 +14565,29 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 && (finishReason === 'tool_calls'
                     || (finishReason === 'length' && accumulatedToolCalls.length > 0));
             const exitedEmptyAfterTools = toolCallRound > 0 && !fullResponse.trim() && !reasoningLoopAborted;
-            if (hitIterationCap || exitedEmptyAfterTools) {
+            // 3. The model walked through many tool calls narrating each step
+            //    ("Let me try X", "Now let me Y:") and then stopped mid-thought
+            //    with the trailing text ending on a sentence-fragment marker
+            //    (':', '—', ';', etc.) and no final tool_call. Cumulative
+            //    fullResponse is non-empty (so exitedEmptyAfterTools misses it),
+            //    but the user sees a long running narration that never lands an
+            //    actual answer. Force synthesis so the model has to summarize
+            //    what it did and didn't accomplish. Conservative: only triggers
+            //    after at least 2 tool rounds — short answers like "Steps:" on
+            //    a single-round response are uncommon enough to ignore, and
+            //    most legitimate completions end with a period, code fence, or
+            //    closing bracket.
+            const trailing = fullResponse.replace(/\s+$/, '');
+            const endsMidThought = trailing.length > 0
+                && /[:;—–]\s*$/.test(trailing.slice(-4));
+            const exitedMidThought = toolCallRound > 1 && endsMidThought
+                && accumulatedToolCalls.length === 0
+                && !reasoningLoopAborted;
+            if (hitIterationCap || exitedEmptyAfterTools || exitedMidThought) {
                 if (hitIterationCap) {
                     console.warn(`[Chat Stream] Max tool iterations (${chatTools.MAX_TOOL_ITERATIONS}) reached — forcing synthesis`);
+                } else if (exitedMidThought) {
+                    console.warn(`[Chat Stream] Tool loop exited mid-thought after ${toolCallRound} tool call(s) — forcing synthesis (trail: ${JSON.stringify(trailing.slice(-60))})`);
                 } else {
                     console.warn(`[Chat Stream] Tool loop exited with empty response after ${toolCallRound} tool call(s) — forcing synthesis`);
                 }
