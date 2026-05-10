@@ -257,21 +257,34 @@ function SystemResourceMonitor({ current, history }) {
                     {/* Per-GPU cards */}
                     {gpus.map((gpu) => {
                         const seriesPair = gpuSeriesByIndex.get(gpu.index);
+                        // Degraded mode: nvidia-smi is wedged but we
+                        // enumerated the card via /proc. Live metrics
+                        // are null until NVML recovers.
+                        const degraded = gpu.utilizationPct == null;
+                        const valueText = degraded ? '—' : `${gpu.utilizationPct}%`;
+                        let subline;
+                        if (degraded) {
+                            subline = 'Live metrics unavailable — see banner below';
+                        } else {
+                            const parts = [
+                                `VRAM ${(gpu.vramUsedMb / 1024).toFixed(1)} / ${(gpu.vramTotalMb / 1024).toFixed(1)} GB (${gpu.vramUsedPct}%)`,
+                            ];
+                            if (gpu.temperatureC != null) parts.push(`${gpu.temperatureC}°C`);
+                            if (gpu.powerW != null) parts.push(`${gpu.powerW.toFixed(0)}W`);
+                            subline = parts.join('  ·  ');
+                        }
                         return (
                             <StatCard
                                 key={`gpu-${gpu.index}`}
                                 icon={<BoltIcon sx={{ fontSize: 16 }} />}
                                 label={`GPU ${gpu.index} · ${gpu.name}`}
-                                valueText={`${gpu.utilizationPct}%`}
-                                percent={gpu.utilizationPct}
+                                valueText={valueText}
+                                percent={degraded ? 0 : gpu.utilizationPct}
                                 accent={accent}
                                 tintBg={tintBg}
                                 series={seriesPair?.util || []}
                                 sparkId={`srm-spark-gpu-${gpu.index}`}
-                                subline={
-                                    `VRAM ${(gpu.vramUsedMb / 1024).toFixed(1)} / ${(gpu.vramTotalMb / 1024).toFixed(1)} GB (${gpu.vramUsedPct}%)` +
-                                    `  ·  ${gpu.temperatureC}°C  ·  ${gpu.powerW.toFixed(0)}W`
-                                }
+                                subline={subline}
                             />
                         );
                     })}
@@ -316,6 +329,52 @@ function SystemResourceMonitor({ current, history }) {
                         </Box>
                     )}
                 </Box>
+
+                {/* Degraded-mode banner: GPUs enumerated via /proc but
+                    nvidia-smi (NVML) is wedged, so live metrics are stale.
+                    Surfaces the recovery hint without taking a card slot. */}
+                {hasData && gpuError && gpus.length > 0 && gpus.some(g => g.utilizationPct == null) && (
+                    <Box
+                        sx={{
+                            mt: 1.5,
+                            p: 1.25,
+                            borderRadius: 1.5,
+                            border: '1px solid var(--border-primary)',
+                            bgcolor: 'var(--bg-tertiary)',
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: 1,
+                        }}
+                    >
+                        <BoltIcon sx={{ fontSize: 18, color: 'var(--text-tertiary)', mt: 0.25 }} />
+                        <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                                variant="caption"
+                                sx={{
+                                    color: 'var(--text-secondary)',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: 0.5,
+                                    fontSize: '0.7rem',
+                                    fontWeight: 600,
+                                }}
+                            >
+                                GPU monitoring degraded
+                            </Typography>
+                            <Typography
+                                variant="caption"
+                                component="div"
+                                sx={{
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '0.7rem',
+                                    lineHeight: 1.5,
+                                    mt: 0.25,
+                                }}
+                            >
+                                {gpuError}
+                            </Typography>
+                        </Box>
+                    </Box>
+                )}
 
                 {/* Models summary row */}
                 {models.length > 0 && (

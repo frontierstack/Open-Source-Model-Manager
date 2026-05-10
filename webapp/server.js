@@ -4417,21 +4417,64 @@ function sampleCpuPercent() {
     }
 }
 
-let gpuErrorLogged = false; // Only log nvidia-smi errors once to avoid log spam
-let gpuUnavailable = false; // Skip nvidia-smi calls after persistent failure
-let gpuRetryAt = 0;         // Timestamp to retry nvidia-smi after failure
-const GPU_RETRY_INTERVAL = 60000; // Retry nvidia-smi every 60s after failure
+// GPU monitoring auto-recovery state. nvidia-smi inside the container can
+// wedge with "Failed to initialize NVML: Unknown Error" when the host
+// driver is upgraded after the container started, or when cgroup state
+// changes. We retry on an adaptive cadence (fast first, slow once persistent),
+// auto-reset on recovery, and fall back to /proc/driver/nvidia for at least
+// GPU presence/names so the panel doesn't go blank.
+let gpuLastError = null;        // Persisted error message between retries
+let gpuFirstFailureAt = 0;      // Time of first failure since last success
+let gpuRetryAt = 0;             // Earliest time to re-run nvidia-smi
+let gpuErrorLogged = false;     // Avoid log flooding at 3s broadcast interval
+let gpuLastRecoveryLogAt = 0;   // Throttle "recovered" logs
+const GPU_RETRY_FAST_MS = 15000;
+const GPU_RETRY_SLOW_MS = 60000;
+const GPU_FAST_RETRY_WINDOW_MS = 5 * 60 * 1000;
+
+// Cached /proc fallback so the broadcast at 3s cadence doesn't re-stat
+// /proc/driver/nvidia repeatedly. Static info — refresh every 30s.
+let procGpuCache = null;
+let procGpuCacheAt = 0;
+async function readGpusFromProc() {
+    if (procGpuCache && Date.now() - procGpuCacheAt < 30000) {
+        return procGpuCache;
+    }
+    const out = [];
+    try {
+        const dirs = await fs.readdir('/proc/driver/nvidia/gpus');
+        dirs.sort();
+        for (let i = 0; i < dirs.length; i++) {
+            try {
+                const info = await fs.readFile(`/proc/driver/nvidia/gpus/${dirs[i]}/information`, 'utf8');
+                const m = info.match(/^Model:\s*(.+)$/m);
+                out.push({
+                    index: i,
+                    name: m ? m[1].trim() : 'NVIDIA GPU',
+                    utilizationPct: null,
+                    vramUsedMb: null,
+                    vramTotalMb: null,
+                    vramUsedPct: null,
+                    temperatureC: null,
+                    powerW: null,
+                    monitoringDegraded: true,
+                });
+            } catch { /* skip unreadable entry */ }
+        }
+    } catch { /* no /proc/driver/nvidia at all */ }
+    procGpuCache = out;
+    procGpuCacheAt = Date.now();
+    return out;
+}
 
 async function broadcastSystemMonitoring() {
     try {
         // ---- GPUs ----
         const gpus = [];
-        let gpuError = null;
+        let gpuError = gpuLastError; // Default to persisted state between retries
 
-        // Skip nvidia-smi if it previously failed — retry every 60s
-        if (gpuUnavailable && Date.now() < gpuRetryAt) {
-            // Use cached error state, don't re-run nvidia-smi
-        } else {
+        const shouldQuery = !gpuFirstFailureAt || Date.now() >= gpuRetryAt;
+        if (shouldQuery) {
             try {
                 const { stdout } = await execPromise('nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits');
                 const lines = stdout.trim().split('\n');
@@ -4451,31 +4494,48 @@ async function broadcastSystemMonitoring() {
                         powerW: parseFloat(power) || 0
                     });
                 }
-                // nvidia-smi recovered — reset failure state
                 if (gpus.length > 0) {
+                    if (gpuFirstFailureAt && Date.now() - gpuLastRecoveryLogAt > 60000) {
+                        const downSec = Math.round((Date.now() - gpuFirstFailureAt) / 1000);
+                        console.log(`[Monitoring] GPU detection recovered after ${downSec}s`);
+                        gpuLastRecoveryLogAt = Date.now();
+                    }
+                    gpuFirstFailureAt = 0;
+                    gpuLastError = null;
+                    gpuError = null;
                     gpuErrorLogged = false;
-                    gpuUnavailable = false;
                 }
             } catch (err) {
-                // Determine the specific reason nvidia-smi failed
                 const errMsg = err.message || String(err);
-                if (errMsg.includes('not found') || errMsg.includes('ENOENT') || errMsg.includes('No such file')) {
+                if (/Failed to initialize NVML/i.test(errMsg)) {
+                    gpuError = 'NVML init failed inside the container — usually means the host NVIDIA driver was upgraded after the webapp container started, leaving stale device handles. Recover with: docker compose restart webapp';
+                } else if (errMsg.includes('not found') || errMsg.includes('ENOENT') || errMsg.includes('No such file')) {
                     gpuError = 'nvidia-smi not found — NVIDIA drivers may not be installed in the container';
                 } else if (errMsg.includes('NVML') || errMsg.includes('driver')) {
                     gpuError = 'NVIDIA driver communication failed — GPU passthrough may not be configured';
                 } else {
-                    gpuError = `nvidia-smi error: ${errMsg.substring(0, 120)}`;
+                    gpuError = `nvidia-smi error: ${errMsg.substring(0, 160).replace(/\s+/g, ' ').trim()}`;
                 }
+                gpuLastError = gpuError;
 
-                // Mark unavailable and schedule retry so we stop hammering a broken nvidia-smi
-                gpuUnavailable = true;
-                gpuRetryAt = Date.now() + GPU_RETRY_INTERVAL;
+                if (!gpuFirstFailureAt) gpuFirstFailureAt = Date.now();
+                const fastWindow = (Date.now() - gpuFirstFailureAt) < GPU_FAST_RETRY_WINDOW_MS;
+                gpuRetryAt = Date.now() + (fastWindow ? GPU_RETRY_FAST_MS : GPU_RETRY_SLOW_MS);
 
-                // Log once to avoid flooding at 3s interval
                 if (!gpuErrorLogged) {
                     gpuErrorLogged = true;
                     console.warn(`[Monitoring] GPU detection failed: ${gpuError}`);
                 }
+            }
+        }
+
+        // Fallback enumeration via /proc when live metrics aren't available.
+        // Keeps the panel showing GPU presence + names instead of going blank,
+        // and works even when NVML is wedged (proc interface is kernel-side).
+        if (gpus.length === 0 && (gpuError || gpuFirstFailureAt)) {
+            const fallback = await readGpusFromProc();
+            if (fallback.length > 0) {
+                for (const g of fallback) gpus.push(g);
             }
         }
 
