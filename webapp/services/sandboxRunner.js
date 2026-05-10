@@ -278,6 +278,25 @@ except Exception as _e:
 
     if (workspaceInfo) {
         env.push(`USER_WORKSPACE=${workspaceInfo.containerMount}`);
+        // Auto-persist pip installs across runs without the model needing to
+        // know about /workspace at all. Plain `pip install yt-dlp` honors
+        // PIP_TARGET as the default --target, so the install lands under
+        // /workspace/.deps (per-conversation, persistent). PYTHONPATH then
+        // makes the installed package importable in this and every future
+        // call without `sys.path.insert` boilerplate. The model was
+        // re-installing to /tmp on every turn because plain `pip install`
+        // appeared to "just work" but evaporated under the read-only rootfs;
+        // this makes it actually work.
+        const depsDir = `${workspaceInfo.containerMount}/.deps`;
+        env.push(
+            `PIP_TARGET=${depsDir}`,
+            // Pip otherwise complains "Target path exists but is not a
+            // directory" if the user previously created /workspace/.deps
+            // as a file by accident; --upgrade flag is the workaround pip
+            // documents. Setting it here keeps `pip install <pkg>` idempotent.
+            `PIP_DISABLE_PIP_VERSION_CHECK=1`,
+            `PYTHONPATH=${depsDir}`,
+        );
     }
 
     const memoryBytes = parseMemory(memory);
