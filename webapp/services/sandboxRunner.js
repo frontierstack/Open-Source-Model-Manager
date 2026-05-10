@@ -388,13 +388,39 @@ except Exception as _e:
     if (stdout.length > MAX) stdout = stdout.slice(0, MAX) + '\n[stdout truncated]';
     if (stderr.length > MAX) stderr = stderr.slice(0, MAX) + '\n[stderr truncated]';
 
-    // 5. Parse stdout as JSON (skill convention)
+    // 5. Parse stdout as JSON (skill convention).
+    //
+    // The harness writes a single-line `json.dumps(_result)` as the last
+    // thing on stdout, but many third-party libraries (yt-dlp's progress
+    // bar, tqdm, requests verbose mode, ML training spinners) print to
+    // stdout too. A strict whole-stdout parse fails the moment any of
+    // those leak through, even when the skill ran perfectly. Try the
+    // whole buffer first; if that fails, walk back from the end looking
+    // for a parseable JSON line.
     let result = null;
     let parseError = null;
+    const trimmed = stdout.trim() || 'null';
     try {
-        result = JSON.parse(stdout.trim() || 'null');
+        result = JSON.parse(trimmed);
     } catch (e) {
         parseError = e.message;
+        // Treat \r as a line separator too. Progress bars (yt-dlp, tqdm,
+        // wget) rewrite a single terminal line using bare \r, so they
+        // arrive as one long "line" if you only split on \n.
+        const lines = trimmed.split(/\r\n|\r|\n/);
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            // Cheap shape filter so we don't burn cycles JSON-parsing
+            // every progress line. The harness output is always a top-
+            // level JSON object — array results are wrapped in a dict.
+            if (!line.startsWith('{') || !line.endsWith('}')) continue;
+            try {
+                result = JSON.parse(line);
+                parseError = null;
+                break;
+            } catch { /* keep walking */ }
+        }
     }
 
     // 6. Collect artifact file list

@@ -7589,18 +7589,36 @@ async function executePythonSkill(skill, params, ctx = null) {
 
     if (wantSandbox) {
         try {
-            // Network policy from the skill definition. Built-in skills that
-            // need the internet (playwright, scrapling, web fetches) must
-            // declare network: 'allowlist' + `allowlist: [...]` so we don't
-            // grant open egress by accident.
-            const network = skill.network || 'none';
-            const allowlist = skill.allowlist || [];
+            // Network policy from the skill definition.
+            //   - User-created skills (have userId) default to public
+            //     internet via `allowlist: ['*']`. The egress proxy still
+            //     applies its `resolvesPublicly` check, so private/internal
+            //     IPs (10/8, 172.16/12, 192.168/16, 127/8, link-local) stay
+            //     blocked. This matches the "open internet, no LAN reach"
+            //     policy users expect when they write a tool that talks to
+            //     a third-party API.
+            //   - Built-in skills (no userId) keep the explicit policy on
+            //     their skill record — most are `'none'` for FS work;
+            //     web tools (playwright, scrapling, fetch_url) declare
+            //     `'allowlist'` with their own narrow host list.
+            const isUserSkill = !!skill.userId;
+            const network = skill.network || (isUserSkill ? 'allowlist' : 'none');
+            const allowlist = skill.allowlist || (isUserSkill && network === 'allowlist' ? ['*'] : []);
+            // User skills also default to workspace=true so the sandbox's
+            // ReadonlyRootfs doesn't block ad-hoc `pip install` for
+            // dependencies. Without this, every user skill that needs a
+            // package not in the base image fails before it can run.
+            // The persistent /workspace/.deps cache (PIP_TARGET) makes the
+            // install cheap on subsequent calls.
+            const workspace = typeof skill.workspace === 'boolean'
+                ? skill.workspace
+                : isUserSkill;
             const run = await sandbox.runPythonSkill({
                 code: skill.code,
                 params,
                 network,
                 allowlist,
-                workspace: !!skill.workspace,
+                workspace,
                 // Opt out of sandbox-side path rewriting when the skill
                 // declares it. Needed for git_* skills where `path` is a
                 // repo-relative filter ('.', 'src/app.py'), not a
