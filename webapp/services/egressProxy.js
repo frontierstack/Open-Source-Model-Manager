@@ -103,8 +103,16 @@ async function resolvesPublicly(host) {
 
 const PROXY_PORT = parseInt(process.env.EGRESS_PROXY_PORT || '3180', 10);
 
-// grants: token -> { allow:Set<string>, expiresAt:number, toolName, userId }
+// grants: token -> { allow:Set<string>, expiresAt:number, toolName, userId, ip }
 const grants = new Map();
+// grantsByIp: sandbox container bridge IP -> token. Lets us authenticate
+// clients that don't forward proxy URL userinfo on CONNECT (Python
+// urllib/urllib3/pip — every CONNECT lands as 407 even when HTTPS_PROXY
+// has the creds in the URL). The sandbox bridge network is itself the
+// security boundary: only sandbox containers can reach this listener,
+// each gets a unique IP, and the bound grant carries the same per-tool
+// allowlist + private-network blocking as the token path.
+const grantsByIp = new Map();
 const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 minutes — longer than any tool
 
 // Stats for debugging / future dashboards.
@@ -117,6 +125,7 @@ const stats = {
     rejectedExpired: 0,
     rejectedNotOnAllowlist: 0,
     rejectedPrivateHost: 0,
+    allowedByIp: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -137,7 +146,59 @@ function issueGrant({ allowlist, toolName, userId, ttlMs = DEFAULT_TTL_MS }) {
 }
 
 function revokeGrant(token) {
+    const g = grants.get(token);
+    if (g && g.ip && grantsByIp.get(g.ip) === token) grantsByIp.delete(g.ip);
     if (grants.delete(token)) stats.revoked++;
+}
+
+/** Bind an issued grant to the sandbox container's bridge IP. The proxy
+ *  will then accept requests from that IP without requiring
+ *  Proxy-Authorization (lets pip / urllib / requests work — they don't
+ *  forward proxy URL userinfo on CONNECT). Idempotent; called from
+ *  sandboxRunner once `container.inspect()` returns the network settings. */
+function bindGrantToIp(token, ip) {
+    if (!token || !ip) return;
+    const g = grants.get(token);
+    if (!g) return;
+    // If a previous grant was bound to this IP (orphaned, not yet swept),
+    // overwrite — the new container is the legitimate owner.
+    g.ip = ip;
+    grantsByIp.set(ip, token);
+}
+
+function normalizeRemoteAddr(addr) {
+    if (!addr) return '';
+    // strip IPv4-mapped IPv6 prefix; bridge networks deliver as ::ffff:172.x.x.x
+    return String(addr).replace(/^::ffff:/i, '');
+}
+
+/** Resolve the grant for a request: prefer Proxy-Authorization (curl,
+ *  git, wget — clients that forward URL userinfo); fall back to source-IP
+ *  binding for clients that don't (Python's urllib stack). Either path
+ *  yields the same grant object, so allowlist + private-network checks
+ *  are identical from there on. */
+function resolveGrant(req, remoteAddr) {
+    const tok = extractToken(req);
+    if (tok) {
+        const c = checkGrant(tok);
+        if (c.ok) return { ok: true, grant: c.grant, via: 'token', token: tok };
+        // If the header was present but invalid/expired, fall through to
+        // the IP path — a stale Proxy-Authorization shouldn't lock out a
+        // request that would otherwise succeed by source IP.
+    }
+    const ip = normalizeRemoteAddr(remoteAddr);
+    if (ip && grantsByIp.has(ip)) {
+        const ipTok = grantsByIp.get(ip);
+        const c = checkGrant(ipTok);
+        if (c.ok) {
+            stats.allowedByIp++;
+            return { ok: true, grant: c.grant, via: 'ip', token: ipTok };
+        }
+        // Expired/cleared — drop the IP binding so we don't keep checking it.
+        grantsByIp.delete(ip);
+    }
+    if (tok) return { ok: false, reason: 'bad_token' };
+    return { ok: false, reason: 'no_token' };
 }
 
 /** Return true if `host` (case-insensitive) matches any pattern on allowlist.
@@ -216,8 +277,7 @@ async function onHttpRequest(req, res) {
         return deny(res, 400, 'bad_request', 'expected absolute URL');
     }
 
-    const token = extractToken(req);
-    const check = checkGrant(token);
+    const check = resolveGrant(req, req.socket && req.socket.remoteAddress);
     if (!check.ok) {
         stats[`rejected${check.reason === 'no_token' ? 'NoToken'
                : check.reason === 'bad_token' ? 'BadToken'
@@ -266,8 +326,7 @@ async function onHttpRequest(req, res) {
 // ---------------------------------------------------------------------------
 
 async function onConnect(req, clientSocket, head) {
-    const token = extractToken(req);
-    const check = checkGrant(token);
+    const check = resolveGrant(req, clientSocket && clientSocket.remoteAddress);
     if (!check.ok) {
         stats[`rejected${check.reason === 'no_token' ? 'NoToken'
                : check.reason === 'bad_token' ? 'BadToken'
@@ -341,7 +400,10 @@ function start() {
     setInterval(() => {
         const now = Date.now();
         for (const [tok, g] of grants) {
-            if (g.expiresAt < now) grants.delete(tok);
+            if (g.expiresAt < now) {
+                if (g.ip && grantsByIp.get(g.ip) === tok) grantsByIp.delete(g.ip);
+                grants.delete(tok);
+            }
         }
     }, 60_000).unref();
 
@@ -352,6 +414,7 @@ function getStats() {
     return {
         ...stats,
         activeGrants: grants.size,
+        ipBoundGrants: grantsByIp.size,
         listening: !!server,
         port: PROXY_PORT,
     };
@@ -361,6 +424,7 @@ module.exports = {
     start,
     issueGrant,
     revokeGrant,
+    bindGrantToIp,
     getStats,
     hostMatches,            // exported for tests
     isPrivateOrLocalIp,     // exported for tests + reuse

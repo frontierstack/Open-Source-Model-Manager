@@ -325,6 +325,21 @@ except Exception as _e:
 
         await container.start();
 
+        // Bind the egress grant to this container's bridge IP so clients
+        // that don't forward proxy URL userinfo on CONNECT (Python's
+        // urllib stack — pip, requests, urllib.request) authenticate by
+        // source IP. curl/git keep working through Proxy-Authorization;
+        // either path applies the same allowlist + private-network checks.
+        if (egressToken) {
+            try {
+                const info = await container.inspect();
+                const nets = info && info.NetworkSettings && info.NetworkSettings.Networks;
+                const netInfo = nets && nets[DEFAULT_NETWORK_NAME];
+                const ip = netInfo && netInfo.IPAddress;
+                if (ip) egressProxy.bindGrantToIp(egressToken, ip);
+            } catch (_) { /* fall back to header auth — curl/git still succeed */ }
+        }
+
         const waitResult = await Promise.race([
             container.wait(),
             new Promise(resolve => setTimeout(async () => {
