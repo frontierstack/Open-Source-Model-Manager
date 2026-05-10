@@ -565,7 +565,8 @@ const App = () => {
         description: '',
         type: 'tool',
         parameters: {},
-        code: ''
+        code: '',
+        systemPrompt: ''
     });
 
     // Markdown Skills state — instructional .md files the LLM consults
@@ -7458,7 +7459,7 @@ console.log(await res.json());`
                 } else {
                     showSnackbar('Skill created successfully', 'success');
                     setSkillDialogOpen(false);
-                    setSkillFormData({ name: '', description: '', type: 'tool', parameters: {}, code: '' });
+                    setSkillFormData({ name: '', description: '', type: 'tool', parameters: {}, code: '', systemPrompt: '' });
                     fetchSkills();
                 }
             })
@@ -7483,7 +7484,7 @@ console.log(await res.json());`
                     showSnackbar('Skill updated successfully', 'success');
                     setSkillDialogOpen(false);
                     setEditingSkill(null);
-                    setSkillFormData({ name: '', description: '', type: 'tool', parameters: {}, code: '' });
+                    setSkillFormData({ name: '', description: '', type: 'tool', parameters: {}, code: '', systemPrompt: '' });
                     fetchSkills();
                 }
             })
@@ -11539,7 +11540,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
                                                                         setEditingSkill(null);
-                                                                        setSkillFormData({ name: '', description: '', type: 'tool', parameters: {}, code: '' });
+                                                                        setSkillFormData({ name: '', description: '', type: 'tool', parameters: {}, code: '', systemPrompt: '' });
                                                                         setSkillDialogOpen(true);
                                                                     }}
                                                                 >
@@ -11660,7 +11661,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                                                                     size="small"
                                                                                                     onClick={() => {
                                                                                                         setEditingSkill(skill);
-                                                                                                        setSkillFormData(skill);
+                                                                                                        setSkillFormData({ systemPrompt: '', ...skill });
                                                                                                         setSkillDialogOpen(true);
                                                                                                     }}
                                                                                                     sx={{
@@ -12067,6 +12068,16 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                         onChange={(e) => setSkillFormData({ ...skillFormData, code: e.target.value })}
                         sx={{ mb: 2, fontFamily: 'monospace' }}
                         helperText="Enter the code or script for this tool"
+                    />
+                    <TextField
+                        fullWidth
+                        label="Prompt"
+                        multiline
+                        rows={4}
+                        value={skillFormData.systemPrompt || ''}
+                        onChange={(e) => setSkillFormData({ ...skillFormData, systemPrompt: e.target.value })}
+                        sx={{ mb: 2 }}
+                        helperText="Optional. Instructions the model sees when this tool is called — use it to enforce defaults, output format, or behavior rules. First sentence also appears in the tool description shown to the model during selection."
                     />
                 </DialogContent>
                 <DialogActions>

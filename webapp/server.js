@@ -7231,7 +7231,7 @@ app.post('/api/skills', requireAuth, async (req, res) => {
         return res.status(403).json({ error: 'Agents permission required' });
     }
 
-    const { name, description, type, parameters, code } = req.body;
+    const { name, description, type, parameters, code, systemPrompt } = req.body;
 
     if (!name || !type) {
         return res.status(400).json({ error: 'Skill name and type are required' });
@@ -7252,6 +7252,7 @@ app.post('/api/skills', requireAuth, async (req, res) => {
             type, // 'tool', 'function', 'command'
             parameters: parameters || {},
             code: code || '',
+            systemPrompt: typeof systemPrompt === 'string' ? systemPrompt : '',
             userId: req.userId || null,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -7275,7 +7276,7 @@ app.put('/api/skills/:id', requireAuth, async (req, res) => {
     }
 
     const { id } = req.params;
-    const { name, description, type, parameters, code, enabled } = req.body;
+    const { name, description, type, parameters, code, systemPrompt, enabled } = req.body;
     console.log(`PUT /api/skills/${req.params.id} - body keys: ${Object.keys(req.body || {}).join(',')}`);
 
     try {
@@ -7305,6 +7306,7 @@ app.put('/api/skills/:id', requireAuth, async (req, res) => {
             type: type || skills[skillIndex].type,
             parameters: parameters !== undefined ? parameters : skills[skillIndex].parameters,
             code: code !== undefined ? code : skills[skillIndex].code,
+            systemPrompt: systemPrompt !== undefined ? systemPrompt : skills[skillIndex].systemPrompt,
             enabled: enabled !== undefined ? enabled : skills[skillIndex].enabled,
             updatedAt: new Date().toISOString()
         };
@@ -13647,6 +13649,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Cleared per user turn, not per conversation.
         const toolCallHistory = []; // { fp: 'name:args', resultHash: string }
 
+        // Skills can carry a `systemPrompt` (set in the Tool editor's
+        // "Prompt" field) that the model should see when the tool is
+        // called — used to enforce per-tool defaults, output format, or
+        // behavior rules. Track which skills have already had their
+        // prompt injected this turn; once the model has seen a skill's
+        // instructions, repeating them on every subsequent call wastes
+        // tokens for no gain.
+        const injectedSkillPrompts = new Set();
+        const SKILL_PROMPT_CHAR_CAP = 1500;
+
         // --- Auto-invoke base64_decode on input ---------------------------
         // Models inconsistently pick base64_decode out of a 70+ tool catalog
         // and often guess the decoded value inline. Detect base64 in the
@@ -14278,6 +14290,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // (potentially large) skills file is read once per request
                     // instead of once per round. policyCache memoizes per name.
                     const toolResultMessages = [];
+                    // Skill prompts collected this round — emitted as one
+                    // transient system message after the tool results so the
+                    // model's next turn sees per-tool behavior rules.
+                    const pendingSkillPrompts = [];
                     for (const call of finalizedCalls) {
                         const policy = toolPolicy(call.function.name);
                         if (clientConnected) {
@@ -14372,6 +14388,32 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         } else {
                             resultMsg = await chatTools.executeToolCall(call, toolCtx);
                         }
+
+                        // Skill `systemPrompt` injection. If this tool is a
+                        // user-defined skill (not a static native) with a
+                        // non-empty Prompt field, queue it for emission as a
+                        // transient system message after the tool result.
+                        // Dedupe per turn — see `injectedSkillPrompts` above.
+                        const callName = call.function.name;
+                        if (!chatTools.toolRegistry.has(callName) && !injectedSkillPrompts.has(callName)) {
+                            try {
+                                const all = await loadSkills();
+                                const scoped = filterByUserId(all, toolCtx?.userId);
+                                const skill = scoped.find(s => safeToolName(s.name) === callName);
+                                if (skill && typeof skill.systemPrompt === 'string' && skill.systemPrompt.trim()) {
+                                    let prompt = skill.systemPrompt.trim();
+                                    if (prompt.length > SKILL_PROMPT_CHAR_CAP) {
+                                        prompt = prompt.slice(0, SKILL_PROMPT_CHAR_CAP) + '…';
+                                    }
+                                    pendingSkillPrompts.push({ name: skill.name, prompt });
+                                    injectedSkillPrompts.add(callName);
+                                    console.log(`[Chat Stream] Injecting skill systemPrompt for "${skill.name}" (${prompt.length} chars)`);
+                                }
+                            } catch (e) {
+                                console.warn(`[Chat Stream] Skill prompt lookup failed for ${callName}: ${e.message}`);
+                            }
+                        }
+
                         // Per-tool-result size cap. Without this a single
                         // archive extraction or large file read can dump
                         // hundreds of KB of text into currentMessages, which
@@ -14471,6 +14513,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             };
                         }
                     });
+                    // If any skill in this round carried a Prompt, emit one
+                    // combined system message after the tool results. Keep
+                    // it short and labeled per-skill so the model can
+                    // attribute the rules to the right tool.
+                    const skillPromptMsg = pendingSkillPrompts.length
+                        ? {
+                            role: 'system',
+                            content: pendingSkillPrompts
+                                .map(p => `Instructions for "${p.name}": ${p.prompt}`)
+                                .join('\n\n'),
+                        }
+                        : null;
                     currentMessages = [
                         ...currentMessages,
                         {
@@ -14479,6 +14533,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             tool_calls: safeToolCalls,
                         },
                         ...toolResultMessages,
+                        ...(skillPromptMsg ? [skillPromptMsg] : []),
                     ];
                     toolCallRound++;
                     continuationCount = 0; // fresh length budget for next turn
