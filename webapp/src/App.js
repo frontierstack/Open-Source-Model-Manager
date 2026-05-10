@@ -7816,33 +7816,37 @@ console.log(await res.json());`
                                     CSS variables chat:3002 uses, so theme
                                     choice syncs across both apps. */}
                                 <ThemePicker />
+                                {/* Header chips: keep typography + icon sizing
+                                    in lockstep with ThemePicker (h-8, text-xs,
+                                    12-14px icons) so the row reads as a single
+                                    set instead of mixed sizes. */}
                                 <Chip
-                                    icon={wsConnected ? <CheckCircleIcon sx={{ fontSize: 18 }} /> : <WarningIcon sx={{ fontSize: 18 }} />}
+                                    icon={wsConnected ? <CheckCircleIcon sx={{ fontSize: 14 }} /> : <WarningIcon sx={{ fontSize: 14 }} />}
                                     label={wsConnected ? "Connected" : "Disconnected"}
                                     size="medium"
                                     color={wsConnected ? "success" : "error"}
                                     variant="outlined"
-                                    sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', md: 'inline-flex' }, '& .MuiChip-icon': { ml: 0.5 } }}
+                                    sx={{ height: 32, fontSize: '0.75rem', display: { xs: 'none', md: 'inline-flex' }, '& .MuiChip-icon': { ml: 0.5 } }}
                                 />
                                 {liveInstances.length > 0 && (
                                     <Chip
-                                        icon={<MemoryIcon sx={{ fontSize: 18 }} />}
+                                        icon={<MemoryIcon sx={{ fontSize: 14 }} />}
                                         label={`${liveInstances.length} Active`}
                                         size="medium"
                                         color="secondary"
                                         variant="outlined"
-                                        sx={{ height: 32, fontSize: '0.875rem', display: { xs: 'none', md: 'inline-flex' } }}
+                                        sx={{ height: 32, fontSize: '0.75rem', display: { xs: 'none', md: 'inline-flex' }, '& .MuiChip-icon': { ml: 0.5 } }}
                                     />
                                 )}
                                 <Chip
-                                    icon={<AccountCircleIcon sx={{ fontSize: 18, color: 'text.primary' }} />}
+                                    icon={<AccountCircleIcon sx={{ fontSize: 14, color: 'text.primary' }} />}
                                     label={user?.username || 'User'}
                                     size="medium"
                                     variant="outlined"
                                     onClick={handleUserMenuOpen}
                                     sx={{
                                         height: 32,
-                                        fontSize: '0.875rem',
+                                        fontSize: '0.75rem',
                                         borderColor: 'divider',
                                         color: 'text.primary',
                                         '& .MuiChip-icon': { ml: 0.5 },
