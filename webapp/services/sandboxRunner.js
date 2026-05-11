@@ -524,6 +524,11 @@ const PATH_ARG_NAMES = [
     'filePath', 'dirPath', 'sourcePath', 'destPath',
     'path', 'directory', 'src', 'dest', 'target',
     'from', 'to', 'output', 'input',
+    // download_file / screenshot use `savePath`; tar_extract / unzip_file
+    // use `tarPath` / `zipPath` / `extractPath`. Without these, the model's
+    // very natural `/tmp/foo.tgz` never gets rewritten to `/workspace/foo.tgz`
+    // and the file disappears between calls.
+    'savePath', 'tarPath', 'zipPath', 'extractPath',
 ];
 
 /** Create (if needed) + chmod the per-(user, conversation) workspace.

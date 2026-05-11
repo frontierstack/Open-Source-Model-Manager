@@ -15681,8 +15681,19 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'diff_files', 'grep_code', 'outline_file', 'replace_lines',
     // make a workspace file downloadable — copies into /workspace/artifacts/
     'make_downloadable',
-    // archives
-    'create_archive', 'extract_archive',
+    // download_file lives in NETWORK_SANDBOX_DEFAULTS too — it's listed here
+    // so the migration also flips workspace=true. Without the workspace mount,
+    // the file lands in the per-call tmpfs `/tmp` and evaporates the moment
+    // the sandbox container exits, leaving every subsequent skill (extract,
+    // read, hash, ...) staring at ENOENT.
+    'download_file',
+    // archives — names match the actual entries in default-skills.json
+    // (`tar_extract`/`tar_create`/`unzip_file`/`zip_files`). The previous
+    // `create_archive`/`extract_archive` entries were dead names: no
+    // matching skill, so the workspace flag never landed and these ran
+    // in-process against the webapp container's filesystem instead of
+    // the per-conversation /workspace.
+    'tar_extract', 'tar_create', 'unzip_file', 'zip_files',
     // pdf / docs generation + reading
     'create_pdf', 'html_to_pdf', 'markdown_to_html',
     'read_pdf', 'pdf_page_count', 'pdf_to_images',
@@ -15817,16 +15828,23 @@ async function addMissingDefaultSkills() {
             };
             // Honor sandbox/workspace/network flags declared on the template,
             // then layer the global WORKSPACE_/NETWORK_SANDBOX_DEFAULTS maps
-            // so older defaults still get the right policy.
-            if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
-                out.sandbox = true;
-                out.workspace = true;
-                out.network = out.network || 'none';
-            } else if (NETWORK_SANDBOX_DEFAULTS[out.name]) {
+            // so older defaults still get the right policy. NETWORK first —
+            // a skill in BOTH sets (e.g. download_file) needs `network=allowlist`,
+            // not `network=none`, while still getting the workspace mount.
+            // The pre-existing if/else here silently downgraded such skills to
+            // network=none, so download_file couldn't reach the internet.
+            if (NETWORK_SANDBOX_DEFAULTS[out.name]) {
                 const spec = NETWORK_SANDBOX_DEFAULTS[out.name];
                 out.sandbox = true;
                 out.network = out.network || 'allowlist';
                 out.allowlist = out.allowlist || spec.allowlist;
+                if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                    out.workspace = true;
+                }
+            } else if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                out.sandbox = true;
+                out.workspace = true;
+                out.network = out.network || 'none';
             }
             return out;
         });
@@ -15960,7 +15978,10 @@ async function initializeDefaultSkills() {
 
         // Add IDs, timestamps, AND sandbox/workspace flags for known
         // file-op / network-requiring default skills. Same logic as the
-        // migration, applied up-front on first install.
+        // migration, applied up-front on first install. NETWORK first so
+        // skills in both sets keep their egress policy AND get the workspace
+        // mount; the previous if/else order silently downgraded
+        // network-requiring + workspace-needing skills to network=none.
         const defaultSkills = defaultSkillsTemplate.map(skill => {
             const out = {
                 id: crypto.randomBytes(16).toString('hex'),
@@ -15968,15 +15989,18 @@ async function initializeDefaultSkills() {
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
             };
-            if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
-                out.sandbox = true;
-                out.workspace = true;
-                out.network = out.network || 'none';
-            } else if (NETWORK_SANDBOX_DEFAULTS[out.name]) {
+            if (NETWORK_SANDBOX_DEFAULTS[out.name]) {
                 const spec = NETWORK_SANDBOX_DEFAULTS[out.name];
                 out.sandbox = true;
                 out.network = out.network || 'allowlist';
                 out.allowlist = out.allowlist || spec.allowlist;
+                if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                    out.workspace = true;
+                }
+            } else if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
+                out.sandbox = true;
+                out.workspace = true;
+                out.network = out.network || 'none';
             }
             return out;
         });
