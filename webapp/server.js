@@ -15926,6 +15926,26 @@ const REFRESH_STALE_SKILLS = new Set([
     // to /workspace/<basename>). Same UX fix as grep_code.
     'outline_file',
     'replace_lines',
+    // File-op family — workspace-hint treatment on FileNotFoundError /
+    // Directory-not-found / generic-exception paths so the model self-
+    // corrects after a path-rewrite. read_file / head_file / tail_file are
+    // also in the disk-read group above (Set dedupes); listing them here
+    // keeps the rationale colocated with the rest of the family.
+    // move_file / copy_file additionally got explicit collision detection —
+    // when normalizePathArgs rewrites two different host paths to the same
+    // /workspace/<basename>, shutil would silently SameFile-error. update_file
+    // gained a try/except (had none before) so a missing parent dir produces
+    // a clean error instead of a raw traceback. diff_files /
+    // search_replace_file now check existence upfront so they can name the
+    // offending path.
+    'delete_file',
+    'delete_directory',
+    'update_file',
+    'append_to_file',
+    'search_replace_file',
+    'diff_files',
+    'move_file',
+    'copy_file',
 ]);
 
 async function refreshStaleDefaultSkills() {
