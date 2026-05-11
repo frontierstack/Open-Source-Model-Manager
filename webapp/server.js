@@ -15913,6 +15913,13 @@ const REFRESH_STALE_SKILLS = new Set([
     // run_npm — systemPrompt updated when egress widened from npmjs-only
     // to public allowlist (postinstall scripts + git deps now succeed).
     'run_npm',
+    // grep_code — pre-fix the skill defaulted `directory` to `.`, which
+    // resolved to the harness's /work cwd (containing only skill.py +
+    // params.json) when the model omitted the param. New code defaults to
+    // USER_WORKSPACE, expands excludeDirs to skip .deps/pip caches, and
+    // returns a clearer error when an outside-workspace path was rewritten
+    // and now points at a non-existent /workspace/<basename>.
+    'grep_code',
 ]);
 
 async function refreshStaleDefaultSkills() {
