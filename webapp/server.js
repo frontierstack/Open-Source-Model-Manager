@@ -15920,6 +15920,12 @@ const REFRESH_STALE_SKILLS = new Set([
     // returns a clearer error when an outside-workspace path was rewritten
     // and now points at a non-existent /workspace/<basename>.
     'grep_code',
+    // outline_file / replace_lines — "file not found" error extended with
+    // the sandbox-boundary hint so the model stops retrying outside-
+    // workspace absolute paths (which the path normalizer silently rewrites
+    // to /workspace/<basename>). Same UX fix as grep_code.
+    'outline_file',
+    'replace_lines',
 ]);
 
 async function refreshStaleDefaultSkills() {
