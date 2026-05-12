@@ -11766,9 +11766,13 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                         filename,
                         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         type: 'spreadsheet',
-                        // No raw bytes — sheets[] is the only thing the UI
-                        // needs and the model already has the CSV content.
-                        bytes: null,
+                        // Persist the raw xlsx bytes so /api/chat/stream can
+                        // copy the original spreadsheet into the conversation's
+                        // sandbox workspace (/workspace/uploads/<name>.xlsx).
+                        // Skills like query_sqlite, read_xlsx, run_python can
+                        // then operate on the actual file instead of just the
+                        // CSV-flattened text content.
+                        bytes: buffer,
                         meta: {
                             sheetCount: sheetsStructured.length,
                             sheets: sheetsStructured,
@@ -12270,6 +12274,121 @@ app.delete('/api/chat/continuation/:conversationId', requireAuth, (req, res) => 
     res.json({ success: true });
 });
 
+// Materialize this turn's attachments to the conversation's sandbox
+// workspace at /workspace/uploads/<filename> so disk-read skills
+// (read_file, list_directory, grep_code, outline_file, head_file,
+// tail_file) can target them. The chat UI still embeds full content
+// inline as === FILE N === blocks for immediate access; the disk copy
+// is the long-term home that survives context-roll-off (memory
+// compression, older-turn truncation) and gets wiped automatically
+// when the conversation is deleted (DELETE /api/conversations/:id
+// already calls deleteConversationWorkspace).
+//
+// `workspaceUserId` must follow the same convention as sandbox runs
+// and the conv-delete handler — `req.userId ?? null` — so the bucket
+// the upload lands in is the same bucket the wipe walks.
+// `attachmentOwnerId` follows /api/chat/upload's ownerId
+// (req.user?.id || req.apiKeyData?.id || 'default') so loadBytes()
+// finds the right attachment row.
+async function materializeAttachmentsToWorkspace(workspaceUserId, attachmentOwnerId, conversationId, attachments) {
+    if (!conversationId || !Array.isArray(attachments) || attachments.length === 0) {
+        return { written: 0 };
+    }
+    const sbRunner = require('./services/sandboxRunner');
+    let ws;
+    try {
+        ws = await sbRunner.ensureWorkspace(workspaceUserId, conversationId);
+    } catch (e) {
+        return { written: 0, error: 'ensureWorkspace: ' + e.message };
+    }
+    const uploadsDir = path.join(ws.localInContainer, 'uploads');
+    try {
+        await fs.mkdir(uploadsDir, { recursive: true, mode: 0o777 });
+        // Explicit chmod — umask may have stripped bits from the mkdir mode.
+        // Sandbox container runs as a non-root user; the dir must be world-
+        // writable (and the files world-readable below) for the sandbox to
+        // open them after webapp (root) wrote them.
+        await fs.chmod(uploadsDir, 0o777);
+    } catch (e) {
+        return { written: 0, error: 'mkdir uploads: ' + e.message };
+    }
+
+    const sanitizeName = (raw) => {
+        let n = String(raw == null ? 'untitled' : raw);
+        n = n.replace(/[\\/]/g, '_');           // no path separators
+        n = n.replace(/^\.+/, '_');             // no leading-dot hidden files
+        n = n.replace(/[\x00-\x1f\x7f]/g, '');  // no controls
+        // Whitelist filename-safe characters; everything else collapses to _.
+        n = n.replace(/[^A-Za-z0-9._\-()\[\]+ ]/g, '_');
+        if (n.length > 200) n = n.slice(0, 200);
+        return n || 'untitled';
+    };
+
+    let written = 0;
+    const filesWritten = [];
+    const errors = [];
+
+    for (const att of attachments) {
+        try {
+            const safeName = sanitizeName(att && att.filename);
+            const targetPath = path.join(uploadsDir, safeName);
+            let wrote = false;
+
+            // 1. Image: bytes from dataUrl (base64-encoded data URI).
+            if (!wrote && att && att.type === 'image' && typeof att.dataUrl === 'string' && att.dataUrl.startsWith('data:')) {
+                const m = att.dataUrl.match(/^data:[^;]+;base64,(.*)$/);
+                if (m) {
+                    const bytes = Buffer.from(m[1], 'base64');
+                    await fs.writeFile(targetPath, bytes);
+                    await fs.chmod(targetPath, 0o666);
+                    wrote = true;
+                }
+            }
+
+            // 2. attachmentStore-backed bytes — PDFs and (post-upload-fix) xlsx
+            //    carry an attachmentId pointing at the bytes saved by
+            //    /api/chat/upload. This preserves the original binary.
+            if (!wrote && att && att.attachmentId) {
+                try {
+                    const loaded = await attachmentStore.loadBytes(attachmentOwnerId, att.attachmentId);
+                    if (loaded && loaded.bytes && loaded.bytes.length > 0) {
+                        await fs.writeFile(targetPath, loaded.bytes);
+                        await fs.chmod(targetPath, 0o666);
+                        wrote = true;
+                    }
+                } catch (_) { /* fall through to text fallback */ }
+            }
+
+            // 3. Text content fallback — paste-as-file, csv, json, code,
+            //    eml/docx extract, xlsx-without-bytes, etc. The content the
+            //    model would have inlined anyway, now on disk so disk-read
+            //    skills can slice it without burning context.
+            if (!wrote && att && typeof att.content === 'string' && att.content.length > 0) {
+                await fs.writeFile(targetPath, att.content, { encoding: 'utf8' });
+                await fs.chmod(targetPath, 0o666);
+                wrote = true;
+            }
+
+            if (wrote) {
+                written++;
+                filesWritten.push(safeName);
+            } else {
+                errors.push(`${safeName}: no bytes/content available`);
+            }
+        } catch (e) {
+            errors.push(`${(att && att.filename) || '?'}: ${e.message}`);
+        }
+    }
+
+    return {
+        written,
+        filesWritten,
+        errors: errors.length ? errors : undefined,
+        uploadsDir: '/workspace/uploads',  // path as the sandbox sees it
+        hostUploadsDir: uploadsDir,         // for debug logs
+    };
+}
+
 // Streaming chat endpoint - Server-Sent Events (SSE)
 app.post('/api/chat/stream', requireAuth, async (req, res) => {
     // Support both single message (legacy) and messages array (OpenAI compatible)
@@ -12400,6 +12519,35 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             } catch (e) { /* broadcast is best-effort */ }
         };
         logChatActivity(`Request received for ${targetModel}${streamingConversationId ? ` (conv ${streamingConversationId.substring(0, 8)})` : ''}`);
+
+        // Materialize this turn's attachments to /workspace/uploads/ before
+        // the model runs, so a tool call in the very first iteration can see
+        // the files on disk. Best-effort — failure here logs but does not
+        // block the turn (the inline === FILE N === blocks in the user
+        // message still carry the content).
+        const incomingAttachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+        if (incomingAttachments.length > 0 && streamingConversationId) {
+            try {
+                const workspaceUserId = req.userId ?? null;
+                const result = await materializeAttachmentsToWorkspace(
+                    workspaceUserId, userId, streamingConversationId, incomingAttachments
+                );
+                if (result.written > 0) {
+                    const fileList = (result.filesWritten || []).join(', ');
+                    const msg = `Materialized ${result.written} upload(s) to /workspace/uploads/ (${fileList})`;
+                    console.log(`[Uploads→Workspace] conv ${streamingConversationId.slice(0, 8)}… — ${msg}`);
+                    logChatActivity(msg);
+                }
+                if (result.errors && result.errors.length) {
+                    console.warn(`[Uploads→Workspace] errors:`, result.errors);
+                }
+                if (result.error) {
+                    console.warn(`[Uploads→Workspace] failed:`, result.error);
+                }
+            } catch (e) {
+                console.warn('[Uploads→Workspace] exception:', e.message);
+            }
+        }
 
         // Get context size configuration
         const contextSize = targetInstance.config?.contextSize || targetInstance.config?.maxModelLen || 4096;

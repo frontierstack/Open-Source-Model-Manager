@@ -409,7 +409,20 @@ export default function ChatContainer({
             textParts.push(`=== FILE ${fileIndex}: ${att.filename} (OCR) ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
         });
         if (textParts.length > 0) {
-            const header = `The user has uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. Read and consider ALL files below:\n\n`;
+            // Files are on disk at /workspace/uploads/<filename> in the
+            // sandbox AND inlined below. Inline is best for short content;
+            // disk is best for slicing large files or re-reading after older
+            // context has rolled off via memory compression / truncation.
+            const fileNamesList = [...textAttachments, ...imageAttachments.filter(a => a.content)]
+                .map(a => a.filename)
+                .join(', ');
+            const header =
+                `The user uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. ` +
+                `Full content is inlined in the === FILE N === blocks below, ` +
+                `AND each file is on disk at /workspace/uploads/<filename> (this turn: ${fileNamesList}). ` +
+                `Read inline for immediate access. For selective access to large files — or to re-read ` +
+                `after older context has rolled off — use read_file (with startLine/endLine), grep_code, ` +
+                `outline_file, head_file, tail_file, or list_directory on /workspace/uploads/.\n\n`;
             fullTextContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
         }
 
@@ -535,6 +548,22 @@ export default function ChatContainer({
                     max_tokens: settings.maxTokens || undefined,
                     stream: true,
                     conversationId, // Include for continuation support
+                    // Per-turn attachment metadata so the server materializes
+                    // each upload to /workspace/uploads/<filename> in the
+                    // conversation's sandbox bucket before model dispatch.
+                    // Inline === FILE N === blocks (built above) still carry
+                    // immediate content; the disk copy survives context
+                    // roll-off and unlocks disk-read skills.
+                    ...(attachedFiles && attachedFiles.length > 0 ? {
+                        attachments: attachedFiles.map(a => ({
+                            filename: a.filename,
+                            type: a.type,
+                            ...(a.attachmentId ? { attachmentId: a.attachmentId } : {}),
+                            ...(a.content ? { content: a.content } : {}),
+                            ...(a.dataUrl ? { dataUrl: a.dataUrl } : {}),
+                            ...(a.mimeType ? { mimeType: a.mimeType } : {}),
+                        })),
+                    } : {}),
                 }),
                 signal: abortControllerRef.current.signal,
             });

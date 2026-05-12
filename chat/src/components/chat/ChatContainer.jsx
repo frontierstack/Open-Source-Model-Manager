@@ -1082,18 +1082,27 @@ export default function ChatContainer({
                 });
 
             if (textParts.length > 0) {
-                // The header below is load-bearing: it tells the model the
-                // file content is ALREADY inline and is NOT on disk. Without
-                // this, the model sees a filename-looking header and reaches
-                // for read_email_file / read_pdf / read_file / search_files
-                // — those will fail because uploads never land in the
-                // sandbox workspace, only their parsed text is forwarded.
+                // Files are available BOTH inline (the === FILE N === blocks
+                // below — fastest for short content) AND on disk at
+                // /workspace/uploads/<filename> in the sandbox (best for
+                // slicing large files or when older inline content has rolled
+                // off via memory compression / token-budget truncation).
+                // Server-side /api/chat/stream writes each attachment to
+                // /workspace/uploads/ before the model dispatches, so disk-
+                // read skills (read_file, head_file, tail_file, grep_code,
+                // outline_file, list_directory) work from turn 1.
+                const fileNamesList = attachedFiles
+                    .filter(att => att.type !== 'image' || att.content)
+                    .map(att => att.filename)
+                    .join(', ');
                 const header =
                     `The user uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. ` +
-                    `Their FULL content is included inline in the === FILE N === blocks below. ` +
-                    `These files are NOT on disk — do NOT call read_email_file, read_pdf, read_file, ` +
-                    `search_files, list_directory, or any other "read from path" tool for them. ` +
-                    `Read and reason from the inline content directly.\n\n`;
+                    `Full content is included inline in the === FILE N === blocks below, ` +
+                    `AND each file is on disk at /workspace/uploads/<filename> (this turn: ${fileNamesList}). ` +
+                    `For immediate access, read the inline content directly. ` +
+                    `For selective access to large files — or to re-read after older context has rolled off — ` +
+                    `use read_file (with startLine/endLine), grep_code, outline_file, head_file, tail_file, ` +
+                    `or list_directory on /workspace/uploads/.\n\n`;
                 fullContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
             }
         } else {
@@ -1293,6 +1302,26 @@ export default function ChatContainer({
                 max_tokens: settings.maxTokens || undefined,  // Only send if explicitly set; backend uses smart defaults
                 stream: true,
                 conversationId: conversationId, // Include for background streaming support
+                // Per-turn attachment metadata so the server can materialize
+                // each upload to /workspace/uploads/<filename> in the
+                // conversation's sandbox bucket. The inline === FILE N ===
+                // blocks built into apiMessages above stay in place for
+                // immediate model access; the disk copy is the long-term
+                // home that disk-read skills target after older context
+                // rolls off. Server-side helper accepts attachmentId
+                // (PDF/xlsx bytes via attachmentStore), dataUrl (images),
+                // and content (text). Skip the field when there's nothing
+                // to send — the server treats absence as no-op.
+                ...(attachedFiles && attachedFiles.length > 0 ? {
+                    attachments: attachedFiles.map(a => ({
+                        filename: a.filename,
+                        type: a.type,
+                        ...(a.attachmentId ? { attachmentId: a.attachmentId } : {}),
+                        ...(a.content ? { content: a.content } : {}),
+                        ...(a.dataUrl ? { dataUrl: a.dataUrl } : {}),
+                        ...(a.mimeType ? { mimeType: a.mimeType } : {}),
+                    })),
+                } : {}),
             };
 
             const response = await fetch('/api/chat/stream', {
