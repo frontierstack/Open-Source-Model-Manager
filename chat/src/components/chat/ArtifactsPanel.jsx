@@ -392,11 +392,16 @@ function FilePreviewBody({ active, fileSource }) {
         );
     }
     if (['pdf', 'audio', 'video'].includes(lang)) {
-        // Browsers natively render these in an iframe.
+        // Browsers natively render these in an iframe. Mirror the HTML
+        // iframe's sandbox tokens — without `allow-downloads`, Chrome
+        // silently blocks the built-in PDF viewer's Download button and
+        // any right-click → Save As inside the frame. `allow-scripts` +
+        // `allow-same-origin` keep the embedded PDF/media viewer working.
         return (
             <iframe
                 src={active.url}
                 title={active.title || 'preview'}
+                sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads"
                 style={{ width: '100%', height: '100%', border: 0, background: 'var(--bg-2)' }}
             />
         );
