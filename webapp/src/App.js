@@ -10603,7 +10603,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>transcribe_audio</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>faster-whisper transcription. Bundled <code>tiny.en</code> model (CPU, int8) under <code>/opt/whisper-models/</code>. Params: <code>path</code>, <code>model</code> (default <code>tiny.en</code>), <code>language</code>, <code>wordTimestamps</code>, <code>beamSize</code> (default 1 = greedy). Returns <code>{`{ text, segments, language, durationSec }`}</code>. ~5-15s for a 1-min clip.</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>faster-whisper transcription. Bundled <code>small.en</code> model (CPU, int8) under <code>/opt/whisper-models/</code>. Params: <code>path</code>, <code>model</code> (default <code>small.en</code>), <code>language</code>, <code>wordTimestamps</code>, <code>beamSize</code> (default 5). Returns <code>{`{ text, segments, language, durationSec }`}</code>. ~10-20s for a 1-min clip; ~30-60s for a 5-min song.</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>

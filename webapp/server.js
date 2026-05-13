@@ -15992,7 +15992,7 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'read_pdf', 'pdf_page_count', 'pdf_to_images',
     // image manipulation (Pillow), spreadsheet read (openpyxl), SQL (sqlite3)
     'transform_image', 'read_xlsx', 'query_sqlite',
-    // audio transcription (faster-whisper, tiny.en bundled in sandbox image)
+    // audio transcription (faster-whisper, small.en bundled in sandbox image)
     'transcribe_audio',
 ]);
 
@@ -16239,6 +16239,13 @@ const REFRESH_STALE_SKILLS = new Set([
     'diff_files',
     'move_file',
     'copy_file',
+    // transcribe_audio — bundled whisper model bumped from tiny.en to
+    // small.en for noticeably better lyrics/music accuracy. Default
+    // beamSize also bumped from 1 (greedy) to 5 (canonical Whisper
+    // beam). Without this refresh, existing installs keep pointing at
+    // /opt/whisper-models/tiny.en, which the rebuilt sandbox image no
+    // longer ships — transcribe would fail with "model load failed".
+    'transcribe_audio',
 ]);
 
 async function refreshStaleDefaultSkills() {
