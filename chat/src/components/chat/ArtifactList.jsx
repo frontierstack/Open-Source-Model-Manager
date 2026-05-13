@@ -33,6 +33,26 @@ function withDownloadFlag(url) {
     return url + (url.includes('?') ? '&' : '?') + 'download=1';
 }
 
+// fetch the artifact as a blob, then hand the bytes to the browser via a
+// `blob:` URL + synthetic <a> click. The native <a href download> path
+// can be blocked by Chrome with "Network issue" when the server URL is
+// served via a self-signed cert + HSTS — Chrome refuses to honor the
+// user's cert exception for background download requests. A blob URL is
+// in-memory and same-origin, so it bypasses those heuristics entirely.
+async function saveViaBlob(url, filename) {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+}
+
 /**
  * ArtifactList — vertical stack of clickable cards, one per file the
  * server staged in /artifacts during a tool call. The filename link
@@ -90,6 +110,15 @@ export default function ArtifactList({ artifacts }) {
                             href={dlUrl}
                             download={a.name}
                             title={`Download ${a.name}`}
+                            onClick={(e) => {
+                                // Try fetch+blob first; the native <a download>
+                                // is the fallback if the blob fetch fails (kept
+                                // on the href so right-click → Save As also works).
+                                e.preventDefault();
+                                saveViaBlob(dlUrl, a.name).catch(() => {
+                                    window.location.href = dlUrl;
+                                });
+                            }}
                             style={{
                                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                                 width: 30, height: 30,

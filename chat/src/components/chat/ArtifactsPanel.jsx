@@ -220,14 +220,40 @@ export default function ArtifactsPanel({ open, artifacts = [], activeId, onSelec
                     </div>
                 </div>
                 {active && (active.kind === 'file' && active.url ? (
-                    // Native <a download> for file artifacts — no JS click
-                    // chain so Chrome's "non-user-initiated download" guard
-                    // never trips. ?download=1 forces Content-Disposition:
-                    // attachment server-side regardless of file type.
+                    // fetch+blob path: the native <a download> works in most
+                    // browsers, but Chrome surfaces "Network issue" on the
+                    // background download request when the server URL is a
+                    // self-signed-cert HTTPS endpoint. Fetching into a blob
+                    // and triggering the save from a `blob:` URL routes
+                    // around that — bytes are in-memory + same-origin. The
+                    // <a href download> is kept on the element so right-
+                    // click → Save As still works as a fallback path.
                     <a
                         href={active.url + (active.url.includes('?') ? '&' : '?') + 'download=1'}
                         download={active.fileName || active.title}
                         title="Download"
+                        onClick={(e) => {
+                            e.preventDefault();
+                            const dlUrl = active.url + (active.url.includes('?') ? '&' : '?') + 'download=1';
+                            const fname = active.fileName || active.title || 'download';
+                            (async () => {
+                                try {
+                                    const r = await fetch(dlUrl, { credentials: 'same-origin' });
+                                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                                    const blob = await r.blob();
+                                    const blobUrl = URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = blobUrl;
+                                    a.download = fname;
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    document.body.removeChild(a);
+                                    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+                                } catch (_err) {
+                                    window.location.href = dlUrl;
+                                }
+                            })();
+                        }}
                         style={{
                             ...iconBtn,
                             textDecoration: 'none',
@@ -392,16 +418,20 @@ function FilePreviewBody({ active, fileSource }) {
         );
     }
     if (['pdf', 'audio', 'video'].includes(lang)) {
-        // Browsers natively render these in an iframe. Mirror the HTML
-        // iframe's sandbox tokens — without `allow-downloads`, Chrome
-        // silently blocks the built-in PDF viewer's Download button and
-        // any right-click → Save As inside the frame. `allow-scripts` +
-        // `allow-same-origin` keep the embedded PDF/media viewer working.
+        // Browsers natively render these in an iframe. Do NOT add a
+        // sandbox attribute here — Chrome's built-in PDF viewer is an
+        // internal extension that does not initialize in a sandboxed
+        // iframe even with allow-same-origin / allow-scripts, and the
+        // frame falls back to chrome-error://chromewebdata/. Downloads
+        // from this preview are expected to go through the Download
+        // button in the panel header (native <a href download>), not
+        // the PDF viewer's own toolbar — that path is reliable while
+        // the in-PDF-viewer download button is subject to Chrome's
+        // sandboxed-iframe download policy.
         return (
             <iframe
                 src={active.url}
                 title={active.title || 'preview'}
-                sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads"
                 style={{ width: '100%', height: '100%', border: 0, background: 'var(--bg-2)' }}
             />
         );

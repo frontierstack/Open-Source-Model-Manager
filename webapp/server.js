@@ -128,6 +128,13 @@ app.use(helmet({
     },
     crossOriginEmbedderPolicy: false,  // Required for some external resources
     crossOriginResourcePolicy: { policy: "same-origin" },
+    // HSTS off: the dev cert is self-signed, so once Chrome caches an HSTS
+    // policy for this origin it refuses to honor the user's "proceed past
+    // cert warning" exception for background requests — artifact downloads
+    // then surface as "Network issue" / NET::ERR_CERT_AUTHORITY_INVALID
+    // mid-stream. HSTS adds no real security value without a trusted CA
+    // chain; leave it disabled until we ship trusted certs.
+    strictTransportSecurity: false,
 }));
 
 // Security: Rate limiting for authentication endpoints
