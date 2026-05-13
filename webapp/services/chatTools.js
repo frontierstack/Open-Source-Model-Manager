@@ -476,7 +476,26 @@ async function executeToolCall(call, ctx) {
 
     try {
         const result = await dispatch(args, ctx);
-        const serialized = typeof result === 'string' ? result : JSON.stringify(result);
+        let serialized = typeof result === 'string' ? result : JSON.stringify(result);
+
+        // Smart-dependency: scan the tool output for known install failures
+        // (pip, npm, apt, ModuleNotFoundError) and attach an `_advice` field
+        // telling the model not to retry the install and what to try
+        // instead. Without this, models repeatedly retry the same failing
+        // install command because stderr from a sandbox skill looks like
+        // generic noise — the loop guard then aborts after 3 identical
+        // calls and the model gives up with "I couldn't figure it out".
+        const advice = detectInstallFailureAdvice(serialized);
+        if (advice) {
+            try {
+                const obj = JSON.parse(serialized);
+                if (obj && typeof obj === 'object') {
+                    obj._advice = advice;
+                    serialized = JSON.stringify(obj);
+                }
+            } catch { /* non-JSON tool output — leave alone */ }
+        }
+
         return {
             tool_call_id: call.id,
             role: 'tool',
@@ -491,6 +510,107 @@ async function executeToolCall(call, ctx) {
             content: JSON.stringify({ error: e.message || String(e) }),
         };
     }
+}
+
+// Python module-name → pip-package-name mappings for the most common
+// "import X" vs "pip install Y" mismatches. Lookups only — the advice
+// tells the model the right pip name; we never run the install.
+const PY_MODULE_TO_PIP = {
+    cv2: 'opencv-python',
+    PIL: 'Pillow',
+    yaml: 'PyYAML',
+    sklearn: 'scikit-learn',
+    bs4: 'beautifulsoup4',
+    magic: 'python-magic',
+    psycopg2: 'psycopg2-binary',
+    Crypto: 'pycryptodome',
+    serial: 'pyserial',
+    dateutil: 'python-dateutil',
+    OpenSSL: 'pyOpenSSL',
+    docx: 'python-docx',
+    pptx: 'python-pptx',
+    fitz: 'PyMuPDF',
+    skimage: 'scikit-image',
+    google: 'google-cloud',
+    PyQt5: 'PyQt5',
+    pkg_resources: 'setuptools',
+};
+
+// Scan tool output for install-failure signatures and return a short
+// directive advice string for the model. Returns null when nothing
+// matches (the vast majority of tool results).
+//
+// `content` is the serialized tool result — usually a JSON object whose
+// stdout/stderr fields carry pip/npm/apt error text. We parse it first
+// so the regexes run against the *unescaped* shell output (JSON-serialized
+// stdout buries `\n` and `\"` in the string, which fights the regexes).
+function detectInstallFailureAdvice(content) {
+    if (typeof content !== 'string' || content.length === 0) return null;
+
+    // Pull out scanning targets from the JSON if we can; fall back to the
+    // raw serialized string for non-JSON tool outputs (some skills return
+    // bare strings, especially older ones).
+    let scanText = content;
+    try {
+        const obj = JSON.parse(content);
+        if (obj && typeof obj === 'object') {
+            const parts = [];
+            for (const key of ['stdout', 'stderr', 'output', 'message', 'error']) {
+                const v = obj[key];
+                if (typeof v === 'string' && v) parts.push(v);
+            }
+            if (parts.length > 0) scanText = parts.join('\n');
+        }
+    } catch { /* not JSON — scan raw content */ }
+
+    // pip: "Could not find a version that satisfies the requirement <pkg>"
+    let m = scanText.match(/Could not find a version that satisfies the requirement ([@A-Za-z0-9_.\-]+)/);
+    if (m) {
+        const pkg = m[1];
+        return `Package "${pkg}" does not exist on PyPI under that name. Do NOT retry this install — pip already exhausted the index. Either (a) verify the correct PyPI name by searching pypi.org/search/?q=${encodeURIComponent(pkg)} via scrapling_fetch, (b) call the underlying service's HTTP API directly with stdlib (urllib/requests), or (c) abandon this approach and tell the user what you could not do. Do not call pip install with the same name again.`;
+    }
+
+    // npm: "404 Not Found - GET <url>/<pkg>" or "npm ERR! 404 '<pkg>' is not in the npm registry"
+    m = scanText.match(/npm ERR! 404[^\n]*?["'`]([@A-Za-z0-9_.\-/]+)["'`]/);
+    if (!m) m = scanText.match(/404 Not Found[^\n]*\/([@A-Za-z0-9_.\-/]+)/);
+    if (m) {
+        const pkg = m[1];
+        return `npm package "${pkg}" was not found in the registry. Do NOT retry this install — the name is wrong or the package isn't published. Verify by fetching https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(pkg)} or try a different approach.`;
+    }
+
+    // apt / dnf: "Unable to locate package <pkg>" / "No package <pkg> available"
+    m = scanText.match(/Unable to locate package ([A-Za-z0-9_.\-+]+)/);
+    if (!m) m = scanText.match(/No package ([A-Za-z0-9_.\-+]+) available/);
+    if (m) {
+        const pkg = m[1];
+        return `System package "${pkg}" is not in this sandbox image's apt sources. The sandbox is minimal and you generally cannot install new system packages. Do NOT retry. Use a pip-installable Python equivalent, call a remote API instead, or tell the user what you could not do.`;
+    }
+
+    // Python ModuleNotFoundError — the most common confusion is the import
+    // name differing from the pip package name.
+    m = scanText.match(/ModuleNotFoundError: No module named ['"]([^'"]+)['"]/);
+    if (m) {
+        const mod = m[1].split('.')[0];
+        const pip = PY_MODULE_TO_PIP[mod];
+        if (pip) {
+            return `Python module "${mod}" is the import name; the pip package is "${pip}". Install with: subprocess.run(["pip","install","${pip}"], ...). Do not pip install "${mod}".`;
+        }
+        return `Python module "${mod}" is not installed. The pip package may have a different name (e.g. import cv2 ↔ pip install opencv-python). Try: pip install ${mod} first; if pip says "no matching distribution", search pypi.org via scrapling_fetch for the correct name.`;
+    }
+
+    // Generic command-not-found from shell-style skills. Two common
+    // shapes: zsh "zsh: command not found: <cmd>" and bash "bash:
+    // <cmd>: command not found". Match zsh first because its shape is
+    // more specific (command not found is followed by `: <cmd>`); the
+    // bash pattern would otherwise capture "zsh" as the binary name.
+    m = scanText.match(/command not found\s*:\s*([a-zA-Z0-9_.\-]{2,})/);
+    if (!m) m = scanText.match(/(?:^|[\s:])([a-zA-Z0-9_.\-]{2,})\s*:\s*command not found/m);
+    if (m) {
+        const cmd = m[1];
+        return `Binary "${cmd}" is not on PATH in this sandbox. Do NOT retry the same command. Use a Python/Node equivalent via stdlib, install a Python wrapper via pip, or tell the user the operation isn't possible in this environment.`;
+    }
+
+    return null;
 }
 
 // ---------------------------------------------------------------------------

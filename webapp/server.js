@@ -14614,7 +14614,43 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         const targetRepeat = !!targetKey && priorHits.length >= 1;
                         const argRepeat = !targetKey && priorHits.length >= 2 &&
                             priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
-                        if (targetRepeat || argRepeat) {
+
+                        // Forced web_search → scrapling_fetch pivot. After 2
+                        // rate-limit / fallback-exhausted failures on
+                        // web_search this turn, short-circuit subsequent
+                        // web_search calls (any query) with a directive that
+                        // names scrapling_fetch and includes a constructed
+                        // URL the model can paste in. The existing error
+                        // message says "Consider calling scrapling_fetch" but
+                        // models routinely ignore it and burn 12+ rounds
+                        // retrying web_search with different queries against
+                        // the same rate-limited backend.
+                        const webSearchBlocked = call.function.name === 'web_search' &&
+                            toolCallHistory.filter(h => h.toolName === 'web_search' && h.searchBlocked).length >= 2;
+                        if (webSearchBlocked) {
+                            let q = '';
+                            try { q = String(JSON.parse(call.function.arguments || '{}').query || '').slice(0, 200); } catch { /* */ }
+                            const qEnc = encodeURIComponent(q || '');
+                            const nudgeText =
+                                `STOP calling web_search — it has been rate-limited multiple times this turn and will keep failing for the rest of this turn. ` +
+                                `Call scrapling_fetch instead. Scrapling uses anti-bot bypass (StealthyFetcher / Playwright) and routinely succeeds where the search APIs are blocked. ` +
+                                `Example call: scrapling_fetch({"url":"https://duckduckgo.com/html/?q=${qEnc}"}). ` +
+                                `Other search-engine URLs that work with scrapling_fetch: ` +
+                                `https://www.bing.com/search?q=${qEnc} , https://search.brave.com/search?q=${qEnc} . ` +
+                                `If you already know the likely source domain (lyrics on genius.com, docs on a vendor site, etc.), call scrapling_fetch on the domain directly instead of routing through a search engine.`;
+                            const nudge = {
+                                error: 'web_search_blocked_use_scrapling',
+                                message: nudgeText,
+                                rate_limited_count: toolCallHistory.filter(h => h.toolName === 'web_search' && h.searchBlocked).length,
+                            };
+                            resultMsg = {
+                                tool_call_id: call.id,
+                                role: 'tool',
+                                name: call.function.name,
+                                content: JSON.stringify(nudge),
+                            };
+                            console.warn(`[Chat Stream] web_search blocked after ${nudge.rate_limited_count} rate-limit failures; redirecting model to scrapling_fetch`);
+                        } else if (targetRepeat || argRepeat) {
                             const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
                             const webTools = new Set(['web_search', 'fetch_url']);
                             const loopingToolName = call.function.name;
@@ -14697,12 +14733,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             console.warn(`[Chat Stream] Capped ${call.function.name} result: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars`);
                         }
                         // Record fingerprint + result hash for future loop checks.
+                        // Also flag specific failure modes (web_search rate-
+                        // limit) that drive forced-redirect logic above.
                         try {
                             const rh = crypto.createHash('sha1')
                                 .update(String(resultMsg.content || ''))
                                 .digest('hex')
                                 .slice(0, 16);
-                            toolCallHistory.push({ fp, resultHash: rh });
+                            let searchBlocked = false;
+                            if (call.function.name === 'web_search') {
+                                try {
+                                    const parsed = JSON.parse(resultMsg.content || '{}');
+                                    const errStr = String(parsed?.error || '');
+                                    searchBlocked = /rate-limited|fallbacks also failed|blocked/i.test(errStr) ||
+                                                    parsed?.count === 0;
+                                } catch (_) { /* non-JSON content — treat as not blocked */ }
+                            }
+                            toolCallHistory.push({
+                                fp,
+                                resultHash: rh,
+                                toolName: call.function.name,
+                                searchBlocked,
+                            });
                             // Cap history so a long session doesn't grow unbounded.
                             if (toolCallHistory.length > 40) toolCallHistory.shift();
                         } catch (_) { /* ignore hash failures */ }
