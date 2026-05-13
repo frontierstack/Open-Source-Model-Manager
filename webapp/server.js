@@ -11929,9 +11929,99 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             }
         }
 
-        // Catch-all: Try to decode as text first, fallback to binary
+        // Binary file persist helper — saves bytes to attachmentStore and
+        // returns the JSON the chat UI expects. Used by both the explicit
+        // audio/video/binary branch and the catch-all U+FFFD fallback.
+        // The `content` marker tells the model the file is on disk at
+        // /workspace/uploads/<filename> (materializeAttachmentsToWorkspace
+        // will load via attachmentId before the model dispatches).
+        const persistBinaryFile = async (buffer, finalMime) => {
+            const ownerId = req.user?.id || req.apiKeyData?.id || 'default';
+            const attachmentId = await attachmentStore.save(ownerId, {
+                filename,
+                mimeType: finalMime,
+                type: 'file',
+                bytes: buffer,
+            });
+            const isAudio = finalMime.startsWith('audio/');
+            const isVideo = finalMime.startsWith('video/');
+            const hint = isAudio
+                ? `Call transcribe_audio with {"file_path":"/workspace/uploads/${filename}"} to transcribe.`
+                : isVideo
+                    ? `Use ffmpeg via run_python/run_node to extract audio or frames, then process.`
+                    : `Read with run_python (open(..., 'rb')) or other sandbox skills.`;
+            const marker =
+                `[Binary file uploaded: ${filename} (${finalMime}, ${buffer.length} bytes). ` +
+                `On disk at /workspace/uploads/${filename}. ${hint}]`;
+            return {
+                type: 'file',
+                filename,
+                attachmentId,
+                mimeType: finalMime,
+                size: buffer.length,
+                content: marker,
+                charCount: marker.length,
+                estimatedTokens: Math.ceil(marker.length / 4),
+            };
+        };
+
+        // Known-binary mime types: route directly to attachmentStore so the
+        // bytes survive intact and land in /workspace/uploads/ for skills
+        // like transcribe_audio. Without this branch, audio/video/etc. fell
+        // into the catch-all where Buffer.from(b64,'base64').toString('utf8')
+        // produced a string of U+FFFD replacement chars that sanitizeForModel
+        // then stripped — leaving 4 chars of garbage where the song used to
+        // be, and no file on disk for the model to find.
+        const isKnownBinaryMime = (mt) => {
+            if (!mt) return false;
+            return mt.startsWith('audio/') ||
+                   mt.startsWith('video/') ||
+                   mt.startsWith('font/') ||
+                   mt.startsWith('model/') ||
+                   mt === 'application/octet-stream' ||
+                   mt === 'application/x-executable' ||
+                   mt === 'application/x-sharedlib' ||
+                   mt === 'application/wasm';
+        };
+        const BINARY_EXTS = new Set([
+            'mp3','wav','flac','ogg','oga','m4a','aac','opus','wma','aiff','ape',
+            'mp4','mkv','mov','avi','webm','wmv','flv','m4v','mpg','mpeg','3gp',
+            'exe','dll','so','dylib','class','jar','wasm','bin','dat','iso','dmg',
+            'img','psd','ai','indd','sqlite','db','sqlite3','mdb','dbf',
+            'ttf','otf','woff','woff2','eot',
+        ]);
+        if (isKnownBinaryMime(mimeType) || (ext && BINARY_EXTS.has(ext))) {
+            try {
+                const buffer = Buffer.from(content, 'base64');
+                const finalMime = mimeType || 'application/octet-stream';
+                return res.json(await persistBinaryFile(buffer, finalMime));
+            } catch (binErr) {
+                console.error('[Chat Upload] binary persist failed:', binErr);
+                // Fall through to catch-all so the user still gets *something*.
+            }
+        }
+
+        // Catch-all: Try to decode as text. If the decode produces many
+        // U+FFFD replacement chars, the file is binary with an unknown or
+        // wrong mimeType — persist the bytes via attachmentStore instead of
+        // returning sanitized garbage.
         try {
-            let decoded = sanitizeForModel(Buffer.from(content, 'base64').toString('utf8'));
+            const buffer = Buffer.from(content, 'base64');
+            let decoded = buffer.toString('utf8');
+
+            // Binary sniff: legitimate UTF-8 text essentially never produces
+            // U+FFFD. A binary file produces them in droves. Threshold: 50
+            // absolute + 2% relative, so a stray U+FFFD in a long doc still
+            // routes as text but a real binary triggers the persist path.
+            const replacementCount = (decoded.match(/\uFFFD/g) || []).length;
+            const isBinary = replacementCount > 50 && (replacementCount / decoded.length) > 0.02;
+
+            if (isBinary) {
+                const finalMime = mimeType || 'application/octet-stream';
+                return res.json(await persistBinaryFile(buffer, finalMime));
+            }
+
+            decoded = sanitizeForModel(decoded);
             const originalLength = decoded.length;
             decoded = maybeOptimize(decoded);
 
@@ -11944,14 +12034,17 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 saved: originalLength - decoded.length
             });
         } catch (decodeError) {
-            // If not text, return as binary data
-            return res.json({
-                type: 'file',
-                filename,
-                dataUrl: `data:${mimeType || 'application/octet-stream'};base64,${content}`,
-                mimeType: mimeType || 'application/octet-stream',
-                size: Buffer.from(content, 'base64').length
-            });
+            // Last-resort binary persist if even the UTF-8 decode threw
+            // (shouldn't happen — Buffer.toString('utf8') is total — but
+            // belt-and-suspenders).
+            try {
+                const buffer = Buffer.from(content, 'base64');
+                const finalMime = mimeType || 'application/octet-stream';
+                return res.json(await persistBinaryFile(buffer, finalMime));
+            } catch (persistErr) {
+                console.error('[Chat Upload] catch-all binary persist failed:', persistErr);
+                return res.status(500).json({ error: 'Failed to process file: ' + (persistErr.message || decodeError.message) });
+            }
         }
     } catch (error) {
         console.error('File upload error:', error);
