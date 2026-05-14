@@ -405,6 +405,22 @@ async function executeToolCall(call, ctx) {
                 `[chatTools] ${toolName} args appear truncated (raw length ${rawArgs.length}, ` +
                 `repair via ${argsRepairedVia}, no trailing brace) — refusing dispatch`
             );
+            // create_pdf / create_docx accept a `contentFile` workspace
+            // path that bypasses the arg-token cap entirely. Point the
+            // model at that pattern instead of the generic "split
+            // across calls" hint, which doesn't really apply to a
+            // single-output renderer.
+            const isDocRenderer = toolName === 'create_pdf' || toolName === 'create_docx';
+            const retryHint = isDocRenderer
+                ? `Build the markdown body in /workspace/<name>.md via create_file + ` +
+                  `append_to_file (one short call per section, no truncation risk), ` +
+                  `then re-call ${toolName} with contentFile='/workspace/<name>.md' ` +
+                  `and NO inline content. The file path bypasses the arg-token cap.`
+                : `Retry with a smaller payload: split large content across multiple ` +
+                  `calls (e.g. create the file with a short stub via create_file, then ` +
+                  `append the rest in chunks via replace_lines), or move the long ` +
+                  `content to a follow-up call. Do not retry the same call with the ` +
+                  `same large content — it will truncate again.`;
             return {
                 tool_call_id: call.id,
                 role: 'tool',
@@ -414,12 +430,7 @@ async function executeToolCall(call, ctx) {
                     message:
                         `Your call to ${toolName} was truncated mid-stream — your previous ` +
                         `response hit the output token limit before finishing the JSON ` +
-                        `arguments. The tool was NOT run. Retry with a smaller payload: ` +
-                        `split large content across multiple calls (e.g. create the file ` +
-                        `with a short stub via create_file, then append the rest in chunks ` +
-                        `via replace_lines), or move the long content to a follow-up call. ` +
-                        `Do not retry the same call with the same large content — it will ` +
-                        `truncate again.`,
+                        `arguments. The tool was NOT run. ` + retryHint,
                     partial_args_preview: rawArgs.length > 500
                         ? rawArgs.slice(0, 500) + '…[truncated]'
                         : rawArgs,
