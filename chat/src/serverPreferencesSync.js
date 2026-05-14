@@ -12,7 +12,11 @@
 
 import { useChatStore } from './stores/useChatStore';
 
-const SYNCED_TOP_LEVEL = ['theme'];                                    // top-level fields on the chat store
+// top-level fields on the chat store. `folders` + `conversationFolderMap`
+// are arrays/objects (not scalars) — the store always replaces them with a
+// fresh reference on every mutation, so the identity comparison in
+// watchAndSync still detects changes correctly.
+const SYNCED_TOP_LEVEL = ['theme', 'folders', 'conversationFolderMap'];
 const SYNCED_SETTINGS = ['fontFamily', 'fontSize', 'layout'];          // nested under settings
 const REMOTE_FIELDS = new Set([...SYNCED_TOP_LEVEL, ...SYNCED_SETTINGS]);
 
@@ -53,6 +57,23 @@ export async function hydrateFromServer() {
         }
         if (Object.keys(settingsPatch).length > 0) {
             store.updateSettings(settingsPatch);
+        }
+
+        // Sidebar folders + conversation→folder map. The server is the
+        // cross-device source of truth: when it holds folder state we apply
+        // it locally. When it doesn't yet (first load after this shipped, or
+        // a brand-new account) we push this device's local folders up so the
+        // pre-existing localStorage-only folders aren't stranded.
+        if (Array.isArray(preferences.folders)) {
+            store.setFolders(preferences.folders);
+        } else if (Array.isArray(store.folders) && store.folders.length > 0) {
+            debouncedPush({ folders: store.folders });
+        }
+        const remoteMap = preferences.conversationFolderMap;
+        if (remoteMap && typeof remoteMap === 'object' && !Array.isArray(remoteMap)) {
+            store.setConversationFolderMap(remoteMap);
+        } else if (store.conversationFolderMap && Object.keys(store.conversationFolderMap).length > 0) {
+            debouncedPush({ conversationFolderMap: store.conversationFolderMap });
         }
     } catch (err) {
         console.warn('[prefs] hydrate failed:', err);

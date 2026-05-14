@@ -2805,6 +2805,8 @@ const PREF_FIELDS = new Set([
     'layout',        // default | centered | timeline | bubbles | slack | minimal
     'codePreviewEnabled', // boolean — controls code-block preview rendering in chat
     'compactSidebar', // boolean — webapp left rail collapsed
+    'folders',       // chat sidebar folders: [{ id, name, order, createdAt }]
+    'conversationFolderMap', // chat: { [conversationId]: folderId }
 ]);
 
 function sanitizePreferencesPatch(patch) {
@@ -2812,7 +2814,36 @@ function sanitizePreferencesPatch(patch) {
     const out = {};
     for (const [k, v] of Object.entries(patch)) {
         if (!PREF_FIELDS.has(k)) continue;
-        if (typeof v === 'string') {
+        if (k === 'folders') {
+            // Chat sidebar folders — array of { id, name, order, createdAt }.
+            // Persisted per-account so folders survive across browsers/devices.
+            if (!Array.isArray(v)) continue;
+            const folders = [];
+            for (const f of v.slice(0, 200)) {
+                if (!f || typeof f !== 'object') continue;
+                if (typeof f.id !== 'string' || !f.id || f.id.length > 100) continue;
+                if (typeof f.name !== 'string' || f.name.length > 200) continue;
+                folders.push({
+                    id: f.id,
+                    name: f.name,
+                    order: Number.isFinite(f.order) ? f.order : 0,
+                    createdAt: typeof f.createdAt === 'string' ? f.createdAt.slice(0, 40) : '',
+                });
+            }
+            out.folders = folders;
+        } else if (k === 'conversationFolderMap') {
+            // { [conversationId]: folderId } — which folder each chat lives in.
+            if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+            const map = {};
+            let n = 0;
+            for (const [convId, folderId] of Object.entries(v)) {
+                if (n++ >= 5000) break;
+                if (typeof convId !== 'string' || !convId || convId.length > 100) continue;
+                if (typeof folderId !== 'string' || !folderId || folderId.length > 100) continue;
+                map[convId] = folderId;
+            }
+            out.conversationFolderMap = map;
+        } else if (typeof v === 'string') {
             if (v.length > 100) continue;
             out[k] = v;
         } else if (typeof v === 'boolean' || typeof v === 'number') {

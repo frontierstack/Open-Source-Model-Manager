@@ -366,6 +366,21 @@ export const useChatStore = create(
             });
         },
 
+        // Bulk replace — used by serverPreferencesSync to apply the
+        // per-account folder state pulled from /api/me/preferences so
+        // folders persist across browsers/devices, not just localStorage.
+        setFolders: (folders) => set(() => {
+            const next = Array.isArray(folders) ? folders : [];
+            saveToStorage(STORAGE_KEYS.FOLDERS, next);
+            return { folders: next };
+        }),
+
+        setConversationFolderMap: (map) => set(() => {
+            const next = (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+            saveToStorage(STORAGE_KEYS.CONVERSATION_FOLDER_MAP, next);
+            return { conversationFolderMap: next };
+        }),
+
         // Start a fresh chat (clears active conversation without deleting it)
         startNewChat: () => {
             saveToStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null);
