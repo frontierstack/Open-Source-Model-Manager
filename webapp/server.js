@@ -688,6 +688,133 @@ function makeReasoningLoopDetector() {
     };
 }
 
+// Textual `<tool_call>` extractor. Some chat templates (notably Qwen3 +
+// Qwen-Coder finetunes running on llama.cpp's OpenAI-compat server)
+// emit function calls as Hermes-style XML text in the content stream
+// instead of as native `tool_calls` deltas:
+//
+//   <tool_call>
+//     <function=list_directory>
+//       <parameter=dirPath>/workspace/foo</parameter>
+//       <parameter=recursive>False</parameter>
+//     </function>
+//   </tool_call>
+//
+// The model believes it just called the tool and waits for a result. The
+// native dispatch loop ignores the block (it's content, not tool_calls),
+// the model never gets a tool result, eventually re-emits the same call
+// or stalls. User sees the raw XML in the thinking area and a hung turn.
+//
+// This factory returns an extractor that:
+//   - Buffers content across SSE chunks (a single <tool_call> often
+//     splits across many tiny deltas)
+//   - When a complete <tool_call>...</tool_call> closes, parses it into
+//     a synthetic native-shaped tool_call object
+//   - Returns { passthrough, blocks } per chunk so the streaming
+//     content the UI sees never includes the raw XML
+//
+// The 12-char tail hold ('<tool_call>' is 11 chars + safety byte)
+// guards against the open tag arriving split across two SSE deltas.
+const TEXTUAL_TOOL_CALL_OPEN  = '<tool_call>';
+const TEXTUAL_TOOL_CALL_CLOSE = '</tool_call>';
+const TEXTUAL_TOOL_CALL_HOLD  = TEXTUAL_TOOL_CALL_OPEN.length + 1;
+
+function parseTextualToolCall(text) {
+    // text is a single complete <tool_call>...</tool_call> XML block.
+    // Extracts the function name + named parameters, with light scalar
+    // coercion so callers downstream get proper JSON types in
+    // `function.arguments` (which is itself a JSON-encoded string —
+    // OpenAI native shape).
+    const nameMatch = text.match(/<function=([^>\s]+)\s*>/i);
+    if (!nameMatch) return null;
+    const name = nameMatch[1].trim();
+    const params = {};
+    const paramRx = /<parameter=([^>\s]+)\s*>([\s\S]*?)<\/parameter>/gi;
+    let m;
+    while ((m = paramRx.exec(text)) !== null) {
+        const key = m[1].trim();
+        const raw = m[2];
+        let val = raw;
+        const trimmed = raw.trim();
+        if (trimmed === '') {
+            val = '';
+        } else if (/^(true|True|TRUE)$/.test(trimmed)) {
+            val = true;
+        } else if (/^(false|False|FALSE)$/.test(trimmed)) {
+            val = false;
+        } else if (/^(null|None|NULL)$/.test(trimmed)) {
+            val = null;
+        } else if (/^-?\d+$/.test(trimmed)) {
+            val = parseInt(trimmed, 10);
+        } else if (/^-?\d+\.\d+$/.test(trimmed)) {
+            val = parseFloat(trimmed);
+        } else if ((trimmed.startsWith('[') && trimmed.endsWith(']'))
+                || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+            try { val = JSON.parse(trimmed); } catch (_) { val = raw; }
+        }
+        params[key] = val;
+    }
+    return {
+        id: 'tc_text_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        type: 'function',
+        function: {
+            name,
+            arguments: JSON.stringify(params),
+        },
+    };
+}
+
+function makeTextualToolCallExtractor() {
+    let buf = '';          // pending content held back from the client
+    let inBlock = false;   // currently between <tool_call> and </tool_call>
+    function process(chunk) {
+        if (!chunk) return { passthrough: '', blocks: [] };
+        buf += chunk;
+        const blocks = [];
+        let passthrough = '';
+        while (buf.length > 0) {
+            if (!inBlock) {
+                const openIdx = buf.indexOf(TEXTUAL_TOOL_CALL_OPEN);
+                if (openIdx === -1) {
+                    // No open tag in buf. Flush all but a safety tail —
+                    // the open tag might be arriving split across chunks.
+                    const hold = Math.min(buf.length, TEXTUAL_TOOL_CALL_HOLD);
+                    passthrough += buf.slice(0, buf.length - hold);
+                    buf = buf.slice(buf.length - hold);
+                    break;
+                }
+                passthrough += buf.slice(0, openIdx);
+                buf = buf.slice(openIdx);
+                inBlock = true;
+            } else {
+                const closeIdx = buf.indexOf(TEXTUAL_TOOL_CALL_CLOSE);
+                if (closeIdx === -1) {
+                    // Block not yet complete; wait for more chunks.
+                    break;
+                }
+                const blockText = buf.slice(0, closeIdx + TEXTUAL_TOOL_CALL_CLOSE.length);
+                const parsed = parseTextualToolCall(blockText);
+                if (parsed) blocks.push(parsed);
+                buf = buf.slice(closeIdx + TEXTUAL_TOOL_CALL_CLOSE.length);
+                inBlock = false;
+            }
+        }
+        return { passthrough, blocks };
+    }
+    // Drain on stream end. If we're outside a block, the residual buf
+    // is just the safety tail held back to handle a split open tag —
+    // flush it as passthrough. If we're inside a block, the model
+    // never closed the tool call; discard the partial XML rather than
+    // leaking it to the UI.
+    process.flush = function () {
+        const out = inBlock ? '' : buf;
+        buf = '';
+        inBlock = false;
+        return { passthrough: out, blocks: [] };
+    };
+    return process;
+}
+
 // Builds a short system-prompt prelude the chat stream prepends on every
 // turn. Two jobs: (1) tell the model what today's actual date is — local
 // models with training cutoffs earlier than "now" otherwise refuse queries
@@ -14063,6 +14190,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         const streamOneRequest = (requestMessages, maxTokens, options = {}) => {
             const roundContentStart = options.roundContentStart ?? fullResponse.length;
             const roundReasoningStart = options.roundReasoningStart ?? fullReasoning.length;
+            // Per-round extractor for Hermes/Qwen-style textual tool calls.
+            // Buffer state resets between rounds so a stray open tag in
+            // round N doesn't bleed into round N+1.
+            const textualToolCallExtractor = makeTextualToolCallExtractor();
             return new Promise(async (resolve, reject) => {
                 let lastFinishReason = 'stop';
 
@@ -14149,8 +14280,36 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                             const delta = parsed.choices[0].delta;
                                             // Scrub Harmony control tokens that some templates
                                             // leak as literal text when the model de-rails.
-                                            const content = scrubHarmonyTokens(delta.content || '');
+                                            const rawContent = scrubHarmonyTokens(delta.content || '');
                                             const reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
+
+                                            // Hermes/Qwen text-format tool calls — extract any
+                                            // <tool_call>...</tool_call> blocks from content and
+                                            // dispatch them as if they had been native tool_calls
+                                            // deltas. `passthrough` is the content stream with
+                                            // those blocks removed so the UI never sees the raw
+                                            // XML. Buffer state inside the extractor handles
+                                            // tags split across SSE chunks.
+                                            const { passthrough, blocks } = textualToolCallExtractor(rawContent);
+                                            const content = passthrough;
+                                            if (blocks.length) {
+                                                for (const tc of blocks) {
+                                                    accumulatedToolCalls.push(tc);
+                                                    if (clientConnected) {
+                                                        try {
+                                                            res.write(`data: ${JSON.stringify({
+                                                                type: 'tool_call_delta',
+                                                                tool_calls: [{
+                                                                    index: accumulatedToolCalls.length - 1,
+                                                                    id: tc.id,
+                                                                    type: tc.type,
+                                                                    function: tc.function,
+                                                                }],
+                                                            })}\n\n`);
+                                                        } catch (_) { clientConnected = false; }
+                                                    }
+                                                }
+                                            }
 
                                             // Native tool calling — model streams tool_calls as
                                             // delta fragments; accumulate by index across chunks.
@@ -14265,8 +14424,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     }
                                     const delta = parsed.choices?.[0]?.delta;
                                     if (delta) {
-                                        const content = scrubHarmonyTokens(delta.content || '');
+                                        const rawContent = scrubHarmonyTokens(delta.content || '');
                                         const reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
+                                        // Pull any final-chunk textual tool calls out
+                                        // before the content lands in fullResponse / SSE.
+                                        const { passthrough, blocks } = textualToolCallExtractor(rawContent);
+                                        const content = passthrough;
+                                        for (const tc of blocks) {
+                                            accumulatedToolCalls.push(tc);
+                                            if (clientConnected) {
+                                                try {
+                                                    res.write(`data: ${JSON.stringify({
+                                                        type: 'tool_call_delta',
+                                                        tool_calls: [{
+                                                            index: accumulatedToolCalls.length - 1,
+                                                            id: tc.id,
+                                                            type: tc.type,
+                                                            function: tc.function,
+                                                        }],
+                                                    })}\n\n`);
+                                                } catch (_) { clientConnected = false; }
+                                            }
+                                        }
                                         if (content) fullResponse += content;
                                         if (reasoning) fullReasoning += reasoning;
                                         if ((content || reasoning) && clientConnected) {
@@ -14285,6 +14464,24 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                         }
                                     }
                                 } catch (e) { /* ignore trailing parse errors */ }
+                            }
+                        }
+                        // Drain extractor — flushes any safety-tail content held
+                        // back to handle a split open tag, and discards any
+                        // unclosed <tool_call> block (model abandoned the call).
+                        const drained = textualToolCallExtractor.flush();
+                        if (drained.passthrough) {
+                            fullResponse += drained.passthrough;
+                            if (clientConnected) {
+                                try {
+                                    res.write(`data: ${JSON.stringify({
+                                        token: drained.passthrough,
+                                        choices: [{
+                                            delta: { content: drained.passthrough },
+                                            index: 0
+                                        }]
+                                    })}\n\n`);
+                                } catch (_) { clientConnected = false; }
                             }
                         }
                         resolve(lastFinishReason);
