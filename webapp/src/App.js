@@ -10605,10 +10605,18 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>transcribe_audio</TableCell>
                                                         <TableCell sx={{ color: 'var(--text-secondary)' }}>faster-whisper transcription. Bundled <code>small.en</code> model (CPU, int8) under <code>/opt/whisper-models/</code>. Params: <code>path</code>, <code>model</code> (default <code>small.en</code>), <code>language</code>, <code>wordTimestamps</code>, <code>beamSize</code> (default 5). Returns <code>{`{ text, segments, language, durationSec }`}</code>. ~10-20s for a 1-min clip; ~30-60s for a 5-min song.</TableCell>
                                                     </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>create_pdf</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Render a PDF from a strict markdown subset (headings, GFM tables, bullet/numbered lists). Params: <code>filename</code>, optional <code>title</code>, and <strong>either</strong> <code>content</code> (markdown body inline) <strong>or</strong> <code>contentFile</code> (path to a <code>/workspace</code> markdown file — use this for long documents to bypass the tool-arg token cap). Artifacts are staged to <code>/workspace/artifacts/</code> automatically and surface as a download chip — do not call <code>make_downloadable</code> afterwards.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>create_docx</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Render an editable Word <code>.docx</code> (paragraphs separated by blank lines; <code># </code> / <code>## </code> lines map to Heading 1 / Heading 2). Params: <code>filename</code>, optional <code>title</code>, and <strong>either</strong> <code>content</code> inline <strong>or</strong> <code>contentFile</code> (a <code>/workspace</code> markdown file — preferred when the body exceeds ~5000 chars). Surfaces as a download chip on return.</TableCell>
+                                                    </TableRow>
                                                 </TableBody>
                                             </Table>
                                             <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                Defined in <code>webapp/default-skills.json</code>. All run with <code>sandbox: true</code>, <code>workspace: true</code>, <code>network: "none"</code>.
+                                                Defined in <code>webapp/default-skills.json</code>. All run with <code>sandbox: true</code> and <code>network: "none"</code>; most also mount <code>/workspace</code> (<code>workspace: true</code>), except <code>create_pdf</code> / <code>create_docx</code> which stage straight to <code>/workspace/artifacts/</code>.
                                             </Typography>
                                         </Box>
 

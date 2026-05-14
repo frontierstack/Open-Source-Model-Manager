@@ -33,8 +33,9 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **OpenAI-Compatible API** — Drop-in replacement for OpenAI endpoints
 - **Vision Models** — Send images to vision-capable models (LLaVA, Qwen-VL) with OCR fallback for non-vision models
 - **Thinking Models** — Parse and display reasoning from models like DeepSeek R1 and Qwen QwQ
-- **Audio Transcription** — Built-in `transcribe_audio` skill (faster-whisper, bundled `tiny.en` model, CPU-only, runs in the sandbox)
+- **Audio Transcription** — Built-in `transcribe_audio` skill (faster-whisper, bundled `small.en` model, CPU-only, runs in the sandbox)
 - **Spreadsheets & SQL in chat** — `read_xlsx` (openpyxl) and `query_sqlite` skills let the model read XLSX files and run SELECTs (or DDL with `readonly=false`) against SQLite databases in the workspace
+- **Document Generation** — `create_pdf` and `create_docx` skills render Markdown (including GFM tables) to PDF/DOCX, persisted to `/workspace/artifacts/`; a `contentFile` param accepts large input that would exceed the tool-arg token cap
 - **Image Editing** — `transform_image` skill (Pillow) for resize, crop, thumbnail, rotate, format-convert, and grayscale operations
 - **Auto-Download Chips** — Any file a sandboxed skill writes to `/workspace/artifacts/` is auto-promoted into a download chip in the chat (mtime-filtered so prior turns don't re-surface); `make_downloadable` promotes existing workspace files explicitly
 - **Map-Reduce Chunking** — Automatically splits large content across multiple model calls and synthesizes results
@@ -270,7 +271,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
           │  │  Express API       │ │ Tailwind │         │             │
           │  │  WebSocket Server  │ │ 18 Themes│   :3001/api           │
-          │  │  74 Skills Engine  │ │ 6 Layouts│         │             │
+          │  │  120+ Skills Engine│ │ 6 Layouts│         │             │
           │  │  Native Tool Calls │ │Tool Chips│         │             │
           │  │  OpenAI Endpoints  │ │ OCR/File │         │             │
           │  │  Web Scraping      │ │ Uploads  │         │             │
@@ -303,7 +304,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 
 **Data Persistence:** All user data stored in `./models/.modelserver/` as JSON files (agents, skills, conversations, API keys with AES-256-GCM encryption). Model containers mount `./models` read-only.
 
-**Sandbox image:** Skills that run user-provided code (or any of the new media skills — `transform_image`, `transcribe_audio`, `read_xlsx`, `query_sqlite`, `make_downloadable`) execute inside a ~2.6GB gVisor-isolated sandbox image with `faster-whisper`, `ffmpeg`, Pillow, openpyxl, and a bundled `tiny.en` Whisper model preloaded.
+**Sandbox image:** Skills that run user-provided code (or any of the new media skills — `transform_image`, `transcribe_audio`, `read_xlsx`, `query_sqlite`, `make_downloadable`) execute inside a ~2.6GB gVisor-isolated sandbox image with `faster-whisper`, `ffmpeg`, Pillow, openpyxl, and a bundled `small.en` Whisper model preloaded.
 
 ---
 
