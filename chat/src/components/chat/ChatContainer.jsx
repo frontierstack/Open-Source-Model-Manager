@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
 import ChatHeader from './ChatHeader';
 import ChatSidebar from './ChatSidebar';
@@ -267,17 +268,25 @@ export default function ChatContainer({
     const handleContinueRef = useRef(null); // Stable reference for continue handler (avoids React.memo invalidation)
 
     // Chat store
+    //
+    // Only subscribe to the fields actually read by this component's
+    // render. Streaming buffers (streamingContent / streamingReasoning /
+    // processingStatus / processingMessage / processingLog /
+    // streamingToolCalls) and the setter functions used inside event
+    // handlers are read lazily via useChatStore.getState() at the call
+    // sites or imported as standalone selectors below — subscribing to
+    // them here would re-render ChatContainer on every rAF tick during
+    // streaming, which cascades to ChatHeader / ChatInput / ChatSidebar
+    // and breaks ChatMessages's React.memo via a fresh `header` element
+    // each render. useShallow ensures the destructured object is treated
+    // as unchanged when its fields haven't moved.
     const {
         conversations,
         activeConversationId,
         messages,
         isStreaming,
-        streamingContent,
-        streamingReasoning,
         attachments,
         settings,
-        processingStatus,
-        processingMessage,
         setConversations,
         setActiveConversation,
         addConversation,
@@ -296,7 +305,6 @@ export default function ChatContainer({
         commitStreamingMessage,
         setProcessingStatus,
         clearProcessingStatus,
-        processingLog,
         pushProcessingLog,
         resolveProcessingLog,
         clearProcessingLog,
@@ -309,7 +317,44 @@ export default function ChatContainer({
         setTheme,
         systemPrompts: storeSystemPrompts,
         setSystemPrompts,
-    } = useChatStore();
+    } = useChatStore(useShallow(state => ({
+        conversations: state.conversations,
+        activeConversationId: state.activeConversationId,
+        messages: state.messages,
+        isStreaming: state.isStreaming,
+        attachments: state.attachments,
+        settings: state.settings,
+        setConversations: state.setConversations,
+        setActiveConversation: state.setActiveConversation,
+        addConversation: state.addConversation,
+        updateConversation: state.updateConversation,
+        deleteConversation: state.deleteConversation,
+        setMessages: state.setMessages,
+        addMessage: state.addMessage,
+        setStreaming: state.setStreaming,
+        setStreamingContent: state.setStreamingContent,
+        setStreamingReasoning: state.setStreamingReasoning,
+        appendStreamingContent: state.appendStreamingContent,
+        appendStreamingReasoning: state.appendStreamingReasoning,
+        startStreamingToolCall: state.startStreamingToolCall,
+        finishStreamingToolCall: state.finishStreamingToolCall,
+        clearStreaming: state.clearStreaming,
+        commitStreamingMessage: state.commitStreamingMessage,
+        setProcessingStatus: state.setProcessingStatus,
+        clearProcessingStatus: state.clearProcessingStatus,
+        pushProcessingLog: state.pushProcessingLog,
+        resolveProcessingLog: state.resolveProcessingLog,
+        clearProcessingLog: state.clearProcessingLog,
+        setProcessingLog: state.setProcessingLog,
+        addAttachment: state.addAttachment,
+        removeAttachment: state.removeAttachment,
+        clearAttachments: state.clearAttachments,
+        updateSettings: state.updateSettings,
+        theme: state.theme,
+        setTheme: state.setTheme,
+        systemPrompts: state.systemPrompts,
+        setSystemPrompts: state.setSystemPrompts,
+    })));
 
     // System prompts come entirely from the server (user-managed in
     // Settings). The built-in "Research partner / Line editor / Code
