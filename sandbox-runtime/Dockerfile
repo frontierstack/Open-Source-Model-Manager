@@ -30,6 +30,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libopenblas0 \
         fontconfig \
         fonts-dejavu-core \
+        # poppler-utils powers pdf2image (pdftoppm) for pdf_to_images, plus
+        # pdftotext / pdfinfo as command-line fallbacks. ~8 MB installed.
+        poppler-utils \
+        # WeasyPrint system stack — pango/cairo/harfbuzz/gdk-pixbuf for the
+        # html_to_pdf skill. Without these the wheel import-time check
+        # fails ("cannot load library 'libgobject-2.0-0'") even though
+        # the Python package is present.
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libpangocairo-1.0-0 \
+        libharfbuzz0b \
+        libcairo2 \
+        libgdk-pixbuf-2.0-0 \
+        shared-mime-info \
         # git + TLS roots for the sandboxed git_clone_shallow skill.
         # Only needed when the model asks to inspect a remote repo; cheap
         # to include unconditionally.
@@ -73,6 +87,20 @@ RUN pip install --no-cache-dir \
         reportlab==4.4.4 \
         python-docx==1.1.2 \
         openpyxl==3.1.5 \
+        # PDF read + page count (pure Python) + raster (needs poppler-utils
+        # from the apt layer above). markdown + WeasyPrint round out the
+        # markdown_to_html / html_to_pdf skills. WeasyPrint depends on the
+        # pango/cairo system libs installed above; without them, import
+        # weasyprint fails at load time. pydyf is pinned because newer
+        # WeasyPrint releases require its matching pydyf API — leaving
+        # pydyf unpinned lets pip pull a too-new pydyf (0.12+) whose
+        # `transform()` signature WeasyPrint 62 can't call (raises
+        # `'super' object has no attribute 'transform'` mid-render).
+        pypdf==4.3.1 \
+        pdf2image==1.17.0 \
+        markdown==3.7 \
+        weasyprint==62.3 \
+        pydyf==0.10.0 \
     && rm -rf /root/.cache
 
 # Audio transcription (faster-whisper, CTranslate2 backend). The small.en

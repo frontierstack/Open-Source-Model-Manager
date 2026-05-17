@@ -16481,6 +16481,21 @@ const REFRESH_STALE_SKILLS = new Set([
     // /opt/whisper-models/tiny.en, which the rebuilt sandbox image no
     // longer ships — transcribe would fail with "model load failed".
     'transcribe_audio',
+    // read_pdf / pdf_page_count / pdf_to_images / markdown_to_html /
+    // html_to_pdf — these landed as Koda-CLI client-side stubs whose
+    // stored `code` was just a comment header. The sandbox harness at
+    // sandboxRunner.js calls `execute(_params)`, which raised
+    // `NameError: name 'execute' is not defined` on every invocation.
+    // Refreshed code is real pypdf / pdf2image / markdown / WeasyPrint
+    // implementations that write artifacts to /workspace/artifacts/ so
+    // the chat UI's download chip path works. Sandbox image gained
+    // poppler-utils + pango/cairo system libs + pypdf/pdf2image/
+    // markdown/weasyprint in the same change.
+    'read_pdf',
+    'pdf_page_count',
+    'pdf_to_images',
+    'markdown_to_html',
+    'html_to_pdf',
 ]);
 
 async function refreshStaleDefaultSkills() {

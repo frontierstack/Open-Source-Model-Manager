@@ -1595,5 +1595,85 @@
     "systemPrompt": "Use this skill on sitemap.xml content. Detects <urlset> (returns up to 500 URLs with metadata) vs <sitemapindex> (returns child sitemap locations). Pair with fetch_url to download and then parse_sitemap to enumerate.",
     "code": "def execute(params):\n    '''Parse an XML sitemap or sitemapindex and extract URLs with metadata.'''\n    text = params.get('sitemap') or params.get('xml') or params.get('content')\n    if not text or not isinstance(text, str):\n        return {'success': False, 'error': 'sitemap parameter is required (XML string)'}\n    import xml.etree.ElementTree as ET, re\n    text = re.sub(r'\\sxmlns=\"[^\"]+\"', '', text, count=1)\n    try:\n        root = ET.fromstring(text)\n    except ET.ParseError as e:\n        return {'success': False, 'error': f'Invalid XML: {e}'}\n    if root.tag.endswith('sitemapindex'):\n        items = []\n        for sm in root.findall('sitemap'):\n            items.append({'loc': (sm.findtext('loc') or '').strip(),\n                          'lastmod': (sm.findtext('lastmod') or '').strip() or None})\n        return {'success': True, 'kind': 'sitemapindex', 'count': len(items), 'sitemaps': items[:500]}\n    urls = []\n    for u in root.findall('url'):\n        urls.append({\n            'loc': (u.findtext('loc') or '').strip(),\n            'lastmod': (u.findtext('lastmod') or '').strip() or None,\n            'changefreq': (u.findtext('changefreq') or '').strip() or None,\n            'priority': (u.findtext('priority') or '').strip() or None,\n        })\n    return {'success': True, 'kind': 'urlset', 'count': len(urls),\n            'urls': urls[:500], 'truncated': len(urls) > 500}",
     "enabled": true
+  },
+  {
+    "name": "read_pdf",
+    "description": "Extract text from a PDF file using pypdf. Returns the concatenated text of every page, plus page count.",
+    "type": "function",
+    "parameters": {
+      "filePath": "string",
+      "maxPages": "number"
+    },
+    "systemPrompt": "Use this skill to read the contents of a PDF that the user uploaded or that landed in the workspace (/workspace/...). Pass `filePath` (the model can use the path it saw in the chat — paths like `/tmp/foo.pdf` are auto-rewritten to `/workspace/foo.pdf`). Optional `maxPages` caps extraction for very long PDFs. The skill returns `{success, text, pageCount, pagesExtracted, charCount}`. If the PDF is encrypted with a non-empty password, extraction fails — tell the user the document is password-protected. Pair with `pdf_page_count` first if you only need length, or `pdf_to_images` if the PDF is scanned and `text` comes back mostly empty (then OCR an image).",
+    "code": "def execute(params):\n    \"\"\"Extract text from a PDF using pypdf. Returns concatenated page text.\"\"\"\n    import os\n    try:\n        from pypdf import PdfReader\n    except ImportError:\n        return {\"success\": False, \"error\": \"pypdf not installed in this sandbox image\"}\n    file_path = params.get('filePath')\n    if not file_path:\n        return {\"success\": False, \"error\": \"filePath is required\"}\n    if not os.path.exists(file_path):\n        ws = os.environ.get('USER_WORKSPACE', '/workspace')\n        hint = f\" Files uploaded into chat live under {ws}/ — paths outside the workspace get rewritten to {ws}/<basename>; use list_directory({ws}) to see what is actually there.\"\n        return {\"success\": False, \"error\": f\"file not found: {file_path}.\" + hint}\n    try:\n        reader = PdfReader(file_path)\n        if getattr(reader, 'is_encrypted', False):\n            try:\n                ok = reader.decrypt('')\n            except Exception:\n                ok = 0\n            if not ok:\n                return {\"success\": False, \"error\": \"PDF is encrypted (password-protected); cannot extract\"}\n        page_count = len(reader.pages)\n        max_pages = params.get('maxPages')\n        try:\n            limit = int(max_pages) if max_pages else page_count\n        except (TypeError, ValueError):\n            limit = page_count\n        if limit <= 0:\n            limit = page_count\n        limit = min(limit, page_count)\n        parts = []\n        for i in range(limit):\n            try:\n                t = reader.pages[i].extract_text() or ''\n            except Exception as e:\n                t = f'[page {i+1}: extraction failed: {e}]'\n            parts.append(t)\n        text = '\\n\\n'.join(parts).strip()\n        return {\n            \"success\": True,\n            \"text\": text,\n            \"pageCount\": page_count,\n            \"pagesExtracted\": limit,\n            \"charCount\": len(text),\n        }\n    except Exception as e:\n        return {\"success\": False, \"error\": f\"PDF parse failed: {e}\"}\n",
+    "enabled": true,
+    "sandbox": true,
+    "workspace": true,
+    "network": "none"
+  },
+  {
+    "name": "pdf_page_count",
+    "description": "Return the number of pages in a PDF file using pypdf.",
+    "type": "function",
+    "parameters": {
+      "filePath": "string"
+    },
+    "systemPrompt": "Use this skill when the user asks how long a PDF is, or before deciding whether to call `read_pdf` with a `maxPages` cap. Pass `filePath`; returns `{success, pageCount}`. Paths outside the workspace (e.g. `/tmp/foo.pdf`) are auto-rewritten to `/workspace/foo.pdf`.",
+    "code": "def execute(params):\n    \"\"\"Count pages in a PDF using pypdf.\"\"\"\n    import os\n    try:\n        from pypdf import PdfReader\n    except ImportError:\n        return {\"success\": False, \"error\": \"pypdf not installed in this sandbox image\"}\n    file_path = params.get('filePath')\n    if not file_path:\n        return {\"success\": False, \"error\": \"filePath is required\"}\n    if not os.path.exists(file_path):\n        ws = os.environ.get('USER_WORKSPACE', '/workspace')\n        return {\"success\": False, \"error\": f\"file not found: {file_path}. Files uploaded into chat live under {ws}/.\"}\n    try:\n        reader = PdfReader(file_path)\n        return {\"success\": True, \"pageCount\": len(reader.pages)}\n    except Exception as e:\n        return {\"success\": False, \"error\": f\"PDF parse failed: {e}\"}\n",
+    "enabled": true,
+    "sandbox": true,
+    "workspace": true,
+    "network": "none"
+  },
+  {
+    "name": "pdf_to_images",
+    "description": "Rasterize PDF pages to PNG (or JPEG) files under /workspace/artifacts/ via pdf2image + poppler. Returns the list of file paths produced.",
+    "type": "function",
+    "parameters": {
+      "filePath": "string",
+      "dpi": "number",
+      "format": "string",
+      "firstPage": "number",
+      "lastPage": "number"
+    },
+    "systemPrompt": "Use this skill when the PDF is scanned/image-only (read_pdf returns empty/garbled text), the user asks to see a page as an image, or you need to feed pages to a vision model. Pass `filePath`; optional `dpi` (50-400, default 150), `format` (`png` or `jpeg`, default `png`), and `firstPage` / `lastPage` to slice. Output files land in /workspace/artifacts/ as `<basename>_page001.png` etc., so the chat UI auto-surfaces them as download chips. Returns `{success, files, pageCount, dpi, format}`. Don't request 400 dpi for a 100-page doc — that's hundreds of MB; default 150 is fine for OCR.",
+    "code": "def execute(params):\n    \"\"\"Render PDF pages to images under /workspace/artifacts/ via pdf2image (poppler).\"\"\"\n    import os, re\n    try:\n        from pdf2image import convert_from_path\n    except ImportError:\n        return {\"success\": False, \"error\": \"pdf2image not installed in this sandbox image\"}\n    file_path = params.get('filePath')\n    if not file_path:\n        return {\"success\": False, \"error\": \"filePath is required\"}\n    if not os.path.exists(file_path):\n        ws = os.environ.get('USER_WORKSPACE', '/workspace')\n        return {\"success\": False, \"error\": f\"file not found: {file_path}. Files uploaded into chat live under {ws}/.\"}\n    try:\n        dpi = int(params.get('dpi') or 150)\n    except (TypeError, ValueError):\n        dpi = 150\n    dpi = max(50, min(dpi, 400))\n    fmt = str(params.get('format') or 'png').lower()\n    if fmt == 'jpg':\n        fmt = 'jpeg'\n    if fmt not in ('png', 'jpeg'):\n        fmt = 'png'\n    artifacts_dir = '/workspace/artifacts'\n    os.makedirs(artifacts_dir, exist_ok=True)\n    base = re.sub(r'\\W+', '_', os.path.splitext(os.path.basename(file_path))[0]) or 'pdf'\n    kwargs = {'dpi': dpi, 'fmt': fmt}\n    fp = params.get('firstPage')\n    lp = params.get('lastPage')\n    try:\n        if fp is not None and int(fp) > 0:\n            kwargs['first_page'] = int(fp)\n    except (TypeError, ValueError):\n        pass\n    try:\n        if lp is not None and int(lp) > 0:\n            kwargs['last_page'] = int(lp)\n    except (TypeError, ValueError):\n        pass\n    try:\n        images = convert_from_path(file_path, **kwargs)\n    except Exception as e:\n        return {\"success\": False, \"error\": f\"pdf2image failed: {e}\"}\n    ext = 'jpg' if fmt == 'jpeg' else 'png'\n    pil_fmt = 'JPEG' if fmt == 'jpeg' else 'PNG'\n    start = kwargs.get('first_page', 1)\n    written = []\n    for i, img in enumerate(images):\n        out = os.path.join(artifacts_dir, f'{base}_page{start + i:03d}.{ext}')\n        img.save(out, pil_fmt)\n        written.append(out)\n    return {\n        \"success\": True,\n        \"files\": written,\n        \"pageCount\": len(written),\n        \"dpi\": dpi,\n        \"format\": ext,\n    }\n",
+    "enabled": true,
+    "sandbox": true,
+    "workspace": true,
+    "network": "none"
+  },
+  {
+    "name": "markdown_to_html",
+    "description": "Convert a Markdown file (or inline string) to a styled standalone HTML document under /workspace/artifacts/.",
+    "type": "function",
+    "parameters": {
+      "mdPath": "string",
+      "content": "string",
+      "title": "string",
+      "outputName": "string"
+    },
+    "systemPrompt": "Use this skill to turn Markdown into a standalone, styled HTML file. Pass EITHER `mdPath` (path to a .md file in the workspace) OR `content` (the Markdown as a string). Optional `title` sets the <title> tag, and `outputName` overrides the filename. The HTML lands in /workspace/artifacts/ so the chat UI surfaces a download chip. Supports GFM-flavored tables, fenced code, headings, lists, blockquotes, and a clean inline stylesheet. Pair with `html_to_pdf` if the user wants a PDF — but for direct Markdown→PDF use `create_pdf` instead; it's purpose-built and skips the HTML hop.",
+    "code": "def execute(params):\n    \"\"\"Convert Markdown (file or string) to a styled HTML file under /workspace/artifacts/.\"\"\"\n    import os, re\n    try:\n        import markdown as md\n    except ImportError:\n        return {\"success\": False, \"error\": \"markdown not installed in this sandbox image\"}\n    md_path = params.get('mdPath') or params.get('filePath')\n    md_text = params.get('content')\n    if not md_path and not md_text:\n        return {\"success\": False, \"error\": \"either mdPath or content is required\"}\n    if md_path:\n        if not os.path.exists(md_path):\n            ws = os.environ.get('USER_WORKSPACE', '/workspace')\n            return {\"success\": False, \"error\": f\"file not found: {md_path}. Files uploaded into chat live under {ws}/.\"}\n        try:\n            with open(md_path, 'r', encoding='utf-8') as f:\n                md_text = f.read()\n        except Exception as e:\n            return {\"success\": False, \"error\": f\"failed to read {md_path}: {e}\"}\n        base = re.sub(r'\\W+', '_', os.path.splitext(os.path.basename(md_path))[0]) or 'document'\n    else:\n        base = 'document'\n    title = params.get('title') or base.replace('_', ' ')\n    try:\n        body = md.markdown(\n            md_text,\n            extensions=['extra', 'tables', 'fenced_code', 'sane_lists', 'toc'],\n        )\n    except Exception as e:\n        return {\"success\": False, \"error\": f\"markdown render failed: {e}\"}\n    page = (\n        '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n'\n        '<meta charset=\"utf-8\">\\n'\n        f'<title>{title}</title>\\n'\n        '<style>\\n'\n        'body{font-family:-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;max-width:760px;margin:2em auto;padding:0 1.2em;line-height:1.55;color:#222;}\\n'\n        'h1,h2,h3,h4{line-height:1.25;margin-top:1.4em;}\\n'\n        'h1{border-bottom:1px solid #ddd;padding-bottom:0.3em;}\\n'\n        'code{background:#f4f4f4;padding:0.1em 0.3em;border-radius:3px;font-family:Menlo,Consolas,monospace;font-size:0.9em;}\\n'\n        'pre{background:#f4f4f4;padding:1em;overflow:auto;border-radius:4px;}\\n'\n        'pre code{background:none;padding:0;}\\n'\n        'table{border-collapse:collapse;margin:1em 0;}\\n'\n        'th,td{border:1px solid #ccc;padding:0.4em 0.7em;text-align:left;}\\n'\n        'th{background:#f0f0f0;}\\n'\n        'blockquote{border-left:4px solid #ccc;color:#555;margin:0;padding:0.4em 1em;}\\n'\n        'a{color:#0366d6;}\\n'\n        '</style>\\n</head>\\n<body>\\n'\n        f'{body}\\n'\n        '</body>\\n</html>\\n'\n    )\n    out_name = params.get('outputName') or f'{base}.html'\n    if not out_name.lower().endswith('.html') and not out_name.lower().endswith('.htm'):\n        out_name += '.html'\n    out_name = re.sub(r'[\\\\/]', '_', out_name)\n    artifacts_dir = '/workspace/artifacts'\n    os.makedirs(artifacts_dir, exist_ok=True)\n    out_path = os.path.join(artifacts_dir, out_name)\n    try:\n        with open(out_path, 'w', encoding='utf-8') as f:\n            f.write(page)\n    except Exception as e:\n        return {\"success\": False, \"error\": f\"failed to write {out_path}: {e}\"}\n    return {\n        \"success\": True,\n        \"outputPath\": out_path,\n        \"charCount\": len(page),\n    }\n",
+    "enabled": true,
+    "sandbox": true,
+    "workspace": true,
+    "network": "none"
+  },
+  {
+    "name": "html_to_pdf",
+    "description": "Convert an HTML file (or inline string) to a PDF under /workspace/artifacts/ via WeasyPrint. Supports modern CSS, page breaks, and embedded fonts.",
+    "type": "function",
+    "parameters": {
+      "htmlPath": "string",
+      "content": "string",
+      "outputName": "string"
+    },
+    "systemPrompt": "Use this skill to render proper HTML+CSS into a PDF. Pass EITHER `htmlPath` (path to an .html file in the workspace) OR `content` (the HTML as a string). Optional `outputName` overrides the filename. The PDF lands in /workspace/artifacts/ so the chat UI surfaces a download chip. WeasyPrint supports real CSS — flexbox, page-break-before, @page rules, web fonts (the sandbox has the DejaVu family available), and embedded images. For Markdown→PDF prefer `create_pdf` directly; only use this HTML path when the user already has HTML or needs CSS layout features.",
+    "code": "def execute(params):\n    \"\"\"Convert HTML (file or string) to a PDF under /workspace/artifacts/ via WeasyPrint.\"\"\"\n    import os, re\n    try:\n        from weasyprint import HTML\n    except ImportError as e:\n        return {\"success\": False, \"error\": f\"weasyprint not available in this sandbox image: {e}\"}\n    html_path = params.get('htmlPath') or params.get('filePath')\n    html_text = params.get('content') or params.get('html')\n    if not html_path and not html_text:\n        return {\"success\": False, \"error\": \"either htmlPath or content is required\"}\n    if html_path:\n        if not os.path.exists(html_path):\n            ws = os.environ.get('USER_WORKSPACE', '/workspace')\n            return {\"success\": False, \"error\": f\"file not found: {html_path}. Files uploaded into chat live under {ws}/.\"}\n        base = re.sub(r'\\W+', '_', os.path.splitext(os.path.basename(html_path))[0]) or 'document'\n    else:\n        base = 'document'\n    out_name = params.get('outputName') or f'{base}.pdf'\n    if not out_name.lower().endswith('.pdf'):\n        out_name += '.pdf'\n    out_name = re.sub(r'[\\\\/]', '_', out_name)\n    artifacts_dir = '/workspace/artifacts'\n    os.makedirs(artifacts_dir, exist_ok=True)\n    out_path = os.path.join(artifacts_dir, out_name)\n    try:\n        if html_path:\n            HTML(filename=html_path).write_pdf(out_path)\n        else:\n            HTML(string=html_text).write_pdf(out_path)\n    except Exception as e:\n        return {\"success\": False, \"error\": f\"weasyprint failed: {e}\"}\n    return {\n        \"success\": True,\n        \"outputPath\": out_path,\n        \"byteSize\": os.path.getsize(out_path),\n    }\n",
+    "enabled": true,
+    "sandbox": true,
+    "workspace": true,
+    "network": "none"
   }
 ]
