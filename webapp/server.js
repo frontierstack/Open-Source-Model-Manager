@@ -16225,6 +16225,9 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // pdf / docs generation + reading
     'create_pdf', 'html_to_pdf', 'markdown_to_html',
     'read_pdf', 'pdf_page_count', 'pdf_to_images',
+    // email generation (.eml) — needs workspace mount to attach files
+    // the user/model already wrote into /workspace.
+    'create_email',
     // image manipulation (Pillow), spreadsheet read (openpyxl), SQL (sqlite3)
     'transform_image', 'read_xlsx', 'query_sqlite',
     // audio transcription (faster-whisper, small.en bundled in sandbox image)
