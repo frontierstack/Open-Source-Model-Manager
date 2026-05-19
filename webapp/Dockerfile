@@ -105,6 +105,14 @@ RUN npm install
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/src/app/.playwright
 RUN npx playwright install chromium
 
+# Install Patchright's pinned Chromium. Patchright (used by scrapling's
+# StealthyFetcher for bot-detection bypass) is pinned to a different chromium
+# revision than playwright-core (currently 1217 vs 1208) and refuses to fall
+# back to the playwright-installed binary. Without this, every StealthyFetcher
+# call fails with `Executable doesn't exist at .playwright/chromium-1217/...`
+# and the chat agent loses its strongest anti-bot fetch path.
+RUN python3 -m patchright install chromium
+
 COPY . .
 RUN npm run build
 

@@ -393,11 +393,14 @@ async function getBrowser() {
 
     // Create new browser if pool not full
     if (browserPool.length < MAX_POOL_SIZE) {
-        // Use headed mode with Xvfb when available (better anti-detection)
-        const useHeaded = USE_HEADED_MODE;
-        if (useHeaded) {
-            console.log('Launching browser in headed mode with Xvfb');
-        }
+        // Always launch headless. The previous boot-time Xvfb spawn (startXvfb)
+        // could die silently — stdio: 'ignore' swallows any crash — leaving
+        // USE_HEADED_MODE cached as true while no X server is actually serving.
+        // The result was: every chromium launch died with "Missing X server or
+        // $DISPLAY" and the chat's playwright_fetch path was completely broken.
+        // Stealth/anti-detection lives in scrapling_fetch (patchright + curl_cffi);
+        // playwright_fetch is the simple JS-render path and headless is fine.
+        const useHeaded = false;
 
         const browser = await chromium.launch({
             headless: !useHeaded,

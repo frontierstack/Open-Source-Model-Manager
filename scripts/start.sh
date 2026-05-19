@@ -80,8 +80,11 @@ echo -e "  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${NC}"
 
 section "Preflight"
 
-# Check required Docker images
-REQUIRED_IMAGES=("modelserver-webapp:latest" "modelserver-llamacpp:latest" "modelserver-sglang:latest")
+# Check required Docker images. modelserver-sandbox-python is built outside
+# docker-compose (plain `docker build sandbox-runtime/`) and is required for
+# run_python / http_request / any sandbox-executed skill — without it the
+# webapp returns "no such image" 404s and the chat agent thrashes.
+REQUIRED_IMAGES=("modelserver-webapp:latest" "modelserver-llamacpp:latest" "modelserver-sglang:latest" "modelserver-sandbox-python:latest")
 MISSING_IMAGES=()
 
 for img in "${REQUIRED_IMAGES[@]}"; do

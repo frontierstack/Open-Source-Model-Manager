@@ -615,6 +615,7 @@ section "Build Plan"
 BUILD_LLAMACPP=false
 BUILD_SGLANG=false
 BUILD_WEBAPP=false
+BUILD_SANDBOX=false
 
 # Track reasons for the summary
 declare -A BUILD_REASON
@@ -648,6 +649,21 @@ analyze_component "llamacpp" "modelserver-llamacpp:latest"
 analyze_component "sglang" "modelserver-sglang:latest"
 analyze_component "webapp" "modelserver-webapp:latest"
 
+# sandbox-runtime — analyzed inline because the dash makes the
+# BUILD_<UPPER> eval pattern produce an invalid variable name.
+if [ "$NO_CACHE" = true ] || [ "$RESUME" = false ]; then
+    BUILD_SANDBOX=true
+    BUILD_REASON[sandbox-runtime]="rebuild requested"
+elif [[ -z $(docker images -q "modelserver-sandbox-python:latest" 2>/dev/null) ]]; then
+    BUILD_SANDBOX=true
+    BUILD_REASON[sandbox-runtime]="image not found"
+elif ! is_build_complete "sandbox-runtime"; then
+    BUILD_SANDBOX=true
+    BUILD_REASON[sandbox-runtime]="Dockerfile changed"
+else
+    BUILD_REASON[sandbox-runtime]="up to date"
+fi
+
 # Display build plan
 for comp in llamacpp sglang webapp; do
     reason="${BUILD_REASON[$comp]}"
@@ -661,8 +677,14 @@ for comp in llamacpp sglang webapp; do
     fi
 done
 
+if [ "$BUILD_SANDBOX" = true ]; then
+    log_step "sandbox-runtime  ${DIM}${BUILD_REASON[sandbox-runtime]}${NC}"
+else
+    log_success "sandbox-runtime  ${DIM}${BUILD_REASON[sandbox-runtime]}${NC}"
+fi
+
 # Check if anything needs building
-if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_SGLANG" = false ] && [ "$BUILD_WEBAPP" = false ]; then
+if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_SGLANG" = false ] && [ "$BUILD_WEBAPP" = false ] && [ "$BUILD_SANDBOX" = false ]; then
     echo ""
     log_success "All images up to date — nothing to build"
     echo ""
@@ -789,6 +811,49 @@ if [ "$BUILD_WEBAPP" = true ]; then
     verify_image "modelserver-webapp:latest" || exit 1
 fi
 
+# Build sandbox-runtime. Not a docker-compose service, so this uses `docker
+# build` directly. Image is referenced by webapp/services/sandboxRunner.js
+# (SANDBOX_IMAGE='modelserver-sandbox-python:latest'); without it run_python,
+# http_request and every other sandbox-executed skill fail with
+# "No such image: modelserver-sandbox-python:latest".
+if [ "$BUILD_SANDBOX" = true ]; then
+    section "Sandbox Runtime Image"
+
+    > "$BUILD_STATE_DIR/sandbox-runtime.log" 2>/dev/null || true
+
+    # Mirror build_image's proxy/SSL build-args
+    sandbox_build_args=()
+    [ -n "$HTTP_PROXY" ]                   && sandbox_build_args+=(--build-arg "HTTP_PROXY=$HTTP_PROXY")
+    [ -n "$HTTPS_PROXY" ]                  && sandbox_build_args+=(--build-arg "HTTPS_PROXY=$HTTPS_PROXY")
+    [ -n "$NO_PROXY" ]                     && sandbox_build_args+=(--build-arg "NO_PROXY=$NO_PROXY")
+    [ -n "$PIP_TRUSTED_HOST" ]             && sandbox_build_args+=(--build-arg "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST")
+    [ -n "$PIP_CERT" ]                     && sandbox_build_args+=(--build-arg "PIP_CERT=$PIP_CERT")
+
+    sandbox_no_cache=()
+    [ "$NO_CACHE" = true ] && sandbox_no_cache=(--no-cache)
+
+    start_build_spinner "Building sandbox-runtime (~3–8 min)" "$BUILD_STATE_DIR/sandbox-runtime.log"
+    sandbox_start=$(date +%s)
+    if docker build "${sandbox_no_cache[@]}" "${sandbox_build_args[@]}" \
+            -t modelserver-sandbox-python:latest \
+            "$PROJECT_DIR/sandbox-runtime" \
+            > "$BUILD_STATE_DIR/sandbox-runtime.log" 2>&1; then
+        stop_build_spinner
+        sandbox_dur=$(( $(date +%s) - sandbox_start ))
+        echo "$sandbox_dur" > "$BUILD_STATE_DIR/sandbox-runtime.duration"
+        mark_build_complete "sandbox-runtime"
+        log_success "sandbox-runtime  ${DIM}$(fmt_duration $sandbox_dur)${NC}"
+    else
+        stop_build_spinner
+        log_error "sandbox-runtime build failed"
+        echo ""
+        echo -e "  ${DIM}Build log: $BUILD_STATE_DIR/sandbox-runtime.log${NC}"
+        tail -15 "$BUILD_STATE_DIR/sandbox-runtime.log" 2>/dev/null | sed 's/^/    /'
+        exit 1
+    fi
+    verify_image "modelserver-sandbox-python:latest" || exit 1
+fi
+
 # ============================================================================
 # PHASE 5: CLEANUP & SUMMARY
 # ============================================================================
@@ -819,6 +884,15 @@ for comp in llamacpp sglang webapp; do
         echo -e "  ${SYM_SKIP}  ${comp}  ${DIM}skipped${NC}"
     fi
 done
+
+sandbox_dur_file="$BUILD_STATE_DIR/sandbox-runtime.duration"
+if [ "$BUILD_SANDBOX" = true ] && [ -f "$sandbox_dur_file" ]; then
+    echo -e "  ${SYM_OK}  sandbox-runtime  ${DIM}built in $(fmt_duration $(cat "$sandbox_dur_file"))${NC}"
+elif [ "$BUILD_SANDBOX" = true ]; then
+    echo -e "  ${SYM_OK}  sandbox-runtime  ${DIM}built${NC}"
+else
+    echo -e "  ${SYM_SKIP}  sandbox-runtime  ${DIM}skipped${NC}"
+fi
 
 echo ""
 echo -e "  ${DIM}Total time:  $(fmt_duration $TOTAL_DURATION)${NC}"
