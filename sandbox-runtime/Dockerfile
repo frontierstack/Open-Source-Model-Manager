@@ -33,6 +33,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # poppler-utils powers pdf2image (pdftoppm) for pdf_to_images, plus
         # pdftotext / pdfinfo as command-line fallbacks. ~8 MB installed.
         poppler-utils \
+        # tesseract-ocr (+ eng traineddata) is the engine the ocr_image
+        # skill drives via the pytesseract wrapper. Without it the skill
+        # returns "pytesseract and/or PIL not installed" and the chat
+        # agent loses its only structured OCR path. The webapp container
+        # has its own tesseract for upload-time OCR; ocr_image runs
+        # inside the sandbox so it needs its own copy.
+        tesseract-ocr \
+        # libzbar0 is the shared lib pyzbar dlopens for QR/barcode reading
+        # (read_email_file scans QR codes in email attachments). Without
+        # it `import pyzbar` raises ImportError("Unable to find zbar
+        # shared library").
+        libzbar0 \
         # WeasyPrint system stack — pango/cairo/harfbuzz/gdk-pixbuf for the
         # html_to_pdf skill. Without these the wheel import-time check
         # fails ("cannot load library 'libgobject-2.0-0'") even though
@@ -101,6 +113,17 @@ RUN pip install --no-cache-dir \
         markdown==3.7 \
         weasyprint==62.3 \
         pydyf==0.10.0 \
+        # Python wrapper for the tesseract-ocr binary installed above —
+        # used by the ocr_image skill.
+        pytesseract==0.3.13 \
+        # read_email_file skill uses these: PyPDF2 (legacy name kept for
+        # the .pdf path; pypdf above is the renamed version — both are
+        # shipped because skill code imports the legacy spelling),
+        # extract_msg (Outlook .msg parsing), pyzbar (QR codes in
+        # attachment images).
+        PyPDF2==3.0.1 \
+        extract-msg==0.48.5 \
+        pyzbar==0.1.9 \
     && rm -rf /root/.cache
 
 # Audio transcription (faster-whisper, CTranslate2 backend). The small.en

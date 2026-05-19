@@ -94,7 +94,18 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     duckdb==1.2.* \
     matplotlib==3.10.* \
     # Writing-quality skill (readability_score)
-    textstat==0.7.*
+    textstat==0.7.* \
+    # OCR Python wrapper for the tesseract-ocr binary installed above.
+    # The ocr_image skill is NOT sandbox-flagged, so it runs in this
+    # container — without pytesseract it fails with "pytesseract and/or
+    # PIL not installed".
+    pytesseract==0.3.* \
+    # Cross-platform screenshot library used by the (non-sandbox)
+    # screenshot skill. Tiny pure-Python wheel; harmless if unused.
+    mss==9.0.* \
+    # TOML reader for the parse_toml skill. Python 3.11+ also ships
+    # tomllib in stdlib, but the skill imports tomli first.
+    tomli==2.2.*
 
 # Install Playwright browsers for Python (shares with Node.js)
 RUN python3 -m playwright install chromium
