@@ -81,7 +81,7 @@ echo -e "  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${NC}"
 section "Preflight"
 
 # Check required Docker images
-REQUIRED_IMAGES=("modelserver-webapp:latest" "modelserver-llamacpp:latest" "modelserver-vllm:latest")
+REQUIRED_IMAGES=("modelserver-webapp:latest" "modelserver-llamacpp:latest" "modelserver-sglang:latest")
 MISSING_IMAGES=()
 
 for img in "${REQUIRED_IMAGES[@]}"; do

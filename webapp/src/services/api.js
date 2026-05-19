@@ -111,9 +111,9 @@ class ApiClient {
 
     // Instances APIs
     instances = {
-        list: () => this.get('/api/vllm/instances'),
-        get: (modelName) => this.get(`/api/vllm/instances/${encodeURIComponent(modelName)}`),
-        stop: (modelName) => this.delete(`/api/vllm/instances/${encodeURIComponent(modelName)}`)
+        list: () => this.get('/api/sglang/instances'),
+        get: (modelName) => this.get(`/api/sglang/instances/${encodeURIComponent(modelName)}`),
+        stop: (modelName) => this.delete(`/api/sglang/instances/${encodeURIComponent(modelName)}`)
     };
 
     // Agents APIs

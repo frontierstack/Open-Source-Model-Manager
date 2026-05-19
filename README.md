@@ -7,7 +7,7 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 <p align="center">
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-24.0%2B-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="License"></a>
-  <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-12.1-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA"></a>
+  <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-12.9-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://pi.dev"><img src="https://img.shields.io/badge/Pi-pi.dev-8b5cf6?style=flat-square" alt="Pi (pi.dev)"></a>
@@ -21,8 +21,8 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 
 | Backend | GPU Requirement | Best For |
 |---------|-----------------|----------|
-| **llama.cpp** | Maxwell 5.2+ (GTX 900, Quadro M4000) | GGUF models, older GPUs, CPU offload |
-| **vLLM** | Pascal 6.0+ (GTX 1000+, Quadro P+) | High throughput, newer GPUs |
+| **llama.cpp** | Maxwell 5.2+ (GTX 900, Quadro M4000) | GGUF models, older GPUs, CPU offload, single-stream chat, **Multi-Token Prediction (MTP) & draft-model speculative decoding** for 1.5–2× tok/s on DeepSeek-V3/R1, Qwen3-Next-MTP, and Qwen3.5/3.6-MTP variants |
+| **sglang** | Turing 7.5+ (RTX 20-series, T4) — driver R570+ recommended | High-throughput concurrent serving, RadixAttention prefix caching, GGUF + safetensors + AWQ/GPTQ/FP8/NVFP4, native `--tool-call-parser` and `--reasoning-parser` for Qwen / DeepSeek / GLM / Kimi / Llama-3/4 / Mistral / GPT-OSS |
 
 ### Core Capabilities
 
@@ -288,7 +288,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           │     ┌─────┴──────┐                                         │
           │     ▼            ▼                                         │
           │  ┌────────┐  ┌────────┐                                    │
-          │  │llamacpp│  │  vllm  │  Dynamic instances on :8001+       │
+          │  │llamacpp│  │  sglang  │  Dynamic instances on :8001+       │
           │  │Maxwell │  │Pascal  │  Bound to localhost only           │
           │  │ 5.2+   │  │ 6.0+  │  Models mounted read-only          │
           │  └────┬───┘  └───┬────┘                                    │
@@ -352,7 +352,7 @@ MIT License — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-[llama.cpp](https://github.com/ggerganov/llama.cpp) | [vLLM](https://github.com/vllm-project/vllm) | [HuggingFace](https://huggingface.co/) | [Pi (pi.dev)](https://pi.dev) — terminal coding agent | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
+[llama.cpp](https://github.com/ggerganov/llama.cpp) | [sglang](https://github.com/sgl-project/sglang) | [HuggingFace](https://huggingface.co/) | [Pi (pi.dev)](https://pi.dev) — terminal coding agent | [Scrapling](https://github.com/D4Vinci/Scrapling) | [Playwright](https://playwright.dev/) | [Material-UI](https://mui.com/)
 
 ---
 

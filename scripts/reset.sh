@@ -149,8 +149,8 @@ section "Stop Services"
 start_spinner "Stopping model instances"
 docker ps --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
 docker ps -a --filter "name=llamacpp-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
-docker ps --filter "name=vllm-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
-docker ps -a --filter "name=vllm-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
+docker ps --filter "name=sglang-" -q 2>/dev/null | xargs -r docker stop 2>/dev/null || true
+docker ps -a --filter "name=sglang-" -q 2>/dev/null | xargs -r docker rm 2>/dev/null || true
 stop_spinner
 log_success "Model instances stopped"
 
@@ -184,8 +184,8 @@ if [ "$REBUILD_IMAGES" = true ]; then
     echo ""
     docker compose --profile build-only build llamacpp --no-cache 2>&1 | tail -3
     log_success "llamacpp rebuilt"
-    docker compose --profile build-only build vllm --no-cache 2>&1 | tail -3
-    log_success "vllm rebuilt"
+    docker compose --profile build-only build sglang --no-cache 2>&1 | tail -3
+    log_success "sglang rebuilt"
     docker compose build webapp --no-cache 2>&1 | tail -3
     log_success "webapp rebuilt"
 fi

@@ -181,7 +181,7 @@ function formatMessageInline(msg, isLight = false) {
             remaining = remaining.slice(match[0].length);
             continue;
         }
-        match = remaining.match(/^((?:llamacpp|vllm)-[\w\-]+)/);
+        match = remaining.match(/^((?:llamacpp|sglang)-[\w\-]+)/);
         if (match) {
             parts.push(<span key={key++} style={{ color: C.container, fontSize: '0.73rem' }}>{match[1]}</span>);
             remaining = remaining.slice(match[0].length);

@@ -431,10 +431,10 @@ function AppContent() {
 
     const loadModels = async () => {
         try {
-            const [modelsRes, llamacppRes, vllmRes] = await Promise.all([
+            const [modelsRes, llamacppRes, sglangRes] = await Promise.all([
                 fetch('/api/models', { credentials: 'include' }),
                 fetch('/api/llamacpp/instances', { credentials: 'include' }),
-                fetch('/api/vllm/instances', { credentials: 'include' }),
+                fetch('/api/sglang/instances', { credentials: 'include' }),
             ]);
 
             if (modelsRes.ok) {
@@ -443,19 +443,19 @@ function AppContent() {
 
                 // Get running instances from both backends
                 const llamacppInstances = llamacppRes.ok ? await llamacppRes.json() : [];
-                const vllmInstances = vllmRes.ok ? await vllmRes.json() : [];
+                const sglangInstances = sglangRes.ok ? await sglangRes.json() : [];
 
                 const llamacppArray = Array.isArray(llamacppInstances)
                     ? llamacppInstances
                     : (llamacppInstances?.instances || []);
-                const vllmArray = Array.isArray(vllmInstances)
-                    ? vllmInstances
-                    : (vllmInstances?.instances || []);
+                const sglangArray = Array.isArray(sglangInstances)
+                    ? sglangInstances
+                    : (sglangInstances?.instances || []);
 
                 // Create a map of running instances with their backend
                 const runningMap = new Map();
                 llamacppArray.forEach(i => runningMap.set(i.name, { ...i, backend: 'llamacpp' }));
-                vllmArray.forEach(i => runningMap.set(i.name, { ...i, backend: 'vllm' }));
+                sglangArray.forEach(i => runningMap.set(i.name, { ...i, backend: 'sglang' }));
 
                 const merged = modelsArray.map(m => {
                     const runningInfo = runningMap.get(m.name);

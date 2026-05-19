@@ -2,7 +2,7 @@ name: modelserver
 
 services:
   # llama.cpp base image for GGUF models
-  # Supports older GPUs (Maxwell 5.2+) that don't work with vLLM's GGUF quantization
+  # Supports older GPUs (Maxwell 5.2+) that don't work with sglang's GGUF quantization
   llamacpp:
     build: ./llamacpp
     image: modelserver-llamacpp:latest
@@ -12,11 +12,11 @@ services:
     profiles:
       - build-only
 
-  # vLLM base image for HuggingFace models and GGUF (requires compute capability 6.0+)
-  vllm:
-    build: ./vllm
-    image: modelserver-vllm:latest
-    # This service builds the base image for dynamic vLLM instances
+  # sglang base image for HuggingFace models and GGUF (requires compute capability 6.0+)
+  sglang:
+    build: ./sglang
+    image: modelserver-sglang:latest
+    # This service builds the base image for dynamic sglang instances
     # Instances are created and managed by the webapp via Docker API
     # Do not run this service directly - it's only for building the image
     profiles:
@@ -34,8 +34,8 @@ services:
       - ./models:/models
       - ./certs:/certs:ro
       - webapp_data:/usr/src/app/data
-      # Read/list/delete the HF cache used by vLLM HF-repo loads from the
-      # webapp UI. Same named volume the vLLM HF instances mount under
+      # Read/list/delete the HF cache used by sglang HF-repo loads from the
+      # webapp UI. Same named volume the sglang HF instances mount under
       # /root/.cache/huggingface — exposed here at /hf-cache for inspection.
       - hf_cache:/hf-cache
     environment:
@@ -87,7 +87,7 @@ services:
 
 volumes:
   webapp_data:
-  # HuggingFace cache for vLLM HF-repo loads (safetensors / AWQ / GPTQ /
+  # HuggingFace cache for sglang HF-repo loads (safetensors / AWQ / GPTQ /
   # FP8 / NVFP4 / BnB). Survives model-instance container restarts so big
   # weights aren't redownloaded each time.
   hf_cache:

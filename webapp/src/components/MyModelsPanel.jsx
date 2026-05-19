@@ -5,7 +5,7 @@ import { HardDrive as StorageIcon } from 'lucide-react';
 //
 // Owns only the page-header tile so the tab's outer surface matches
 // LogsPanel / UsersPanel / AppsPanel. The three inner sections —
-// Running Instances, Cached vLLM Models, Available Models — render
+// Running Instances, Cached sglang HF Models, Available Models — render
 // inside via {children}; their cards are still MUI for now and
 // inherit theme colors via the Phase 3 component overrides. A full
 // rebuild of the running-instance cards (~260 lines: status/port/
@@ -41,7 +41,7 @@ export default function MyModelsPanel({ instancesLoaded = 0, children }) {
                     <div className="text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
                         {instancesLoaded > 0
                             ? `${instancesLoaded} model${instancesLoaded > 1 ? 's' : ''} currently loaded · manage instances, cache, and downloads`
-                            : 'Manage loaded instances, the vLLM cache, and your local model library'}
+                            : 'Manage loaded instances, the sglang HF cache, and your local model library'}
                     </div>
                 </div>
             </div>

@@ -237,16 +237,16 @@ function isValidModelName(modelName) {
     return resolved.startsWith('/models/');
 }
 
-// In-memory store for model instances (supports both vLLM and llama.cpp backends)
+// In-memory store for model instances (supports both sglang and llama.cpp backends)
 // Map structure: modelName -> { containerId, port, status, config, backend }
 const modelInstances = new Map();
 
-// Pending vLLM-HF loads — populated when createVllmHfInstance fires a container
+// Pending sglang-HF loads — populated when createSglangHfInstance fires a container
 // and cleared when that container becomes healthy. Used by streamContainerLogs
-// to auto-retry once when vLLM rejects the KV cache size for the requested
+// to auto-retry once when sglang rejects the KV cache size for the requested
 // max_model_len (the engine prints a usable ceiling that we feed back).
 // Map structure: repoId -> { repoId, format, config, retried: boolean }
-const pendingVllmLoads = new Map();
+const pendingSglangLoads = new Map();
 
 // Content continuation queue for processing large files in chunks
 // Map structure: conversationId -> { content: string, processedChunks: number, totalChunks: number, chunkSize: number }
@@ -312,11 +312,11 @@ const CHUNKING_CONFIG = {
     enableAgentic: true
 };
 
-// Default chat-completion stop strings. Needed for vLLM + GGUF chat models
+// Default chat-completion stop strings. Needed for sglang + GGUF chat models
 // whose tokenizer EOS doesn't match the chat template turn terminator.
 // Example: Qwen3 GGUF tokenizer EOS = <|endoftext|> (151643), but the ChatML
 // template ends each turn with <|im_end|> (151645). Without explicit stops,
-// vLLM happily generates past <|im_end|> and hallucinates further turns.
+// sglang happily generates past <|im_end|> and hallucinates further turns.
 // These strings are safe to send for any backend/model — if the model never
 // emits them, they're no-ops.
 const DEFAULT_STOP_STRINGS = ['<|im_end|>', '<|im_start|>', '<|endoftext|>', '<|end|>', '<|eot_id|>'];
@@ -1080,7 +1080,7 @@ Provide your synthesized response:`;
  */
 /**
  * Ask the backend's /tokenize endpoint for an exact token count. Both
- * llama.cpp and vLLM expose this. Used to replace our chars/token
+ * llama.cpp and sglang expose this. Used to replace our chars/token
  * estimator for map-reduce sizing — the estimator assumes ~4 chars/token
  * (prose-shaped) but code with heavy punctuation tokenizes at ~2
  * chars/token, so chunks sized by the estimator regularly blow past
@@ -1552,15 +1552,14 @@ async function processWithMapReduce(options) {
 
 // Backend configuration defaults
 const BACKEND_DEFAULTS = {
-    vllm: {
+    sglang: {
         maxModelLen: 4096,
         cpuOffloadGb: 0,
-        gpuMemoryUtilization: 0.9,
+        memFractionStatic: 0.88,
         tensorParallelSize: 1,
-        maxNumSeqs: 256,
+        maxRunningRequests: 256,
         kvCacheDtype: 'auto',
         trustRemoteCode: true,
-        enforceEager: false,
         disableThinking: false
     },
     llamacpp: {
@@ -1701,8 +1700,8 @@ function getModelsVolumeBind() {
 }
 
 // Detected NVIDIA GPU count, cached for the lifetime of the process.
-// Used as the default tensor_parallel_size when a vLLM instance is loaded
-// without an explicit value — vLLM should fan out across every GPU
+// Used as the default tensor_parallel_size when a sglang instance is loaded
+// without an explicit value — sglang should fan out across every GPU
 // available unless the user opts down. Cache invalidates on falsy.
 let cachedGpuCount = null;
 async function getGpuCount() {
@@ -1778,7 +1777,7 @@ process.on('uncaughtException', (error) => {
     // For now, we'll keep it alive to maintain existing connections
 });
 
-// Sync model instances from Docker on startup (handles both vLLM and llama.cpp)
+// Sync model instances from Docker on startup (handles both sglang and llama.cpp)
 // Optimized: Parallelized container inspection for faster startup
 async function syncModelInstances() {
     try {
@@ -1792,9 +1791,9 @@ async function syncModelInstances() {
                 let backend = null;
                 let modelName = null;
 
-                if (name.startsWith('vllm-')) {
-                    backend = 'vllm';
-                    modelName = name.replace('vllm-', '');
+                if (name.startsWith('sglang-')) {
+                    backend = 'sglang';
+                    modelName = name.replace('sglang-', '');
                 } else if (name.startsWith('llamacpp-')) {
                     backend = 'llamacpp';
                     modelName = name.replace('llamacpp-', '');
@@ -1833,8 +1832,8 @@ async function syncModelInstances() {
                 return env ? env.split('=')[1] : null;
             };
 
-            if (backend === 'vllm') {
-                port = parseInt(getEnvValue('VLLM_PORT') || '8000');
+            if (backend === 'sglang') {
+                port = parseInt(getEnvValue('SGLANG_PORT') || '8000');
             } else if (backend === 'llamacpp') {
                 port = parseInt(getEnvValue('LLAMA_PORT') || '8000');
             }
@@ -1842,36 +1841,35 @@ async function syncModelInstances() {
             // Extract config from environment variables based on backend
             let config = {};
 
-            if (backend === 'vllm') {
-                const maxModelLen = parseInt(getEnvValue('VLLM_MAX_MODEL_LEN') || '4096');
+            if (backend === 'sglang') {
+                const maxModelLen = parseInt(getEnvValue('SGLANG_MAX_MODEL_LEN') || '4096');
                 config = {
                     maxModelLen,
                     contextSize: maxModelLen,  // Alias for chat stream compatibility
-                    contextShift: getEnvValue('VLLM_CTX_SHIFT') !== 'false',
-                    cpuOffloadGb: parseFloat(getEnvValue('VLLM_CPU_OFFLOAD_GB') || '0'),
-                    gpuMemoryUtilization: parseFloat(getEnvValue('VLLM_GPU_MEMORY_UTILIZATION') || '0.9'),
-                    tensorParallelSize: parseInt(getEnvValue('VLLM_TENSOR_PARALLEL_SIZE') || '1'),
-                    maxNumSeqs: parseInt(getEnvValue('VLLM_MAX_NUM_SEQS') || '256'),
-                    kvCacheDtype: getEnvValue('VLLM_KV_CACHE_DTYPE') || 'auto',
-                    enforceEager: getEnvValue('VLLM_ENFORCE_EAGER') === 'true',
-                    trustRemoteCode: getEnvValue('VLLM_TRUST_REMOTE_CODE') !== 'false',
-                    toolCallParser: getEnvValue('VLLM_TOOL_CALL_PARSER') || ''
+                    contextShift: getEnvValue('SGLANG_CTX_SHIFT') !== 'false',
+                    cpuOffloadGb: parseFloat(getEnvValue('SGLANG_CPU_OFFLOAD_GB') || '0'),
+                    memFractionStatic: parseFloat(getEnvValue('SGLANG_MEM_FRACTION_STATIC') || '0.88'),
+                    tensorParallelSize: parseInt(getEnvValue('SGLANG_TENSOR_PARALLEL_SIZE') || '1'),
+                    maxRunningRequests: parseInt(getEnvValue('SGLANG_MAX_RUNNING_REQUESTS') || '256'),
+                    kvCacheDtype: getEnvValue('SGLANG_KV_CACHE_DTYPE') || 'auto',
+                    trustRemoteCode: getEnvValue('SGLANG_TRUST_REMOTE_CODE') !== 'false',
+                    toolCallParser: getEnvValue('SGLANG_TOOL_CALL_PARSER') || ''
                 };
-                // HF-repo instances: container is `vllm-hf-<owner>--<name>` and
+                // HF-repo instances: container is `sglang-hf-<owner>--<name>` and
                 // the modelInstances key needs to be the actual repo id (with /)
-                // so requests routed by `model` field match vLLM's served name.
+                // so requests routed by `model` field match sglang's served name.
                 if (modelName && modelName.startsWith('hf-')) {
-                    const servedName = getEnvValue('VLLM_SERVED_MODEL_NAME');
-                    const modelPath = getEnvValue('VLLM_MODEL_PATH');
+                    const servedName = getEnvValue('SGLANG_SERVED_MODEL_NAME');
+                    const modelPath = getEnvValue('SGLANG_MODEL_PATH');
                     const reconstructed = servedName && servedName.includes('/')
                         ? servedName
                         : (modelPath && modelPath.includes('/') && !modelPath.startsWith('/') ? modelPath : null);
                     if (reconstructed) {
                         config.hfRepoId = reconstructed;
                         config.source = 'hf';
-                        // Remap modelName so the Map key, /api/vllm/instances
+                        // Remap modelName so the Map key, /api/sglang/instances
                         // listing, and chat requests all use the canonical repo id
-                        // (matches vLLM's served_model_name).
+                        // (matches sglang's served_model_name).
                         modelName = reconstructed;
                     }
                 }
@@ -1897,7 +1895,15 @@ async function syncModelInstances() {
                     // env var. Without this, the UI always shows the toggle as
                     // OFF for containers recovered on startup, even when the
                     // running process actually has --reasoning off.
-                    disableThinking: getEnvValue('LLAMA_REASONING') === 'off'
+                    disableThinking: getEnvValue('LLAMA_REASONING') === 'off',
+                    // Speculative decoding mode survives across webapp restarts —
+                    // read the same env vars the entrypoint translates back into
+                    // --spec-type / --spec-draft-n-max / --spec-draft-model so
+                    // the My Models chip shows the running mode correctly after
+                    // a webapp recreate.
+                    specType: getEnvValue('LLAMA_SPEC_TYPE') || 'none',
+                    specDraftNMax: parseInt(getEnvValue('LLAMA_SPEC_DRAFT_N_MAX') || '3'),
+                    specDraftModel: getEnvValue('LLAMA_SPEC_DRAFT_MODEL') || ''
                 };
             }
 
@@ -2227,7 +2233,7 @@ async function removeStaleContainerByName(name) {
     }
 }
 
-// Port allocation for vLLM instances
+// Port allocation for sglang instances
 const BASE_PORT = 8001;
 
 function allocatePort() {
@@ -3460,7 +3466,7 @@ app.get('/api/models', requireAuth, async (req, res) => {
     }
     const modelsDir = '/models';
     try {
-        // Get running model instances (vLLM or llama.cpp)
+        // Get running model instances (sglang or llama.cpp)
         const instances = Array.from(modelInstances.entries()).map(([name, info]) => ({
             name,
             port: info.port,
@@ -3538,7 +3544,7 @@ app.get('/api/models', requireAuth, async (req, res) => {
                     status = 'Slow to load (will auto-recover)';
                 } else if (instance.status === 'running') {
                     // Show correct backend name based on what's actually running
-                    const backendName = instance.backend === 'vllm' ? 'vLLM' : 'llama.cpp';
+                    const backendName = instance.backend === 'sglang' ? 'sglang' : 'llama.cpp';
                     status = `Loaded in ${backendName}`;
                 } else {
                     status = `Instance: ${instance.status}`;
@@ -3575,6 +3581,36 @@ app.get('/api/models', requireAuth, async (req, res) => {
 // ============================================================================
 // MODEL LOADING ENDPOINT
 // ============================================================================
+
+// sglang parser auto-detection helpers. Used by both /api/models/:modelName/load
+// (local GGUF) and /api/models/load-hf (HuggingFace repo) so toolCallParser /
+// reasoningParser are consistent across load paths and the model can emit
+// structured message.tool_calls + separated <think>...</think> reasoning out
+// of the box. Override at load time with req.body.toolCallParser etc.
+const autoDetectSglangToolParser = (name) => {
+    const r = String(name || '').toLowerCase();
+    if (r.includes('qwen3-coder') || r.includes('qwen2.5-coder') || r.includes('qwen3.6-coder')) return 'qwen3_coder';
+    if (r.includes('llama-4') || r.includes('llama4')) return 'llama4';
+    if (r.includes('llama-3') || r.includes('llama3')) return 'llama3';
+    if (r.includes('mistral')) return 'mistral';
+    if (r.includes('deepseek-v3.2') || r.includes('deepseekv3.2')) return 'deepseekv32';
+    if (r.includes('deepseek-v3.1') || r.includes('deepseekv3.1')) return 'deepseekv31';
+    if (r.includes('deepseek')) return 'deepseekv3';
+    if (r.includes('kimi')) return 'kimi_k2';
+    if (r.includes('glm-4.5') || r.includes('glm45') || r.includes('glm-45')) return 'glm45';
+    if (r.includes('glm')) return 'glm';
+    if (r.includes('gpt-oss')) return 'gpt-oss';
+    if (r.includes('step3') || r.includes('step-3')) return 'step3';
+    return 'qwen';
+};
+const autoDetectSglangReasoningParser = (name) => {
+    const r = String(name || '').toLowerCase();
+    if (r.includes('qwen3') || r.includes('qwen-3')) return 'qwen3';
+    if (r.includes('deepseek-r1') || r.includes('deepseekr1')) return 'deepseek-r1';
+    if (r.includes('glm-4.5') || r.includes('glm45') || r.includes('glm-45')) return 'glm45';
+    if (r.includes('kimi')) return 'kimi';
+    return '';
+};
 
 app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
     // Check permission
@@ -3660,10 +3696,10 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 return res.status(400).json({ error: 'maxModelLen must be between 256 and 1048576' });
             }
         }
-        if (req.body.gpuMemoryUtilization !== undefined) {
-            const gpuUtil = Number(req.body.gpuMemoryUtilization);
-            if (isNaN(gpuUtil) || gpuUtil < 0.1 || gpuUtil > 1.0) {
-                return res.status(400).json({ error: 'gpuMemoryUtilization must be between 0.1 and 1.0' });
+        if (req.body.memFractionStatic !== undefined) {
+            const memFrac = Number(req.body.memFractionStatic);
+            if (isNaN(memFrac) || memFrac < 0.1 || memFrac > 1.0) {
+                return res.status(400).json({ error: 'memFractionStatic must be between 0.1 and 1.0' });
             }
         }
 
@@ -3671,15 +3707,15 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
 
         let result;
 
-        if (backend === 'vllm') {
+        if (backend === 'sglang') {
             // Check for known incompatible VLM models
             const lowerModelName = modelName.toLowerCase();
             const knownIncompatibleVLMs = ['qwen3-vl', 'qwen2-vl', 'qwen-vl'];
             const isIncompatibleVLM = knownIncompatibleVLMs.some(pattern => lowerModelName.includes(pattern));
 
             if (isIncompatibleVLM) {
-                broadcast({ type: 'log', message: `⚠️ WARNING: ${modelName} is a Vision Language Model that may have limited GGUF support in vLLM.` });
-                broadcast({ type: 'log', message: `   vLLM's GGUF support is still maturing. If the model fails to load, try a HuggingFace format instead.` });
+                broadcast({ type: 'log', message: `⚠️ WARNING: ${modelName} is a Vision Language Model that may have limited GGUF support in sglang.` });
+                broadcast({ type: 'log', message: `   sglang's GGUF support is still maturing. If the model fails to load, try a HuggingFace format instead.` });
                 console.warn(`Attempting to load potentially incompatible VLM model: ${modelName}`);
             }
 
@@ -3687,22 +3723,25 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             const config = {
                 maxModelLen: req.body.maxModelLen || 4096,
                 cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
-                gpuMemoryUtilization: req.body.gpuMemoryUtilization ?? 0.9,
+                memFractionStatic: req.body.memFractionStatic ?? 0.88,
                 tensorParallelSize: Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : detectedGpus,
-                maxNumSeqs: req.body.maxNumSeqs || 256,
+                maxRunningRequests: req.body.maxRunningRequests || 256,
+                chunkedPrefillSize: req.body.chunkedPrefillSize ?? 4096,
+                schedulePolicy: req.body.schedulePolicy || 'lpm',
                 kvCacheDtype: req.body.kvCacheDtype || 'auto',
                 trustRemoteCode: req.body.trustRemoteCode ?? true,
-                enforceEager: req.body.enforceEager ?? false,
                 contextShift: req.body.contextShift ?? true,
                 contextSize: req.body.maxModelLen || 4096,  // Alias for API compatibility
                 disableThinking: req.body.disableThinking ?? false,
                 compressMemory: req.body.compressMemory ?? false,
-                tokenizer: req.body.tokenizer || '',  // HuggingFace tokenizer repo for GGUF models
-                chatTemplate: req.body.chatTemplate || ''  // Jinja2 chat template path (GGUF gets ChatML default)
+                tokenizer: req.body.tokenizer || '',
+                chatTemplate: req.body.chatTemplate || '',
+                toolCallParser: req.body.toolCallParser ?? autoDetectSglangToolParser(modelName),
+                reasoningParser: req.body.reasoningParser ?? autoDetectSglangReasoningParser(modelName)
             };
 
-            broadcast({ type: 'log', message: `Creating vLLM instance for ${modelName}...` });
-            result = await createVllmInstance(modelName, fullPath, config);
+            broadcast({ type: 'log', message: `Creating sglang instance for ${modelName}...` });
+            result = await createSglangInstance(modelName, fullPath, config);
         } else if (backend === 'llamacpp') {
             const config = {
                 nGpuLayers: req.body.nGpuLayers ?? -1,
@@ -3721,13 +3760,19 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
                 frequencyPenalty: req.body.frequencyPenalty ?? 0.0,
                 disableThinking: req.body.disableThinking ?? false,
                 compressMemory: req.body.compressMemory ?? false,
-                swaFull: req.body.swaFull === true
+                swaFull: req.body.swaFull === true,
+                // Speculative decoding controls. specType ∈ {none, draft-mtp,
+                // draft-simple}; specDraftModel is a path inside the container
+                // (under /models) and is only used when specType=draft-simple.
+                specType: req.body.specType || 'none',
+                specDraftNMax: req.body.specDraftNMax ?? 3,
+                specDraftModel: req.body.specDraftModel || ''
             };
 
             broadcast({ type: 'log', message: `Creating llama.cpp instance for ${modelName}...` });
             result = await createLlamacppInstance(modelName, fullPath, config);
         } else {
-            return res.status(400).json({ error: `Unknown backend: ${backend}. Supported: llamacpp, vllm` });
+            return res.status(400).json({ error: `Unknown backend: ${backend}. Supported: llamacpp, sglang` });
         }
 
         broadcast({ type: 'status', message: `Instance created on port ${result.port}` });
@@ -3739,7 +3784,7 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
     }
 });
 
-// List HuggingFace repos cached on disk by prior vLLM HF loads. Reads the
+// List HuggingFace repos cached on disk by prior sglang HF loads. Reads the
 // shared `hf_cache` named volume mounted at /hf-cache. Each cached repo is
 // stored under hub/models--<owner>--<name>/{blobs,refs,snapshots}.
 app.get('/api/models/hf-cache', requireAuth, async (req, res) => {
@@ -3820,8 +3865,8 @@ app.delete('/api/models/hf-cache/:dirName', requireAuth, async (req, res) => {
     }
 });
 
-// Load a HuggingFace repo directly via vLLM (non-GGUF formats: safetensors,
-// AWQ, GPTQ, FP8, NVFP4, BnB, compressed-tensors). vLLM handles the download.
+// Load a HuggingFace repo directly via sglang (non-GGUF formats: safetensors,
+// AWQ, GPTQ, FP8, NVFP4, BnB, compressed-tensors). sglang handles the download.
 app.post('/api/models/load-hf', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, 'models')) {
         return res.status(403).json({ error: 'Models permission required' });
@@ -3839,52 +3884,35 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'maxModelLen must be between 256 and 1048576' });
         }
     }
-    if (req.body.gpuMemoryUtilization !== undefined) {
-        const gpuUtil = Number(req.body.gpuMemoryUtilization);
-        if (isNaN(gpuUtil) || gpuUtil < 0.1 || gpuUtil > 1.0) {
-            return res.status(400).json({ error: 'gpuMemoryUtilization must be between 0.1 and 1.0' });
+    if (req.body.memFractionStatic !== undefined) {
+        const memFrac = Number(req.body.memFractionStatic);
+        if (isNaN(memFrac) || memFrac < 0.1 || memFrac > 1.0) {
+            return res.status(400).json({ error: 'memFractionStatic must be between 0.1 and 1.0' });
         }
     }
-    // Auto-pick a tool-call parser from the repo name. vLLM 0.19+ requires
-    // --enable-auto-tool-choice + --tool-call-parser when requests include
-    // a `tools` array (which the chat stream always sends) — without it
-    // every chat request fails 400.
-    const autoDetectToolParser = (repo) => {
-        const r = String(repo || '').toLowerCase();
-        if (r.includes('qwen3-coder') || r.includes('qwen2.5-coder') || r.includes('qwen3.6-coder')) return 'qwen3_coder';
-        if (r.includes('llama-3') || r.includes('llama3')) return 'llama3_json';
-        if (r.includes('mistral')) return 'mistral';
-        if (r.includes('deepseek')) return 'deepseek_v3';
-        if (r.includes('phi-4') || r.includes('phi4')) return 'phi4_mini_json';
-        if (r.includes('glm')) return 'glm45';
-        if (r.includes('granite')) return 'granite';
-        return 'hermes'; // default — covers Qwen, OpenChat, Hermes-tuned, many others
-    };
-    // enforceEager defaults to false: CUDA graphs give a meaningful throughput
-    // win and work on driver 580+ with the open kernel modules (required for
-    // Blackwell sm_120 anyway). Older driver/arch combos that hit
-    // cudaErrorUnsupportedPtxVersion can flip this on per-load via the dialog.
     const detectedGpus = await getGpuCount();
     const config = {
         maxModelLen: req.body.maxModelLen || 4096,
         cpuOffloadGb: req.body.cpuOffloadGb ?? 0,
-        gpuMemoryUtilization: req.body.gpuMemoryUtilization ?? 0.9,
+        memFractionStatic: req.body.memFractionStatic ?? 0.88,
         tensorParallelSize: Number(req.body.tensorParallelSize) > 0 ? Number(req.body.tensorParallelSize) : detectedGpus,
-        maxNumSeqs: req.body.maxNumSeqs || 256,
+        maxRunningRequests: req.body.maxRunningRequests || 256,
+        chunkedPrefillSize: req.body.chunkedPrefillSize ?? 4096,
+        schedulePolicy: req.body.schedulePolicy || 'lpm',
         kvCacheDtype: req.body.kvCacheDtype || 'auto',
         trustRemoteCode: req.body.trustRemoteCode ?? true,
-        enforceEager: req.body.enforceEager ?? false,
         contextSize: req.body.maxModelLen || 4096,
         contextShift: req.body.contextShift ?? true,
         disableThinking: req.body.disableThinking ?? false,
         compressMemory: req.body.compressMemory ?? false,
-        toolCallParser: req.body.toolCallParser ?? autoDetectToolParser(repoId)
+        toolCallParser: req.body.toolCallParser ?? autoDetectSglangToolParser(repoId),
+        reasoningParser: req.body.reasoningParser ?? autoDetectSglangReasoningParser(repoId)
     };
     try {
-        broadcast({ type: 'log', message: `Creating vLLM HF instance for ${repoId} (${format || 'auto'})...` });
-        const result = await createVllmHfInstance(repoId, format || 'auto', config);
+        broadcast({ type: 'log', message: `Creating sglang HF instance for ${repoId} (${format || 'auto'})...` });
+        const result = await createSglangHfInstance(repoId, format || 'auto', config);
         broadcast({ type: 'status', message: `Instance created on port ${result.port}` });
-        res.json({ message: 'Instance created', backend: 'vllm', source: 'hf', repoId, ...result });
+        res.json({ message: 'Instance created', backend: 'sglang', source: 'hf', repoId, ...result });
     } catch (error) {
         console.error(`Error loading HF repo ${repoId}:`, error.message);
         broadcast({ type: 'log', message: `Error: ${error.message}` });
@@ -3893,55 +3921,56 @@ app.post('/api/models/load-hf', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
-// VLLM INSTANCE MANAGEMENT
+// SGLANG INSTANCE MANAGEMENT
 // ============================================================================
 
-async function createVllmInstance(modelName, modelPath, config) {
+async function createSglangInstance(modelName, modelPath, config) {
     const port = allocatePort();
-    const containerName = `vllm-${modelName}`;
+    const containerName = `sglang-${modelName}`;
     // Internal port for Docker network communication (same as external for simplicity)
     const internalPort = port;
 
     try {
         // Check if base image exists
-        const images = await docker.listImages({ filters: { reference: ['modelserver-vllm:latest'] } });
+        const images = await docker.listImages({ filters: { reference: ['modelserver-sglang:latest'] } });
         if (images.length === 0) {
-            throw new Error('modelserver-vllm:latest image not found. Please run ./build.sh to build the base image.');
+            throw new Error('modelserver-sglang:latest image not found. Please run ./build.sh to build the base image.');
         }
 
         // Build environment variables
         const envVars = [
-            `VLLM_MODEL_PATH=${modelPath}`,
-            `VLLM_PORT=${port}`,
-            `VLLM_MAX_MODEL_LEN=${config.maxModelLen}`,
-            `VLLM_CPU_OFFLOAD_GB=${config.cpuOffloadGb}`,
-            `VLLM_GPU_MEMORY_UTILIZATION=${config.gpuMemoryUtilization}`,
-            `VLLM_TENSOR_PARALLEL_SIZE=${config.tensorParallelSize}`,
-            `VLLM_MAX_NUM_SEQS=${config.maxNumSeqs}`,
-            `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
-            `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
-            `VLLM_ENFORCE_EAGER=${config.enforceEager}`,
-            `VLLM_CTX_SHIFT=${config.contextShift}`,
-            `VLLM_TOOL_CALL_PARSER=${config.toolCallParser || 'hermes'}`
+            `SGLANG_MODEL_PATH=${modelPath}`,
+            `SGLANG_PORT=${port}`,
+            `SGLANG_MAX_MODEL_LEN=${config.maxModelLen}`,
+            `SGLANG_MEM_FRACTION_STATIC=${config.memFractionStatic}`,
+            `SGLANG_TENSOR_PARALLEL_SIZE=${config.tensorParallelSize}`,
+            `SGLANG_MAX_RUNNING_REQUESTS=${config.maxRunningRequests}`,
+            `SGLANG_CHUNKED_PREFILL_SIZE=${config.chunkedPrefillSize ?? 4096}`,
+            `SGLANG_SCHEDULE_POLICY=${config.schedulePolicy || 'lpm'}`,
+            `SGLANG_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
+            `SGLANG_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
+            `SGLANG_CTX_SHIFT=${config.contextShift}`,
+            `SGLANG_TOOL_CALL_PARSER=${config.toolCallParser || 'qwen'}`,
+            `SGLANG_REASONING_PARSER=${config.reasoningParser || ''}`,
         ];
 
         // Add tokenizer if specified (helps with GGUF models)
         if (config.tokenizer) {
-            envVars.push(`VLLM_TOKENIZER=${config.tokenizer}`);
+            envVars.push(`SGLANG_TOKENIZER=${config.tokenizer}`);
         }
 
         // Add chat template if specified (entrypoint auto-generates ChatML default for GGUF)
         if (config.chatTemplate) {
-            envVars.push(`VLLM_CHAT_TEMPLATE=${config.chatTemplate}`);
+            envVars.push(`SGLANG_CHAT_TEMPLATE=${config.chatTemplate}`);
         }
 
-        // Set served model name so vLLM accepts it in the `model` request field
-        envVars.push(`VLLM_SERVED_MODEL_NAME=${modelName}`);
+        // Set served model name so sglang accepts it in the `model` request field
+        envVars.push(`SGLANG_SERVED_MODEL_NAME=${modelName}`);
 
         await removeStaleContainerByName(containerName);
 
         const container = await docker.createContainer({
-            Image: 'modelserver-vllm:latest',
+            Image: 'modelserver-sglang:latest',
             name: containerName,
             Env: envVars,
             HostConfig: {
@@ -3958,7 +3987,7 @@ async function createVllmInstance(modelName, modelPath, config) {
                 }],
                 // Connect to the same network as webapp for internal communication
                 NetworkMode: 'modelserver_default',
-                // vLLM needs more shared memory for model loading
+                // sglang needs more shared memory for model loading
                 ShmSize: 8 * 1024 * 1024 * 1024 // 8GB shared memory
             }
         });
@@ -3972,7 +4001,7 @@ async function createVllmInstance(modelName, modelPath, config) {
             internalPort,
             status: 'starting',
             config,
-            backend: 'vllm'
+            backend: 'sglang'
         });
         startSystemMonitoring();
 
@@ -3984,7 +4013,7 @@ async function createVllmInstance(modelName, modelPath, config) {
             port
         });
 
-        console.log(`Created vLLM instance for ${modelName} on port ${port} (container: ${containerName})`);
+        console.log(`Created sglang instance for ${modelName} on port ${port} (container: ${containerName})`);
 
         // Start streaming container logs
         streamContainerLogs(container, modelName);
@@ -4012,34 +4041,35 @@ function repoIdToContainerSuffix(repoId) {
     return repoId.replace(/\//g, '--').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 50);
 }
 
-async function createVllmHfInstance(repoId, format, config) {
+async function createSglangHfInstance(repoId, format, config) {
     const port = allocatePort();
-    const containerName = `vllm-hf-${repoIdToContainerSuffix(repoId)}`;
+    const containerName = `sglang-hf-${repoIdToContainerSuffix(repoId)}`;
     const internalPort = port;
 
     try {
-        const images = await docker.listImages({ filters: { reference: ['modelserver-vllm:latest'] } });
+        const images = await docker.listImages({ filters: { reference: ['modelserver-sglang:latest'] } });
         if (images.length === 0) {
-            throw new Error('modelserver-vllm:latest image not found. Please run ./build.sh to build the base image.');
+            throw new Error('modelserver-sglang:latest image not found. Please run ./build.sh to build the base image.');
         }
 
-        // vLLM accepts a HuggingFace repo id as --model and downloads on first
+        // sglang accepts a HuggingFace repo id as --model and downloads on first
         // start. The HF cache is mounted as a named volume so weights survive
         // container restarts. The entrypoint's *.gguf branch is a no-op for
         // repo ids, so quantization is auto-detected from the model config.
         const envVars = [
-            `VLLM_MODEL_PATH=${repoId}`,
-            `VLLM_PORT=${port}`,
-            `VLLM_MAX_MODEL_LEN=${config.maxModelLen}`,
-            `VLLM_CPU_OFFLOAD_GB=${config.cpuOffloadGb}`,
-            `VLLM_GPU_MEMORY_UTILIZATION=${config.gpuMemoryUtilization}`,
-            `VLLM_TENSOR_PARALLEL_SIZE=${config.tensorParallelSize}`,
-            `VLLM_MAX_NUM_SEQS=${config.maxNumSeqs}`,
-            `VLLM_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
-            `VLLM_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
-            `VLLM_ENFORCE_EAGER=${config.enforceEager}`,
-            `VLLM_SERVED_MODEL_NAME=${repoId}`,
-            `VLLM_TOOL_CALL_PARSER=${config.toolCallParser || ''}`
+            `SGLANG_MODEL_PATH=${repoId}`,
+            `SGLANG_PORT=${port}`,
+            `SGLANG_MAX_MODEL_LEN=${config.maxModelLen}`,
+            `SGLANG_MEM_FRACTION_STATIC=${config.memFractionStatic}`,
+            `SGLANG_TENSOR_PARALLEL_SIZE=${config.tensorParallelSize}`,
+            `SGLANG_MAX_RUNNING_REQUESTS=${config.maxRunningRequests}`,
+            `SGLANG_CHUNKED_PREFILL_SIZE=${config.chunkedPrefillSize ?? 4096}`,
+            `SGLANG_SCHEDULE_POLICY=${config.schedulePolicy || 'lpm'}`,
+            `SGLANG_KV_CACHE_DTYPE=${config.kvCacheDtype}`,
+            `SGLANG_TRUST_REMOTE_CODE=${config.trustRemoteCode}`,
+            `SGLANG_SERVED_MODEL_NAME=${repoId}`,
+            `SGLANG_TOOL_CALL_PARSER=${config.toolCallParser || ''}`,
+            `SGLANG_REASONING_PARSER=${config.reasoningParser || ''}`,
         ];
 
         const hfToken = process.env.HUGGING_FACE_HUB_TOKEN || process.env.HF_TOKEN || '';
@@ -4051,7 +4081,7 @@ async function createVllmHfInstance(repoId, format, config) {
         await removeStaleContainerByName(containerName);
 
         const container = await docker.createContainer({
-            Image: 'modelserver-vllm:latest',
+            Image: 'modelserver-sglang:latest',
             name: containerName,
             Env: envVars,
             HostConfig: {
@@ -4082,33 +4112,33 @@ async function createVllmHfInstance(repoId, format, config) {
             internalPort,
             status: 'starting',
             config: { ...config, hfRepoId: repoId, format },
-            backend: 'vllm',
+            backend: 'sglang',
             source: 'hf'
         });
         startSystemMonitoring();
 
         // Stash the request so streamContainerLogs can auto-retry once if
-        // vLLM rejects the configured max_model_len for KV-cache reasons.
+        // sglang rejects the configured max_model_len for KV-cache reasons.
         // Preserve the prior `retried` flag if this IS the retry (so we
         // don't loop forever if the suggested ceiling still doesn't fit).
-        const prior = pendingVllmLoads.get(repoId);
-        pendingVllmLoads.set(repoId, {
+        const prior = pendingSglangLoads.get(repoId);
+        pendingSglangLoads.set(repoId, {
             repoId, format,
             config: { ...config },
             retried: prior?.retried ?? false,
         });
 
         broadcast({ type: 'status', modelName: repoId, status: 'starting', port });
-        broadcast({ type: 'log', message: `[vllm-hf] starting ${repoId} on port ${port} (cache: modelserver_hf_cache)` });
+        broadcast({ type: 'log', message: `[sglang-hf] starting ${repoId} on port ${port} (cache: modelserver_hf_cache)` });
 
-        console.log(`Created vLLM-HF instance for ${repoId} on port ${port} (container: ${containerName})`);
+        console.log(`Created sglang-HF instance for ${repoId} on port ${port} (container: ${containerName})`);
 
         streamContainerLogs(container, repoId);
         monitorContainerHealth(container, repoId, port);
 
         return { containerId: container.id, port, containerName };
     } catch (error) {
-        console.error(`Error creating vLLM-HF container:`, error);
+        console.error(`Error creating sglang-HF container:`, error);
         throw error;
     }
 }
@@ -4160,8 +4190,18 @@ async function createLlamacppInstance(modelName, modelPath, config) {
             // every turn re-evaluates the entire prompt from scratch (the
             // "forcing full prompt re-processing due to lack of cache data"
             // log line). See llama.cpp PR #13194.
-            `LLAMA_SWA_FULL=${config.swaFull === true ? 'true' : 'false'}`
+            `LLAMA_SWA_FULL=${config.swaFull === true ? 'true' : 'false'}`,
+            // Speculative decoding (May 2026 llama.cpp PR #22673). Three values:
+            // 'none' (default) = serial decode. 'draft-mtp' = native MTP heads
+            // baked into the main GGUF (DeepSeek-V3/R1, Qwen3-Next-MTP,
+            // Qwen3.5/3.6-MTP — no second model needed). 'draft-simple' =
+            // classic speculative with a separate smaller draft GGUF.
+            `LLAMA_SPEC_TYPE=${config.specType || 'none'}`,
+            `LLAMA_SPEC_DRAFT_N_MAX=${config.specDraftNMax ?? 3}`
         ];
+        if (config.specType === 'draft-simple' && config.specDraftModel) {
+            envVars.push(`LLAMA_SPEC_DRAFT_MODEL=${config.specDraftModel}`);
+        }
 
         // Only add threads if explicitly set (non-zero)
         if (config.threads && config.threads > 0) {
@@ -4187,7 +4227,7 @@ async function createLlamacppInstance(modelName, modelPath, config) {
                     Capabilities: [['gpu']]
                 }],
                 NetworkMode: 'modelserver_default',
-                // llama.cpp needs less shared memory than vLLM
+                // llama.cpp needs less shared memory than sglang
                 ShmSize: 2 * 1024 * 1024 * 1024 // 2GB shared memory
             }
         });
@@ -4238,7 +4278,7 @@ async function streamContainerLogs(container, modelName) {
             timestamps: true
         });
 
-        // vLLM startup-time errors that have a clear remedy. Detected once
+        // sglang startup-time errors that have a clear remedy. Detected once
         // per stream so we can show the user a single, actionable toast
         // instead of letting the 80-line Python traceback scroll past.
         let surfacedKvCeiling = false;
@@ -4266,8 +4306,8 @@ async function streamContainerLogs(container, modelName) {
                             level: isError ? 'error' : isSuccess ? 'success' : 'info'
                         });
 
-                        // KV-cache-too-small startup failure. vLLM tells us the
-                        // exact ceiling — extract it. If this is a vLLM-HF load
+                        // KV-cache-too-small startup failure. sglang tells us the
+                        // exact ceiling — extract it. If this is a sglang-HF load
                         // we tracked, auto-relaunch the container once with
                         // max_model_len = ceiling - 128. Otherwise (or on the
                         // second failure) surface a status event so the UI can
@@ -4279,7 +4319,7 @@ async function streamContainerLogs(container, modelName) {
                                 const requested = parseInt(kvMatch[1], 10);
                                 const available = kvMatch[2];
                                 const ceiling = parseInt(kvMatch[3], 10);
-                                const pending = pendingVllmLoads.get(modelName);
+                                const pending = pendingSglangLoads.get(modelName);
                                 const canAutoRetry = pending && !pending.retried;
 
                                 if (canAutoRetry) {
@@ -4308,7 +4348,7 @@ async function streamContainerLogs(container, modelName) {
                                                 maxModelLen: newMaxLen,
                                                 contextSize: newMaxLen,
                                             };
-                                            await createVllmHfInstance(pending.repoId, pending.format, newConfig);
+                                            await createSglangHfInstance(pending.repoId, pending.format, newConfig);
                                         } catch (err) {
                                             broadcast({
                                                 type: 'status',
@@ -4317,7 +4357,7 @@ async function streamContainerLogs(container, modelName) {
                                                 error: `Auto-retry failed: ${err.message}. Try kv_cache_dtype=fp8 or a smaller max_model_len.`,
                                                 suggestedMaxModelLen: ceiling
                                             });
-                                            pendingVllmLoads.delete(modelName);
+                                            pendingSglangLoads.delete(modelName);
                                         }
                                     });
                                 } else {
@@ -4333,7 +4373,7 @@ async function streamContainerLogs(container, modelName) {
                                         level: 'error',
                                         message: `[${modelName}] Load aborted — max_model_len ${requested} > KV cache ceiling ${ceiling}. Suggested: max_model_len=${ceiling}, or kv_cache_dtype=fp8.`
                                     });
-                                    pendingVllmLoads.delete(modelName);
+                                    pendingSglangLoads.delete(modelName);
                                 }
                             }
                         }
@@ -4358,14 +4398,14 @@ async function streamContainerLogs(container, modelName) {
 
 // Monitor container health and detect failures
 // Uses progressive timeout: fast checks initially, then slower checks for large models
-// vLLM takes longer to load than llama.cpp, so we use extended timeouts
+// sglang takes longer to load than llama.cpp, so we use extended timeouts
 async function monitorContainerHealth(container, modelName, port) {
     // Phase 1: Quick checks for fast-loading models (first 120 seconds, every 2 seconds)
     // Phase 2: Extended loading phase for large models (next 10 minutes, every 5 seconds)
     // Phase 3: Continuous monitoring to recover from unhealthy state (every 30 seconds)
-    const PHASE1_DURATION = 120;   // 120 seconds of quick checks (vLLM takes longer)
+    const PHASE1_DURATION = 120;   // 120 seconds of quick checks (sglang takes longer)
     const PHASE1_INTERVAL = 2000;  // 2 seconds
-    const PHASE2_DURATION = 600;   // 10 more minutes (600 seconds) for vLLM model loading
+    const PHASE2_DURATION = 600;   // 10 more minutes (600 seconds) for sglang model loading
     const PHASE2_INTERVAL = 5000;  // 5 seconds
     const PHASE3_INTERVAL = 30000; // 30 seconds for ongoing monitoring
 
@@ -4412,8 +4452,8 @@ async function monitorContainerHealth(container, modelName, port) {
                 return;
             }
 
-            // Container is running, check if vLLM server is responding
-            // Use /v1/models endpoint for vLLM readiness check
+            // Container is running, check if sglang server is responding
+            // Use /v1/models endpoint for sglang readiness check
             const targetHost = instance.containerName || `host.docker.internal`;
             const targetPort = instance.internalPort || port;
             try {
@@ -4428,7 +4468,7 @@ async function monitorContainerHealth(container, modelName, port) {
                     // Successful start clears any pending auto-retry record
                     // for this load, so a future unrelated error doesn't get
                     // mis-attributed to this load attempt.
-                    pendingVllmLoads.delete(modelName);
+                    pendingSglangLoads.delete(modelName);
 
                     // Broadcast structured status update for frontend
                     broadcast({
@@ -4645,13 +4685,13 @@ async function broadcastSystemMonitoring() {
                 const lines = stdout.trim().split('\n');
                 for (const line of lines) {
                     const parts = line.split(',').map(s => s.trim());
-                    const [index, name, gpuUtil, memUtil, memUsed, memTotal, temp, power] = parts;
+                    const [index, name, memFrac, memUtil, memUsed, memTotal, temp, power] = parts;
                     const memUsedMb = parseInt(memUsed, 10);
                     const memTotalMb = parseInt(memTotal, 10);
                     gpus.push({
                         index: parseInt(index, 10),
                         name,
-                        utilizationPct: parseInt(gpuUtil, 10) || 0,
+                        utilizationPct: parseInt(memFrac, 10) || 0,
                         vramUsedMb: Number.isFinite(memUsedMb) ? memUsedMb : 0,
                         vramTotalMb: Number.isFinite(memTotalMb) ? memTotalMb : 0,
                         vramUsedPct: memTotalMb > 0 ? Math.round((memUsedMb / memTotalMb) * 100) : 0,
@@ -4767,14 +4807,14 @@ function stopSystemMonitoring() {
     // coupling again we only have to change it here.
 }
 
-// List all running vLLM instances
-app.get('/api/vllm/instances', requireAuth, (req, res) => {
+// List all running sglang instances
+app.get('/api/sglang/instances', requireAuth, (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'instances')) {
         return res.status(403).json({ error: 'Instances permission required' });
     }
     const instances = Array.from(modelInstances.entries())
-        .filter(([name, info]) => info.backend === 'vllm')
+        .filter(([name, info]) => info.backend === 'sglang')
         .map(([name, info]) => ({
             name,
             ...info
@@ -4783,7 +4823,7 @@ app.get('/api/vllm/instances', requireAuth, (req, res) => {
 });
 
 // Stop and remove instance
-app.delete('/api/vllm/instances/:modelName', requireAuth, async (req, res) => {
+app.delete('/api/sglang/instances/:modelName', requireAuth, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'instances')) {
         return res.status(403).json({ error: 'Instances permission required' });
@@ -4959,8 +4999,8 @@ app.delete('/api/llamacpp/instances/:modelName', requireAuth, async (req, res) =
 // KV CACHE MANAGEMENT ENDPOINTS
 // ============================================================================
 
-// Get sequence status for an instance (vLLM equivalent of slots)
-app.get('/api/vllm/instances/:modelName/slots', requireAuth, async (req, res) => {
+// Get sequence status for an instance (sglang equivalent of slots)
+app.get('/api/sglang/instances/:modelName/slots', requireAuth, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'instances')) {
         return res.status(403).json({ error: 'Instances permission required' });
@@ -4973,12 +5013,12 @@ app.get('/api/vllm/instances/:modelName/slots', requireAuth, async (req, res) =>
     }
 
     try {
-        // vLLM doesn't have a /slots endpoint like llama.cpp
+        // sglang doesn't have a /slots endpoint like llama.cpp
         // Return sequence capacity based on config
-        const maxNumSeqs = instance.config?.maxNumSeqs || 256;
+        const maxRunningRequests = instance.config?.maxRunningRequests || 256;
         res.json({
-            max_sequences: maxNumSeqs,
-            note: 'vLLM manages sequences dynamically. max_sequences is the configured limit.'
+            max_sequences: maxRunningRequests,
+            note: 'sglang manages sequences dynamically. max_sequences is the configured limit.'
         });
     } catch (error) {
         console.error(`Error getting sequence info for ${modelName}:`, error.message);
@@ -4986,8 +5026,8 @@ app.get('/api/vllm/instances/:modelName/slots', requireAuth, async (req, res) =>
     }
 });
 
-// Reset server state for an instance (vLLM doesn't have explicit slot clearing)
-app.post('/api/vllm/instances/:modelName/slots/clear', requireAuth, async (req, res) => {
+// Reset server state for an instance (sglang doesn't have explicit slot clearing)
+app.post('/api/sglang/instances/:modelName/slots/clear', requireAuth, async (req, res) => {
     // Check permission
     if (!checkPermission(req.apiKeyData, 'instances')) {
         return res.status(403).json({ error: 'Instances permission required' });
@@ -5004,10 +5044,10 @@ app.post('/api/vllm/instances/:modelName/slots/clear', requireAuth, async (req, 
         const targetHost = instance.containerName || `host.docker.internal`;
         const targetPort = instance.internalPort || instance.port;
 
-        // vLLM manages sequences internally, we just verify the server is responsive
+        // sglang manages sequences internally, we just verify the server is responsive
         broadcast({
             type: 'log',
-            message: `[${modelName}] Verifying vLLM server state...`,
+            message: `[${modelName}] Verifying sglang server state...`,
             level: 'info'
         });
 
@@ -5016,11 +5056,11 @@ app.post('/api/vllm/instances/:modelName/slots/clear', requireAuth, async (req, 
 
         broadcast({
             type: 'log',
-            message: `[${modelName}] vLLM server is responsive`,
+            message: `[${modelName}] sglang server is responsive`,
             level: 'success'
         });
 
-        res.json({ message: 'Server state verified', note: 'vLLM manages sequences dynamically' });
+        res.json({ message: 'Server state verified', note: 'sglang manages sequences dynamically' });
     } catch (error) {
         console.error(`Error verifying server state for ${modelName}:`, error.message);
         res.status(500).json({ error: `Failed to verify server state: ${error.message}` });
@@ -5073,7 +5113,7 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
         if (tags.includes('safetensors')) return 'safetensors';
         return 'unknown';
     };
-    const VLLM_FORMATS = new Set(['safetensors', 'awq', 'gptq', 'fp8', 'nvfp4', 'bnb', 'compressed-tensors', 'gguf']);
+    const SGLANG_FORMATS = new Set(['safetensors', 'awq', 'gptq', 'fp8', 'nvfp4', 'bnb', 'compressed-tensors', 'gguf']);
     const LLAMACPP_FORMATS = new Set(['gguf']);
 
     // Helper to extract parameter size in billions from model name
@@ -5171,7 +5211,7 @@ app.get('/api/huggingface/search', requireAuth, async (req, res) => {
                 contextEstimated: contextLength !== null,  // Whether context was estimated
                 createdAt: model.createdAt,
                 format: detectedFormat,
-                vllmCompatible: VLLM_FORMATS.has(detectedFormat),
+                sglangCompatible: SGLANG_FORMATS.has(detectedFormat),
                 llamacppCompatible: LLAMACPP_FORMATS.has(detectedFormat)
             };
         });
@@ -5800,7 +5840,7 @@ app.get('/api/system/resources', requireAuth, async (req, res) => {
     }
 });
 
-// Calculate optimal vLLM settings for a model based on hardware
+// Calculate optimal sglang settings for a model based on hardware
 app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
     // Check permission - models or admin
     if (!checkPermission(req.apiKeyData, 'models')) {
@@ -6105,16 +6145,16 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         }
 
         // ========================================================================
-        // VLLM OPTIMAL SETTINGS
+        // SGLANG OPTIMAL SETTINGS
         // ========================================================================
         //
         // VRAM accounting differs from llama.cpp here in one important way:
-        // vLLM allocates a FIXED pool per GPU at startup, sized as
+        // sglang allocates a FIXED pool per GPU at startup, sized as
         //   per_card_pool = total_per_card × gpu_memory_utilization
         // and never grows it. If anything else on the card is using
         // memory, the pool can OOM during init. So gpu_memory_utilization
         // must be capped at (free_per_card / total_per_card) on the
-        // most-constrained card, never higher. After that, vLLM auto-tunes
+        // most-constrained card, never higher. After that, sglang auto-tunes
         // max_num_seqs from leftover KV cache space — we just pass a
         // ceiling.
         //
@@ -6126,24 +6166,23 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
         let settings = {
             maxModelLen: 4096,
             cpuOffloadGb: 0,
-            gpuMemoryUtilization: 0.9,
+            memFractionStatic: 0.88,
             tensorParallelSize: 1,
-            maxNumSeqs: 256,
+            maxRunningRequests: 256,
             kvCacheDtype: 'auto',
             trustRemoteCode: true,
-            enforceEager: false
         };
 
         if (gpuCount === 0 || gpuMemoryGB === 0) {
-            notes.push('ERROR: No GPU detected — vLLM requires a GPU to run');
+            notes.push('ERROR: No GPU detected — sglang requires a GPU to run');
             notes.push('Please ensure NVIDIA drivers and CUDA are properly installed');
             return res.json({
                 settings,
-                backend: 'vllm',
+                backend: 'sglang',
                 hardware: { gpuCount, gpuMemoryGB: '0', ramGB: ramGB.toFixed(1), cpuCores: cpuCount },
                 model: { sizeGB: modelSizeGB.toFixed(2), estimatedVRAM: modelSizeGB.toFixed(2) },
                 notes,
-                error: 'GPU required for vLLM'
+                error: 'GPU required for sglang'
             });
         }
 
@@ -6153,37 +6192,41 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
 
         const smallestTotalGB = gpuCount ? Math.min(...gpuDetails.map(g => g.totalGB)) : 0;
         // gpu_memory_utilization is a fraction of TOTAL per-card. Cap it
-        // at what's actually free on the most-constrained card so vLLM
+        // at what's actually free on the most-constrained card so sglang
         // doesn't try to grab more than exists.
         const liveUtilCap = smallestTotalGB > 0
             ? Math.max(0.1, Math.min(0.95, (smallestGpuFreeGB / smallestTotalGB) - 0.02))
             : 0.85;
-        settings.gpuMemoryUtilization = parseFloat(liveUtilCap.toFixed(2));
+        settings.memFractionStatic = parseFloat(liveUtilCap.toFixed(2));
 
         // Effective allocatable VRAM = per_card × util × count (matches what
-        // vLLM will actually grab at init).
-        const perCardAllocatedGB = smallestTotalGB * settings.gpuMemoryUtilization;
+        // sglang will actually grab at init).
+        const perCardAllocatedGB = smallestTotalGB * settings.memFractionStatic;
         const effectiveAllocatedGB = perCardAllocatedGB * tp;
 
-        // KV-cache estimate per token at f16. vLLM uses an auto-paged KV
+        // KV-cache estimate per token at f16. sglang uses an auto-paged KV
         // cache; per-token cost is roughly the same as llama.cpp dense path.
         const KV_PER_TOKEN_F16 = 120 * 1024;        // bytes/tok at f16
         const KV_PER_TOKEN_FP8 = KV_PER_TOKEN_F16 / 2;
-        const VLLM_OVERHEAD_GB = 2.0;                // CUDA graphs, activations, profiler buffers
+        const SGLANG_OVERHEAD_GB = 2.0;                // CUDA graphs, activations, profiler buffers
 
         // Step 1: does the model + minimal overhead fit on GPU?
-        const usableForKvGB = effectiveAllocatedGB - modelSizeGB - VLLM_OVERHEAD_GB;
+        const usableForKvGB = effectiveAllocatedGB - modelSizeGB - SGLANG_OVERHEAD_GB;
 
         if (usableForKvGB < 1.0) {
-            // Doesn't fit — enable CPU offload (per-card amount).
-            const overflowGB = Math.max(0, modelSizeGB - effectiveAllocatedGB + VLLM_OVERHEAD_GB + 2);
+            // Doesn't fit on GPU. sglang 0.5.12 has no `--cpu-offload-gb`
+            // equivalent — the field stays in the response so the UI can
+            // surface a warning chip, but we explicitly tell the user to
+            // switch to llama.cpp or a smaller quantization. Leaving the
+            // notes silent here would let them load a config that OOMs at
+            // startup with no actionable feedback.
+            const overflowGB = Math.max(0, modelSizeGB - effectiveAllocatedGB + SGLANG_OVERHEAD_GB + 2);
             settings.cpuOffloadGb = Math.ceil(overflowGB / tp);
             settings.maxModelLen = 4096;
-            settings.maxNumSeqs = 64;
+            settings.maxRunningRequests = 64;
             settings.kvCacheDtype = 'fp8';
-            notes.push(`Model (${modelSizeGB.toFixed(1)} GB) exceeds per-card allocation (${perCardAllocatedGB.toFixed(1)} GB × ${tp} = ${effectiveAllocatedGB.toFixed(1)} GB)`);
-            notes.push(`CPU offloading ${settings.cpuOffloadGb} GB per GPU (${(settings.cpuOffloadGb * tp).toFixed(0)} GB total to system RAM)`);
-            notes.push('Note: GGUF + CPU offload may have issues (vLLM GH #8757)');
+            notes.push(`Model (${modelSizeGB.toFixed(1)} GB) exceeds per-card allocation (${perCardAllocatedGB.toFixed(1)} GB × ${tp} = ${effectiveAllocatedGB.toFixed(1)} GB).`);
+            notes.push(`sglang has no CPU-offload knob — switch to the llama.cpp backend (which does support \`cpuOffloadGb=${settings.cpuOffloadGb}\` per GPU), or pick a smaller quantization (Q3_K_S / Q2_K) that fits on GPU.`);
         } else {
             // Step 2: pick KV dtype. Use fp8 only when budget is tight
             // (< 4 GB headroom for KV) — fp8 hurts long-context quality
@@ -6192,7 +6235,7 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
             settings.kvCacheDtype = kvDtype;
             const perTok = kvDtype === 'fp8' ? KV_PER_TOKEN_FP8 : KV_PER_TOKEN_F16;
 
-            // Step 3: pick max model len. vLLM benefits from a power-of-two
+            // Step 3: pick max model len. sglang benefits from a power-of-two
             // boundary similar to llama.cpp.
             const maxCtx = Math.floor((usableForKvGB * 1024 * 1024 * 1024) / perTok);
             let chosenCtx = 4096;
@@ -6201,18 +6244,18 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
             }
             settings.maxModelLen = chosenCtx;
 
-            // Step 4: max_num_seqs ceiling — vLLM auto-tunes inside this
+            // Step 4: max_num_seqs ceiling — sglang auto-tunes inside this
             // cap based on remaining KV space. Larger ceiling = more
             // concurrent requests but only if KV pool can hold them.
-            settings.maxNumSeqs = usableForKvGB >= 8 ? 512 :
+            settings.maxRunningRequests = usableForKvGB >= 8 ? 512 :
                                   usableForKvGB >= 4 ? 256 :
                                                        128;
 
             const predictedKvGB = (chosenCtx * perTok) / (1024 * 1024 * 1024);
             notes.push(`Effective allocation: ${perCardAllocatedGB.toFixed(1)} GB per card × ${tp} GPU(s) = ${effectiveAllocatedGB.toFixed(1)} GB`);
-            notes.push(`gpu_memory_utilization: ${settings.gpuMemoryUtilization} (capped to fit smallest card's free VRAM)`);
-            notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV: ${predictedKvGB.toFixed(1)} GB · vLLM overhead: ${VLLM_OVERHEAD_GB} GB`);
-            notes.push(`Context: ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} · KV dtype: ${kvDtype} · max concurrent seqs: ${settings.maxNumSeqs}`);
+            notes.push(`gpu_memory_utilization: ${settings.memFractionStatic} (capped to fit smallest card's free VRAM)`);
+            notes.push(`Model: ${modelSizeGB.toFixed(1)} GB · predicted KV: ${predictedKvGB.toFixed(1)} GB · sglang overhead: ${SGLANG_OVERHEAD_GB} GB`);
+            notes.push(`Context: ${chosenCtx >= 1024 ? (chosenCtx / 1024).toFixed(0) + 'K' : chosenCtx} · KV dtype: ${kvDtype} · max concurrent seqs: ${settings.maxRunningRequests}`);
             if (kvDtype === 'fp8') {
                 notes.push('fp8 KV chosen to fit at this context — slight quality hit on long contexts');
             }
@@ -6224,13 +6267,13 @@ app.post('/api/system/optimal-settings', requireAuth, async (req, res) => {
                 notes.push(`  GPU ${g.index} (${g.name || 'unknown'}): ${g.freeGB.toFixed(1)} GB free / ${g.totalGB.toFixed(1)} GB total`);
             }
             if (imbalanced) {
-                notes.push(`Cards are imbalanced (${(largestGpuFreeGB - smallestGpuFreeGB).toFixed(1)} GB spread). vLLM uses an even split — gpu_memory_utilization was capped to fit the smallest card.`);
+                notes.push(`Cards are imbalanced (${(largestGpuFreeGB - smallestGpuFreeGB).toFixed(1)} GB spread). sglang uses an even split — gpu_memory_utilization was capped to fit the smallest card.`);
             }
         }
 
         res.json({
             settings,
-            backend: 'vllm',
+            backend: 'sglang',
             hardware: {
                 gpuCount,
                 gpuMemoryGB: gpuMemoryGB.toFixed(1),
@@ -12361,7 +12404,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                     messageTokens = estimateTokens(truncatedMessage);
                     totalInputTokens = systemTokens + messageTokens;
 
-                    // Make request to vLLM instance
+                    // Make request to sglang instance
                     const messages = [];
 
                     if (systemPrompt) {
@@ -12374,7 +12417,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
                         messages: messages,
                         temperature: temperature || 0.7,
                         // Always clamped to contextSize - inputTokens to prevent
-                        // vLLM's "0 input tokens" VLLMValidationError.
+                        // sglang's "0 input tokens" SglangValidationError.
                         max_tokens: responseReserve,
                         stop: DEFAULT_STOP_STRINGS
                     };
@@ -12409,7 +12452,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         }
 
         // Normal flow - input fits within context
-        // Make request to vLLM instance
+        // Make request to sglang instance
         const messages = [];
 
         // Add system prompt if one exists
@@ -12424,8 +12467,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             model: targetModel,
             messages: messages,
             temperature: temperature || 0.7,
-            // Always clamped to contextSize - inputTokens to prevent vLLM's
-            // "0 input tokens" VLLMValidationError when the caller sends a
+            // Always clamped to contextSize - inputTokens to prevent sglang's
+            // "0 input tokens" SglangValidationError when the caller sends a
             // raw max_tokens value equal to contextSize.
             max_tokens: responseReserve,
             stop: DEFAULT_STOP_STRINGS
@@ -14231,15 +14274,15 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 try {
                     // Final-pass clamp: input == messages + tool catalog. The
                     // upstream responseReserve only counts message tokens, so a
-                    // large tool catalog (often ~7k actual vLLM tokens on the
+                    // large tool catalog (often ~7k actual sglang tokens on the
                     // full skill catalog) can push the request past
                     // max_model_len here. Estimate JSON char-bytes / 3 over-
                     // counts because tool schemas tokenize very efficiently
                     // (field names = single tokens), so this estimate is
                     // pessimistic and the floor is intentionally low (64) —
                     // a tiny response beats a 400. The chat stream catches
-                    // a remaining VLLMValidationError below and re-clamps
-                    // from the actual input_tokens vLLM reports.
+                    // a remaining SglangValidationError below and re-clamps
+                    // from the actual input_tokens sglang reports.
                     let actualMaxTokens = maxTokens;
                     try {
                         const messagesJson = JSON.stringify(requestMessages);
@@ -14532,8 +14575,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // responseReserve is already clamped to leave room for input
             // (see the desiredResponseTokens/responseReserve calculation above),
             // so we always use it — never the raw client-supplied value, which
-            // could equal contextSize and make vLLM reject the request with
-            // "0 input tokens" VLLMValidationError.
+            // could equal contextSize and make sglang reject the request with
+            // "0 input tokens" SglangValidationError.
             const initialMaxTokens = responseReserve;
             updateJobPhase('generating');
             pushJobEvent({
@@ -14564,7 +14607,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // input can grow past contextSize even though each individual
             // tool message is capped (TOOL_RESULT_CHAR_CAP ≈ 12 KB). Without
             // this trim, the next streamOneRequest gets max_tokens clamped to
-            // 64 (server.js floor) and vLLM rejects the whole request with
+            // 64 (server.js floor) and sglang rejects the whole request with
             // "exceeds maximum context length". Always preserves: system,
             // original user message, and the most recent tool-call round.
             const trimToolHistoryToFit = (messages, budget) => {
@@ -15041,7 +15084,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // the model hit its output cap mid-arguments (handled
                     // above by the truncation guard in executeToolCall),
                     // the call's `arguments` string is incomplete JSON.
-                    // Some backends (vLLM in particular) return 500 when
+                    // Some backends (sglang in particular) return 500 when
                     // they re-parse an assistant turn whose tool_calls
                     // carry malformed JSON — which surfaces in the chat UI
                     // as "Request failed with status code 500" / response
@@ -15691,7 +15734,7 @@ app.post('/api/complete', requireAuth, async (req, res) => {
             finalPrompt = `${systemPrompt}\n\n${prompt}`;
         }
 
-        // Compute a safe max_tokens value. vLLM rejects the request if
+        // Compute a safe max_tokens value. sglang rejects the request if
         // input_tokens + max_tokens > contextSize, so we always clamp to the
         // space actually available for generation.
         const contextSize = (targetInstance.config && (targetInstance.config.contextSize || targetInstance.config.maxModelLen)) || 4096;
@@ -16078,8 +16121,8 @@ app.post('/api/system/reset', requireAdmin, async (req, res) => {
     broadcast({ type: 'log', message: 'This will stop all instances and delete all models...' });
 
     try {
-        // Step 1: Stop all vLLM instances
-        broadcast({ type: 'log', message: 'Step 1/4: Stopping all vLLM instances...' });
+        // Step 1: Stop all sglang instances
+        broadcast({ type: 'log', message: 'Step 1/4: Stopping all sglang instances...' });
         const instanceNames = Array.from(modelInstances.keys());
 
         for (const modelName of instanceNames) {
@@ -16134,13 +16177,13 @@ app.post('/api/system/reset', requireAdmin, async (req, res) => {
         // Step 3: Docker cleanup
         broadcast({ type: 'log', message: 'Step 3/4: Running Docker cleanup...' });
 
-        // Prune stopped vLLM containers
+        // Prune stopped sglang containers
         try {
-            broadcast({ type: 'log', message: '  Removing stopped vLLM containers...' });
+            broadcast({ type: 'log', message: '  Removing stopped sglang containers...' });
             const containers = await docker.listContainers({ all: true });
-            const vllmContainers = containers.filter(c => c.Names.some(n => n.includes('vllm-')));
+            const sglangContainers = containers.filter(c => c.Names.some(n => n.includes('sglang-')));
 
-            for (const containerInfo of vllmContainers) {
+            for (const containerInfo of sglangContainers) {
                 try {
                     const container = docker.getContainer(containerInfo.Id);
                     const inspect = await container.inspect();
@@ -17918,10 +17961,10 @@ app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
-// OPENAI-COMPATIBLE API PROXY (Requires auth, forwards to vLLM instances)
+// OPENAI-COMPATIBLE API PROXY (Requires auth, forwards to sglang instances)
 // ============================================================================
 
-// Proxy all /v1/* requests to vLLM instances with authentication
+// Proxy all /v1/* requests to sglang instances with authentication
 app.all('/v1/*', requireAuth, async (req, res) => {
     try {
         // Log authentication details for debugging
@@ -17951,10 +17994,10 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         // routing predictably.
         const requestedModel = req.body && typeof req.body.model === 'string' ? req.body.model : null;
         const matched = requestedModel
-            ? instances.find(i => i.config?.hfRepoId === requestedModel || i.containerName === `vllm-${requestedModel}` || i.containerName === `llamacpp-${requestedModel}`)
+            ? instances.find(i => i.config?.hfRepoId === requestedModel || i.containerName === `sglang-${requestedModel}` || i.containerName === `llamacpp-${requestedModel}`)
             : null;
         const firstInstance = matched || instances[0];
-        // Use container name to reach vLLM via Docker network
+        // Use container name to reach sglang via Docker network
         // Fall back to host.docker.internal for backwards compatibility
         const targetHost = firstInstance.containerName || `host.docker.internal`;
         const targetPort = firstInstance.internalPort || firstInstance.port;
@@ -17962,7 +18005,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
 
         console.log(`[Proxy] Forwarding to ${targetUrl}`);
 
-        // Special handling for GET /v1/models — vLLM and llama.cpp both
+        // Special handling for GET /v1/models — sglang and llama.cpp both
         // omit context_window from this response, so Pi (and any other
         // OpenAI-compatible client that reads it) defaults to 32768 and
         // throttles itself even when the loaded model has a much larger
@@ -18011,7 +18054,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             console.log('[Proxy] Streaming request detected');
 
             // Ask the backend to emit a final usage chunk so we can attribute
-            // tokens to the API key. vLLM + llama.cpp's OpenAI-compatible
+            // tokens to the API key. sglang + llama.cpp's OpenAI-compatible
             // modes both honor `stream_options.include_usage`; backends that
             // don't recognize it ignore the field. Without this, streaming
             // calls record `tokens: 0` and the per-key usage stays at 0/max.
@@ -18164,7 +18207,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             });
         } else {
             res.status(500).json({
-                error: 'Failed to proxy request to vLLM',
+                error: 'Failed to proxy request to sglang',
                 details: error.message
             });
         }

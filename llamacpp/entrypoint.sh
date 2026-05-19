@@ -32,6 +32,16 @@
 #   SWA / hybrid models like Gemma 3/4 — without it, every turn forces a
 #   full prompt re-eval (see PR #13194). Costs more VRAM proportional to
 #   ctx-size × num_swa_layers, so only safe with adequate headroom.
+# - LLAMA_SPEC_TYPE: Speculative-decoding mode. 'none' (default) = single-
+#   stream serial decode. 'draft-mtp' = use the model's built-in multi-
+#   token-prediction heads (DeepSeek-V3/R1, Qwen3-Next-MTP, Qwen3.5/3.6-
+#   MTP). 'draft-simple' = classic speculative decoding with a separate
+#   smaller draft GGUF.
+# - LLAMA_SPEC_DRAFT_MODEL: Path to draft GGUF when LLAMA_SPEC_TYPE is
+#   'draft-simple'. Ignored for 'draft-mtp' (heads live in the main model).
+# - LLAMA_SPEC_DRAFT_N_MAX: Max tokens drafted per step (default 3).
+#   Higher = more speculation work per step; pays off when acceptance
+#   rate is high and rolls back when it isn't.
 
 set -e
 
@@ -55,6 +65,9 @@ PRESENCE_PENALTY=${LLAMA_PRESENCE_PENALTY:-0.0}
 FREQUENCY_PENALTY=${LLAMA_FREQUENCY_PENALTY:-0.0}
 CTX_CHECKPOINTS=${LLAMA_CTX_CHECKPOINTS:-2}
 SWA_FULL=${LLAMA_SWA_FULL:-false}
+SPEC_TYPE=${LLAMA_SPEC_TYPE:-none}
+SPEC_DRAFT_MODEL=${LLAMA_SPEC_DRAFT_MODEL:-}
+SPEC_DRAFT_N_MAX=${LLAMA_SPEC_DRAFT_N_MAX:-3}
 
 echo ">>> Starting llama.cpp server"
 echo "    Model: $MODEL_PATH"
@@ -75,6 +88,7 @@ echo "    Presence Penalty: $PRESENCE_PENALTY"
 echo "    Frequency Penalty: $FREQUENCY_PENALTY"
 echo "    Context Checkpoints: $CTX_CHECKPOINTS"
 echo "    SWA Full: $SWA_FULL"
+echo "    Speculative Decoding: $SPEC_TYPE${SPEC_TYPE:+ (draft-n-max=$SPEC_DRAFT_N_MAX${SPEC_DRAFT_MODEL:+, draft-model=$SPEC_DRAFT_MODEL})}"
 
 # Build command arguments
 CMD_ARGS=(
@@ -137,6 +151,28 @@ case "$SWA_FULL" in
     true|on|1)
         CMD_ARGS+=(--swa-full)
         echo "    [SWA full cache: ENABLED — prompt cache reuses across turns]"
+        ;;
+esac
+
+# Speculative decoding. --spec-type was added in May 2026 (llama.cpp PR
+# #22673) and unifies the previous --draft-model / --draft-max world.
+# Only pass the flag when the user explicitly opted in; "none" lets older
+# llama-server binaries keep working without the flag.
+case "$SPEC_TYPE" in
+    draft-mtp)
+        # Native multi-token-prediction heads — the model's own GGUF
+        # carries them, so no separate draft GGUF is required.
+        CMD_ARGS+=(--spec-type draft-mtp --spec-draft-n-max "$SPEC_DRAFT_N_MAX")
+        echo "    [MTP speculative decoding ENABLED: --spec-type draft-mtp --spec-draft-n-max $SPEC_DRAFT_N_MAX]"
+        ;;
+    draft-simple)
+        # Classic speculative decoding — must supply a smaller draft GGUF.
+        if [ -z "$SPEC_DRAFT_MODEL" ] || [ ! -r "$SPEC_DRAFT_MODEL" ]; then
+            echo "    [WARN] draft-simple requested but LLAMA_SPEC_DRAFT_MODEL=$SPEC_DRAFT_MODEL is empty or unreadable; ignoring."
+        else
+            CMD_ARGS+=(--spec-type draft-simple --spec-draft-model "$SPEC_DRAFT_MODEL" --spec-draft-n-max "$SPEC_DRAFT_N_MAX")
+            echo "    [Speculative decoding ENABLED: --spec-type draft-simple --spec-draft-model $SPEC_DRAFT_MODEL --spec-draft-n-max $SPEC_DRAFT_N_MAX]"
+        fi
         ;;
 esac
 

@@ -99,12 +99,12 @@ cleanup_instances() {
 }
 
 cleanup_instances "llama.cpp" "name=llamacpp-"
-cleanup_instances "vLLM" "name=vllm-"
+cleanup_instances "sglang" "name=sglang-"
 
 # Combined check across both backends for the "nothing to do" message.
 LLAMACPP_REMAINING=$(docker ps -a --filter "name=llamacpp-" -q 2>/dev/null | wc -l)
-VLLM_REMAINING=$(docker ps -a --filter "name=vllm-" -q 2>/dev/null | wc -l)
-if [ "$((LLAMACPP_REMAINING + VLLM_REMAINING))" -eq 0 ]; then
+SGLANG_REMAINING=$(docker ps -a --filter "name=sglang-" -q 2>/dev/null | wc -l)
+if [ "$((LLAMACPP_REMAINING + SGLANG_REMAINING))" -eq 0 ]; then
     log_success "No model instances present"
 fi
 

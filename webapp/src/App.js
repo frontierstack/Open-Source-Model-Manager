@@ -176,16 +176,19 @@ const formatDuration = (seconds) => {
     return mRem ? `${h}h ${mRem}m` : `${h}h`;
 };
 
-// Settings tooltips - detailed descriptions for all vLLM configuration options
+// Settings tooltips - detailed descriptions for all sglang configuration options
 const SETTINGS_TOOLTIPS = {
-    maxModelLen: "Maximum number of tokens the model can process at once. Larger values allow longer conversations but require more VRAM. Your prompt + response must fit within this limit.",
-    cpuOffloadGb: "Amount of model weights (in GB) to offload to CPU RAM. Use when model doesn't fit entirely in GPU VRAM. Note: GGUF + CPU offload may have issues (vLLM GitHub #8757).",
-    gpuMemoryUtilization: "Fraction of GPU memory (0.0-1.0) that vLLM is allowed to use. Higher values allow larger context windows but leave less headroom for spikes.",
-    tensorParallelSize: "Number of GPUs to use for tensor parallelism. Set to your GPU count to split the model across multiple GPUs for larger models.",
-    maxNumSeqs: "Maximum number of concurrent sequences (requests) that can be processed simultaneously. Higher values improve throughput but use more memory.",
-    kvCacheDtype: "Data type for KV cache. 'auto' uses model's native dtype, 'fp8' uses 8-bit precision to save memory with minimal quality loss.",
-    trustRemoteCode: "Whether to trust remote code from the model repository. Required for some custom model architectures.",
-    enforceEager: "Disable CUDA graphs and use eager execution. Useful for debugging but slower. Keep disabled for production.",
+    maxModelLen: "Maximum number of tokens the model can process at once (passed as --context-length). Larger values allow longer conversations but require more VRAM. Your prompt + response must fit within this limit.",
+    cpuOffloadGb: "Amount of model weights (in GB) to offload to CPU RAM. Use when model doesn't fit entirely in GPU VRAM. Some hybrid Mamba+MoE GGUFs (Qwen3.5/3.6-A3B-MTP) hit a causal_conv1d_fwd dtype error under CPU offload — keep at 0 for those.",
+    memFractionStatic: "Fraction of GPU memory (0.0-1.0) that sglang is allowed to use for weights + KV cache (--mem-fraction-static). Default 0.88. Higher values squeeze in more concurrent requests but leave less headroom for spikes.",
+    tensorParallelSize: "Number of GPUs to shard the model across (--tp). Set to your GPU count to split a large model. The entrypoint clamps this to the number of GPUs the container can actually see, so over-requesting won't hang at NCCL init.",
+    maxRunningRequests: "Maximum number of concurrent requests sglang will batch at once (--max-running-requests). Higher values improve throughput but use more KV cache memory. Leave at 256 for general chat; reduce if hitting OOM under load.",
+    chunkedPrefillSize: "Chunk size in tokens for prefill (--chunked-prefill-size). 4096 is a balanced default. Set -1 to disable for very small models. Larger chunks improve throughput on long prompts at the cost of latency variance.",
+    schedulePolicy: "Request scheduling policy. 'lpm' (longest-prefix-match) pairs with RadixAttention and wins on RAG/multi-turn workloads. 'fcfs' (first-come-first-served) is fine for general chat. 'priority' uses an explicit priority field.",
+    kvCacheDtype: "Data type for KV cache (--kv-cache-dtype). 'auto' uses model's native dtype; 'fp8_e5m2' / 'fp8_e4m3' halve KV memory with minimal quality loss on Hopper/Ada+.",
+    trustRemoteCode: "Whether to trust remote code from the model repository (--trust-remote-code). Required for some custom HF model architectures (e.g., GLM-4, certain MoE variants).",
+    toolCallParser: "Parser sglang uses to structure tool-call text into message.tool_calls (--tool-call-parser). Auto-detected from model name (qwen for Qwen2/3 Instruct, qwen3_coder for Coder variants, llama3, mistral, deepseekv3, kimi_k2, glm45, step3, gpt-oss). Leave empty to disable.",
+    reasoningParser: "Parser sglang uses to separate <think> reasoning from the final answer (--reasoning-parser). Auto-detected: qwen3 for Qwen3 thinking, deepseek-r1 for R1, glm45 for GLM-4.5, kimi for Kimi K2. Empty for non-reasoning models.",
     contextShift: "Enable context shifting to automatically truncate old context when the limit is reached. Without this, requests fail when context is full. Recommended for long conversations.",
     disableThinking: "Controls reasoning/thinking mode for models that support it (e.g., Qwen3, Gemma thinking variants). ON = reasoning enabled (model shows its work in <think> blocks). OFF = reasoning disabled (model answers directly, faster).",
     compressMemory: "Enable AIMem memory compression for long conversations. Compresses older messages using deduplication, lossy compression, and relevance ranking to reduce token usage (~48% reduction) while retaining all facts."
@@ -205,6 +208,9 @@ const LLAMACPP_TOOLTIPS = {
     batchSize: "Batch size for prompt processing. Larger values are faster but use more memory. Common values: 512, 1024, 2048.",
     ubatchSize: "Micro-batch size for processing. Should be smaller than batch size. Common values: 256, 512, 1024. Larger values speed up prompt processing for long inputs.",
     swaFull: "Allocate the full sliding-window-attention cache. Required for prompt-cache reuse across turns on SWA/hybrid models like Gemma 3/4 — without it, every turn re-evaluates the entire prompt from scratch. Costs more VRAM proportional to context size; only enable if VRAM headroom allows.",
+    specType: "Speculative decoding mode (llama.cpp --spec-type). 'Off' = serial decode (default). 'MTP heads' uses this model's built-in multi-token-prediction heads — DeepSeek-V3/R1, Qwen3-Next-MTP, and Qwen3.5/3.6-MTP all ship them. No separate draft GGUF needed. 'Draft model' is classic speculative decoding using a smaller second GGUF. Both can deliver ~1.5–2× single-stream tok/s on supported models.",
+    specDraftNMax: "Max tokens speculatively drafted per step (llama.cpp --spec-draft-n-max). 3 is a balanced default. Higher = more aggressive speculation (helps when acceptance rate is high), lower = less wasted compute when the draft is wrong. Only meaningful when speculative decoding is enabled.",
+    specDraftModel: "Path inside /models to the draft GGUF (llama.cpp --spec-draft-model). Only used in 'Draft model' mode. The draft should be small + share the main model's tokenizer (e.g. Qwen2.5-0.5B-Instruct as draft for Qwen3-8B-Instruct). Ignored when 'MTP heads' is selected — those heads live inside the main GGUF.",
     repeatPenalty: "Penalty for repeating tokens (1.0 = no penalty). Higher values (1.1-1.3) reduce repetition. Too high may affect coherence.",
     repeatLastN: "Number of recent tokens to consider for repetition penalty. 64-128 is usually sufficient.",
     presencePenalty: "Penalty for tokens that have appeared at all (0.0-1.0). Encourages the model to talk about new topics.",
@@ -424,7 +430,7 @@ const App = () => {
     const [searchSortBy, setSearchSortBy] = useState('downloads'); // 'downloads', 'likes', 'params', 'trending', 'newest'
     const [searchSizeFilter, setSearchSizeFilter] = useState('all'); // 'all', 'small', 'medium', 'large', 'xlarge'
     const [searchFormat, setSearchFormat] = useState('gguf'); // 'gguf', 'safetensors', 'awq', 'gptq', 'fp8', 'nvfp4', 'bnb', 'any'
-    // HuggingFace direct-load dialog (vLLM loads non-GGUF formats from a repo id)
+    // HuggingFace direct-load dialog (sglang loads non-GGUF formats from a repo id)
     const [hfLoadDialog, setHfLoadDialog] = useState({ open: false, repoId: '', format: '' });
     const [hfLoadConfig, setHfLoadConfig] = useState({
         // 16K default: the chat stream attaches the full skill catalog
@@ -432,7 +438,7 @@ const App = () => {
         // context leaves no room for the user message. 16K is the safe
         // minimum for chat use; bump higher for long conversations.
         maxModelLen: 16384,
-        gpuMemoryUtilization: 0.9,
+        memFractionStatic: 0.88,
         tensorParallelSize: 1,
         cpuOffloadGb: 0,
         kvCacheDtype: 'auto',
@@ -449,11 +455,11 @@ const App = () => {
     const [hfLoading, setHfLoading] = useState(false);
     // llama.cpp load dialog mirror — clicking Load on a downloaded GGUF model
     // opens this with the model name pre-filled, so config is per-launch
-    // (matches the vLLM flow). Replaces the old standalone Launch Settings
+    // (matches the sglang flow). Replaces the old standalone Launch Settings
     // panel that applied a single global config to every load.
     const [llamacppLoadDialog, setLlamacppLoadDialog] = useState({ open: false, modelName: '' });
     const [llamacppLoading, setLlamacppLoading] = useState(false);
-    // Cached HF repos previously pulled by vLLM (lives in modelserver_hf_cache volume)
+    // Cached HF repos previously pulled by sglang (lives in modelserver_hf_cache volume)
     const [hfCacheEntries, setHfCacheEntries] = useState([]);
     const [hfCacheTotalBytes, setHfCacheTotalBytes] = useState(0);
     const [hfCacheLoading, setHfCacheLoading] = useState(false);
@@ -469,13 +475,13 @@ const App = () => {
     const [newUserData, setNewUserData] = useState({ username: '', email: '', password: '', role: 'user' });
 
 
-    // Model configuration state for vLLM
+    // Model configuration state for sglang
     const [modelConfig, setModelConfig] = useState({
         maxModelLen: 4096,
         cpuOffloadGb: 0,
-        gpuMemoryUtilization: 0.9,
+        memFractionStatic: 0.88,
         tensorParallelSize: 1,
-        maxNumSeqs: 256,
+        maxRunningRequests: 256,
         kvCacheDtype: 'auto',
         trustRemoteCode: true,
         enforceEager: false,
@@ -502,7 +508,15 @@ const App = () => {
         frequencyPenalty: 0.0,
         disableThinking: false,
         compressMemory: false,
-        swaFull: false
+        swaFull: false,
+        // Speculative decoding (llama.cpp PR #22673, May 2026).
+        //   'none'         — single-stream serial decode (default)
+        //   'draft-mtp'    — use this model's built-in MTP heads (DeepSeek-V3/R1,
+        //                    Qwen3-Next-MTP, Qwen3.5/3.6-MTP). No second model.
+        //   'draft-simple' — classic speculation with a separate smaller draft.
+        specType: 'none',
+        specDraftNMax: 3,
+        specDraftModel: ''
     });
 
     // Optimal settings state
@@ -929,9 +943,9 @@ const App = () => {
 
     const fetchInstances = async () => {
         try {
-            const [llamacppRes, vllmRes] = await Promise.allSettled([
+            const [llamacppRes, sglangRes] = await Promise.allSettled([
                 fetch('/api/llamacpp/instances', { credentials: 'include' }),
-                fetch('/api/vllm/instances', { credentials: 'include' }),
+                fetch('/api/sglang/instances', { credentials: 'include' }),
             ]);
 
             const allInstances = [];
@@ -943,11 +957,11 @@ const App = () => {
                 allInstances.push(...llamacppInstances);
             }
 
-            // Parse vLLM instances
-            if (vllmRes.status === 'fulfilled' && vllmRes.value.ok) {
-                const vllmData = await vllmRes.value.json();
-                const vllmInstances = Array.isArray(vllmData) ? vllmData : (vllmData.instances || []);
-                allInstances.push(...vllmInstances);
+            // Parse sglang instances
+            if (sglangRes.status === 'fulfilled' && sglangRes.value.ok) {
+                const sglangData = await sglangRes.value.json();
+                const sglangInstances = Array.isArray(sglangData) ? sglangData : (sglangData.instances || []);
+                allInstances.push(...sglangInstances);
             }
 
             setInstances(allInstances);
@@ -1653,9 +1667,9 @@ curl -k -X POST ${baseUrl}/api/models/Llama-2-7B-GGUF/load \\
   -d '{
     "maxModelLen": 4096,
     "cpuOffloadGb": 0,
-    "gpuMemoryUtilization": 0.9,
+    "memFractionStatic": 0.88,
     "tensorParallelSize": 1,
-    "maxNumSeqs": 256,
+    "maxRunningRequests": 256,
     "compressMemory": true
   }'
 
@@ -1667,9 +1681,9 @@ curl -k -X POST ${baseUrl}/api/models/Llama-2-7B-GGUF/load \\
   -d '{
     "maxModelLen": 4096,
     "cpuOffloadGb": 0,
-    "gpuMemoryUtilization": 0.9,
+    "memFractionStatic": 0.88,
     "tensorParallelSize": 1,
-    "maxNumSeqs": 256,
+    "maxRunningRequests": 256,
     "compressMemory": true
   }'
 
@@ -1687,9 +1701,9 @@ response = requests.post(
     json={
         'maxModelLen': 4096,
         'cpuOffloadGb': 0,
-        'gpuMemoryUtilization': 0.9,
+        'memFractionStatic': 0.88,
         'tensorParallelSize': 1,
-        'maxNumSeqs': 256
+        'maxRunningRequests': 256
     },
     verify=False  # For self-signed certificates
 )
@@ -1705,9 +1719,9 @@ response = requests.post(
     json={
         'maxModelLen': 4096,
         'cpuOffloadGb': 0,
-        'gpuMemoryUtilization': 0.9,
+        'memFractionStatic': 0.88,
         'tensorParallelSize': 1,
-        'maxNumSeqs': 256
+        'maxRunningRequests': 256
     },
     verify=False  # For self-signed certificates
 )
@@ -1730,9 +1744,9 @@ $headers = @{
 $body = @{
     maxModelLen = 4096
     cpuOffloadGb = 0
-    gpuMemoryUtilization = 0.9
+    memFractionStatic = 0.88
     tensorParallelSize = 1
-    maxNumSeqs = 256
+    maxRunningRequests = 256
 } | ConvertTo-Json
 
 $response = Invoke-RestMethod -Uri "${baseUrl}/api/models/Llama-2-7B-GGUF/load" -Method Post -Headers $headers -Body $body
@@ -1747,9 +1761,9 @@ fetch('${baseUrl}/api/models/Llama-2-7B-GGUF/load', {
   body: JSON.stringify({
     maxModelLen: 4096,
     cpuOffloadGb: 0,
-    gpuMemoryUtilization: 0.9,
+    memFractionStatic: 0.88,
     tensorParallelSize: 1,
-    maxNumSeqs: 256
+    maxRunningRequests: 256
   })
 })
 .then(res => res.json())
@@ -1767,9 +1781,9 @@ fetch('${baseUrl}/api/models/Llama-2-7B-GGUF/load', {
   body: JSON.stringify({
     maxModelLen: 4096,
     cpuOffloadGb: 0,
-    gpuMemoryUtilization: 0.9,
+    memFractionStatic: 0.88,
     tensorParallelSize: 1,
-    maxNumSeqs: 256
+    maxRunningRequests: 256
   })
 })
 .then(res => res.json())
@@ -1842,20 +1856,20 @@ fetch('${baseUrl}/api/models/Llama-2-7B-GGUF', {
 .then(data => console.log(data.message))
 .catch(err => console.error(err));`
             },
-            '/api/vllm/instances': {
+            '/api/sglang/instances': {
                 curl: `# Bearer Token Authentication
-curl -X GET ${baseUrl}/api/vllm/instances \\
+curl -X GET ${baseUrl}/api/sglang/instances \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -X GET ${baseUrl}/api/vllm/instances \\
+curl -X GET ${baseUrl}/api/sglang/instances \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
 
 # Bearer Token Authentication
 response = requests.get(
-    '${baseUrl}/api/vllm/instances',
+    '${baseUrl}/api/sglang/instances',
     headers={
         'Authorization': 'Bearer your_bearer_token'
     }
@@ -1863,7 +1877,7 @@ response = requests.get(
 
 # OR API Key + Secret Authentication
 response = requests.get(
-    '${baseUrl}/api/vllm/instances',
+    '${baseUrl}/api/sglang/instances',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret'
@@ -1884,10 +1898,10 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances" -Method Get -Headers $headers
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/sglang/instances" -Method Get -Headers $headers
 $response | ForEach-Object { Write-Output "$($_.name): $($_.status) on port $($_.port)" }`,
                 javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/vllm/instances', {
+fetch('${baseUrl}/api/sglang/instances', {
   method: 'GET',
   headers: {
     'Authorization': 'Bearer your_bearer_token'
@@ -1898,7 +1912,7 @@ fetch('${baseUrl}/api/vllm/instances', {
 .catch(err => console.error(err));
 
 // OR API Key + Secret Authentication
-fetch('${baseUrl}/api/vllm/instances', {
+fetch('${baseUrl}/api/sglang/instances', {
   method: 'GET',
   headers: {
     'X-API-Key': 'your_api_key',
@@ -1909,20 +1923,20 @@ fetch('${baseUrl}/api/vllm/instances', {
 .then(instances => instances.forEach(i => console.log(\`\${i.name}: \${i.status} on port \${i.port}\`)))
 .catch(err => console.error(err));`
             },
-            '/api/vllm/instances/:name': {
+            '/api/sglang/instances/:name': {
                 curl: `# Bearer Token Authentication
-curl -X DELETE ${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF \\
+curl -X DELETE ${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -X DELETE ${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF \\
+curl -X DELETE ${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
 
 # Bearer Token Authentication
 response = requests.delete(
-    '${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF',
+    '${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF',
     headers={
         'Authorization': 'Bearer your_bearer_token'
     }
@@ -1930,7 +1944,7 @@ response = requests.delete(
 
 # OR API Key + Secret Authentication
 response = requests.delete(
-    '${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF',
+    '${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret'
@@ -1950,10 +1964,10 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF" -Method Delete -Headers $headers
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF" -Method Delete -Headers $headers
 Write-Output $response.message`,
                 javascript: `// Bearer Token Authentication
-fetch('${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF', {
+fetch('${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF', {
   method: 'DELETE',
   headers: {
     'Authorization': 'Bearer your_bearer_token'
@@ -1964,7 +1978,7 @@ fetch('${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF', {
 .catch(err => console.error(err));
 
 // OR API Key + Secret Authentication
-fetch('${baseUrl}/api/vllm/instances/Llama-2-7B-GGUF', {
+fetch('${baseUrl}/api/sglang/instances/Llama-2-7B-GGUF', {
   method: 'DELETE',
   headers: {
     'X-API-Key': 'your_api_key',
@@ -4674,15 +4688,15 @@ fetch(\`${baseUrl}/api/downloads/\${downloadId}\`, {
 .catch(err => console.error(err));`
             },
             // ============================================================================
-            // VLLM SLOTS
+            // SGLANG SLOTS
             // ============================================================================
-            '/api/vllm/instances/:name/slots': {
-                curl: `# Get KV cache slots for a vLLM instance
-curl -k -X GET "${baseUrl}/api/vllm/instances/llama-7b/slots" \\
+            '/api/sglang/instances/:name/slots': {
+                curl: `# Get KV cache slots for a sglang instance
+curl -k -X GET "${baseUrl}/api/sglang/instances/llama-7b/slots" \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -k -X GET "${baseUrl}/api/vllm/instances/llama-7b/slots" \\
+curl -k -X GET "${baseUrl}/api/sglang/instances/llama-7b/slots" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
@@ -4691,14 +4705,14 @@ model_name = "llama-7b"
 
 # Bearer Token Authentication
 response = requests.get(
-    f'${baseUrl}/api/vllm/instances/{model_name}/slots',
+    f'${baseUrl}/api/sglang/instances/{model_name}/slots',
     headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
 
 # OR API Key + Secret Authentication
 response = requests.get(
-    f'${baseUrl}/api/vllm/instances/{model_name}/slots',
+    f'${baseUrl}/api/sglang/instances/{model_name}/slots',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret'
@@ -4721,25 +4735,25 @@ $headers = @{
 
 $modelName = "llama-7b"
 
-$slots = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/$modelName/slots" -Headers $headers
+$slots = Invoke-RestMethod -Uri "${baseUrl}/api/sglang/instances/$modelName/slots" -Headers $headers
 Write-Output "Used: $($slots.used), Total: $($slots.total)"`,
                 javascript: `const modelName = 'llama-7b';
 
 // Bearer Token Authentication
-fetch(\`${baseUrl}/api/vllm/instances/\${modelName}/slots\`, {
+fetch(\`${baseUrl}/api/sglang/instances/\${modelName}/slots\`, {
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
 .then(slots => console.log('Used:', slots.used, 'Total:', slots.total))
 .catch(err => console.error(err));`
             },
-            '/api/vllm/instances/:name/slots/clear': {
-                curl: `# Clear KV cache for a vLLM instance
-curl -k -X POST "${baseUrl}/api/vllm/instances/llama-7b/slots/clear" \\
+            '/api/sglang/instances/:name/slots/clear': {
+                curl: `# Clear KV cache for a sglang instance
+curl -k -X POST "${baseUrl}/api/sglang/instances/llama-7b/slots/clear" \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -k -X POST "${baseUrl}/api/vllm/instances/llama-7b/slots/clear" \\
+curl -k -X POST "${baseUrl}/api/sglang/instances/llama-7b/slots/clear" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"`,
                 python: `import requests
@@ -4748,14 +4762,14 @@ model_name = "llama-7b"
 
 # Bearer Token Authentication
 response = requests.post(
-    f'${baseUrl}/api/vllm/instances/{model_name}/slots/clear',
+    f'${baseUrl}/api/sglang/instances/{model_name}/slots/clear',
     headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
 
 # OR API Key + Secret Authentication
 response = requests.post(
-    f'${baseUrl}/api/vllm/instances/{model_name}/slots/clear',
+    f'${baseUrl}/api/sglang/instances/{model_name}/slots/clear',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret'
@@ -4777,12 +4791,12 @@ $headers = @{
 
 $modelName = "llama-7b"
 
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/vllm/instances/$modelName/slots/clear" -Method Post -Headers $headers
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/sglang/instances/$modelName/slots/clear" -Method Post -Headers $headers
 Write-Output "KV cache cleared"`,
                 javascript: `const modelName = 'llama-7b';
 
 // Bearer Token Authentication
-fetch(\`${baseUrl}/api/vllm/instances/\${modelName}/slots/clear\`, {
+fetch(\`${baseUrl}/api/sglang/instances/\${modelName}/slots/clear\`, {
   method: 'POST',
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
@@ -6713,7 +6727,7 @@ curl -sk -X POST ${baseUrl}/v1/chat/completions \\
   }'
 
 # Also reachable: /v1/models, /v1/completions, /v1/embeddings — anything the
-# underlying vLLM/llama.cpp instance exposes.
+# underlying sglang/llama.cpp instance exposes.
 curl -sk ${baseUrl}/v1/models \\
   -H "Authorization: Bearer your_bearer_token"`,
                 python: `from openai import OpenAI
@@ -7024,11 +7038,11 @@ console.log(await res.json());`
 
     const handleSelectModel = (modelId, modelFormat) => {
         // Non-GGUF formats (safetensors / AWQ / GPTQ / FP8 / NVFP4 / BnB)
-        // are loaded by vLLM directly from the HF repo id — there's no
+        // are loaded by sglang directly from the HF repo id — there's no
         // single-file pull step. Open a dedicated load dialog so the user
         // can set max-model-len / GPU mem / tensor-parallel before launch.
         if (modelFormat && modelFormat !== 'gguf' && modelFormat !== 'unknown') {
-            // Prefill tensorParallelSize with the detected GPU count so vLLM
+            // Prefill tensorParallelSize with the detected GPU count so sglang
             // fans across every GPU by default. Falls back to whatever the
             // dialog already had if /api/system/resources is unreachable.
             fetch('/api/system/resources').then(r => r.json()).then(d => {
@@ -7065,7 +7079,7 @@ console.log(await res.json());`
                 repoId,
                 format,
                 maxModelLen: Number(hfLoadConfig.maxModelLen) || 4096,
-                gpuMemoryUtilization: Number(hfLoadConfig.gpuMemoryUtilization) || 0.9,
+                memFractionStatic: Number(hfLoadConfig.memFractionStatic) || 0.88,
                 tensorParallelSize: Number(hfLoadConfig.tensorParallelSize) || 1,
                 cpuOffloadGb: Number(hfLoadConfig.cpuOffloadGb) || 0,
                 kvCacheDtype: hfLoadConfig.kvCacheDtype || 'auto',
@@ -7083,7 +7097,7 @@ console.log(await res.json());`
             return body;
         })
         .then(data => {
-            showSnackbar(`vLLM starting "${repoId}" on port ${data.port} — first launch will download weights`, 'success');
+            showSnackbar(`sglang starting "${repoId}" on port ${data.port} — first launch will download weights`, 'success');
             setHfLoadDialog({ open: false, repoId: '', format: '' });
             fetchInstances();
         })
@@ -7162,7 +7176,7 @@ console.log(await res.json());`
     const handleLoadModel = (modelName) => {
         // Local /models/<name> directories are always GGUF (the only path
         // that produces them is the HF GGUF pull flow), so they always go
-        // to llama.cpp. Non-GGUF models use the Load-via-vLLM dialog from
+        // to llama.cpp. Non-GGUF models use the Load-via-sglang dialog from
         // the search results — this opens the matching llama.cpp dialog.
         setLlamacppLoadDialog({ open: true, modelName });
     };
@@ -7259,8 +7273,8 @@ console.log(await res.json());`
         // HF-repo instance keys contain '/' (e.g. owner/name), which would split
         // the URL into too many segments and fall through to a 404 — encode it.
         const encodedName = encodeURIComponent(modelName);
-        const endpoint = backend === 'vllm'
-            ? `/api/vllm/instances/${encodedName}`
+        const endpoint = backend === 'sglang'
+            ? `/api/sglang/instances/${encodedName}`
             : `/api/llamacpp/instances/${encodedName}`;
         fetch(endpoint, {
             method: 'DELETE',
@@ -8092,13 +8106,13 @@ console.log(await res.json());`
 
                                                 <Typography variant="caption" sx={{ color: 'text.secondary', mr: 0.5, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: 0.5 }}>Format</Typography>
                                                 {[
-                                                    { value: 'gguf', label: 'GGUF', hint: 'llama.cpp + vLLM (experimental)' },
-                                                    { value: 'safetensors', label: 'safetensors', hint: 'vLLM full precision' },
-                                                    { value: 'awq', label: 'AWQ', hint: 'vLLM 4-bit, NVIDIA-optimized' },
-                                                    { value: 'gptq', label: 'GPTQ', hint: 'vLLM 4-bit, Marlin kernels' },
-                                                    { value: 'fp8', label: 'FP8', hint: 'vLLM Hopper/Ada/Blackwell' },
-                                                    { value: 'nvfp4', label: 'NVFP4', hint: 'vLLM Blackwell only' },
-                                                    { value: 'bnb', label: 'BnB', hint: 'vLLM bitsandbytes' },
+                                                    { value: 'gguf', label: 'GGUF', hint: 'llama.cpp + sglang (experimental)' },
+                                                    { value: 'safetensors', label: 'safetensors', hint: 'sglang full precision' },
+                                                    { value: 'awq', label: 'AWQ', hint: 'sglang 4-bit, NVIDIA-optimized' },
+                                                    { value: 'gptq', label: 'GPTQ', hint: 'sglang 4-bit, Marlin kernels' },
+                                                    { value: 'fp8', label: 'FP8', hint: 'sglang Hopper/Ada/Blackwell' },
+                                                    { value: 'nvfp4', label: 'NVFP4', hint: 'sglang Blackwell only' },
+                                                    { value: 'bnb', label: 'BnB', hint: 'sglang bitsandbytes' },
                                                     { value: 'any', label: 'Any', hint: 'No format filter' },
                                                 ].map(opt => (
                                                     <Tooltip key={opt.value} title={opt.hint} arrow>
@@ -8257,14 +8271,14 @@ console.log(await res.json());`
                                                                             {/* Format + Type Tags */}
                                                                             {(() => {
                                                                                 const FORMAT_STYLES = {
-                                                                                    gguf:                 { label: 'GGUF',     color: 'rgba(20,184,166,0.3)',  textColor: '#14b8a6', tip: 'llama.cpp + vLLM (experimental)' },
-                                                                                    safetensors:          { label: 'safetensors', color: 'var(--border-focus)', textColor: '#818cf8', tip: 'vLLM full-precision' },
-                                                                                    awq:                  { label: 'AWQ',      color: 'rgba(34,197,94,0.3)',   textColor: '#22c55e', tip: 'vLLM 4-bit, NVIDIA-optimized' },
-                                                                                    gptq:                 { label: 'GPTQ',     color: 'rgba(234,179,8,0.3)',   textColor: '#eab308', tip: 'vLLM 4-bit (Marlin kernels)' },
-                                                                                    fp8:                  { label: 'FP8',      color: 'rgba(244,114,182,0.3)', textColor: '#f472b6', tip: 'vLLM Hopper/Ada/Blackwell' },
-                                                                                    nvfp4:                { label: 'NVFP4',    color: 'rgba(217,70,239,0.3)',  textColor: '#d946ef', tip: 'vLLM Blackwell-only' },
-                                                                                    bnb:                  { label: 'BnB',      color: 'rgba(245,158,11,0.3)',  textColor: '#f59e0b', tip: 'vLLM bitsandbytes' },
-                                                                                    'compressed-tensors': { label: 'comp-tensors', color: 'rgba(129,140,248,0.3)', textColor: '#a5b4fc', tip: 'vLLM compressed-tensors' },
+                                                                                    gguf:                 { label: 'GGUF',     color: 'rgba(20,184,166,0.3)',  textColor: '#14b8a6', tip: 'llama.cpp + sglang (experimental)' },
+                                                                                    safetensors:          { label: 'safetensors', color: 'var(--border-focus)', textColor: '#818cf8', tip: 'sglang full-precision' },
+                                                                                    awq:                  { label: 'AWQ',      color: 'rgba(34,197,94,0.3)',   textColor: '#22c55e', tip: 'sglang 4-bit, NVIDIA-optimized' },
+                                                                                    gptq:                 { label: 'GPTQ',     color: 'rgba(234,179,8,0.3)',   textColor: '#eab308', tip: 'sglang 4-bit (Marlin kernels)' },
+                                                                                    fp8:                  { label: 'FP8',      color: 'rgba(244,114,182,0.3)', textColor: '#f472b6', tip: 'sglang Hopper/Ada/Blackwell' },
+                                                                                    nvfp4:                { label: 'NVFP4',    color: 'rgba(217,70,239,0.3)',  textColor: '#d946ef', tip: 'sglang Blackwell-only' },
+                                                                                    bnb:                  { label: 'BnB',      color: 'rgba(245,158,11,0.3)',  textColor: '#f59e0b', tip: 'sglang bitsandbytes' },
+                                                                                    'compressed-tensors': { label: 'comp-tensors', color: 'rgba(129,140,248,0.3)', textColor: '#a5b4fc', tip: 'sglang compressed-tensors' },
                                                                                 };
                                                                                 const fmt = FORMAT_STYLES[model.format];
                                                                                 const hasFormat = !!fmt;
@@ -8292,7 +8306,7 @@ console.log(await res.json());`
                                                                                         )}
                                                                                         {showSize && sizeEntry && typeof sizeEntry.totalBytes === 'number' && (() => {
                                                                                             // Estimate runtime VRAM at 8K context: weights + KV cache.
-                                                                                            // The +2 GB activation overhead reflects vLLM's CUDA workspace,
+                                                                                            // The +2 GB activation overhead reflects sglang's CUDA workspace,
                                                                                             // NCCL buffers, and forward-pass scratch — empirical, not exact,
                                                                                             // but better than ignoring it. Without this people see "9 GB
                                                                                             // weights" and assume it'll fit on a 16 GB card; in practice
@@ -8783,9 +8797,9 @@ console.log(await res.json());`
                                                                                     size="small"
                                                                                     color="success"
                                                                                 />
-                                                                                <Tooltip title={`Backend: ${instance.backend === 'llamacpp' ? 'llama.cpp' : 'vLLM'}`}>
+                                                                                <Tooltip title={`Backend: ${instance.backend === 'llamacpp' ? 'llama.cpp' : 'sglang'}`}>
                                                                                     <Chip
-                                                                                        label={instance.backend === 'llamacpp' ? 'llama.cpp' : 'vLLM'}
+                                                                                        label={instance.backend === 'llamacpp' ? 'llama.cpp' : 'sglang'}
                                                                                         size="small"
                                                                                         sx={{
                                                                                             bgcolor: 'rgba(255, 255, 255, 0.1)',
@@ -8802,7 +8816,7 @@ console.log(await res.json());`
                                                                                         variant="outlined"
                                                                                     />
                                                                                 </Tooltip>
-                                                                                {instance.backend === 'vllm' && instance.config?.cpuOffloadGb > 0 && (
+                                                                                {instance.backend === 'sglang' && instance.config?.cpuOffloadGb > 0 && (
                                                                                     <Tooltip title="CPU offload enabled">
                                                                                         <Chip
                                                                                             label={`CPU: ${instance.config?.cpuOffloadGb}GB`}
@@ -8814,11 +8828,11 @@ console.log(await res.json());`
                                                                                 )}
                                                                             </Box>
                                                                             <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
-                                                                                {instance.backend === 'vllm' ? (
+                                                                                {instance.backend === 'sglang' ? (
                                                                                     <>
                                                                                         <Tooltip title="GPU memory utilization">
                                                                                             <Chip
-                                                                                                label={`GPU: ${Math.round((instance.config?.gpuMemoryUtilization || 0.9) * 100)}%`}
+                                                                                                label={`GPU: ${Math.round((instance.config?.memFractionStatic || 0.88) * 100)}%`}
                                                                                                 size="small"
                                                                                                 variant="outlined"
                                                                                                 sx={{ fontSize: '0.7rem' }}
@@ -8834,7 +8848,7 @@ console.log(await res.json());`
                                                                                         </Tooltip>
                                                                                         <Tooltip title="Max concurrent sequences">
                                                                                             <Chip
-                                                                                                label={`Seqs: ${instance.config?.maxNumSeqs || 256}`}
+                                                                                                label={`Seqs: ${instance.config?.maxRunningRequests || 256}`}
                                                                                                 size="small"
                                                                                                 variant="outlined"
                                                                                                 sx={{ fontSize: '0.7rem' }}
@@ -9011,14 +9025,14 @@ console.log(await res.json());`
                                     </Grid>
                                 )}
 
-                                {/* Cached HuggingFace Models (vLLM HF-repo loads) */}
+                                {/* Cached HuggingFace Models (sglang HF-repo loads) */}
                                 {hfCacheEntries.length > 0 && (
                                     <Grid item xs={12}>
                                         <Card>
                                             <CardContent>
                                                 <SectionHeader
                                                     icon={<CloudDownloadIcon />}
-                                                    title="Cached vLLM Models (HuggingFace cache)"
+                                                    title="Cached sglang Models (HuggingFace cache)"
                                                     subtitle={`${hfCacheEntries.length} repo${hfCacheEntries.length > 1 ? 's' : ''} · ${formatBytes(hfCacheTotalBytes)} total — reloads use this cache (no re-download)`}
                                                     action={
                                                         <Tooltip title="Refresh cache list">
@@ -9115,7 +9129,7 @@ console.log(await res.json());`
                                                 <Grid container spacing={2} sx={{ mt: 1 }}>
                                                     {models.map((model) => {
                                                         const paramSize = extractParameterSize(model.name);
-                                                        const isRunning = model.loadedIn === 'vllm' || model.loadedIn === 'llamacpp';
+                                                        const isRunning = model.loadedIn === 'sglang' || model.loadedIn === 'llamacpp';
                                                         const isLoading = model.status.includes('Starting') || model.status.includes('Loading');
                                                         return (
                                                             <Grid item xs={12} sm={6} md={4} key={model.name}>
@@ -10128,10 +10142,10 @@ console.log(await res.json());`
                                                             <MenuItem value="/api/downloads">GET /api/downloads - List Active Downloads</MenuItem>
                                                             <MenuItem value="/api/downloads/:downloadId">DELETE /api/downloads/:id - Cancel Download</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Instances ───</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances">GET /api/vllm/instances - List vLLM Instances</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances/:name">DELETE /api/vllm/instances/:modelName - Stop vLLM Instance</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances/:name/slots">GET /api/vllm/instances/:modelName/slots - Get KV Cache Slots</MenuItem>
-                                                            <MenuItem value="/api/vllm/instances/:name/slots/clear">POST /api/vllm/instances/:name/slots/clear - Clear KV Cache</MenuItem>
+                                                            <MenuItem value="/api/sglang/instances">GET /api/sglang/instances - List sglang Instances</MenuItem>
+                                                            <MenuItem value="/api/sglang/instances/:name">DELETE /api/sglang/instances/:modelName - Stop sglang Instance</MenuItem>
+                                                            <MenuItem value="/api/sglang/instances/:name/slots">GET /api/sglang/instances/:modelName/slots - Get KV Cache Slots</MenuItem>
+                                                            <MenuItem value="/api/sglang/instances/:name/slots/clear">POST /api/sglang/instances/:name/slots/clear - Clear KV Cache</MenuItem>
                                                             <MenuItem value="/api/llamacpp/instances">GET /api/llamacpp/instances - List llama.cpp Instances</MenuItem>
                                                             <MenuItem value="/api/llamacpp/instances/:name">DELETE /api/llamacpp/instances/:modelName - Stop llama.cpp Instance</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── System Prompts ───</MenuItem>
@@ -10648,7 +10662,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
                                                 <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Configuration Flags</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>llama.cpp and vLLM backend settings</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>llama.cpp and sglang backend settings</Typography>
                                             </Box>
                                         </Box>
 
@@ -10682,28 +10696,34 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>AIMem conversation compression</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Skip reasoning mode</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specType</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>none</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-type (none / draft-mtp / draft-simple)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftNMax</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>3</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-n-max (1–16)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftModel</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>""</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-model PATH (only when draft-simple)</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
                                                 </Box>
                                             </Grid>
 
-                                            {/* vLLM Settings */}
+                                            {/* sglang Settings */}
                                             <Grid item xs={12} lg={6}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                                        <Chip label="vLLM" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
-                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Pascal 6.0+</Typography>
+                                                        <Chip label="sglang" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Turing 7.5+ / driver R570+</Typography>
                                                     </Box>
                                                     <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' } }}>
                                                         <TableBody>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130 }}>maxModelLen</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Max context length</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 150 }}>maxModelLen</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--context-length</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>cpuOffloadGb</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>CPU offload (GB)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>gpuMemoryUtil</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.9</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GPU memory fraction</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>tensorParallelSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Multi-GPU parallelism</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxNumSeqs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>256</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Max concurrent seqs</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Cache dtype (auto/fp8)</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Trust HF code</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>enforceEager</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Disable CUDA graphs</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>memFractionStatic</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>0.88</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--mem-fraction-static (replaces vLLM gpuMemoryUtilization)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>tensorParallelSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>1</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--tp (auto-clamped to visible GPUs)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxRunningRequests</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>256</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--max-running-requests</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>chunkedPrefillSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--chunked-prefill-size (-1 to disable)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>schedulePolicy</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>lpm</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--schedule-policy (pairs with RadixAttention)</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto / fp8_e5m2 / fp8_e4m3</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>toolCallParser</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>qwen / qwen3_coder / llama3 / mistral / deepseekv3 / kimi_k2 / glm45 / step3</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>reasoningParser</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>qwen3 / deepseek-r1 / glm45 / kimi</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--trust-remote-code</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>AIMem conversation compression</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Skip reasoning mode</TableCell></TableRow>
@@ -10846,9 +10866,9 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List all models</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/pull</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Download from HuggingFace</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name/load</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Start model instance</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Load HuggingFace repo directly into vLLM</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/load-hf</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Load HuggingFace repo directly into sglang</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete model</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List HuggingFace cache contents (vLLM downloads)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List HuggingFace cache contents (sglang downloads)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/models/hf-cache/:dirName</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Delete a cached HF repo</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List all model configs</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get/update model config</TableCell></TableRow>
@@ -10873,10 +10893,10 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List vLLM instances</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop vLLM instance</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances/:name/slots</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get KV cache slots</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/vllm/instances/:name/slots/clear</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Clear KV cache</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List sglang instances</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop sglang instance</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name/slots</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get KV cache slots</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/sglang/instances/:name/slots/clear</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Clear KV cache</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/llamacpp/instances</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List llama.cpp instances</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/llamacpp/instances/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stop llama.cpp instance</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>/api/system-prompts</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List system prompts</TableCell></TableRow>
@@ -10956,7 +10976,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible chat (proxied to first running instance)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible text completion</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible model list (used by Pi extension)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/*</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>ALL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Catch-all proxy: any other vLLM/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/*</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>ALL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Catch-all proxy: any other sglang/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
 
                                                     {/* Pi Terminal Agent */}
                                                     <TableRow>
@@ -11361,8 +11381,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             remaining = remaining.slice(match[0].length);
                                                             continue;
                                                         }
-                                                        // Container names (llamacpp-*, vllm-*)
-                                                        match = remaining.match(/^((?:llamacpp|vllm)-[\w\-]+)/);
+                                                        // Container names (llamacpp-*, sglang-*)
+                                                        match = remaining.match(/^((?:llamacpp|sglang)-[\w\-]+)/);
                                                         if (match) {
                                                             parts.push(<span key={key++} style={{ color: '#22d3ee', fontSize: '0.73rem' }}>{match[1]}</span>);
                                                             remaining = remaining.slice(match[0].length);
@@ -12205,7 +12225,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                 </DialogActions>
             </Dialog>
 
-            {/* Load HuggingFace repo via vLLM (non-GGUF formats) */}
+            {/* Load HuggingFace repo via sglang (non-GGUF formats) */}
             <Dialog
                 open={hfLoadDialog.open}
                 onClose={() => !hfLoading && setHfLoadDialog({ open: false, repoId: '', format: '' })}
@@ -12213,9 +12233,9 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                 fullWidth
             >
                 <DialogTitle sx={{ pb: 1 }}>
-                    Load via vLLM
+                    Load via sglang
                     <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
-                        {hfLoadDialog.format ? `${hfLoadDialog.format.toUpperCase()} · ` : ''}vLLM downloads weights from HuggingFace on first start
+                        {hfLoadDialog.format ? `${hfLoadDialog.format.toUpperCase()} · ` : ''}sglang downloads weights from HuggingFace on first start
                     </Typography>
                 </DialogTitle>
                 <DialogContent>
@@ -12239,11 +12259,11 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                         <TextField
                             label="GPU memory utilization"
                             type="number"
-                            value={hfLoadConfig.gpuMemoryUtilization}
-                            onChange={e => setHfLoadConfig(c => ({ ...c, gpuMemoryUtilization: e.target.value }))}
+                            value={hfLoadConfig.memFractionStatic}
+                            onChange={e => setHfLoadConfig(c => ({ ...c, memFractionStatic: e.target.value }))}
                             inputProps={{ min: 0.1, max: 1.0, step: 0.05 }}
                             size="small"
-                            helperText="Fraction of GPU memory vLLM may use (0.1–1.0)."
+                            helperText="Fraction of GPU memory sglang may use (0.1–1.0)."
                         />
                         <TextField
                             label="Tensor parallel size"
@@ -12322,13 +12342,13 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                         Cancel
                     </Button>
                     <Button onClick={handleLoadHf} variant="contained" disabled={hfLoading}>
-                        {hfLoading ? <CircularProgress size={18} /> : 'Load with vLLM'}
+                        {hfLoading ? <CircularProgress size={18} /> : 'Load with sglang'}
                     </Button>
                 </DialogActions>
             </Dialog>
 
             {/* llama.cpp Load Dialog — opened by clicking Load on a downloaded
-                GGUF model. Mirrors the HF vLLM dialog so the user gets the same
+                GGUF model. Mirrors the HF sglang dialog so the user gets the same
                 "configure and launch" pattern for both backends. */}
             <Dialog
                 open={llamacppLoadDialog.open}
@@ -12527,6 +12547,87 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                             control={<Switch checked={llamacppConfig.compressMemory} onChange={e => setLlamacppConfig({ ...llamacppConfig, compressMemory: e.target.checked })} />}
                             label="AIMem (compress older conversation messages)"
                         />
+
+                        {/* MTP (multi-token prediction / speculative decoding) —
+                            llama.cpp PR #22673 (May 2026). Bottom of the dialog
+                            because the default ('none') is silent serial
+                            decode; only flip it on for an `-MTP-` variant
+                            GGUF, or wire a draft model. Options carry a
+                            primary label + a secondary description;
+                            renderValue collapses the selected option back to
+                            the short title so the field stays compact. */}
+                        <Box sx={{ mt: 1, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                                MTP (advanced)
+                            </Typography>
+                            <Tooltip title={SETTINGS_TOOLTIPS.specType} placement="top-start">
+                                <FormControl size="small" fullWidth>
+                                    <InputLabel>MTP mode</InputLabel>
+                                    <Select
+                                        value={llamacppConfig.specType}
+                                        label="MTP mode"
+                                        onChange={e => setLlamacppConfig({ ...llamacppConfig, specType: e.target.value })}
+                                        renderValue={(value) => ({
+                                            'none': 'Off — serial decode (no MTP)',
+                                            'draft-mtp': 'MTP heads (built into this model)',
+                                            'draft-simple': 'Draft model (separate smaller GGUF)',
+                                        }[value])}
+                                    >
+                                        <MenuItem value="none">
+                                            <Box>
+                                                <Typography variant="body2" sx={{ fontWeight: 600 }}>Off — serial decode (no MTP)</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                                                    Default. One token per forward pass. Best when the model has no MTP heads and you don't want to manage a draft GGUF.
+                                                </Typography>
+                                            </Box>
+                                        </MenuItem>
+                                        <MenuItem value="draft-mtp">
+                                            <Box>
+                                                <Typography variant="body2" sx={{ fontWeight: 600 }}>MTP heads (built into this model)</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                                                    Use the multi-token-prediction heads already baked into the GGUF. No second model needed. ~1.5–2× single-stream tok/s. Only works on <code>-MTP-</code> variant checkpoints: DeepSeek-V3 / R1, Qwen3-Next-MTP, Qwen3.5/3.6-MTP. Refuses to start on a plain non-MTP GGUF.
+                                                </Typography>
+                                            </Box>
+                                        </MenuItem>
+                                        <MenuItem value="draft-simple">
+                                            <Box>
+                                                <Typography variant="body2" sx={{ fontWeight: 600 }}>Draft model (separate smaller GGUF)</Typography>
+                                                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                                                    Classic speculative decoding: a small fast model proposes tokens, the main model verifies. Best when the draft shares the main model's tokenizer (e.g. Qwen2.5-0.5B-Instruct as draft for Qwen3-8B-Instruct). Specify the draft path below.
+                                                </Typography>
+                                            </Box>
+                                        </MenuItem>
+                                    </Select>
+                                </FormControl>
+                            </Tooltip>
+                            {llamacppConfig.specType !== 'none' && (
+                                <Tooltip title={SETTINGS_TOOLTIPS.specDraftNMax} placement="top-start">
+                                    <TextField
+                                        size="small"
+                                        type="number"
+                                        label="Draft tokens per step"
+                                        value={llamacppConfig.specDraftNMax}
+                                        onChange={e => setLlamacppConfig({ ...llamacppConfig, specDraftNMax: Math.max(1, Math.min(16, Number(e.target.value) || 1)) })}
+                                        inputProps={{ min: 1, max: 16 }}
+                                        sx={{ mt: 1.5 }}
+                                        fullWidth
+                                    />
+                                </Tooltip>
+                            )}
+                            {llamacppConfig.specType === 'draft-simple' && (
+                                <Tooltip title={SETTINGS_TOOLTIPS.specDraftModel} placement="top-start">
+                                    <TextField
+                                        size="small"
+                                        label="Draft model path"
+                                        placeholder="/models/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+                                        value={llamacppConfig.specDraftModel}
+                                        onChange={e => setLlamacppConfig({ ...llamacppConfig, specDraftModel: e.target.value })}
+                                        sx={{ mt: 1.5 }}
+                                        fullWidth
+                                    />
+                                </Tooltip>
+                            )}
+                        </Box>
                     </Box>
                 </DialogContent>
                 <DialogActions>

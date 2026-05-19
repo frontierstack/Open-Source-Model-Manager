@@ -793,7 +793,7 @@ export default function ChatInput({
                                                                     background: 'var(--accent-soft)', color: 'var(--accent)',
                                                                     fontWeight: 600, letterSpacing: '.03em', textTransform: 'uppercase',
                                                                 }}>
-                                                                    {m.backend === 'vllm' ? 'vLLM' : m.backend === 'llamacpp' ? 'llama.cpp' : m.backend}
+                                                                    {m.backend === 'sglang' ? 'sglang' : m.backend === 'llamacpp' ? 'llama.cpp' : m.backend}
                                                                 </span>
                                                             )}
                                                         </div>

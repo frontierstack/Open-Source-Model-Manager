@@ -89,7 +89,7 @@ export default function ChatHeader({
                                             sx={{
                                                 height: 18,
                                                 fontSize: '0.65rem',
-                                                backgroundColor: model.backend === 'vllm'
+                                                backgroundColor: model.backend === 'sglang'
                                                     ? 'rgba(99, 102, 241, 0.2)'
                                                     : 'rgba(99, 102, 241, 0.2)',
                                             }}

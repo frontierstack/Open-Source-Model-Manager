@@ -74,7 +74,7 @@ export function useDownloadModel() {
 }
 
 /**
- * Load a model (create vLLM instance)
+ * Load a model (create sglang or llama.cpp instance)
  */
 export function useLoadModel() {
     const queryClient = useQueryClient();

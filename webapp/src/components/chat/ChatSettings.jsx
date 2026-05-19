@@ -49,7 +49,7 @@ export default function ChatSettings({
         // null = "auto" — let the backend pick based on input size. The TextField
         // renders this as an empty input. Never default to contextSize here
         // because that would later be sent verbatim as max_tokens and leave
-        // vLLM with zero room for the input prompt.
+        // sglang with zero room for the input prompt.
         maxTokens = null,
         systemPromptId = null,
     } = settings;

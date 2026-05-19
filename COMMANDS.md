@@ -29,7 +29,7 @@ sudo ./start.sh
 Starts all services in detached mode:
 - Webapp (port 3001) - Main management UI
 - Chat (port 3002) - Lightweight chat-only UI
-- Base model containers (llamacpp, vllm)
+- Base model containers (llamacpp, sglang)
 
 ### Stop Services
 
@@ -39,7 +39,7 @@ sudo ./stop.sh
 
 Stops all services and cleans up:
 - Stops all Docker Compose services
-- Removes dynamic model instances (llamacpp-*, vllm-*)
+- Removes dynamic model instances (llamacpp-*, sglang-*)
 - Preserves data volumes (models, user data, sessions)
 
 ### Reload Services
@@ -132,7 +132,7 @@ sudo ./build.sh --retry 3            # Allow 3 retry attempts per image
 - **Incremental Builds**: Automatically skips images that already exist
 - **Build State Tracking**: Saves checksums in `.build-state/` directory
 - **Dockerfile Change Detection**: Rebuilds only when Dockerfiles are modified
-- **Parallel Builds**: Builds llamacpp and vllm simultaneously (default)
+- **Parallel Builds**: Builds llamacpp and sglang simultaneously (default)
 - **Resume Capability**: Interrupted builds automatically resume
 - **Retry Logic**: Automatically retries failed builds (configurable)
 
@@ -243,7 +243,7 @@ By default WSL2 runs in NAT mode — services bound to `0.0.0.0` inside WSL are 
 ```bash
 # List all model instances
 docker ps --filter "name=llamacpp"    # llama.cpp instances only
-docker ps --filter "name=vllm"        # vLLM instances only
+docker ps --filter "name=sglang"      # sglang instances only
 docker ps                             # All containers
 ```
 
@@ -252,7 +252,7 @@ docker ps                             # All containers
 ```bash
 # Follow logs in real-time
 docker logs -f llamacpp-{modelName}   # llama.cpp
-docker logs -f vllm-{modelName}       # vLLM
+docker logs -f sglang-{modelName}     # sglang
 
 # View last 100 lines
 docker logs --tail 100 llamacpp-{modelName}
@@ -266,11 +266,11 @@ docker logs --since 30m llamacpp-{modelName}
 ```bash
 # Stop specific instance
 docker stop llamacpp-{modelName}      # llama.cpp
-docker stop vllm-{modelName}          # vLLM
+docker stop sglang-{modelName}        # sglang
 
 # Stop all model instances
 docker ps --filter "name=llamacpp" -q | xargs docker stop
-docker ps --filter "name=vllm" -q | xargs docker stop
+docker ps --filter "name=sglang" -q | xargs docker stop
 ```
 
 ### Instance Resource Usage
@@ -382,7 +382,7 @@ docker compose exec webapp bash
 
 # Access running model instance
 docker exec -it llamacpp-{modelName} sh
-docker exec -it vllm-{modelName} bash
+docker exec -it sglang-{modelName} bash
 
 # Run commands in container
 docker compose exec webapp ls -la /models
@@ -525,7 +525,7 @@ docker image prune
 # Remove specific image
 docker rmi modelserver-webapp:latest
 docker rmi modelserver-llamacpp:latest
-docker rmi modelserver-vllm:latest
+docker rmi modelserver-sglang:latest
 
 # Force remove image
 docker rmi -f modelserver-webapp:latest
@@ -559,7 +559,7 @@ docker compose build --no-cache webapp
 
 # Build base images manually
 docker build -t modelserver-llamacpp:latest ./llamacpp
-docker build -t modelserver-vllm:latest ./vllm
+docker build -t modelserver-sglang:latest ./sglang
 docker build -t modelserver-webapp:latest ./webapp
 ```
 
@@ -614,7 +614,7 @@ curl -sk https://localhost:3001/api/models
 **Check instance logs:**
 ```bash
 docker logs llamacpp-{modelName}      # Look for OOM errors
-docker logs vllm-{modelName}
+docker logs sglang-{modelName}
 ```
 
 **Common issues:**
@@ -624,7 +624,7 @@ docker logs vllm-{modelName}
 
 # Wrong backend - Switch in Launch Settings UI
 # llama.cpp: Maxwell 5.2+ (GTX 900+)
-# vLLM: Pascal 6.0+ (GTX 1000+)
+# sglang: Turing 7.5+ (RTX 20-series, T4) with driver R570+
 ```
 
 **Test model manually:**
@@ -895,7 +895,7 @@ docker compose restart webapp
 ### Performance
 
 - Use **llama.cpp** for Maxwell 5.2+ GPUs (GTX 900, Quadro M series)
-- Use **vLLM** for Pascal 6.0+ GPUs (GTX 1000+, Quadro P series)
+- Use **sglang** for Turing 7.5+ GPUs (RTX 20-series and newer) — high-throughput concurrent serving, GGUF + safetensors + AWQ/GPTQ/FP8/NVFP4 with RadixAttention prefix caching and native tool/reasoning parsers
 - Enable Flash Attention for memory savings
 - Use q8_0/q4_0 cache for low VRAM
 - Monitor GPU with `watch -n 1 nvidia-smi`

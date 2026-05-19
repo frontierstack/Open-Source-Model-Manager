@@ -377,9 +377,9 @@ export default function ChatContainer({
     useEffect(() => {
         const fetchRunningInstances = async () => {
             try {
-                const [llamacppRes, vllmRes] = await Promise.allSettled([
+                const [llamacppRes, sglangRes] = await Promise.allSettled([
                     fetch('/api/llamacpp/instances', { credentials: 'include' }),
-                    fetch('/api/vllm/instances', { credentials: 'include' }),
+                    fetch('/api/sglang/instances', { credentials: 'include' }),
                 ]);
 
                 const instances = [];
@@ -400,15 +400,15 @@ export default function ChatContainer({
                     });
                 }
 
-                // Parse vLLM instances
-                if (vllmRes.status === 'fulfilled' && vllmRes.value.ok) {
-                    const vllmData = await vllmRes.value.json();
-                    const vllmInstances = Array.isArray(vllmData) ? vllmData : (vllmData.instances || []);
-                    vllmInstances.forEach(inst => {
+                // Parse sglang instances
+                if (sglangRes.status === 'fulfilled' && sglangRes.value.ok) {
+                    const sglangData = await sglangRes.value.json();
+                    const sglangInstances = Array.isArray(sglangData) ? sglangData : (sglangData.instances || []);
+                    sglangInstances.forEach(inst => {
                         instances.push({
                             name: inst.name || inst.model,
                             status: inst.status || 'running',  // Use actual backend status
-                            backend: 'vllm',
+                            backend: 'sglang',
                             port: inst.port,
                             // Include context size from config for accurate context tracking
                             contextSize: inst.config?.contextSize || inst.contextSize,

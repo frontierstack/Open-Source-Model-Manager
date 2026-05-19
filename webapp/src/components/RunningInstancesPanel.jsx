@@ -41,7 +41,7 @@ function Pill({ label, tooltip, tone = 'neutral' }) {
             style = { color: 'var(--accent-primary)', borderColor: 'var(--border-focus)', backgroundColor: 'var(--accent-muted)' };
             break;
         case 'brand':
-            // Backend label (vLLM / llama.cpp): strong text on hover bg.
+            // Backend label (sglang / llama.cpp): strong text on hover bg.
             style = { color: 'var(--text-primary)', borderColor: 'var(--border-hover)', backgroundColor: 'var(--bg-hover)', fontWeight: 600 };
             break;
         case 'success':
@@ -66,19 +66,30 @@ function Pill({ label, tooltip, tone = 'neutral' }) {
     return tooltip ? <Tooltip title={tooltip}>{pill}</Tooltip> : pill;
 }
 
-function VllmPills({ cfg }) {
-    // vLLM-specific runtime config pills. Each renders only when
+function SglangPills({ cfg }) {
+    // sglang-specific runtime config pills. Each renders only when
     // the config differs from the runtime default so the row stays
     // information-dense rather than cluttered.
     return (
         <>
-            <Pill tooltip="GPU memory utilization" label={`GPU: ${Math.round((cfg?.gpuMemoryUtilization ?? 0.9) * 100)}%`} />
+            <Pill tooltip="Static memory fraction (--mem-fraction-static)" label={`Mem: ${Math.round((cfg?.memFractionStatic ?? 0.88) * 100)}%`} />
             <Pill tooltip="Tensor parallel size (GPUs)" label={`TP: ${cfg?.tensorParallelSize ?? 1}`} />
-            <Pill tooltip="Max concurrent sequences" label={`Seqs: ${cfg?.maxNumSeqs ?? 256}`} />
+            <Pill tooltip="Max concurrent batched requests" label={`Reqs: ${cfg?.maxRunningRequests ?? 256}`} />
+            {cfg?.chunkedPrefillSize && cfg.chunkedPrefillSize !== 4096 && (
+                <Pill tooltip="Prefill chunk size (--chunked-prefill-size)" label={`Prefill: ${cfg.chunkedPrefillSize}`} />
+            )}
+            {cfg?.schedulePolicy && cfg.schedulePolicy !== 'lpm' && (
+                <Pill tooltip="Request scheduling policy" label={`Sched: ${cfg.schedulePolicy}`} />
+            )}
             {cfg?.kvCacheDtype && cfg.kvCacheDtype !== 'auto' && (
                 <Pill tooltip="KV cache data type" label={`KV: ${cfg.kvCacheDtype}`} tone="warning" />
             )}
-            {cfg?.enforceEager && <Pill tooltip="CUDA graphs disabled" label="Eager" />}
+            {cfg?.toolCallParser && (
+                <Pill tooltip="sglang tool-call parser" label={`Tools: ${cfg.toolCallParser}`} tone="info" />
+            )}
+            {cfg?.reasoningParser && (
+                <Pill tooltip="Reasoning/thinking parser" label={`Reason: ${cfg.reasoningParser}`} tone="accent" />
+            )}
             {cfg?.contextShift && <Pill tooltip="Context shifting enabled" label="CtxShift" tone="success" />}
             {cfg?.compressMemory && <Pill tooltip="AIMem memory compression enabled" label="AIMem" tone="accent" />}
         </>
@@ -97,6 +108,17 @@ function LlamacppPills({ cfg }) {
             )}
             {cfg?.flashAttention && <Pill tooltip="Flash attention enabled" label="Flash" tone="info" />}
             {cfg?.swaFull && <Pill tooltip="Full SWA cache — prompt cache reuses across turns" label="SWA-Full" tone="success" />}
+            {/* Speculative decoding chip — shows the active --spec-type mode
+                (draft-mtp uses the model's built-in MTP heads, draft-simple
+                pairs a smaller draft GGUF with the main model). Hidden when
+                specType is unset or 'none' so the row stays compact for the
+                default serial-decode path. */}
+            {cfg?.specType === 'draft-mtp' && (
+                <Pill tooltip={`MTP speculative decoding (draft-n-max=${cfg?.specDraftNMax ?? 3})`} label="MTP" tone="success" />
+            )}
+            {cfg?.specType === 'draft-simple' && (
+                <Pill tooltip={`Speculative decoding with draft model (n-max=${cfg?.specDraftNMax ?? 3})`} label={`Spec: draft+${cfg?.specDraftNMax ?? 3}`} tone="success" />
+            )}
             {cfg?.contextShift && <Pill tooltip="Context shifting enabled" label="CtxShift" tone="success" />}
             {cfg?.compressMemory && <Pill tooltip="AIMem memory compression enabled" label="AIMem" tone="accent" />}
             {/* Always show the reasoning state so it's unambiguous at a glance */}
@@ -113,8 +135,8 @@ function LlamacppPills({ cfg }) {
 
 function InstanceCard({ instance, onStop }) {
     const cfg = instance.config || {};
-    const isVllm = instance.backend === 'vllm';
-    const ctx = isVllm ? (cfg.maxModelLen || 4096) : (cfg.contextSize || 4096);
+    const isSglang = instance.backend === 'sglang';
+    const ctx = isSglang ? (cfg.maxModelLen || cfg.contextSize || 4096) : (cfg.contextSize || 4096);
     return (
         <div
             // Card surface tracks the active theme/accent. Earlier version
@@ -146,19 +168,16 @@ function InstanceCard({ instance, onStop }) {
                     <div className="flex flex-wrap gap-1 mb-1">
                         <Pill label={`Port ${instance.port}`} tone="accent" />
                         <Pill
-                            tooltip={`Backend: ${isVllm ? 'vLLM' : 'llama.cpp'}`}
-                            label={isVllm ? 'vLLM' : 'llama.cpp'}
+                            tooltip={`Backend: ${isSglang ? 'sglang' : 'llama.cpp'}`}
+                            label={isSglang ? 'sglang' : 'llama.cpp'}
                             tone="brand"
                         />
                         <Pill tooltip="Context size" label={`${ctx} ctx`} />
-                        {isVllm && cfg.cpuOffloadGb > 0 && (
-                            <Pill tooltip="CPU offload enabled" label={`CPU: ${cfg.cpuOffloadGb}GB`} tone="info" />
-                        )}
                     </div>
 
                     {/* Second row: backend-specific runtime details */}
                     <div className="flex flex-wrap gap-1">
-                        {isVllm ? <VllmPills cfg={cfg} /> : <LlamacppPills cfg={cfg} />}
+                        {isSglang ? <SglangPills cfg={cfg} /> : <LlamacppPills cfg={cfg} />}
                     </div>
                 </div>
 

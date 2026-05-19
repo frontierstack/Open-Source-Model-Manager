@@ -215,7 +215,7 @@ build_image() {
     local image_name=$2
 
     local -a profile_args=()
-    if [ "$component" = "llamacpp" ] || [ "$component" = "vllm" ]; then
+    if [ "$component" = "llamacpp" ] || [ "$component" = "sglang" ]; then
         profile_args=(--profile build-only)
     fi
 
@@ -279,7 +279,7 @@ friendly_checkpoint() {
         *"cmake"*)             echo "Running CMake" ;;
         *"make -j"*)           echo "Compiling native code" ;;
         *"pip install"*)       echo "Installing Python packages" ;;
-        *"installing vllm"*)   echo "Installing vLLM" ;;
+        *"installing sglang"*)   echo "Installing sglang" ;;
         *"npm ci"*)            echo "Installing npm packages" ;;
         *"npm install"*)       echo "Installing npm packages" ;;
         *"npm run build"*)     echo "Building frontend bundle" ;;
@@ -292,7 +292,7 @@ friendly_checkpoint() {
     esac
 }
 
-CHECKPOINT_PATTERNS='downloading cuda|installing cuda|compiling llama|cmake|make -j|pip install|installing vllm|npm install|npm run build|npm ci|webpack|apt-get install|apt-get update|exporting layers|exporting manifest'
+CHECKPOINT_PATTERNS='downloading cuda|installing cuda|compiling llama|cmake|make -j|pip install|installing sglang|npm install|npm run build|npm ci|webpack|apt-get install|apt-get update|exporting layers|exporting manifest'
 
 start_build_spinner() {
     local label="$1"
@@ -613,7 +613,7 @@ fi
 section "Build Plan"
 
 BUILD_LLAMACPP=false
-BUILD_VLLM=false
+BUILD_SGLANG=false
 BUILD_WEBAPP=false
 
 # Track reasons for the summary
@@ -645,11 +645,11 @@ analyze_component() {
 }
 
 analyze_component "llamacpp" "modelserver-llamacpp:latest"
-analyze_component "vllm" "modelserver-vllm:latest"
+analyze_component "sglang" "modelserver-sglang:latest"
 analyze_component "webapp" "modelserver-webapp:latest"
 
 # Display build plan
-for comp in llamacpp vllm webapp; do
+for comp in llamacpp sglang webapp; do
     reason="${BUILD_REASON[$comp]}"
     needs_build=false
     eval "needs_build=\$BUILD_$(echo $comp | tr '[:lower:]' '[:upper:]')"
@@ -662,7 +662,7 @@ for comp in llamacpp vllm webapp; do
 done
 
 # Check if anything needs building
-if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_VLLM" = false ] && [ "$BUILD_WEBAPP" = false ]; then
+if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_SGLANG" = false ] && [ "$BUILD_WEBAPP" = false ]; then
     echo ""
     log_success "All images up to date — nothing to build"
     echo ""
@@ -678,16 +678,16 @@ fi
 TOTAL_START_TIME=$(date +%s)
 
 # Build backend images
-if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
+if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_SGLANG" = true ]; then
     section "Backend Images"
 
-    if [ "$PARALLEL" = true ] && [ "$BUILD_LLAMACPP" = true ] && [ "$BUILD_VLLM" = true ]; then
-        log_info "Building llamacpp + vllm in parallel"
+    if [ "$PARALLEL" = true ] && [ "$BUILD_LLAMACPP" = true ] && [ "$BUILD_SGLANG" = true ]; then
+        log_info "Building llamacpp + sglang in parallel"
         echo ""
 
         # Clear any stale logs so the checkpoint monitor starts fresh
         > "$BUILD_STATE_DIR/llamacpp.log" 2>/dev/null || true
-        > "$BUILD_STATE_DIR/vllm.log" 2>/dev/null || true
+        > "$BUILD_STATE_DIR/sglang.log" 2>/dev/null || true
 
         # Build both in background
         (
@@ -697,23 +697,23 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
         PID_LLAMACPP=$!
 
         (
-            build_image "vllm" "modelserver-vllm:latest"
-            echo $? > "$BUILD_STATE_DIR/vllm.exit"
+            build_image "sglang" "modelserver-sglang:latest"
+            echo $? > "$BUILD_STATE_DIR/sglang.exit"
         ) &
-        PID_VLLM=$!
+        PID_SGLANG=$!
 
         # Spinner monitoring both log files for checkpoints
         start_build_spinner "Building backend images (~20–30 min)" \
-            "$BUILD_STATE_DIR/llamacpp.log" "$BUILD_STATE_DIR/vllm.log"
+            "$BUILD_STATE_DIR/llamacpp.log" "$BUILD_STATE_DIR/sglang.log"
         wait $PID_LLAMACPP 2>/dev/null || true
-        wait $PID_VLLM 2>/dev/null || true
+        wait $PID_SGLANG 2>/dev/null || true
         stop_build_spinner
 
         echo ""
 
         # Check exit codes and report
         LLAMACPP_EXIT=$(cat "$BUILD_STATE_DIR/llamacpp.exit" 2>/dev/null || echo "1")
-        VLLM_EXIT=$(cat "$BUILD_STATE_DIR/vllm.exit" 2>/dev/null || echo "1")
+        SGLANG_EXIT=$(cat "$BUILD_STATE_DIR/sglang.exit" 2>/dev/null || echo "1")
 
         if [ "$LLAMACPP_EXIT" = "0" ]; then
             local_dur=$(cat "$BUILD_STATE_DIR/llamacpp.duration" 2>/dev/null || echo "?")
@@ -726,19 +726,19 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
             exit 1
         fi
 
-        if [ "$VLLM_EXIT" = "0" ]; then
-            local_dur=$(cat "$BUILD_STATE_DIR/vllm.duration" 2>/dev/null || echo "?")
-            log_success "vllm  ${DIM}$(fmt_duration $local_dur)${NC}"
+        if [ "$SGLANG_EXIT" = "0" ]; then
+            local_dur=$(cat "$BUILD_STATE_DIR/sglang.duration" 2>/dev/null || echo "?")
+            log_success "sglang  ${DIM}$(fmt_duration $local_dur)${NC}"
         else
-            log_error "vllm build failed"
+            log_error "sglang build failed"
             echo ""
-            echo -e "  ${DIM}Build log: $BUILD_STATE_DIR/vllm.log${NC}"
-            tail -10 "$BUILD_STATE_DIR/vllm.log" 2>/dev/null | sed 's/^/    /'
+            echo -e "  ${DIM}Build log: $BUILD_STATE_DIR/sglang.log${NC}"
+            tail -10 "$BUILD_STATE_DIR/sglang.log" 2>/dev/null | sed 's/^/    /'
             exit 1
         fi
 
         verify_image "modelserver-llamacpp:latest" || exit 1
-        verify_image "modelserver-vllm:latest" || exit 1
+        verify_image "modelserver-sglang:latest" || exit 1
 
     else
         # Sequential builds
@@ -756,18 +756,18 @@ if [ "$BUILD_LLAMACPP" = true ] || [ "$BUILD_VLLM" = true ]; then
             verify_image "modelserver-llamacpp:latest" || exit 1
         fi
 
-        if [ "$BUILD_VLLM" = true ]; then
-            > "$BUILD_STATE_DIR/vllm.log" 2>/dev/null || true
-            start_build_spinner "Building vllm (~10–15 min)" "$BUILD_STATE_DIR/vllm.log"
-            if build_image "vllm" "modelserver-vllm:latest"; then
+        if [ "$BUILD_SGLANG" = true ]; then
+            > "$BUILD_STATE_DIR/sglang.log" 2>/dev/null || true
+            start_build_spinner "Building sglang (~10–15 min)" "$BUILD_STATE_DIR/sglang.log"
+            if build_image "sglang" "modelserver-sglang:latest"; then
                 stop_build_spinner
-                local_dur=$(cat "$BUILD_STATE_DIR/vllm.duration" 2>/dev/null || echo "?")
-                log_success "vllm  ${DIM}$(fmt_duration $local_dur)${NC}"
+                local_dur=$(cat "$BUILD_STATE_DIR/sglang.duration" 2>/dev/null || echo "?")
+                log_success "sglang  ${DIM}$(fmt_duration $local_dur)${NC}"
             else
                 stop_build_spinner
                 exit 1
             fi
-            verify_image "modelserver-vllm:latest" || exit 1
+            verify_image "modelserver-sglang:latest" || exit 1
         fi
     fi
 fi
@@ -806,7 +806,7 @@ TOTAL_DURATION=$(( $(date +%s) - TOTAL_START_TIME ))
 section "Summary"
 
 # Build results table
-for comp in llamacpp vllm webapp; do
+for comp in llamacpp sglang webapp; do
     needs_build=false
     eval "needs_build=\$BUILD_$(echo $comp | tr '[:lower:]' '[:upper:]')"
     dur_file="$BUILD_STATE_DIR/${comp}.duration"
