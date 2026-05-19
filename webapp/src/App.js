@@ -10244,8 +10244,6 @@ console.log(await res.json());`
                                                             <MenuItem value="/api/pi/install">GET /api/pi/install - Pi auto-installer (curl | bash)</MenuItem>
                                                             <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
                                                             <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Documentation ───</MenuItem>
-                                                            <MenuItem value="/api/docs">GET /api/docs - Get API Documentation</MenuItem>
                                                         </Select>
                                                     </FormControl>
                                                 </Grid>
@@ -10476,7 +10474,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                 )}
 
 
-                                {/* Chat Web Search & URL Fetch */}
+                                {/* Web Search & URL Fetch */}
                                 {activeDocSection === 'web-search' && (
 
                                 <Box sx={docSectionSx}>
@@ -10484,8 +10482,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Chat Web Search & URL Fetch</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Web search, URL fetching, and content extraction</Typography>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Web Search &amp; URL Fetch</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Native chat tools for browsing the open web and pulling URL content</Typography>
                                             </Box>
                                         </Box>
 
@@ -10493,75 +10491,125 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                     </Box>
 
                                     <Box sx={docSectionBodySx}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 2, border: '1px solid rgba(34, 197, 94, 0.2)' }}>
-                                            <CheckCircleIcon sx={{ fontSize: 18, color: 'var(--success)' }} />
-                                            <Typography sx={{ fontSize: '0.85rem' }}>Native tools — model invokes web_search / fetch_url / crawl_pages / playwright_fetch / playwright_interact / scrapling_fetch / fetch_timeseries / render_chart automatically when the query warrants it. No UI toggle. (render_chart returns a chartSpec the chat UI mounts inline as a real Recharts SVG; fetch_timeseries pulls free OHLC data from Yahoo Finance for stocks / indexes / forex / crypto.)</Typography>
+
+                                        {/* Intro callout — the model decides; no UI toggle. */}
+                                        <Box sx={{ p: 1.5, mb: 2, bgcolor: 'var(--accent-muted)', borderRadius: 1.5, border: '1px solid var(--accent-muted)' }}>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
+                                                <CheckCircleIcon sx={{ fontSize: 18, color: 'var(--accent-primary)' }} />
+                                                <Typography sx={{ fontSize: '0.85rem', fontWeight: 600 }}>Native tools, no UI toggle</Typography>
+                                            </Box>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                                The chat model invokes <code>web_search</code> and <code>fetch_url</code> as OpenAI-style function calls when a query warrants it. Each call streams in as a chip showing the tool name, arguments, and result. There is no globe / link button to enable; the model decides per turn.
+                                            </Typography>
                                         </Box>
 
                                         <Grid container spacing={2}>
-                                            <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>How to Use</Typography>
-                                                    <Box sx={{ fontSize: '0.8rem' }}>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>1.</strong> Open the Chat interface (port 3002).</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>2.</strong> Just ask. The chat model decides when to search the web or fetch a URL — there's no globe or link button to toggle.</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>3.</strong> Each tool invocation streams in as a chip with the tool name, arguments, and (on click) the full result.</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.8rem' }}><strong>4.</strong> URLs you paste are noticed by the model and fetched on demand via <code>fetch_url</code>.</Typography>
-                                                        <Typography variant="body2" sx={{ fontSize: '0.8rem' }}><strong>5.</strong> File URLs (PDF, DOCX, XLSX, CSV, JSON, …) are direct-downloaded and parsed; HTML pages go through the Scrapling/Playwright fallback chain.</Typography>
+
+                                            {/* ====================== Web Search ====================== */}
+                                            <Grid item xs={12} lg={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)', height: '100%' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                                        <Chip label="web_search" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontFamily: 'monospace' }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Open-web search with content extraction</Typography>
                                                     </Box>
+
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Behavior</Typography>
+                                                    <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' }, mb: 1.5 }}>
+                                                        <TableBody>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130, whiteSpace: 'nowrap' }}>results</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Up to 5 per call</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>content / page</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Up to 12,000 chars extracted</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>query rewrite</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>extractSearchQuery()</code> trims long prompts to key entities (domains, IPs, hashes, CVEs) + intent keywords</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>citations</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Tool description instructs the model to cite sources and quote actual data</TableCell></TableRow>
+                                                        </TableBody>
+                                                    </Table>
+
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Fallback chain</Typography>
+                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0.5 }}>
+                                                        <Chip label="DuckDuckGo" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="Scrapling (StealthyFetcher)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="Brave Search" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(251,191,36,0.15)', color: 'var(--warning)', border: '1px solid rgba(251,191,36,0.25)' }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="Playwright" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
+                                                    </Box>
+                                                    <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
+                                                        Earlier providers serve when reachable; later ones engage only on empty / error / blocked results.
+                                                    </Typography>
                                                 </Box>
                                             </Grid>
-                                            <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Search Engine Stack</Typography>
-                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="DuckDuckGo (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
-                                                        <Chip label="Scrapling fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Brave Search fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                        <Chip label="Smart query extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
-                                                        <Chip label="Time-range filtering" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
+
+                                            {/* ====================== URL Fetch ====================== */}
+                                            <Grid item xs={12} lg={6}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)', height: '100%' }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                                        <Chip label="fetch_url" size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600, fontFamily: 'monospace' }} />
+                                                        <Typography sx={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Backed by <code>POST /api/url/fetch</code> (<code>query</code> scope)</Typography>
                                                     </Box>
+
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Behavior</Typography>
+                                                    <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.7rem' }, mb: 1.5 }}>
+                                                        <TableBody>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130, whiteSpace: 'nowrap' }}>urls / call</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Up to 3 URLs per invocation</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxLength (files)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>50,000 chars default</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>maxLength (HTML)</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>12,000 chars default</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>timeout</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>30,000 ms default</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>file detection</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PDF, DOCX, XLSX/XLS, plus text/code (<code>.txt .csv .json .xml .md .py .js</code>, …) by extension</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>pdf pipeline</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>pdf-parse</code> + <code>repairPdfUrls()</code> rejoins URLs broken across lines</TableCell></TableRow>
+                                                        </TableBody>
+                                                    </Table>
+
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Fallback chain</Typography>
+                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0.5 }}>
+                                                        <Chip label="Direct download" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="Scrapling" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="Playwright" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(251,191,36,0.15)', color: 'var(--warning)', border: '1px solid rgba(251,191,36,0.25)' }} />
+                                                        <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                        <Chip label="axios" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(239,68,68,0.12)', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.22)' }} />
+                                                    </Box>
+                                                    <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
+                                                        Known file extensions skip the browser path entirely and go straight to direct download.
+                                                    </Typography>
                                                 </Box>
                                             </Grid>
-                                            <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Content Fetching Stack</Typography>
-                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="Scrapling StealthyFetcher (primary)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Playwright fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
-                                                        <Chip label="Axios fallback" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                        <Chip label="CAPTCHA evasion" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="XHR/SPA interception" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
-                                                        <Chip label="Smart content extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                    </Box>
-                                                </Box>
-                                            </Grid>
-                                            <Grid item xs={12} md={6}>
-                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2, height: '100%' }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>URL Fetch Feature</Typography>
-                                                    <Box sx={{ fontSize: '0.8rem' }}>
-                                                        <Typography variant="body2" sx={{ mb: 0.5, fontSize: '0.78rem' }}><code style={{ fontSize: '0.72rem', padding: '1px 4px', borderRadius: 3, backgroundColor: 'var(--bg-hover)' }}>POST /api/url/fetch</code> (admin/debug)</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Up to 3 URLs per request, 50k chars/URL for files, 12k for HTML</Typography>
-                                                        <Typography variant="body2" sx={{ mb: 0.3, fontSize: '0.78rem' }}>Smart truncation: 30% beginning + 70% end</Typography>
-                                                        <Typography variant="body2" sx={{ fontSize: '0.78rem' }}>In chat: model invokes <code>fetch_url</code> as a native tool — no toggle</Typography>
-                                                    </Box>
-                                                </Box>
-                                            </Grid>
+
+                                            {/* ====================== Under the hood ====================== */}
                                             <Grid item xs={12}>
                                                 <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Features</Typography>
-                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                        <Chip label="5 results with full content" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
-                                                        <Chip label="24k char content budget" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
-                                                        <Chip label="Smart query extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Content condensation" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Source citations" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                        <Chip label="Article body extraction" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'var(--accent-muted)' }} />
-                                                        <Chip label="Shadow DOM traversal" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(34,197,94,0.15)' }} />
-                                                        <Chip label="Smart truncation (30/70 split)" size="small" sx={{ height: 20, fontSize: '0.65rem', bgcolor: 'rgba(251,191,36,0.15)' }} />
-                                                    </Box>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Under the hood — extractors &amp; helpers</Typography>
+                                                    <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.72rem' } }}>
+                                                        <TableBody>
+                                                            <TableRow>
+                                                                <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 200, whiteSpace: 'nowrap' }}>Scrapling StealthyFetcher</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Playwright-based anti-bot fetcher invoked via <code>execFile</code> (safe URL passing). Timeout in milliseconds. Retries with a longer timeout when initial content is &lt; 500 chars.</TableCell>
+                                                            </TableRow>
+                                                            <TableRow>
+                                                                <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>extract_main_content()</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Strips nav / header / footer / sidebar; prefers article-body selectors (<code>.post-body</code>, <code>.articlebody</code>, <code>[itemprop="articleBody"]</code>, <code>.story-body</code>), then generic containers, then tables, then full text.</TableCell>
+                                                            </TableRow>
+                                                            <TableRow>
+                                                                <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>smartTruncate()</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Keeps the first 30% + last 70% of long content — critical for data pages (e.g. EIA gas prices) where the most recent data sits at the bottom.</TableCell>
+                                                            </TableRow>
+                                                            <TableRow>
+                                                                <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>repairPdfUrls()</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Post-processes <code>pdf-parse</code> output to rejoin URLs that the PDF text layer split across line breaks. Applied at every PDF extraction point (chat upload, URL fetch, email attachments).</TableCell>
+                                                            </TableRow>
+                                                            <TableRow>
+                                                                <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>Playwright XHR interception</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Captures XHR / fetch JSON during page load. <code>networkidle</code> 8 s + scroll trigger for lazy-loading SPAs. Falls back to <code>innerText</code> and shadow-DOM traversal when structured extraction &lt; 300 chars.</TableCell>
+                                                            </TableRow>
+                                                            <TableRow>
+                                                                <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>flattenJsonToText()</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>Collapses large homogeneous result sets from intercepted JSON (e.g. 94 scan engines all "undetected") into summary lines so the model isn't drowned in repetitive structure.</TableCell>
+                                                            </TableRow>
+                                                        </TableBody>
+                                                    </Table>
                                                 </Box>
                                             </Grid>
+
                                         </Grid>
 
 
@@ -10696,6 +10744,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>compressMemory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>AIMem conversation compression</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>disableThinking</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Skip reasoning mode</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>swaFull</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>false</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--swa-full (skip per-turn SWA re-eval)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specType</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>none</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-type (none / draft-mtp / draft-simple)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftNMax</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>3</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-n-max (1–16)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>specDraftModel</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>""</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--spec-draft-model PATH (only when draft-simple)</TableCell></TableRow>
@@ -10721,7 +10770,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>chunkedPrefillSize</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>4096</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--chunked-prefill-size (-1 to disable)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>schedulePolicy</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>lpm</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--schedule-policy (pairs with RadixAttention)</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>kvCacheDtype</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto / fp8_e5m2 / fp8_e4m3</TableCell></TableRow>
-                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>toolCallParser</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>qwen / qwen3_coder / llama3 / mistral / deepseekv3 / kimi_k2 / glm45 / step3</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>toolCallParser</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>qwen / qwen3_coder / llama3 / llama4 / mistral / deepseekv3 / deepseekv31 / deepseekv32 / kimi_k2 / glm / glm45 / gpt-oss / step3</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>reasoningParser</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>auto</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>qwen3 / deepseek-r1 / glm45 / kimi</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>trustRemoteCode</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>--trust-remote-code</TableCell></TableRow>
                                                             <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>contextShift</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>true</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Recycle context window when full</TableCell></TableRow>
@@ -10873,8 +10922,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List all model configs</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/model-configs/:name</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get/update model config</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Search HF models (format filter: gguf/safetensors/awq/gptq/fp8/nvfp4/bnb/any)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/files/:repo</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List repo files</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/repo-size/:repo</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Total size of an HF repo (pre-download size check)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/files/:owner/:repo</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List repo files</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/huggingface/repo-size/:owner/:repo</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Total size of an HF repo (pre-download size check)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List active downloads</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/downloads/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DELETE</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Cancel download</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/system/resources</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Hardware info</TableCell></TableRow>
@@ -10945,6 +10994,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/login</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Login</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/logout</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Logout</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/me</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get current user</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/me/preferences</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-user preferences (theme, fonts, layout; scoped per app via ?app=webapp|chat)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Change password (session auth only)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/auth/reset-password</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Self-service password reset</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>/api/users</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List/create users</TableCell></TableRow>
@@ -11042,6 +11092,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>./reload.sh [service]</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Rebuild and restart services without data loss. Options: webapp, all</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./update.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Quick rebuild of webapp only (for code updates).</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--error)' }}>./reset.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Full system reset. Removes all data except downloaded models. Options: --force (skip confirmation), --rebuild (rebuild Docker images), --full (also delete models)</TableCell></TableRow>
+                                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>./wsl-setup.sh</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>WSL Native-Docker bootstrap: installs Docker + NVIDIA Container Toolkit inside WSL2 (run once on Windows hosts before ./build.sh).</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                         </TableContainer>
