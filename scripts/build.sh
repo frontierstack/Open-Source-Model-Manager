@@ -363,6 +363,123 @@ verify_image() {
     return 0
 }
 
+# Install gVisor (runsc) + register it as a Docker runtime. Idempotent: returns
+# success without doing anything if runsc is already registered. Writes all
+# output to /tmp/install-gvisor.log so the caller can tail it on failure.
+# Returns 0 on success, non-zero on failure.
+install_gvisor() {
+    {
+        echo "[install_gvisor] starting at $(date)"
+
+        local arch gvisor_url tmp
+        arch=$(uname -m)
+        case "$arch" in
+            x86_64)  gvisor_url="https://storage.googleapis.com/gvisor/releases/release/latest/x86_64" ;;
+            aarch64) gvisor_url="https://storage.googleapis.com/gvisor/releases/release/latest/aarch64" ;;
+            *)       echo "Unsupported architecture: $arch (gVisor supports x86_64 and aarch64)"; return 1 ;;
+        esac
+
+        tmp=$(mktemp -d)
+        trap "rm -rf '$tmp'" RETURN
+
+        # Step 1: Download runsc + containerd-shim if not already installed.
+        if ! command -v runsc >/dev/null 2>&1; then
+            echo "Downloading runsc + containerd-shim-runsc-v1 for $arch"
+            local fetcher
+            if command -v curl >/dev/null 2>&1; then
+                fetcher="curl -fsSL -o"
+            elif command -v wget >/dev/null 2>&1; then
+                fetcher="wget -q -O"
+            else
+                echo "Neither curl nor wget is installed."
+                return 1
+            fi
+            (
+                cd "$tmp" || exit 1
+                $fetcher runsc "$gvisor_url/runsc" || exit 1
+                $fetcher runsc.sha512 "$gvisor_url/runsc.sha512" || exit 1
+                $fetcher containerd-shim-runsc-v1 "$gvisor_url/containerd-shim-runsc-v1" || exit 1
+                $fetcher containerd-shim-runsc-v1.sha512 "$gvisor_url/containerd-shim-runsc-v1.sha512" || exit 1
+                sha512sum -c runsc.sha512 >/dev/null || exit 1
+                sha512sum -c containerd-shim-runsc-v1.sha512 >/dev/null || exit 1
+            ) || { echo "Download or checksum verification failed."; return 1; }
+            install -m 0755 -o root -g root "$tmp/runsc" /usr/local/bin/runsc || return 1
+            install -m 0755 -o root -g root "$tmp/containerd-shim-runsc-v1" /usr/local/bin/containerd-shim-runsc-v1 || return 1
+            echo "Installed runsc $(runsc --version 2>&1 | head -1)"
+        fi
+
+        # Step 2: Register runsc in /etc/docker/daemon.json (merge semantics —
+        # preserve other keys). python3 is used because we can't assume jq.
+        local need_reload=0
+        if docker info 2>/dev/null | grep -qw runsc; then
+            echo "Docker already knows the runsc runtime."
+        else
+            echo "Registering runsc as a Docker runtime"
+            mkdir -p /etc/docker
+            local daemon_json=/etc/docker/daemon.json
+            if [ -f "$daemon_json" ]; then
+                cp -a "$daemon_json" "${daemon_json}.lmstudio.bak"
+                echo "Backup of daemon.json saved to ${daemon_json}.lmstudio.bak"
+            fi
+            python3 - "$daemon_json" <<'PY' || return 1
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except FileNotFoundError:
+    cfg = {}
+except json.JSONDecodeError as e:
+    print(f"daemon.json is not valid JSON: {e}", file=sys.stderr)
+    sys.exit(2)
+runtimes = cfg.setdefault('runtimes', {})
+runtimes['runsc'] = {'path': '/usr/local/bin/runsc'}
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+PY
+            need_reload=1
+            echo "daemon.json updated"
+        fi
+
+        # Step 3: Reload (preferred) or restart docker so it picks up the new runtime.
+        if [ "$need_reload" -eq 1 ]; then
+            echo "Reloading docker daemon (systemctl reload docker)"
+            if systemctl reload docker 2>/dev/null; then
+                echo "dockerd reloaded"
+            else
+                echo "reload not supported; restarting docker (running containers will be paused)"
+                systemctl restart docker || return 1
+                echo "dockerd restarted"
+            fi
+            sleep 2
+        fi
+
+        # Step 4: Smoke test — confirm a container can launch with --runtime=runsc.
+        echo "Smoke test: docker run --runtime=runsc alpine echo ok"
+        docker pull alpine:3 >/dev/null 2>&1 || true
+        local output
+        if output=$(docker run --rm --runtime=runsc alpine:3 echo ok 2>&1); then
+            local last_line
+            last_line=$(echo "$output" | tail -1)
+            if [ "$last_line" = "ok" ]; then
+                echo "gVisor sandbox runs containers successfully."
+                return 0
+            else
+                echo "Container ran but returned unexpected output: $output"
+                return 1
+            fi
+        else
+            echo "Smoke test failed:"
+            echo "$output"
+            echo "Check kernel support:"
+            echo "  cat /proc/sys/kernel/unprivileged_userns_clone  (should be 1)"
+            echo "  docker info | grep -A2 Runtimes"
+            return 1
+        fi
+    } > /tmp/install-gvisor.log 2>&1
+}
+
 # ============================================================================
 # PHASE 1: PREREQUISITES
 # ============================================================================
@@ -414,8 +531,7 @@ if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null \
     _is_wsl=true
 fi
 
-# setup-sandbox.sh edits /etc/docker/daemon.json and bounces docker.service.
-# It only works when there's a real systemd-managed Docker daemon — meaning
+# gVisor install requires a real systemd-managed Docker daemon — meaning
 # systemd is PID 1 *and* docker.service exists as a unit. Both fail under
 # Docker Desktop on WSL (the daemon lives in a separate hidden distro and
 # isn't a systemctl unit). Detect the actual capability instead of guessing
@@ -429,8 +545,6 @@ fi
 
 if [ "${SKIP_SANDBOX_SETUP:-0}" = "1" ]; then
     log_warning "SKIP_SANDBOX_SETUP=1 set — skipping gVisor install (tools will run with the default runtime)"
-elif [ ! -f "$PROJECT_DIR/setup-sandbox.sh" ]; then
-    log_warning "setup-sandbox.sh not found — skipping sandbox setup"
 elif [ "$_has_systemd_docker" = false ]; then
     log_warning "No systemd-managed docker.service — skipping gVisor install"
     if [ "$_is_wsl" = true ]; then
@@ -443,20 +557,20 @@ else
         log_success "gVisor (runsc) runtime already registered"
     else
         log_step "Installing gVisor sandbox runtime (runsc)"
-        if bash "$PROJECT_DIR/setup-sandbox.sh" >/tmp/setup-sandbox.log 2>&1; then
+        if install_gvisor; then
             log_success "gVisor installed — tool exec containers will use --runtime=runsc"
         else
             log_warning "gVisor install failed — tool exec will fall back to the default runtime"
             echo ""
-            echo -e "  ${DIM}── setup-sandbox.sh output (tail) ──────────────────────${NC}"
+            echo -e "  ${DIM}── gVisor install output (tail) ────────────────────────${NC}"
             # Prefer the last error/fatal lines if present; otherwise show the tail
-            err_lines=$(grep -iE '(error|fail|fatal|cannot|denied|not found|unable)' /tmp/setup-sandbox.log 2>/dev/null | tail -8)
+            err_lines=$(grep -iE '(error|fail|fatal|cannot|denied|not found|unable)' /tmp/install-gvisor.log 2>/dev/null | tail -8)
             if [ -n "$err_lines" ]; then
                 echo "$err_lines" | sed 's/^/    /'
                 echo -e "  ${DIM}── (last 5 log lines) ──${NC}"
-                tail -5 /tmp/setup-sandbox.log 2>/dev/null | sed 's/^/    /'
+                tail -5 /tmp/install-gvisor.log 2>/dev/null | sed 's/^/    /'
             else
-                tail -15 /tmp/setup-sandbox.log 2>/dev/null | sed 's/^/    /'
+                tail -15 /tmp/install-gvisor.log 2>/dev/null | sed 's/^/    /'
             fi
             echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
             echo ""

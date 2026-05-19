@@ -6,7 +6,7 @@ set -e
 # Replaces Docker Desktop's WSL integration with a real, systemd-managed
 # Docker Engine inside the WSL distro so that:
 #   1. ./build.sh works without needing Docker Desktop on Windows.
-#   2. setup-sandbox.sh (gVisor / runsc) can register the runtime — it needs
+#   2. build.sh's gVisor (runsc) install can register the runtime — it needs
 #      a real /etc/docker/daemon.json + a systemctl-managed docker.service,
 #      neither of which exist when Docker Desktop owns the daemon.
 #
@@ -28,8 +28,9 @@ Setup options:
   --gpu           Force nvidia-container-toolkit install
   --no-gpu        Skip nvidia-container-toolkit install
                   (default: auto-detect from /dev/dxg or /dev/nvidia*)
-  --no-gvisor     Skip gVisor (runsc) install
   --no-smoke      Skip the GPU/Docker smoke tests at the end
+
+  gVisor (runsc) is installed by build.sh — not by this script.
 
 Cleanup mode (does NOT run setup):
   --cleanup       Remove ALL containers, images, volumes, user networks, and
@@ -99,7 +100,6 @@ section() {
 # ============================================================================
 
 INSTALL_GPU=auto       # auto | yes | no
-INSTALL_GVISOR=true
 SKIP_SMOKE_TEST=false
 CLEANUP_MODE=false
 NON_INTERACTIVE=false
@@ -108,7 +108,6 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --no-gpu)      INSTALL_GPU=no;        shift ;;
         --gpu)         INSTALL_GPU=yes;       shift ;;
-        --no-gvisor)   INSTALL_GVISOR=false;  shift ;;
         --no-smoke)    SKIP_SMOKE_TEST=true;  shift ;;
         --cleanup)     CLEANUP_MODE=true;     shift ;;
         -y|--yes)      NON_INTERACTIVE=true;  shift ;;
@@ -547,54 +546,9 @@ if [ "$INSTALL_GPU_FINAL" = yes ]; then
     fi
 fi
 
-# ============================================================================
-# PHASE 6: gVisor SANDBOX RUNTIME (OPTIONAL)
-# ============================================================================
-
-if [ "$INSTALL_GVISOR" = true ]; then
-    section "gVisor Sandbox Runtime"
-
-    SANDBOX_SCRIPT=""
-    for cand in \
-        "$PROJECT_DIR/setup-sandbox.sh" \
-        "$SCRIPT_DIR/setup-sandbox.sh" \
-        "$(pwd)/setup-sandbox.sh"; do
-        if [ -f "$cand" ]; then
-            SANDBOX_SCRIPT="$cand"
-            break
-        fi
-    done
-
-    if [ -z "$SANDBOX_SCRIPT" ]; then
-        log_warning "setup-sandbox.sh not found — skipping gVisor"
-        log_info    "Re-run from inside the project directory if you want gVisor"
-    elif docker info 2>/dev/null | grep -qw runsc; then
-        log_success "gVisor (runsc) runtime already registered"
-    else
-        log_step "Running $SANDBOX_SCRIPT"
-        if bash "$SANDBOX_SCRIPT" >/tmp/setup-sandbox.log 2>&1; then
-            log_success "gVisor installed — tool exec containers will use --runtime=runsc"
-        else
-            log_warning "gVisor install failed (non-fatal — build will fall back to default runtime)"
-            echo ""
-            echo -e "  ${DIM}── setup-sandbox.sh output (tail) ──────────────────────${NC}"
-            err_lines=$(grep -iE '(error|fail|fatal|cannot|denied|not found|unable)' \
-                          /tmp/setup-sandbox.log 2>/dev/null | tail -8)
-            if [ -n "$err_lines" ]; then
-                echo "$err_lines" | sed 's/^/    /'
-                echo -e "  ${DIM}── (last 5 log lines) ──${NC}"
-                tail -5 /tmp/setup-sandbox.log 2>/dev/null | sed 's/^/    /'
-            else
-                tail -15 /tmp/setup-sandbox.log 2>/dev/null | sed 's/^/    /'
-            fi
-            echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
-            echo ""
-        fi
-    fi
-else
-    section "gVisor Sandbox Runtime"
-    log_info "gVisor setup skipped (--no-gvisor)"
-fi
+# gVisor (runsc) install is owned by build.sh — not duplicated here.
+# Running build.sh after wsl-setup.sh picks up the registered systemd Docker
+# daemon and registers the runsc runtime in one place.
 
 # ============================================================================
 # PHASE 7: SUMMARY

@@ -79,7 +79,7 @@ async function runscAvailable() {
         _runscAvailable = false;
     }
     if (!_runscAvailable) {
-        console.warn('[sandboxRunner] gVisor (runsc) not registered — tool execution will use the default runtime. Install via ./setup-sandbox.sh for isolation.');
+        console.warn('[sandboxRunner] gVisor (runsc) not registered — tool execution will use the default runtime. Run ./build.sh to install it for isolation.');
     }
     return _runscAvailable;
 }
