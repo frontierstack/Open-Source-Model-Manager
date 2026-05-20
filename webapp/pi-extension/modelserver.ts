@@ -193,12 +193,17 @@ export default async function (pi: ExtensionAPI) {
         return base;
     };
 
-    // Heuristic: a string that names an existing host FILE (not already a
-    // /workspace path) and is small enough to ship. We deliberately gate on
-    // real existence so ordinary string args are never touched.
+    // Heuristic: a string that names an existing host FILE, small enough to
+    // ship. Gate purely on real host existence (fs.statSync) so ordinary string
+    // args are never touched. We intentionally do NOT exclude "/workspace/..."
+    // paths: Pi's own write tool can create a host file under a /workspace dir
+    // (e.g. /workspace/artifacts/foo.html), and the agent then passes that path
+    // to a server skill — the server's /workspace is a different filesystem, so
+    // that file must still be uploaded. A path that's only in the SERVER
+    // workspace (created via create_file) simply won't exist on the host, so
+    // statSync fails and we leave it alone.
     const isBridgeableHostFile = (v: unknown): v is string => {
         if (typeof v !== "string" || !v) return false;
-        if (v.startsWith("/workspace")) return false;
         if (!(v.includes("/") || v.includes("\\") || /^[A-Za-z]:/.test(v))) return false;
         try {
             const st = fs.statSync(v);
@@ -207,9 +212,12 @@ export default async function (pi: ExtensionAPI) {
     };
 
     // Transparently upload any host-file path argument to the workspace and
-    // rewrite the arg to the basename, so the agent can pass real host paths to
-    // server skills and have them Just Work. Best-effort: on any failure the
-    // original arg is left untouched and the skill errors normally.
+    // rewrite the arg to the ABSOLUTE /workspace/<basename>, so the agent can
+    // pass real host paths to server skills and have them Just Work. Absolute
+    // is required because some skills resolve the path literally (html_to_pdf
+    // does os.path.exists(htmlPath) with no /workspace join); absolute also
+    // works for create_pdf's contentFile and for PATH_ARG_NAMES rewriting.
+    // Best-effort: on any failure the original arg is left untouched.
     const autoBridgeHostFiles = async (args: any): Promise<any> => {
         if (!args || typeof args !== "object" || Array.isArray(args)) return args;
         let out: Record<string, unknown> | null = null;
@@ -218,7 +226,7 @@ export default async function (pi: ExtensionAPI) {
             try {
                 const base = await uploadHostFileToWorkspace(v);
                 if (!out) out = { ...args };
-                out[k] = base;
+                out[k] = "/workspace/" + base;
                 console.error(`[modelserver] auto-bridged host file ${v} -> /workspace/${base}`);
             } catch (e) {
                 console.error(`[modelserver] auto-bridge failed for ${v}:`, (e as Error).message);
