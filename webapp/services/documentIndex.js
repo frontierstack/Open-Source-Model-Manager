@@ -289,35 +289,39 @@ async function listIndexes(userId) {
 
 // Resolve a possibly-wrong documentId to a loadable index. Smaller local
 // models routinely ignore the 32-hex handle in the user-message notice and
-// pass the document's *name* instead (e.g. documentId="CyBOK"). Rather than
-// hard-failing — which leaves the model to fabricate an answer — fall back
-// to the user's indexed documents whenever the intended one is unambiguous.
+// pass the document's *name* instead (e.g. documentId="CyBOK") or an
+// outright hallucinated hex string. Hard-failing leaves the model to
+// fabricate an answer or — worse — wander onto a stale document from a
+// previous turn. So:
+//   1. If a document was indexed for THIS turn (`activeDocumentId`), force
+//      every doc-tool call onto it. The user just uploaded it and is asking
+//      about it; there is no other document a tool call this turn could
+//      sanely mean, and this makes the model's id-copying ability moot.
+//   2. Otherwise honour a valid, loadable requested id (a correct
+//      cross-turn reference).
+//   3. Otherwise fall back to the user's MOST RECENT indexed document —
+//      the newest upload is what a follow-up question is almost always
+//      about.
 // Returns { id, index, resolvedFrom? } or { error }.
-async function resolveIndex(userId, requestedId) {
+async function resolveIndex(userId, requestedId, activeDocumentId = null) {
+    if (activeDocumentId && attachmentStore.isValidId(activeDocumentId)) {
+        const index = await loadIndex(userId, activeDocumentId);
+        if (index) {
+            return activeDocumentId === requestedId
+                ? { id: activeDocumentId, index }
+                : { id: activeDocumentId, index, resolvedFrom: requestedId };
+        }
+    }
     if (attachmentStore.isValidId(requestedId)) {
         const index = await loadIndex(userId, requestedId);
         if (index) return { id: requestedId, index };
     }
-    const list = await listIndexes(userId);
+    const list = await listIndexes(userId); // most-recent first
     if (list.length === 0) {
         return { error: `No indexed documents are available in this session for documentId "${requestedId}".` };
     }
-    // Exactly one indexed document → no ambiguity, use it.
-    if (list.length === 1) {
-        const index = await loadIndex(userId, list[0].id);
-        if (index) return { id: list[0].id, index, resolvedFrom: requestedId };
-    } else {
-        // Multiple candidates — try a loose filename match on the name the
-        // model supplied before giving up.
-        const needle = String(requestedId || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-        if (needle.length >= 2) {
-            const hits = list.filter(d => d.filename.toLowerCase().replace(/[^a-z0-9]+/g, '').includes(needle));
-            if (hits.length === 1) {
-                const index = await loadIndex(userId, hits[0].id);
-                if (index) return { id: hits[0].id, index, resolvedFrom: requestedId };
-            }
-        }
-    }
+    const index = await loadIndex(userId, list[0].id);
+    if (index) return { id: list[0].id, index, resolvedFrom: requestedId };
     return {
         error: `documentId "${requestedId}" not found. Available documents: ` +
             list.map(d => `${d.id}${d.filename ? ` ("${d.filename}")` : ''}`).join('; ') +
@@ -335,8 +339,9 @@ async function resolveIndex(userId, requestedId) {
 async function queryDocument(userId, attachmentId, query, {
     topK = 3,
     snippetChars = 1500,
+    activeDocumentId = null,
 } = {}) {
-    const resolved = await resolveIndex(userId, attachmentId);
+    const resolved = await resolveIndex(userId, attachmentId, activeDocumentId);
     if (resolved.error) return { error: resolved.error };
     const { index, id: realId, resolvedFrom } = resolved;
     const text = await loadText(userId, realId);
@@ -413,8 +418,9 @@ async function queryDocument(userId, attachmentId, query, {
 async function readChunk(userId, attachmentId, chunkIndex, {
     count = 1,
     maxChars = 12000,
+    activeDocumentId = null,
 } = {}) {
-    const resolved = await resolveIndex(userId, attachmentId);
+    const resolved = await resolveIndex(userId, attachmentId, activeDocumentId);
     if (resolved.error) return { error: resolved.error };
     const { index, id: realId, resolvedFrom } = resolved;
     const text = await loadText(userId, realId);

@@ -14099,6 +14099,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             agentId: req.body?.agentId || null,
             conversationId: conversationId || null,
             latestUserText,
+            // Document indexed for THIS turn (large user content stashed via
+            // documentIndex). query_document / read_document_chunk force their
+            // calls onto this id so a model that fumbles the 32-hex handle
+            // can't wander onto a stale document from a previous turn.
+            activeDocumentId: (useAgentic && agenticInfo) ? agenticInfo.documentId : null,
         };
         let toolCatalog = [];
         try {
@@ -19525,7 +19530,10 @@ app.use((req, res) => {
             if (!query) return { error: 'query is required' };
             const topK = args?.topK ? parseInt(args.topK, 10) : 3;
             try {
-                return await documentIndex.queryDocument(ctx?.userId, documentId, query, { topK });
+                return await documentIndex.queryDocument(ctx?.userId, documentId, query, {
+                    topK,
+                    activeDocumentId: ctx?.activeDocumentId || null,
+                });
             } catch (e) {
                 return { error: `query_document failed: ${e.message || String(e)}` };
             }
@@ -19576,7 +19584,10 @@ app.use((req, res) => {
             }
             const count = args?.count ? parseInt(args.count, 10) : 1;
             try {
-                return await documentIndex.readChunk(ctx?.userId, documentId, chunkIndex, { count });
+                return await documentIndex.readChunk(ctx?.userId, documentId, chunkIndex, {
+                    count,
+                    activeDocumentId: ctx?.activeDocumentId || null,
+                });
             } catch (e) {
                 return { error: `read_document_chunk failed: ${e.message || String(e)}` };
             }
