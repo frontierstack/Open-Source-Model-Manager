@@ -330,6 +330,78 @@ async function resolveIndex(userId, requestedId, activeDocumentId = null) {
 }
 
 // ---------------------------------------------------------------------------
+// Heading-aware boost
+// ---------------------------------------------------------------------------
+//
+// Plain TF-IDF surfaces the table of contents for a bare section-number
+// query ("17.6.2"): the TOC packs every section number + a leading-dot
+// run + a page number into one dense chunk, which out-scores the chunk
+// holding the actual "17.6.2 <Title>" heading and its body. For "what is
+// section X" / "summarise section X" that's the wrong chunk. So when the
+// query carries a section number, we locate the real heading line for it
+// and float that chunk to the top.
+
+// Pull dotted numeric section numbers ("17.6.2", "1.2") out of the query
+// tokens. Pure-numeric only — we don't want "v1.2" or "node.js" here.
+function extractSectionNumbers(qTokens) {
+    const out = [];
+    for (const t of qTokens) {
+        if (/^\d+(?:\.\d+)+$/.test(t)) out.push(t);
+    }
+    return out;
+}
+
+// A table-of-contents line carries a leader-dot run (". . . ." or
+// "......") — usually with a trailing page number. Real heading lines
+// don't. This is what lets us tell "17.6.2 Title . . . 563" (TOC) from
+// "17.6.2 Title" (heading).
+function looksLikeTocLine(line) {
+    return /\.{3,}|(?:\.\s+){2,}\./.test(line);
+}
+
+// Return the chunk index whose body contains `offset`, preferring the
+// latest-starting chunk that still contains it (so the heading sits near
+// that chunk's start and lands inside the returned snippet). Chunks are
+// sorted by offset, so we can stop once a chunk starts past the offset.
+function chunkForOffset(chunks, offset) {
+    let best = -1;
+    for (const ch of chunks) {
+        if (ch.offset > offset) break;
+        if (offset < ch.offset + ch.len) best = ch.i; // keep updating → latest match wins
+    }
+    return best;
+}
+
+// Find chunks that contain a *heading* (not a TOC entry) for any of the
+// given section numbers. Returns Map<chunkIndex, headingCharOffset> so the
+// caller can both boost the chunk and start its snippet at the heading.
+function findHeadingChunks(text, sectionNumbers, chunks) {
+    const result = new Map();
+    for (const s of sectionNumbers) {
+        const esc = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // Section number at the start of a line, followed by a separator
+        // (so "17.6" does not match the heading "17.6.2 …"). With the `m`
+        // flag, m.index is the line start.
+        const re = new RegExp('^[ \\t>]*' + esc + '(?=[ \\t]|$)', 'gm');
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            let lineEnd = text.indexOf('\n', m.index);
+            if (lineEnd === -1) lineEnd = text.length;
+            const line = text.slice(m.index, lineEnd);
+            if (looksLikeTocLine(line)) continue; // skip TOC rows
+            const ci = chunkForOffset(chunks, m.index);
+            if (ci >= 0 && !result.has(ci)) result.set(ci, m.index);
+        }
+    }
+    return result;
+}
+
+// Bonus added to a heading chunk's cosine score. Cosine maxes at 1, so a
+// bonus of 1 guarantees heading chunks rank above any non-heading match
+// while preserving TF-IDF order among themselves and below them.
+const HEADING_MATCH_BONUS = 1;
+
+// ---------------------------------------------------------------------------
 // Query
 // ---------------------------------------------------------------------------
 
@@ -385,18 +457,53 @@ async function queryDocument(userId, attachmentId, query, {
             scored.push({ chunkIndex: ch.i, score: cos, ch });
         }
     }
+
+    // Heading-aware boost: if the query names a section number, float the
+    // chunk holding its real heading above the TOC chunk that would
+    // otherwise win. A heading chunk may have been pruned from `scored`
+    // (its lone section-number token trimmed from the chunk's top-N TF),
+    // so add any missing ones too.
+    const sectionNumbers = extractSectionNumbers(qTokens);
+    if (sectionNumbers.length) {
+        const headingChunks = findHeadingChunks(text, sectionNumbers, index.chunks);
+        if (headingChunks.size) {
+            const byIndex = new Map(scored.map(s => [s.chunkIndex, s]));
+            for (const [ci, headingOffset] of headingChunks) {
+                const existing = byIndex.get(ci);
+                if (existing) {
+                    existing.score += HEADING_MATCH_BONUS;
+                    existing.headingOffset = headingOffset;
+                } else {
+                    const ch = index.chunks[ci];
+                    if (ch) scored.push({ chunkIndex: ci, score: HEADING_MATCH_BONUS, ch, headingOffset });
+                }
+            }
+        }
+    }
+
     scored.sort((a, b) => b.score - a.score);
 
     const k = Math.max(1, Math.min(topK, 10));
-    const out = scored.slice(0, k).map(({ chunkIndex, score, ch }) => {
-        const slice = text.slice(ch.offset, ch.offset + ch.len);
+    const out = scored.slice(0, k).map(({ chunkIndex, score, ch, headingOffset }) => {
+        // For a heading-boosted chunk, start the snippet at the heading so
+        // the section title is the first thing the model sees (the heading
+        // can sit deep in the chunk). Otherwise start at the chunk top.
+        const start = (headingOffset != null && headingOffset >= ch.offset && headingOffset < ch.offset + ch.len)
+            ? headingOffset : ch.offset;
+        const slice = text.slice(start, ch.offset + ch.len);
         const snippet = slice.length > snippetChars
             ? slice.slice(0, snippetChars) + '\n…[truncated for relevance return — call read_document_chunk to read this chunk in full]'
             : slice;
+        let lineStart = ch.lineStart;
+        if (start !== ch.offset) {
+            let nl = 0;
+            for (let i = ch.offset; i < start; i++) if (text.charCodeAt(i) === 10) nl++;
+            lineStart += nl;
+        }
         return {
             chunkIndex,
             score: Number(score.toFixed(4)),
-            lineRange: `${ch.lineStart}-${ch.lineEnd}`,
+            lineRange: `${lineStart}-${ch.lineEnd}`,
             text: snippet,
         };
     });
