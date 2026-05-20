@@ -9550,6 +9550,60 @@ function repairPdfUrls(text) {
     return result.join('\n');
 }
 
+// PDF text extraction with correct inter-word spacing.
+//
+// pdf-parse@1.1.1 bundles a 2018-era pdfjs that concatenates glyph runs
+// without reconstructing the spaces a PDF encodes via glyph positioning
+// (TJ kerning / Td advances) instead of literal space characters. Title-case
+// headings, author lists and the like then come out fused — e.g. the CyBOK
+// heading "Attack On Ethernet Switch" extracted as "AttackOnEthernetSwitch",
+// which the model then echoes verbatim. Modern pdfjs reconstructs these
+// spaces from font metrics, so we extract with a current pdfjs-dist and fall
+// back to pdf-parse only if pdfjs throws. Returns the subset of the pdf-parse
+// result shape the call sites consume: { text, numpages, info }.
+let _pdfjsLib = null;
+function getPdfjs() {
+    if (!_pdfjsLib) _pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
+    return _pdfjsLib;
+}
+
+async function extractPdfText(buffer) {
+    try {
+        const pdfjs = getPdfjs();
+        // Copy into a fresh Uint8Array — pdfjs may detach/transfer the input.
+        const bytes = new Uint8Array(buffer);
+        const doc = await pdfjs.getDocument({
+            data: bytes,
+            useSystemFonts: true,
+            isEvalSupported: false,
+            disableFontFace: true,
+            verbosity: 0,            // suppress the noisy "TT: undefined function" logs
+        }).promise;
+        const numpages = doc.numPages;
+        let info = {};
+        try { const md = await doc.getMetadata(); info = (md && md.info) || {}; } catch (_) { /* optional */ }
+        const parts = [];
+        for (let p = 1; p <= numpages; p++) {
+            const page = await doc.getPage(p);
+            const tc = await page.getTextContent();
+            let pageText = '';
+            for (const it of tc.items) {
+                pageText += it.str;
+                if (it.hasEOL) pageText += '\n';
+            }
+            parts.push(pageText);
+            try { page.cleanup(); } catch (_) { /* best effort */ }
+        }
+        try { await doc.cleanup(); await doc.destroy(); } catch (_) { /* best effort */ }
+        return { text: parts.join('\n\n'), numpages, info };
+    } catch (e) {
+        console.warn(`[pdf] pdfjs-dist extraction failed (${e.message}); falling back to pdf-parse`);
+        const pdfParse = require('pdf-parse');
+        const data = await pdfParse(buffer);
+        return { text: data.text || '', numpages: data.numpages || 1, info: data.info || {} };
+    }
+}
+
 /**
  * Parse an XLSX/XLS workbook buffer into concatenated CSV text, one
  * "=== Sheet: <name> ===" header per sheet.
@@ -9696,8 +9750,7 @@ async function fetchUrlAsFile(url, options = {}) {
         // PDF parsing
         if (ext === 'pdf' || contentType.includes('application/pdf')) {
             try {
-                const pdfParse = require('pdf-parse');
-                const data = await pdfParse(buffer);
+                const data = await extractPdfText(buffer);
                 extractedText = repairPdfUrls(data.text || '');
                 title = data.info?.Title || filename;
                 if (data.numpages) {
@@ -11510,7 +11563,7 @@ async function extractEmailAttachmentContent(attachments, depth = 0) {
             // Handle PDF attachments
             else if (ext === 'pdf' || contentType === 'application/pdf') {
                 try {
-                    const data = await pdfParse(content);
+                    const data = await extractPdfText(content);
                     if (data.text?.trim()) {
                         extractedContent += `\n\n=== PDF Attachment: ${filename} ===\n`;
                         extractedContent += repairPdfUrls(data.text).substring(0, 20000); // Limit PDF content
@@ -11651,7 +11704,6 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
         // For PDFs, extract text with OCR fallback for scanned documents
         if (mimeType === 'application/pdf' || ext === 'pdf') {
             try {
-                const pdfParse = require('pdf-parse');
                 const { exec, execSync } = require('child_process');
                 const { promisify } = require('util');
                 const execAsync = promisify(exec);
@@ -11659,7 +11711,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const fs = require('fs');
 
                 const buffer = Buffer.from(content, 'base64');
-                const data = await pdfParse(buffer);
+                const data = await extractPdfText(buffer);
                 const pageCount = data.numpages || 1;
                 let extractedText = data.text || '';
 
@@ -17591,9 +17643,8 @@ async function initializeDefaultSkillsOld() {
         // PDF format - requires pdf-parse package
         if (format === 'pdf') {
             try {
-                const pdfParse = require('pdf-parse');
                 const buffer = await fs.readFile(filePath);
-                const data = await pdfParse(buffer);
+                const data = await extractPdfText(buffer);
                 return { success: true, format, text: repairPdfUrls(data.text), pages: data.numpages, info: data.info };
             } catch (e) {
                 throw new Error(\`Failed to parse PDF: \${e.message}. Make sure pdf-parse package is installed.\`);
