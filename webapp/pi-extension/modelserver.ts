@@ -27,6 +27,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import * as fs from "fs";
+import { basename, dirname } from "path";
+
+// Largest host file the auto-bridge will upload into the server workspace.
+const MAX_BRIDGE_BYTES = 50 * 1024 * 1024;
 
 interface SkillParam {
     [key: string]: string | { type?: string };
@@ -167,6 +172,61 @@ export default async function (pi: ExtensionAPI) {
         }
     });
 
+    // ---- host <-> server-workspace bridge -----------------------------------
+    // Pi lives on the user's machine; the model server's skills (read_pdf,
+    // create_pdf, transform_image, …) run in a sandbox whose /workspace is a
+    // DIFFERENT filesystem. Without a bridge the agent can't feed a host file
+    // to a server skill (it just gets "file not found" because the server
+    // rewrites the path to /workspace/<basename>). These helpers carry bytes
+    // across: upload pushes a host file into the caller's agent-<keyId> bucket
+    // (so the very next skill call sees it at /workspace/<basename>); download
+    // pulls a workspace file back out to the host.
+    const uploadHostFileToWorkspace = async (hostPath: string): Promise<string> => {
+        const base = basename(hostPath);
+        const buf = fs.readFileSync(hostPath);
+        const r = await fetch(`${baseUrl}/api/agent-workspaces/file?path=${encodeURIComponent(base)}`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/octet-stream" },
+            body: buf,
+        });
+        if (!r.ok) throw new Error(`workspace upload failed: HTTP ${r.status}`);
+        return base;
+    };
+
+    // Heuristic: a string that names an existing host FILE (not already a
+    // /workspace path) and is small enough to ship. We deliberately gate on
+    // real existence so ordinary string args are never touched.
+    const isBridgeableHostFile = (v: unknown): v is string => {
+        if (typeof v !== "string" || !v) return false;
+        if (v.startsWith("/workspace")) return false;
+        if (!(v.includes("/") || v.includes("\\") || /^[A-Za-z]:/.test(v))) return false;
+        try {
+            const st = fs.statSync(v);
+            return st.isFile() && st.size > 0 && st.size <= MAX_BRIDGE_BYTES;
+        } catch { return false; }
+    };
+
+    // Transparently upload any host-file path argument to the workspace and
+    // rewrite the arg to the basename, so the agent can pass real host paths to
+    // server skills and have them Just Work. Best-effort: on any failure the
+    // original arg is left untouched and the skill errors normally.
+    const autoBridgeHostFiles = async (args: any): Promise<any> => {
+        if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+        let out: Record<string, unknown> | null = null;
+        for (const [k, v] of Object.entries(args)) {
+            if (!isBridgeableHostFile(v)) continue;
+            try {
+                const base = await uploadHostFileToWorkspace(v);
+                if (!out) out = { ...args };
+                out[k] = base;
+                console.error(`[modelserver] auto-bridged host file ${v} -> /workspace/${base}`);
+            } catch (e) {
+                console.error(`[modelserver] auto-bridge failed for ${v}:`, (e as Error).message);
+            }
+        }
+        return out || args;
+    };
+
     // 1) Register the model server as an OpenAI-compatible provider.
     try {
         const r = await authedFetch("/v1/models");
@@ -269,9 +329,12 @@ export default async function (pi: ExtensionAPI) {
                         }
                         r = await authedFetch(path, init);
                     } else {
+                        // Auto-bridge: ship any host-file path args into the
+                        // server workspace first so this skill can read them.
+                        const bridged = await autoBridgeHostFiles(args);
                         r = await authedFetch(`/api/skills/${encodeURIComponent(skill.name)}/execute`, {
                             method: "POST",
-                            body: JSON.stringify(args ?? {}),
+                            body: JSON.stringify(bridged ?? {}),
                             signal
                         });
                     }
@@ -320,6 +383,54 @@ export default async function (pi: ExtensionAPI) {
             console.error(`[modelserver] failed to register skill ${skill.name}:`, e);
         }
     }
+    // workspace_get: pull a file from the server workspace back to the host.
+    // The other half of the bridge — host->workspace is automatic (any host
+    // path passed to a server skill is uploaded), but delivering a *result*
+    // (a rendered PDF in /workspace/artifacts/, a transformed image, …) to a
+    // specific place on the user's machine needs an explicit destination.
+    try {
+        (pi as any).registerTool({
+            name: "workspace_get",
+            label: "workspace_get",
+            description:
+                "[TWO WORLDS] Copy a file FROM your server workspace TO your local machine. " +
+                "Use it to deliver outputs that server skills produced — e.g. after create_pdf, " +
+                "workspace_get('artifacts/report.pdf', '/mnt/c/Users/you/Desktop/report.pdf'). " +
+                "workspacePath is relative to /workspace (rendered files land under 'artifacts/'). " +
+                "Note: the reverse direction is automatic — when you pass a host path to a server " +
+                "skill (read_pdf, create_pdf contentFile, transform_image, …) the file is uploaded " +
+                "to the workspace for you.",
+            parameters: Type.Object({
+                workspacePath: Type.String({ description: "Path inside the server workspace, e.g. 'artifacts/report.pdf' or 'report.md'" }),
+                hostPath: Type.String({ description: "Absolute destination path on the local machine" }),
+            }),
+            async execute(_id: string, a: any, signal: AbortSignal | undefined) {
+                const wp = String(a?.workspacePath || "").replace(/^\/workspace\/?/, "");
+                const hp = String(a?.hostPath || "");
+                if (!wp || !hp) throw new Error("workspace_get needs workspacePath and hostPath");
+                const r = await fetch(`${baseUrl}/api/agent-workspaces/file?path=${encodeURIComponent(wp)}`, {
+                    headers: { "Authorization": `Bearer ${apiKey}` },
+                    signal,
+                });
+                if (!r.ok) {
+                    let msg = `HTTP ${r.status}`;
+                    try { const j = await r.json() as any; if (j?.error) msg = j.error; } catch { /* ignore */ }
+                    throw new Error(`[workspace_get] ${msg}`);
+                }
+                const buf = Buffer.from(await r.arrayBuffer());
+                fs.mkdirSync(dirname(hp), { recursive: true });
+                fs.writeFileSync(hp, buf);
+                return {
+                    content: [{ type: "text", text: `Saved ${buf.length} bytes to ${hp}` }],
+                    details: { hostPath: hp, bytes: buf.length },
+                };
+            },
+        });
+        registered++;
+    } catch (e) {
+        console.error("[modelserver] failed to register workspace_get:", e);
+    }
+
     if (skippedStub > 0) {
         console.warn(`[modelserver] skipped ${skippedStub} stub skill(s) with no def execute and no native route`);
     }
@@ -399,21 +510,23 @@ function describeArtifacts(parsed: any, insecure: boolean): string {
         `Generated ${arts.length} file(s) on the model server — these live in the ` +
         `server-side sandbox, NOT on your local filesystem. The /workspace/... path in ` +
         `the result does not exist on your machine, so do NOT cp it. To deliver a file ` +
-        `to the location the user asked for, download its URL straight to that path:`
+        `to the location the user asked for, call workspace_get:`
     );
     for (const a of arts) {
         const sz = typeof a.size === "number" ? ` (${a.size} bytes)` : "";
         lines.push("");
         lines.push(`• ${a.name}${sz}`);
         lines.push(
-            `  curl -fsSL${kFlag} -H "Authorization: Bearer $MODELSERVER_API_KEY" ` +
-            `"${a.url}" -o "<DEST_PATH>/${a.name}"`
+            `  workspace_get("artifacts/${a.name}", "<DEST_PATH>/${a.name}")`
+        );
+        lines.push(
+            `  (or: curl -fsSL${kFlag} -H "Authorization: Bearer $MODELSERVER_API_KEY" "${a.url}" -o "<DEST_PATH>/${a.name}")`
         );
     }
     lines.push("");
     lines.push(
-        `Replace <DEST_PATH> with the directory the user wants (mkdir -p it first if ` +
-        `needed). $MODELSERVER_API_KEY is already exported in your environment.`
+        `Replace <DEST_PATH> with the directory the user wants. workspace_get creates ` +
+        `parent dirs for you and needs no auth handling.`
     );
     // Keep any human-facing summary the skill returned (the misleading
     // chat-chip note was already stripped by the caller).

@@ -7959,6 +7959,82 @@ app.delete('/api/agent-workspaces/:owner/:bucket', requireAuth, async (req, res)
     }
 });
 
+// --- host <-> server-workspace file bridge (powers Pi's auto-bridge) --------
+// These let a Pi/API agent move a file BETWEEN the two filesystems it lives in:
+// its host (Pi's own read/write/bash) and the server sandbox workspace (where
+// read_pdf/create_pdf/transform_image/... run). Scoped to the caller's own
+// agent-<apiKeyId> bucket, so the uploaded file is exactly what the next skill
+// call (same key -> same bucket) sees mounted at /workspace.
+//
+// resolveAgentWorkspaceTarget validates the relative path against traversal and
+// returns the absolute on-disk path inside the caller's bucket.
+async function resolveAgentWorkspaceTarget(req, rel) {
+    if (!req.apiKeyData || !req.apiKeyData.id) {
+        const e = new Error('Agent workspace requires API-key auth'); e.httpStatus = 400; throw e;
+    }
+    if (!rel || rel.startsWith('/') || rel.includes('..') || rel.includes('\0') || rel.length > 256) {
+        const e = new Error('Invalid path'); e.httpStatus = 400; throw e;
+    }
+    const sbRunner = require('./services/sandboxRunner');
+    const ws = await sbRunner.ensureWorkspace(req.userId, null, 'agent-' + req.apiKeyData.id);
+    const path_ = require('path');
+    const dir = path_.resolve(ws.localInContainer);
+    const target = path_.resolve(path_.join(dir, rel));
+    if (target !== dir && !target.startsWith(dir + path_.sep)) {
+        const e = new Error('Path escapes workspace'); e.httpStatus = 400; throw e;
+    }
+    return target;
+}
+
+app.post('/api/agent-workspaces/file',
+    requireAuth,
+    express.raw({ type: 'application/octet-stream', limit: '50mb' }),
+    async (req, res) => {
+        try {
+            if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+                return res.status(400).json({ error: 'Empty body (send raw bytes as application/octet-stream)' });
+            }
+            const rel = String(req.query.path || '');
+            const target = await resolveAgentWorkspaceTarget(req, rel);
+            const path_ = require('path');
+            await fs.mkdir(path_.dirname(target), { recursive: true });
+            await fs.writeFile(target, req.body);
+            res.json({ written: true, path: '/workspace/' + rel, bytes: req.body.length });
+        } catch (e) {
+            if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+            console.error('Agent workspace upload failed:', e);
+            res.status(500).json({ error: 'Upload failed' });
+        }
+    }
+);
+
+app.get('/api/agent-workspaces/file', requireAuth, async (req, res) => {
+    try {
+        const rel = String(req.query.path || '');
+        const target = await resolveAgentWorkspaceTarget(req, rel);
+        const st = await fs.stat(target).catch(() => null);
+        if (!st || !st.isFile()) return res.status(404).json({ error: 'File not found in workspace' });
+        const ext = (rel.split('.').pop() || '').toLowerCase();
+        const mime = {
+            pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+            gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+            txt: 'text/plain; charset=utf-8', md: 'text/markdown; charset=utf-8',
+            csv: 'text/csv; charset=utf-8', json: 'application/json; charset=utf-8',
+            html: 'text/html; charset=utf-8', xml: 'application/xml; charset=utf-8',
+            docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            zip: 'application/zip',
+        }[ext] || 'application/octet-stream';
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Content-Length', st.size);
+        res.end(await fs.readFile(target));
+    } catch (e) {
+        if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+        console.error('Agent workspace download failed:', e);
+        res.status(500).json({ error: 'Download failed' });
+    }
+});
+
 // Python skill executor. By default runs in a gVisor-sandboxed container
 // (see webapp/services/sandboxRunner.js). Individual skills can opt out with
 // `sandbox: false` on the skill definition — useful for trusted built-ins
