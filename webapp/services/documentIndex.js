@@ -56,6 +56,20 @@ function tokenize(text) {
     // Numbers preserved (often the most distinctive terms in technical docs).
     const out = [];
     const lower = text.toLowerCase();
+    // First pass: dotted alphanumeric identifiers — section numbers
+    // ("17.6.2"), version strings ("v1.2.3"), decimals, dotted filenames.
+    // The word regex below shreds these into fragments and discards the
+    // single-char pieces ("17.6.2" → just "17"), which made it impossible
+    // to locate a heading by its section number via query_document. Keep
+    // the whole dotted form as one distinctive (rare → high-IDF) token.
+    // Requiring ≥2 dot-joined parts with no surrounding whitespace means a
+    // sentence boundary like "end. Next" never merges across the period.
+    const dotted = /[a-z0-9]+(?:\.[a-z0-9]+)+/g;
+    let dm;
+    while ((dm = dotted.exec(lower)) !== null) {
+        const tok = dm[0];
+        if (tok.length >= 3) out.push(tok);
+    }
     const re = /[a-z0-9_]{2,}/g;
     let m;
     while ((m = re.exec(lower)) !== null) {
@@ -244,6 +258,73 @@ async function loadText(userId, attachmentId) {
     return loaded.bytes.toString('utf8');
 }
 
+// List every indexed document in a user's attachment bucket, most-recent
+// first. Cheap (one readdir + two small JSON reads per indexed dir) and
+// only walked on the fallback path below, so correct calls don't pay for
+// it.
+async function listIndexes(userId) {
+    const dir = path.join(attachmentStore.ROOT, attachmentStore.userIdSafe(userId));
+    let entries;
+    try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (e) {
+        return [];
+    }
+    const out = [];
+    for (const ent of entries) {
+        if (!ent.isDirectory() || !attachmentStore.isValidId(ent.name)) continue;
+        try {
+            const idx = JSON.parse(await fs.readFile(path.join(dir, ent.name, 'index.json'), 'utf8'));
+            let filename = '';
+            try {
+                const meta = JSON.parse(await fs.readFile(path.join(dir, ent.name, 'meta.json'), 'utf8'));
+                filename = meta?.filename || '';
+            } catch (_) { /* meta optional */ }
+            out.push({ id: ent.name, filename, totalChunks: idx.totalChunks || 0, createdAt: idx.createdAt || 0 });
+        } catch (_) { /* not an indexed document — skip */ }
+    }
+    out.sort((a, b) => b.createdAt - a.createdAt);
+    return out;
+}
+
+// Resolve a possibly-wrong documentId to a loadable index. Smaller local
+// models routinely ignore the 32-hex handle in the user-message notice and
+// pass the document's *name* instead (e.g. documentId="CyBOK"). Rather than
+// hard-failing — which leaves the model to fabricate an answer — fall back
+// to the user's indexed documents whenever the intended one is unambiguous.
+// Returns { id, index, resolvedFrom? } or { error }.
+async function resolveIndex(userId, requestedId) {
+    if (attachmentStore.isValidId(requestedId)) {
+        const index = await loadIndex(userId, requestedId);
+        if (index) return { id: requestedId, index };
+    }
+    const list = await listIndexes(userId);
+    if (list.length === 0) {
+        return { error: `No indexed documents are available in this session for documentId "${requestedId}".` };
+    }
+    // Exactly one indexed document → no ambiguity, use it.
+    if (list.length === 1) {
+        const index = await loadIndex(userId, list[0].id);
+        if (index) return { id: list[0].id, index, resolvedFrom: requestedId };
+    } else {
+        // Multiple candidates — try a loose filename match on the name the
+        // model supplied before giving up.
+        const needle = String(requestedId || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        if (needle.length >= 2) {
+            const hits = list.filter(d => d.filename.toLowerCase().replace(/[^a-z0-9]+/g, '').includes(needle));
+            if (hits.length === 1) {
+                const index = await loadIndex(userId, hits[0].id);
+                if (index) return { id: hits[0].id, index, resolvedFrom: requestedId };
+            }
+        }
+    }
+    return {
+        error: `documentId "${requestedId}" not found. Available documents: ` +
+            list.map(d => `${d.id}${d.filename ? ` ("${d.filename}")` : ''}`).join('; ') +
+            `. Retry with one of these exact documentIds.`,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Query
 // ---------------------------------------------------------------------------
@@ -255,10 +336,11 @@ async function queryDocument(userId, attachmentId, query, {
     topK = 3,
     snippetChars = 1500,
 } = {}) {
-    const index = await loadIndex(userId, attachmentId);
-    if (!index) return { error: `No index for documentId "${attachmentId}".` };
-    const text = await loadText(userId, attachmentId);
-    if (text === null) return { error: `No content for documentId "${attachmentId}".` };
+    const resolved = await resolveIndex(userId, attachmentId);
+    if (resolved.error) return { error: resolved.error };
+    const { index, id: realId, resolvedFrom } = resolved;
+    const text = await loadText(userId, realId);
+    if (text === null) return { error: `No content for documentId "${realId}".` };
 
     const qTokens = tokenize(String(query || ''));
     if (!qTokens.length) {
@@ -315,7 +397,10 @@ async function queryDocument(userId, attachmentId, query, {
     });
 
     return {
-        documentId: attachmentId,
+        documentId: realId,
+        ...(resolvedFrom && resolvedFrom !== realId
+            ? { note: `Resolved documentId from "${resolvedFrom}" to ${realId}; use ${realId} in any follow-up calls.` }
+            : {}),
         query: String(query),
         totalChunks: N,
         matches: out,
@@ -329,10 +414,11 @@ async function readChunk(userId, attachmentId, chunkIndex, {
     count = 1,
     maxChars = 12000,
 } = {}) {
-    const index = await loadIndex(userId, attachmentId);
-    if (!index) return { error: `No index for documentId "${attachmentId}".` };
-    const text = await loadText(userId, attachmentId);
-    if (text === null) return { error: `No content for documentId "${attachmentId}".` };
+    const resolved = await resolveIndex(userId, attachmentId);
+    if (resolved.error) return { error: resolved.error };
+    const { index, id: realId, resolvedFrom } = resolved;
+    const text = await loadText(userId, realId);
+    if (text === null) return { error: `No content for documentId "${realId}".` };
 
     const N = index.totalChunks;
     const start = Math.max(0, Math.min(parseInt(chunkIndex, 10) || 0, N - 1));
@@ -358,7 +444,10 @@ async function readChunk(userId, attachmentId, chunkIndex, {
         combined += slice;
     }
     return {
-        documentId: attachmentId,
+        documentId: realId,
+        ...(resolvedFrom && resolvedFrom !== realId
+            ? { note: `Resolved documentId from "${resolvedFrom}" to ${realId}; use ${realId} in any follow-up calls.` }
+            : {}),
         totalChunks: N,
         nextChunkIndex: out.length ? (out[out.length - 1].chunkIndex + 1) : start,
         chunks: out,
@@ -369,6 +458,8 @@ module.exports = {
     saveAndIndex,
     loadIndex,
     loadText,
+    listIndexes,
+    resolveIndex,
     queryDocument,
     readChunk,
     INDEX_VERSION,
