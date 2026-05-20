@@ -24,6 +24,21 @@ const REASONING_TAG_ALT = REASONING_TAG_NAMES.join('|');
 function parseThinkTags(content) {
     if (!content) return { content: '', reasoning: '' };
 
+    // Dangling close tag with no matching open tag. DeepSeek-R1 and several
+    // MTP reasoning checkpoints inject the opening <think> into the prompt
+    // template, so the model's output begins mid-reasoning and only emits the
+    // closing </think>; speculative/MTP decoding can also surface the close
+    // tag inside a content chunk. Without this, the reasoning text and the
+    // bare </think> leak into the visible bubble. If a close tag appears
+    // before any matching open tag, synthesize the missing opening tag.
+    const firstClose = content.match(new RegExp(`</(${REASONING_TAG_ALT})>`, 'i'));
+    if (firstClose) {
+        const firstOpen = content.match(new RegExp(`<(${REASONING_TAG_ALT})>`, 'i'));
+        if (!firstOpen || firstOpen.index > firstClose.index) {
+            content = `<${firstClose[1]}>${content}`;
+        }
+    }
+
     let reasoning = '';
     let cleanContent = content;
     let hasCompletedThinkBlock = false;
@@ -91,9 +106,12 @@ export default function ChatContainer({
     });
     const abortControllerRef = useRef(null);
     const switchingConversationRef = useRef(false); // Track if abort was due to conversation switch
-    const throttleTimerRef = useRef(null); // Throttle streaming UI updates to reduce jitter
-    const pendingContentRef = useRef(''); // Buffer for throttled content updates
-    const pendingReasoningRef = useRef(''); // Buffer for throttled reasoning updates
+    const throttleTimerRef = useRef(null); // rAF id for the smooth-reveal pump
+    const pendingContentRef = useRef(''); // Full target content (parsed); pump reveals it gradually
+    const pendingReasoningRef = useRef(''); // Full target reasoning; mirrored to the dropdown each frame
+    const displayedContentLenRef = useRef(0); // chars of pendingContentRef currently revealed by the pump
+    const lastReasoningLenRef = useRef(0); // last reasoning length pushed to the store (skip redundant sets)
+    const streamActiveRef = useRef(false); // true while a stream is in flight (keeps the pump ticking)
 
     // Chat store
     const {
@@ -126,6 +144,47 @@ export default function ChatContainer({
         clearAttachments,
         updateSettings,
     } = useChatStore();
+
+    // Smooth-reveal pump for streamed output. MTP / speculative decoding
+    // delivers tokens in bursts (3-4 tokens at once, then an 80-120ms pause),
+    // which makes streamed text lurch forward in chunks. This rAF loop
+    // decouples the on-screen text from arrival: each frame it reveals a
+    // fraction (~20%, min 2 chars) of the not-yet-shown backlog, so text
+    // flows out at a steady cadence while staying within ~0.1s of the latest
+    // token. Reasoning is mirrored each frame (its dropdown is collapsed, so
+    // it isn't char-smoothed). The loop ticks for the whole stream and, once
+    // the stream ends, drains the remaining backlog; the stream-end flush
+    // then shows the full text immediately.
+    const SMOOTH_REVEAL_FRACTION = 0.2;
+    const SMOOTH_REVEAL_MIN = 2;
+    const ensureSmoothPump = (conversationId) => {
+        if (throttleTimerRef.current != null) return; // already ticking
+        const step = () => {
+            const activeId = useChatStore.getState().activeConversationId;
+            if (activeId !== conversationId) { throttleTimerRef.current = null; return; }
+            const target = pendingContentRef.current || '';
+            let shown = displayedContentLenRef.current;
+            if (shown > target.length) shown = target.length; // buffer was swapped/shrank
+            const backlog = target.length - shown;
+            if (backlog > 0) {
+                shown = Math.min(target.length, shown + Math.max(SMOOTH_REVEAL_MIN, Math.ceil(backlog * SMOOTH_REVEAL_FRACTION)));
+                displayedContentLenRef.current = shown;
+                setStreamingContent(target.slice(0, shown));
+            }
+            const reasoning = pendingReasoningRef.current;
+            if (reasoning && reasoning.length !== lastReasoningLenRef.current) {
+                lastReasoningLenRef.current = reasoning.length;
+                setStreamingReasoning(reasoning);
+            }
+            const moreContent = displayedContentLenRef.current < (pendingContentRef.current || '').length;
+            if (streamActiveRef.current || moreContent) {
+                throttleTimerRef.current = requestAnimationFrame(step);
+            } else {
+                throttleTimerRef.current = null;
+            }
+        };
+        throttleTimerRef.current = requestAnimationFrame(step);
+    };
 
     // Calculate selected model's context size dynamically
     const selectedModelContextSize = useMemo(() => {
@@ -579,6 +638,13 @@ export default function ChatContainer({
             let assistantReasoning = '';
             let continuationInfo = null;
 
+            // Start the smooth-reveal pump for this turn (de-jitters bursty
+            // MTP/spec output). Cleaned up in the finally block below.
+            displayedContentLenRef.current = 0;
+            lastReasoningLenRef.current = 0;
+            streamActiveRef.current = true;
+            ensureSmoothPump(conversationId);
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -648,35 +714,16 @@ export default function ChatContainer({
                                     assistantReasoning = thinkParsed.reasoning;
                                     pendingReasoningRef.current = assistantReasoning;
                                 }
-                                // Throttled UI update (~50ms) to reduce jitter from per-chunk re-renders
-                                if (!throttleTimerRef.current) {
-                                    throttleTimerRef.current = setTimeout(() => {
-                                        const currentActiveId = useChatStore.getState().activeConversationId;
-                                        if (currentActiveId === conversationId) {
-                                            setStreamingContent(pendingContentRef.current);
-                                            if (pendingReasoningRef.current) {
-                                                setStreamingReasoning(pendingReasoningRef.current);
-                                            }
-                                        }
-                                        throttleTimerRef.current = null;
-                                    }, 50);
-                                }
+                                // The smooth-reveal pump reveals pendingContentRef
+                                // gradually each frame (started at stream begin).
+                                ensureSmoothPump(conversationId);
                             }
 
                             // Handle explicit reasoning field from model API
                             if (delta?.reasoning) {
                                 assistantReasoning += delta.reasoning;
                                 pendingReasoningRef.current = assistantReasoning;
-                                // Throttled UI update for reasoning
-                                if (!throttleTimerRef.current) {
-                                    throttleTimerRef.current = setTimeout(() => {
-                                        const currentActiveId = useChatStore.getState().activeConversationId;
-                                        if (currentActiveId === conversationId) {
-                                            setStreamingReasoning(pendingReasoningRef.current);
-                                        }
-                                        throttleTimerRef.current = null;
-                                    }, 50);
-                                }
+                                ensureSmoothPump(conversationId);
                             }
 
                             // Check for continuation info in final event
@@ -690,9 +737,11 @@ export default function ChatContainer({
                 }
             }
 
-            // Final flush of any pending throttled content
+            // Stream is done — stop the pump and reveal the full buffer
+            // immediately (no lingering smoothing past stream-end).
+            streamActiveRef.current = false;
             if (throttleTimerRef.current) {
-                clearTimeout(throttleTimerRef.current);
+                cancelAnimationFrame(throttleTimerRef.current);
                 throttleTimerRef.current = null;
             }
             const currentActiveIdFlush = useChatStore.getState().activeConversationId;
@@ -706,6 +755,8 @@ export default function ChatContainer({
             }
             pendingContentRef.current = '';
             pendingReasoningRef.current = '';
+            displayedContentLenRef.current = 0;
+            lastReasoningLenRef.current = 0;
 
             // Store chunking info if content was truncated
             if (continuationInfo && continuationInfo.hasMore) {
@@ -776,6 +827,16 @@ export default function ChatContainer({
                 }
             }
         } finally {
+            // Safety net: stop the smooth-reveal pump on every exit path
+            // (including abort/error, which skip the in-loop flush above).
+            streamActiveRef.current = false;
+            if (throttleTimerRef.current) {
+                cancelAnimationFrame(throttleTimerRef.current);
+                throttleTimerRef.current = null;
+            }
+            displayedContentLenRef.current = 0;
+            lastReasoningLenRef.current = 0;
+
             // Safety net: rescue any streaming content that wasn't saved as a message
             const residualContent = useChatStore.getState().streamingContent;
             if (residualContent && residualContent.trim()) {
