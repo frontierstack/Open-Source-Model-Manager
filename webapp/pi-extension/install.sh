@@ -60,6 +60,20 @@ node_major() {
     node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1
 }
 
+# Node v20+/v22 core-dumps at startup with a V8 StackOverflow
+# ("Trace/breakpoint trap (core dumped)") the moment it runs real JS when the
+# stack ulimit is 'unlimited' — it mis-computes its own stack limit. `node -v`
+# survives (no JS), so this hides until npm/pi actually run. Clamp the soft
+# limit to the normal 8 MB default (a lower-than-hard change needs no privilege)
+# so every node/npm invocation below inherits a sane stack. Harmless when the
+# limit is already finite.
+if [ "$(ulimit -s 2>/dev/null)" = "unlimited" ]; then
+    if ulimit -S -s 8192 2>/dev/null; then
+        warn "stack ulimit was 'unlimited' (crashes Node v20+); clamped to 8 MB for this run."
+        warn "  make it permanent:  echo 'ulimit -S -s 8192' >> ~/.bashrc"
+    fi
+fi
+
 # ---------- step 1: SSL bypass for MITM environments ----------
 log "Step 1/6: SSL/MITM bypass"
 if ! [ -f "$HOME/.curlrc" ] || ! grep -qE '^[[:space:]]*insecure' "$HOME/.curlrc" 2>/dev/null; then
