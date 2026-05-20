@@ -126,26 +126,36 @@ const LOCAL_SHADOW_SKILLS = new Set<string>([
     "make_downloadable", "screenshot", "download_file",
 ]);
 
-// A curated subset of the otherwise-shadowed file ops that we DO register for
-// Pi. They operate on the persistent per-agent server workspace (mounted at
-// /workspace inside the sandbox, backed by workspaces/<userId>/agent-<keyId>/
-// on the server). Registering them is what lets a Pi agent assemble a file
-// across turns — e.g. build /workspace/report.md with create_file +
-// append_to_file, then call create_pdf with contentFile='/workspace/report.md'
-// for long reports that blow past the per-turn arg-token cap. The user's own
-// local filesystem stays the domain of Pi's built-in read/write/bash.
-const AGENT_WORKSPACE_TOOLS = new Set<string>([
-    "create_file", "append_to_file", "read_file", "list_directory",
-]);
+// HOST-FIRST. We do NOT register the server's workspace file tools
+// (create_file / append_to_file / read_file / list_directory) for Pi — they
+// stay shadowed (LOCAL_SHADOW_SKILLS). The agent's primary filesystem is the
+// user's host: it uses Pi's own read/write/edit/bash for all file work. The
+// server /workspace exists only for sandbox skills (create_pdf, html_to_pdf,
+// transform_image, read_pdf, …), and the auto-bridge moves host files in and
+// workspace_get moves outputs back — so the agent never has to touch /workspace
+// directly. (Earlier the workspace file tools were registered to assemble a
+// contentFile in /workspace; the auto-bridge made that unnecessary and the
+// extra tools just made the model treat /workspace as a general FS.)
 
-// Prepended to these tools' descriptions/promptSnippet so the model never
-// confuses the server workspace with the user's machine.
-const WORKSPACE_TOOL_NOTE =
-    "[SERVER WORKSPACE] This operates on your persistent server-side workspace " +
-    "at /workspace — NOT your local computer. Use it to stage files the model " +
-    "server's document renderers consume (e.g. write /workspace/report.md, then " +
-    "create_pdf contentFile='/workspace/report.md'). For files on the user's own " +
-    "machine, use Pi's built-in read/write/bash instead. ";
+// Canonical working model, attached to workspace_get (always registered).
+const HOST_FIRST_DOCTRINE =
+    "[HOST-FIRST WORKING MODEL] Your primary filesystem is the user's LOCAL HOST — " +
+    "use your built-in read / write / edit / bash for ALL file work (the user's " +
+    "files live on the host: the current directory, /mnt/c/..., etc.). The model " +
+    "server's skills (create_pdf, html_to_pdf, transform_image, read_pdf, read_xlsx, " +
+    "query_sqlite, …) run in a SEPARATE sandbox; you do NOT manage its filesystem. " +
+    "Pass real HOST paths to those skills — host files are uploaded for you " +
+    "automatically. Use workspace_get(workspacePath, hostPath) to copy a skill's " +
+    "OUTPUT (e.g. 'artifacts/<name>') back to the host. Never create, list, or rely " +
+    "on files under /workspace yourself.";
+
+// Shorter override prepended to any sandbox skill whose prompt still talks about
+// /workspace or create_file (those notes are written for the web chat UI).
+const HOST_FIRST_OVERRIDE =
+    "[PI: HOST-FIRST] Pass real host file paths to this skill — they are uploaded " +
+    "to the sandbox automatically; do NOT use create_file or /workspace. Retrieve " +
+    "any output with workspace_get(workspacePath, hostPath). The /workspace and " +
+    "create_file mentions below are for the web chat UI only — ignore them here.\n\n";
 
 export default async function (pi: ExtensionAPI) {
     const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
@@ -295,16 +305,13 @@ export default async function (pi: ExtensionAPI) {
             continue;
         }
 
-        // Skip server-fs / host-inventory skills that shadow Pi's
-        // built-in local tools. Without this, the model sees both
-        // bash/read/edit and read_file/list_directory, and routinely
-        // picks the modelserver one — operating on /workspace inside
-        // the webapp container instead of the user's $PWD.
-        // AGENT_WORKSPACE_TOOLS are deliberately exempt from shadowing — they
-        // target the persistent server workspace, which is the whole point of
-        // letting a Pi agent build files the server's renderers can consume.
-        const isWorkspaceTool = AGENT_WORKSPACE_TOOLS.has(skill.name);
-        if (!includeLocalShadow && LOCAL_SHADOW_SKILLS.has(skill.name) && !isWorkspaceTool) {
+        // Skip server-fs / host-inventory skills that shadow Pi's built-in
+        // local tools (read/write/edit/bash). Without this the model sees both
+        // and routinely picks the modelserver one — operating on the server
+        // /workspace instead of the user's host. HOST-FIRST: file ops stay
+        // shadowed; the agent works on the host and the auto-bridge handles
+        // sandbox skill inputs.
+        if (!includeLocalShadow && LOCAL_SHADOW_SKILLS.has(skill.name)) {
             skippedShadow++;
             continue;
         }
@@ -312,10 +319,15 @@ export default async function (pi: ExtensionAPI) {
         const params = toTypeboxSchema(skill.parameters || {});
         const baseDescription = skill.description
             || (skill.systemPrompt ? skill.systemPrompt.split(/[.\n]/)[0] : skill.name);
-        const description = isWorkspaceTool ? WORKSPACE_TOOL_NOTE + baseDescription : baseDescription;
-        const promptSnippet = isWorkspaceTool
-            ? WORKSPACE_TOOL_NOTE + (skill.systemPrompt || "")
-            : (skill.systemPrompt || undefined);
+        // Sandbox skills whose chat-written prompt pushes /workspace or
+        // create_file get a HOST-FIRST override prepended so the Pi agent
+        // doesn't follow that web-chat-only guidance.
+        const rawPrompt = skill.systemPrompt || "";
+        const pushesWorkspace = /\/workspace|create_file|append_to_file/.test(rawPrompt + " " + baseDescription);
+        const description = baseDescription;
+        const promptSnippet = pushesWorkspace
+            ? HOST_FIRST_OVERRIDE + rawPrompt
+            : (rawPrompt || undefined);
 
         try {
             (pi as any).registerTool({
@@ -401,13 +413,13 @@ export default async function (pi: ExtensionAPI) {
             name: "workspace_get",
             label: "workspace_get",
             description:
-                "[TWO WORLDS] Copy a file FROM your server workspace TO your local machine. " +
+                "Copy a file FROM the server workspace TO your local machine. " +
                 "Use it to deliver outputs that server skills produced — e.g. after create_pdf, " +
                 "workspace_get('artifacts/report.pdf', '/mnt/c/Users/you/Desktop/report.pdf'). " +
                 "workspacePath is relative to /workspace (rendered files land under 'artifacts/'). " +
-                "Note: the reverse direction is automatic — when you pass a host path to a server " +
-                "skill (read_pdf, create_pdf contentFile, transform_image, …) the file is uploaded " +
-                "to the workspace for you.",
+                "The reverse direction is automatic — when you pass a host path to a server skill " +
+                "(read_pdf, create_pdf contentFile, transform_image, …) the file is uploaded for you.",
+            promptSnippet: HOST_FIRST_DOCTRINE,
             parameters: Type.Object({
                 workspacePath: Type.String({ description: "Path inside the server workspace, e.g. 'artifacts/report.pdf' or 'report.md'" }),
                 hostPath: Type.String({ description: "Absolute destination path on the local machine" }),
