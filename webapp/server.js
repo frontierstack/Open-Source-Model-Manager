@@ -7853,26 +7853,62 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
-// AGENT WORKSPACES — persistent per-agent (bearer-key) sandbox workspaces.
-// Each bearer key gets one bucket (agent-<keyId>) under
-// workspaces/<userId>/; these survive across turns so a Pi agent can build
-// files incrementally (create_file → append_to_file → create_pdf contentFile).
-// This pair powers the webapp "Agent" tab: list + delete, scoped to the
-// caller's own account (req.userId).
+// SANDBOX WORKSPACES — persistent sandbox workspaces, surfaced in the webapp
+// "Sandbox Workspace" tab. Two flavours, both listed/deletable here:
+//   • agent-<apiKeyId>  — one per API key (bearer or key+secret). Survives
+//     across turns so a Pi/API agent can build files incrementally
+//     (create_file → append_to_file → create_pdf contentFile).
+//   • conv-<id> / global — webchat session + shared workspaces.
+// Admins get an org-wide view (every owner); non-admins see only their own.
 // ============================================================================
+function callerIsAdmin(req) {
+    return !!(req.user && req.user.role === 'admin')
+        || !!(req.apiKeyData && Array.isArray(req.apiKeyData.permissions) && req.apiKeyData.permissions.includes('admin'));
+}
+
 app.get('/api/agent-workspaces', requireAuth, async (req, res) => {
     try {
         const sbRunner = require('./services/sandboxRunner');
-        const list = await sbRunner.listWorkspaces(req.userId);
-        // Resolve agent-<keyId> buckets to a friendly key label so the UI can
-        // show which key/agent owns each workspace. Bearer keys only — never
-        // expose the secret/key material here.
+        const isAdmin = callerIsAdmin(req);
+        const list = isAdmin
+            ? await sbRunner.listAllWorkspaces()
+            : await sbRunner.listWorkspaces(req.userId);
+
+        // owner dir name (== userId for UUID ids) → user record
+        const usersById = new Map();
+        try {
+            const users = await getAllUsers();
+            for (const u of users) usersById.set(String(u.id), u);
+        } catch { /* ignore — fall back to raw owner id */ }
+
+        // keyId → api key (label + active). Covers ALL keys, not just bearer.
         const keysById = new Map();
         try {
             const keys = await loadApiKeys();
             for (const k of keys) keysById.set(k.id, k);
-        } catch { /* keys unavailable — fall back to the raw bucket name */ }
-        const enriched = list.map(w => {
+        } catch { /* ignore — fall back to raw bucket name */ }
+
+        // Lazily resolve conversation titles per owner for conv-* buckets so the
+        // webchat section shows real titles instead of bare UUIDs.
+        const convTitlesByOwner = new Map();
+        async function convTitle(owner, convId) {
+            if (!usersById.has(owner)) return null; // only real users have convs
+            if (!convTitlesByOwner.has(owner)) {
+                const m = new Map();
+                try {
+                    const idx = await loadConversationsIndex(owner);
+                    for (const c of (idx || [])) if (c && c.id) m.set(String(c.id), c.title || null);
+                } catch { /* ignore */ }
+                convTitlesByOwner.set(owner, m);
+            }
+            return convTitlesByOwner.get(owner).get(convId) || null;
+        }
+
+        const out = [];
+        for (const w of list) {
+            const owner = w.owner;
+            const ownerUser = usersById.get(owner);
+            const ownerName = owner === 'global' ? null : (ownerUser ? ownerUser.username : owner);
             let label = w.bucket;
             let keyId = null;
             let keyActive = null;
@@ -7882,38 +7918,43 @@ app.get('/api/agent-workspaces', requireAuth, async (req, res) => {
                 if (k) { label = k.name || keyId; keyActive = k.active !== false; }
                 else { label = `(deleted key ${keyId.slice(0, 8)}…)`; keyActive = false; }
             } else if (w.type === 'conversation') {
-                label = 'Chat ' + w.bucket.slice('conv-'.length).slice(0, 12);
+                const convId = w.bucket.slice('conv-'.length);
+                label = (await convTitle(owner, convId)) || ('Chat ' + convId.slice(0, 12));
             } else if (w.type === 'global') {
                 label = 'Shared (global)';
             }
-            return { ...w, label, keyId, keyActive };
-        });
-        // Most-recently-used first.
-        enriched.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
-        res.json({ workspaces: enriched });
+            out.push({ ...w, ownerName, label, keyId, keyActive });
+        }
+        out.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+        res.json({ workspaces: out, isAdmin });
     } catch (e) {
-        console.error('Error listing agent workspaces:', e);
+        console.error('Error listing sandbox workspaces:', e);
         res.status(500).json({ error: 'Failed to list workspaces' });
     }
 });
 
-app.delete('/api/agent-workspaces/:bucket', requireAuth, async (req, res) => {
-    const bucket = req.params.bucket || '';
-    // Strict allowlist — bucket dir names are only ever [A-Za-z0-9_-]. Anything
-    // else is a traversal attempt; reject before touching the filesystem.
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(bucket)) {
-        return res.status(400).json({ error: 'Invalid bucket name' });
+app.delete('/api/agent-workspaces/:owner/:bucket', requireAuth, async (req, res) => {
+    const { owner, bucket } = req.params;
+    // Strict allowlist — owner/bucket dir names are only ever [A-Za-z0-9_-].
+    // Anything else is a traversal attempt; reject before touching the fs.
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(owner || '') || !/^[A-Za-z0-9_-]{1,128}$/.test(bucket || '')) {
+        return res.status(400).json({ error: 'Invalid owner or bucket' });
+    }
+    // Non-admins may only delete their own buckets.
+    const ownOwner = req.userId == null ? 'global' : String(req.userId).replace(/[^A-Za-z0-9_-]/g, '_');
+    if (!callerIsAdmin(req) && owner !== ownOwner) {
+        return res.status(403).json({ error: 'You can only delete your own workspaces' });
     }
     try {
         const sbRunner = require('./services/sandboxRunner');
-        const result = await sbRunner.deleteWorkspaceBucket(req.userId, bucket);
+        const result = await sbRunner.deleteWorkspaceBucketByOwner(owner, bucket);
         if (!result.deleted) {
             return res.status(404).json({ error: result.error || 'Workspace not found' });
         }
-        broadcast({ type: 'log', message: `Agent workspace deleted: ${bucket} (${result.fileCount} files)` });
+        broadcast({ type: 'log', message: `Sandbox workspace deleted: ${owner}/${bucket} (${result.fileCount} files)` });
         res.json(result);
     } catch (e) {
-        console.error('Error deleting agent workspace:', e);
+        console.error('Error deleting sandbox workspace:', e);
         res.status(500).json({ error: 'Failed to delete workspace' });
     }
 });

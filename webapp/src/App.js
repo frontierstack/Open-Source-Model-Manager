@@ -115,7 +115,7 @@ import {
     BookOpen as LucideBookOpen,
     Terminal as LucideTerminal,
     LayoutGrid as LucideLayoutGrid,
-    Bot as LucideBot,
+    Boxes as LucideBoxes,
 } from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
@@ -659,9 +659,10 @@ const App = () => {
         return defaultOrder;
     });
 
-    // Agent tab — persistent per-agent (Pi/bearer-key) sandbox workspaces.
+    // Sandbox Workspace tab — persistent sandbox workspaces (agents + webchat).
     const [agentWorkspaces, setAgentWorkspaces] = useState([]);
     const [agentWsLoading, setAgentWsLoading] = useState(false);
+    const [agentWsIsAdmin, setAgentWsIsAdmin] = useState(false);
     const [agentWsDeleteTarget, setAgentWsDeleteTarget] = useState(null);
     const [agentWsDeleting, setAgentWsDeleting] = useState(false);
 
@@ -672,6 +673,7 @@ const App = () => {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             setAgentWorkspaces(Array.isArray(data.workspaces) ? data.workspaces : []);
+            setAgentWsIsAdmin(!!data.isAdmin);
         } catch (e) {
             setAgentWorkspaces([]);
         } finally {
@@ -683,9 +685,10 @@ const App = () => {
         if (!agentWsDeleteTarget) return;
         setAgentWsDeleting(true);
         try {
-            const res = await fetch(`/api/agent-workspaces/${encodeURIComponent(agentWsDeleteTarget.bucket)}`, {
-                method: 'DELETE',
-            });
+            const res = await fetch(
+                `/api/agent-workspaces/${encodeURIComponent(agentWsDeleteTarget.owner)}/${encodeURIComponent(agentWsDeleteTarget.bucket)}`,
+                { method: 'DELETE' }
+            );
             if (!res.ok) {
                 const d = await res.json().catch(() => ({}));
                 throw new Error(d.error || `HTTP ${res.status}`);
@@ -7007,7 +7010,7 @@ console.log(await res.json());`
         { id: 4, icon: <LucideBookOpen size={18} strokeWidth={1.75} />,  label: 'Docs' },
         { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
         { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
-        { id: 7, icon: <LucideBot size={18} strokeWidth={1.75} />,        label: 'Agent' }
+        { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' }
     ];
 
     // Filter tabs based on user role - hide admin-only tabs for non-admin users
@@ -7200,6 +7203,67 @@ console.log(await res.json());`
         while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
         return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${u[i]}`;
     };
+
+    // Shared renderer for a Sandbox Workspace section (Agents / Webchat).
+    const renderWsTable = (rows) => (
+        <TableContainer component={Paper} variant="outlined">
+            <Table size="small">
+                <TableHead>
+                    <TableRow>
+                        <TableCell>Workspace</TableCell>
+                        {agentWsIsAdmin && <TableCell>Owner</TableCell>}
+                        <TableCell>Type</TableCell>
+                        <TableCell align="right">Files</TableCell>
+                        <TableCell align="right">Size</TableCell>
+                        <TableCell>Last used</TableCell>
+                        <TableCell align="right">Actions</TableCell>
+                    </TableRow>
+                </TableHead>
+                <TableBody>
+                    {rows.map(w => (
+                        <TableRow key={`${w.owner}/${w.bucket}`} hover>
+                            <TableCell>
+                                <Typography variant="body2" sx={{ fontWeight: 500 }}>{w.label}</Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>{w.bucket}</Typography>
+                                {w.type === 'agent' && w.keyActive === false && (
+                                    <Chip label="key removed" size="small" color="warning" sx={{ ml: 1, height: 18 }} />
+                                )}
+                            </TableCell>
+                            {agentWsIsAdmin && (
+                                <TableCell>
+                                    <Typography variant="body2">{w.ownerName || (w.owner === 'global' ? '—' : w.owner)}</Typography>
+                                </TableCell>
+                            )}
+                            <TableCell>
+                                <Chip
+                                    size="small"
+                                    label={w.type}
+                                    color={w.type === 'agent' ? 'primary' : w.type === 'global' ? 'info' : 'default'}
+                                    variant={w.type === 'agent' ? 'filled' : 'outlined'}
+                                />
+                            </TableCell>
+                            <TableCell align="right">{w.fileCount}</TableCell>
+                            <TableCell align="right">{formatBytes(w.sizeBytes)}</TableCell>
+                            <TableCell>
+                                <Typography variant="caption" color="text.secondary">
+                                    {w.mtimeMs ? new Date(w.mtimeMs).toLocaleString() : '—'}
+                                </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                                <Tooltip title="Delete workspace">
+                                    <span>
+                                        <IconButton size="small" color="error" onClick={() => setAgentWsDeleteTarget(w)}>
+                                            <DeleteIcon fontSize="small" />
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
+                            </TableCell>
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+        </TableContainer>
+    );
 
     const handleSelectGGUFFile = (filename) => {
         setGgufFile(filename);
@@ -11584,17 +11648,26 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                             );
                         })()}
 
-                        {/* Agent Tab — persistent Pi/agent workspaces */}
-                        {visibleTabOrder[activeTab] === 7 && (
+                        {/* Sandbox Workspace Tab — Agents + Webchat sessions */}
+                        {visibleTabOrder[activeTab] === 7 && (() => {
+                            const agentRows = agentWorkspaces.filter(w => w.type === 'agent');
+                            const chatRows = agentWorkspaces.filter(w => w.type !== 'agent');
+                            const sectionEmpty = (msg) => (
+                                <Card variant="outlined"><CardContent>
+                                    <Typography variant="body2" color="text.secondary">{msg}</Typography>
+                                </CardContent></Card>
+                            );
+                            return (
                             <Box sx={{ p: 3 }}>
                                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2, gap: 2, flexWrap: 'wrap' }}>
                                     <Box>
-                                        <Typography variant="h5" sx={{ fontWeight: 600, mb: 0.5 }}>Agent Workspaces</Typography>
-                                        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 700 }}>
-                                            Persistent sandbox workspaces for Pi (pi.dev) agents and API keys. Each bearer key
-                                            keeps one workspace that survives across turns, so an agent can build files step by
-                                            step (assemble a report, then render it to PDF). Deleting a workspace permanently
-                                            wipes everything that agent has stored there.
+                                        <Typography variant="h5" sx={{ fontWeight: 600, mb: 0.5 }}>Sandbox Workspaces</Typography>
+                                        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 760 }}>
+                                            Persistent sandbox workspaces produced by skill execution. Deleting one permanently
+                                            wipes every file stored in it.
+                                            {agentWsIsAdmin
+                                                ? ' As an admin you see workspaces across all users and API keys.'
+                                                : ' You see workspaces tied to your own account.'}
                                         </Typography>
                                     </Box>
                                     <Button variant="outlined" size="small" onClick={loadAgentWorkspaces} disabled={agentWsLoading}>
@@ -11604,75 +11677,34 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
 
                                 {agentWsLoading && agentWorkspaces.length === 0 ? (
                                     <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}><CircularProgress /></Box>
-                                ) : agentWorkspaces.length === 0 ? (
-                                    <Card variant="outlined"><CardContent>
-                                        <Typography variant="body2" color="text.secondary">
-                                            No agent workspaces yet. They're created automatically the first time a Pi agent (or
-                                            any bearer-key client) runs a file-writing skill such as <code>create_file</code> or
-                                            <code> create_pdf</code>.
-                                        </Typography>
-                                    </CardContent></Card>
                                 ) : (
-                                    <TableContainer component={Paper} variant="outlined">
-                                        <Table size="small">
-                                            <TableHead>
-                                                <TableRow>
-                                                    <TableCell>Workspace</TableCell>
-                                                    <TableCell>Type</TableCell>
-                                                    <TableCell align="right">Files</TableCell>
-                                                    <TableCell align="right">Size</TableCell>
-                                                    <TableCell>Last used</TableCell>
-                                                    <TableCell align="right">Actions</TableCell>
-                                                </TableRow>
-                                            </TableHead>
-                                            <TableBody>
-                                                {agentWorkspaces.map(w => (
-                                                    <TableRow key={w.bucket} hover>
-                                                        <TableCell>
-                                                            <Typography variant="body2" sx={{ fontWeight: 500 }}>{w.label}</Typography>
-                                                            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>{w.bucket}</Typography>
-                                                            {w.type === 'agent' && w.keyActive === false && (
-                                                                <Chip label="key removed" size="small" color="warning" sx={{ ml: 1, height: 18 }} />
-                                                            )}
-                                                        </TableCell>
-                                                        <TableCell>
-                                                            <Chip
-                                                                size="small"
-                                                                label={w.type}
-                                                                color={w.type === 'agent' ? 'primary' : w.type === 'global' ? 'info' : 'default'}
-                                                                variant={w.type === 'agent' ? 'filled' : 'outlined'}
-                                                            />
-                                                        </TableCell>
-                                                        <TableCell align="right">{w.fileCount}</TableCell>
-                                                        <TableCell align="right">{formatBytes(w.sizeBytes)}</TableCell>
-                                                        <TableCell>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                {w.mtimeMs ? new Date(w.mtimeMs).toLocaleString() : '—'}
-                                                            </Typography>
-                                                        </TableCell>
-                                                        <TableCell align="right">
-                                                            <Tooltip title="Delete workspace">
-                                                                <span>
-                                                                    <IconButton size="small" color="error" onClick={() => setAgentWsDeleteTarget(w)}>
-                                                                        <DeleteIcon fontSize="small" />
-                                                                    </IconButton>
-                                                                </span>
-                                                            </Tooltip>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ))}
-                                            </TableBody>
-                                        </Table>
-                                    </TableContainer>
+                                    <>
+                                        {/* Section 1: Agents (one per API key) */}
+                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 1, mb: 1 }}>
+                                            Agents <Typography component="span" variant="body2" color="text.secondary">— one workspace per API key (Pi / bearer / key+secret)</Typography>
+                                        </Typography>
+                                        {agentRows.length
+                                            ? renderWsTable(agentRows)
+                                            : sectionEmpty('No agent workspaces yet. One is created the first time an API key runs a file-writing skill (create_file, create_pdf, …).')}
+
+                                        {/* Section 2: Webchat sessions + shared */}
+                                        <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 3, mb: 1 }}>
+                                            Webchat Sessions <Typography component="span" variant="body2" color="text.secondary">— per-conversation + shared (global) workspaces</Typography>
+                                        </Typography>
+                                        {chatRows.length
+                                            ? renderWsTable(chatRows)
+                                            : sectionEmpty('No webchat or shared workspaces.')}
+                                    </>
                                 )}
 
                                 <Dialog open={!!agentWsDeleteTarget} onClose={() => !agentWsDeleting && setAgentWsDeleteTarget(null)}>
-                                    <DialogTitle>Delete agent workspace?</DialogTitle>
+                                    <DialogTitle>Delete workspace?</DialogTitle>
                                     <DialogContent>
                                         <Typography variant="body2">
                                             This permanently deletes <strong>{agentWsDeleteTarget?.label}</strong>
-                                            {agentWsDeleteTarget ? ` (${agentWsDeleteTarget.fileCount} files, ${formatBytes(agentWsDeleteTarget.sizeBytes)})` : ''} and
-                                            everything the agent stored in it. This cannot be undone.
+                                            {agentWsDeleteTarget?.ownerName ? ` (owner: ${agentWsDeleteTarget.ownerName})` : ''}
+                                            {agentWsDeleteTarget ? ` — ${agentWsDeleteTarget.fileCount} files, ${formatBytes(agentWsDeleteTarget.sizeBytes)}` : ''} and
+                                            everything stored in it. This cannot be undone.
                                         </Typography>
                                     </DialogContent>
                                     <DialogActions>
@@ -11683,7 +11715,8 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                     </DialogActions>
                                 </Dialog>
                             </Box>
-                        )}
+                            );
+                        })()}
 
                         {/* Apps Tab (Admin Only) */}
                         {visibleTabOrder[activeTab] === 6 && isAdmin && (

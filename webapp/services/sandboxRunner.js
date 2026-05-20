@@ -626,12 +626,22 @@ async function* walkFiles(dir) {
     }
 }
 
-/** Enumerate one owner's workspace buckets for the Agent-tab management UI.
- *  Returns [{ bucket, type, sizeBytes, fileCount, mtimeMs }]; empty array when
- *  the owner has no workspace yet. `type` classifies the bucket so the UI can
- *  label agent (Pi/bearer-key) vs conversation vs global state. */
-async function listWorkspaces(userId) {
-    const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
+/** Map a userId to its on-disk owner dir name (null → 'global'). */
+function workspaceOwnerDir(userId) {
+    return userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+/** Classify a bucket dir name for the management UI. */
+function classifyBucket(name) {
+    return name.startsWith('agent-') ? 'agent'
+        : name.startsWith('conv-') ? 'conversation'
+        : name === 'global' ? 'global'
+        : 'other';
+}
+
+/** Stat one owner's buckets. `owner` is the literal on-disk dir name. Returns
+ *  [{ owner, bucket, type, sizeBytes, fileCount, mtimeMs }]; empty when none. */
+async function listWorkspacesForOwner(owner) {
     const ownerDir = path.join(WORKSPACE_DIR_IN_CONTAINER, owner);
     let entries;
     try {
@@ -655,23 +665,43 @@ async function listWorkspaces(userId) {
         if (!mtimeMs) {
             try { mtimeMs = (await fs.stat(bucketDir)).mtimeMs; } catch { /* ignore */ }
         }
-        const type = b.name.startsWith('agent-') ? 'agent'
-            : b.name.startsWith('conv-') ? 'conversation'
-            : b.name === 'global' ? 'global'
-            : 'other';
-        out.push({ bucket: b.name, type, sizeBytes, fileCount, mtimeMs });
+        out.push({ owner, bucket: b.name, type: classifyBucket(b.name), sizeBytes, fileCount, mtimeMs });
     }
     return out;
 }
 
-/** Delete a single workspace bucket by name for an owner. Bucket name is
- *  re-sanitized defensively (the route validates it too). Returns
+/** One owner's workspace buckets (by userId) — self-scoped management view. */
+async function listWorkspaces(userId) {
+    return listWorkspacesForOwner(workspaceOwnerDir(userId));
+}
+
+/** Every owner's workspace buckets — admin-wide management view. Each entry
+ *  carries its `owner` (the on-disk dir name) so the UI/route can resolve it
+ *  back to a username and authorize deletes. */
+async function listAllWorkspaces() {
+    let owners;
+    try {
+        owners = await fs.readdir(WORKSPACE_DIR_IN_CONTAINER, { withFileTypes: true });
+    } catch {
+        return [];
+    }
+    const out = [];
+    for (const o of owners) {
+        if (!o.isDirectory()) continue;
+        const list = await listWorkspacesForOwner(o.name);
+        for (const w of list) out.push(w);
+    }
+    return out;
+}
+
+/** Delete a bucket given the literal owner dir name + bucket name. Both are
+ *  re-sanitized defensively (the route validates + authorizes too). Returns
  *  { deleted, byteCount, fileCount } for audit logging. */
-async function deleteWorkspaceBucket(userId, bucket) {
-    const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
+async function deleteWorkspaceBucketByOwner(owner, bucket) {
+    const safeOwner = String(owner || '').replace(/[^A-Za-z0-9_-]/g, '_');
     const safeBucket = String(bucket || '').replace(/[^A-Za-z0-9_-]/g, '_');
-    if (!safeBucket) return { deleted: false, error: 'empty bucket' };
-    const dirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, owner, safeBucket);
+    if (!safeOwner || !safeBucket) return { deleted: false, error: 'bad owner/bucket' };
+    const dirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, safeOwner, safeBucket);
     let byteCount = 0, fileCount = 0;
     try {
         for await (const f of walkFiles(dirIn)) {
@@ -686,6 +716,11 @@ async function deleteWorkspaceBucket(userId, bucket) {
         return { deleted: false, error: e.message };
     }
     return { deleted: true, path: dirIn, byteCount, fileCount };
+}
+
+/** Delete a bucket scoped to a userId (self-service). */
+async function deleteWorkspaceBucket(userId, bucket) {
+    return deleteWorkspaceBucketByOwner(workspaceOwnerDir(userId), bucket);
 }
 
 /** One-shot migration: any legacy per-user workspace whose contents sit
@@ -796,7 +831,9 @@ module.exports = {
     setHostBase,
     deleteConversationWorkspace,
     listWorkspaces,
+    listAllWorkspaces,
     deleteWorkspaceBucket,
+    deleteWorkspaceBucketByOwner,
     migrateLegacyWorkspaces,
     ensureWorkspace,
     resolveInWorkspace,

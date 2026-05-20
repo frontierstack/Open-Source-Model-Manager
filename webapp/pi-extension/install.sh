@@ -208,16 +208,42 @@ if have pi && pi --version >/dev/null 2>&1; then
     log "  Pi already installed: $(pi --version)"
 else
     log "  installing @earendil-works/pi-coding-agent globally"
-    # If we're using nvm, npm globals are user-owned (no sudo).
-    if [ -n "${NVM_DIR:-}" ] && [ -f "$NVM_DIR/nvm.sh" ]; then
-        npm install -g @earendil-works/pi-coding-agent >/dev/null 2>&1 \
-            || { err "npm install -g pi failed"; exit 1; }
+    # Capture combined npm output to a log so failures are DIAGNOSABLE. The
+    # old `>/dev/null 2>&1` hid the real error (e.g. "RangeError: Maximum call
+    # stack size exceeded" from a broken npm cache / too-old npm), leaving only
+    # an opaque "npm install -g pi failed".
+    PI_NPM_LOG="$(mktemp 2>/dev/null || echo /tmp/pi-npm-install.log)"
+    pi_npm_install() {
+        # nvm globals are user-owned (no sudo); otherwise try sudo then plain.
+        if [ -n "${NVM_DIR:-}" ] && [ -f "$NVM_DIR/nvm.sh" ]; then
+            npm install -g @earendil-works/pi-coding-agent >"$PI_NPM_LOG" 2>&1
+        else
+            sudo_run npm install -g @earendil-works/pi-coding-agent >"$PI_NPM_LOG" 2>&1 \
+                || npm install -g @earendil-works/pi-coding-agent >"$PI_NPM_LOG" 2>&1
+        fi
+    }
+    if pi_npm_install; then
+        ok "  installed Pi $(pi --version 2>/dev/null || echo unknown)"
+        rm -f "$PI_NPM_LOG" 2>/dev/null || true
     else
-        sudo_run npm install -g @earendil-works/pi-coding-agent >/dev/null 2>&1 \
-            || npm install -g @earendil-works/pi-coding-agent >/dev/null 2>&1 \
-            || { err "npm install -g pi failed"; exit 1; }
+        err "npm install -g @earendil-works/pi-coding-agent failed. Last npm output:"
+        tail -n 25 "$PI_NPM_LOG" 2>/dev/null | sed 's/^/    /' >&2
+        err "Full log: $PI_NPM_LOG"
+        err "Common fixes for 'Maximum call stack size exceeded' / cache errors:"
+        err "    npm cache clean --force"
+        err "    npm install -g npm@latest        # update npm itself, then retry"
+        err "    npm install -g @earendil-works/pi-coding-agent"
+        err "  one-off workaround (raise Node's stack):"
+        err "    node --stack-size=4000 \"\$(command -v npm)\" install -g @earendil-works/pi-coding-agent"
+        # Don't hard-fail if a usable 'pi' is already on PATH — still install
+        # the extension so a working Pi picks up our latest catalog.
+        if have pi && pi --version >/dev/null 2>&1; then
+            warn "  Existing pi found ($(pi --version)); continuing with the extension install."
+        else
+            err "  Pi CLI is required. Fix the npm error above, then re-run this installer."
+            exit 1
+        fi
     fi
-    ok "  installed Pi $(pi --version 2>/dev/null || echo unknown)"
 fi
 
 # ---------- step 5: drop the modelserver extension ----------
