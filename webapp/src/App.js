@@ -115,6 +115,7 @@ import {
     BookOpen as LucideBookOpen,
     Terminal as LucideTerminal,
     LayoutGrid as LucideLayoutGrid,
+    Bot as LucideBot,
 } from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
@@ -630,14 +631,23 @@ const App = () => {
 
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
-        const defaultOrder = [0, 1, 2, 3, 4, 5, 6];
+        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7];
         try {
             const saved = localStorage.getItem('tabOrder');
             if (saved) {
-                const parsed = JSON.parse(saved);
-                // Validate: must have exactly 7 elements and include all tab IDs 0-6
+                let parsed = JSON.parse(saved);
+                // Migrate older saved orders that predate a tab being added:
+                // append any missing default tab IDs (preserving the user's
+                // existing arrangement) instead of discarding their layout.
+                // This covers the 7→8 tab bump (Agent tab) and is forward-safe.
+                if (Array.isArray(parsed)) {
+                    const missing = defaultOrder.filter(id => !parsed.includes(id));
+                    if (missing.length) parsed = [...parsed, ...missing];
+                    // Drop any stale IDs no longer in the tab set.
+                    parsed = parsed.filter(id => defaultOrder.includes(id));
+                }
                 const hasAllTabs = defaultOrder.every(id => parsed.includes(id));
-                if (parsed.length === 7 && hasAllTabs) {
+                if (parsed.length === defaultOrder.length && hasAllTabs) {
                     return parsed;
                 }
                 // Invalid saved order - clear it
@@ -648,6 +658,47 @@ const App = () => {
         }
         return defaultOrder;
     });
+
+    // Agent tab — persistent per-agent (Pi/bearer-key) sandbox workspaces.
+    const [agentWorkspaces, setAgentWorkspaces] = useState([]);
+    const [agentWsLoading, setAgentWsLoading] = useState(false);
+    const [agentWsDeleteTarget, setAgentWsDeleteTarget] = useState(null);
+    const [agentWsDeleting, setAgentWsDeleting] = useState(false);
+
+    const loadAgentWorkspaces = async () => {
+        setAgentWsLoading(true);
+        try {
+            const res = await fetch('/api/agent-workspaces');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            setAgentWorkspaces(Array.isArray(data.workspaces) ? data.workspaces : []);
+        } catch (e) {
+            setAgentWorkspaces([]);
+        } finally {
+            setAgentWsLoading(false);
+        }
+    };
+
+    const confirmDeleteAgentWorkspace = async () => {
+        if (!agentWsDeleteTarget) return;
+        setAgentWsDeleting(true);
+        try {
+            const res = await fetch(`/api/agent-workspaces/${encodeURIComponent(agentWsDeleteTarget.bucket)}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) {
+                const d = await res.json().catch(() => ({}));
+                throw new Error(d.error || `HTTP ${res.status}`);
+            }
+            showSnackbar(`Deleted workspace "${agentWsDeleteTarget.label}"`, 'success');
+            setAgentWsDeleteTarget(null);
+            await loadAgentWorkspaces();
+        } catch (e) {
+            showSnackbar(`Delete failed: ${e.message}`, 'error');
+        } finally {
+            setAgentWsDeleting(false);
+        }
+    };
 
     // Docs accordion order state
     const [docsAccordionOrder, setDocsAccordionOrder] = useState(() => {
@@ -760,6 +811,14 @@ const App = () => {
             fetchUsers();
         }
     }, [activeTab, user?.role, tabOrder]);
+
+    // Refresh agent workspaces whenever the Agent tab is opened.
+    useEffect(() => {
+        if (tabOrder[activeTab] === 7) {
+            loadAgentWorkspaces();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, tabOrder]);
 
     // Hydrate UI preferences (theme/accent/bubble/density) from the
     // server on mount. The store applies them to <html>/<body> so chat's
@@ -6947,7 +7006,8 @@ console.log(await res.json());`
         { id: 3, icon: <LucideKey size={18} strokeWidth={1.75} />,       label: 'API Keys', adminOnly: true },
         { id: 4, icon: <LucideBookOpen size={18} strokeWidth={1.75} />,  label: 'Docs' },
         { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
-        { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true }
+        { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
+        { id: 7, icon: <LucideBot size={18} strokeWidth={1.75} />,        label: 'Agent' }
     ];
 
     // Filter tabs based on user role - hide admin-only tabs for non-admin users
@@ -11523,6 +11583,107 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                             </Box>
                             );
                         })()}
+
+                        {/* Agent Tab — persistent Pi/agent workspaces */}
+                        {visibleTabOrder[activeTab] === 7 && (
+                            <Box sx={{ p: 3 }}>
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2, gap: 2, flexWrap: 'wrap' }}>
+                                    <Box>
+                                        <Typography variant="h5" sx={{ fontWeight: 600, mb: 0.5 }}>Agent Workspaces</Typography>
+                                        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 700 }}>
+                                            Persistent sandbox workspaces for Pi (pi.dev) agents and API keys. Each bearer key
+                                            keeps one workspace that survives across turns, so an agent can build files step by
+                                            step (assemble a report, then render it to PDF). Deleting a workspace permanently
+                                            wipes everything that agent has stored there.
+                                        </Typography>
+                                    </Box>
+                                    <Button variant="outlined" size="small" onClick={loadAgentWorkspaces} disabled={agentWsLoading}>
+                                        {agentWsLoading ? 'Refreshing…' : 'Refresh'}
+                                    </Button>
+                                </Box>
+
+                                {agentWsLoading && agentWorkspaces.length === 0 ? (
+                                    <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}><CircularProgress /></Box>
+                                ) : agentWorkspaces.length === 0 ? (
+                                    <Card variant="outlined"><CardContent>
+                                        <Typography variant="body2" color="text.secondary">
+                                            No agent workspaces yet. They're created automatically the first time a Pi agent (or
+                                            any bearer-key client) runs a file-writing skill such as <code>create_file</code> or
+                                            <code> create_pdf</code>.
+                                        </Typography>
+                                    </CardContent></Card>
+                                ) : (
+                                    <TableContainer component={Paper} variant="outlined">
+                                        <Table size="small">
+                                            <TableHead>
+                                                <TableRow>
+                                                    <TableCell>Workspace</TableCell>
+                                                    <TableCell>Type</TableCell>
+                                                    <TableCell align="right">Files</TableCell>
+                                                    <TableCell align="right">Size</TableCell>
+                                                    <TableCell>Last used</TableCell>
+                                                    <TableCell align="right">Actions</TableCell>
+                                                </TableRow>
+                                            </TableHead>
+                                            <TableBody>
+                                                {agentWorkspaces.map(w => (
+                                                    <TableRow key={w.bucket} hover>
+                                                        <TableCell>
+                                                            <Typography variant="body2" sx={{ fontWeight: 500 }}>{w.label}</Typography>
+                                                            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>{w.bucket}</Typography>
+                                                            {w.type === 'agent' && w.keyActive === false && (
+                                                                <Chip label="key removed" size="small" color="warning" sx={{ ml: 1, height: 18 }} />
+                                                            )}
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <Chip
+                                                                size="small"
+                                                                label={w.type}
+                                                                color={w.type === 'agent' ? 'primary' : w.type === 'global' ? 'info' : 'default'}
+                                                                variant={w.type === 'agent' ? 'filled' : 'outlined'}
+                                                            />
+                                                        </TableCell>
+                                                        <TableCell align="right">{w.fileCount}</TableCell>
+                                                        <TableCell align="right">{formatBytes(w.sizeBytes)}</TableCell>
+                                                        <TableCell>
+                                                            <Typography variant="caption" color="text.secondary">
+                                                                {w.mtimeMs ? new Date(w.mtimeMs).toLocaleString() : '—'}
+                                                            </Typography>
+                                                        </TableCell>
+                                                        <TableCell align="right">
+                                                            <Tooltip title="Delete workspace">
+                                                                <span>
+                                                                    <IconButton size="small" color="error" onClick={() => setAgentWsDeleteTarget(w)}>
+                                                                        <DeleteIcon fontSize="small" />
+                                                                    </IconButton>
+                                                                </span>
+                                                            </Tooltip>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </TableContainer>
+                                )}
+
+                                <Dialog open={!!agentWsDeleteTarget} onClose={() => !agentWsDeleting && setAgentWsDeleteTarget(null)}>
+                                    <DialogTitle>Delete agent workspace?</DialogTitle>
+                                    <DialogContent>
+                                        <Typography variant="body2">
+                                            This permanently deletes <strong>{agentWsDeleteTarget?.label}</strong>
+                                            {agentWsDeleteTarget ? ` (${agentWsDeleteTarget.fileCount} files, ${formatBytes(agentWsDeleteTarget.sizeBytes)})` : ''} and
+                                            everything the agent stored in it. This cannot be undone.
+                                        </Typography>
+                                    </DialogContent>
+                                    <DialogActions>
+                                        <Button onClick={() => setAgentWsDeleteTarget(null)} disabled={agentWsDeleting}>Cancel</Button>
+                                        <Button onClick={confirmDeleteAgentWorkspace} color="error" variant="contained" disabled={agentWsDeleting}>
+                                            {agentWsDeleting ? 'Deleting…' : 'Delete'}
+                                        </Button>
+                                    </DialogActions>
+                                </Dialog>
+                            </Box>
+                        )}
 
                         {/* Apps Tab (Admin Only) */}
                         {visibleTabOrder[activeTab] === 6 && isAdmin && (

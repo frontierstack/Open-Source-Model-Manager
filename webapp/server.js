@@ -7809,11 +7809,24 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
 
         let result;
 
+        // Bearer-key (Pi) and other API-key callers get one persistent,
+        // user-manageable workspace per key: 'agent-<apiKeyId>'. This is what
+        // lets a Pi agent build a file across turns (create_file → append_to_file
+        // → create_pdf contentFile=...) and have it survive, instead of landing
+        // in the shared 'global' bucket. Session (UI) callers have no apiKeyData,
+        // so they fall through to conversation/global scoping unchanged.
+        const skillCtx = {
+            userId: req.userId,
+            workspaceBucket: req.apiKeyData && req.apiKeyData.id
+                ? `agent-${req.apiKeyData.id}`
+                : null,
+        };
+
         // Execute Python skill code
         if (skill.code && skill.code.trim() && !skill.code.startsWith('Uses ') && !skill.code.startsWith('Runs ')) {
             try {
                 // Execute Python code
-                result = await executePythonSkill(skill, params);
+                result = await executePythonSkill(skill, params, skillCtx);
             } catch (error) {
                 console.error(`Error executing skill ${skillName}:`, error);
                 if (agentId) {
@@ -7836,6 +7849,72 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error executing skill:', error);
         res.status(500).json({ error: 'Failed to execute skill' });
+    }
+});
+
+// ============================================================================
+// AGENT WORKSPACES — persistent per-agent (bearer-key) sandbox workspaces.
+// Each bearer key gets one bucket (agent-<keyId>) under
+// workspaces/<userId>/; these survive across turns so a Pi agent can build
+// files incrementally (create_file → append_to_file → create_pdf contentFile).
+// This pair powers the webapp "Agent" tab: list + delete, scoped to the
+// caller's own account (req.userId).
+// ============================================================================
+app.get('/api/agent-workspaces', requireAuth, async (req, res) => {
+    try {
+        const sbRunner = require('./services/sandboxRunner');
+        const list = await sbRunner.listWorkspaces(req.userId);
+        // Resolve agent-<keyId> buckets to a friendly key label so the UI can
+        // show which key/agent owns each workspace. Bearer keys only — never
+        // expose the secret/key material here.
+        const keysById = new Map();
+        try {
+            const keys = await loadApiKeys();
+            for (const k of keys) keysById.set(k.id, k);
+        } catch { /* keys unavailable — fall back to the raw bucket name */ }
+        const enriched = list.map(w => {
+            let label = w.bucket;
+            let keyId = null;
+            let keyActive = null;
+            if (w.type === 'agent') {
+                keyId = w.bucket.slice('agent-'.length);
+                const k = keysById.get(keyId);
+                if (k) { label = k.name || keyId; keyActive = k.active !== false; }
+                else { label = `(deleted key ${keyId.slice(0, 8)}…)`; keyActive = false; }
+            } else if (w.type === 'conversation') {
+                label = 'Chat ' + w.bucket.slice('conv-'.length).slice(0, 12);
+            } else if (w.type === 'global') {
+                label = 'Shared (global)';
+            }
+            return { ...w, label, keyId, keyActive };
+        });
+        // Most-recently-used first.
+        enriched.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+        res.json({ workspaces: enriched });
+    } catch (e) {
+        console.error('Error listing agent workspaces:', e);
+        res.status(500).json({ error: 'Failed to list workspaces' });
+    }
+});
+
+app.delete('/api/agent-workspaces/:bucket', requireAuth, async (req, res) => {
+    const bucket = req.params.bucket || '';
+    // Strict allowlist — bucket dir names are only ever [A-Za-z0-9_-]. Anything
+    // else is a traversal attempt; reject before touching the filesystem.
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(bucket)) {
+        return res.status(400).json({ error: 'Invalid bucket name' });
+    }
+    try {
+        const sbRunner = require('./services/sandboxRunner');
+        const result = await sbRunner.deleteWorkspaceBucket(req.userId, bucket);
+        if (!result.deleted) {
+            return res.status(404).json({ error: result.error || 'Workspace not found' });
+        }
+        broadcast({ type: 'log', message: `Agent workspace deleted: ${bucket} (${result.fileCount} files)` });
+        res.json(result);
+    } catch (e) {
+        console.error('Error deleting agent workspace:', e);
+        res.status(500).json({ error: 'Failed to delete workspace' });
     }
 });
 
@@ -7912,6 +7991,11 @@ async function executePythonSkill(skill, params, ctx = null) {
                 // chat produced. Null for direct /api/skills/:name/execute
                 // (falls back to the 'global' bucket).
                 conversationId: (ctx && ctx.conversationId) || null,
+                // workspaceBucket pins a persistent per-agent workspace for
+                // bearer-key (Pi) callers — 'agent-<apiKeyId>'. Set by the
+                // /api/skills/:name/execute route from req.apiKeyData.id so
+                // every turn of a Pi agent shares one manageable workspace.
+                workspaceBucket: (ctx && ctx.workspaceBucket) || null,
             });
             if (run.timedOut) {
                 // Runs with no artifacts are cleaned up immediately; nothing
@@ -16481,8 +16565,12 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // in-process against the webapp container's filesystem instead of
     // the per-conversation /workspace.
     'tar_extract', 'tar_create', 'unzip_file', 'zip_files',
-    // pdf / docs generation + reading
-    'create_pdf', 'html_to_pdf', 'markdown_to_html',
+    // pdf / docs generation + reading. create_pdf & create_docx both accept a
+    // `contentFile` workspace path for long bodies — they MUST mount /workspace
+    // so that file (written via create_file/append_to_file in the same bucket)
+    // is visible at render time. create_docx was previously missing here, so its
+    // contentFile path silently 404'd.
+    'create_pdf', 'create_docx', 'html_to_pdf', 'markdown_to_html',
     'read_pdf', 'pdf_page_count', 'pdf_to_images',
     // email generation (.eml) — needs workspace mount to attach files
     // the user/model already wrote into /workspace.

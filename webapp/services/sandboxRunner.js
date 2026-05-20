@@ -128,6 +128,10 @@ async function runPythonSkill(opts) {
         // Per-chat scope so all skills firing in the same conversation
         // share a workspace bucket that can be wiped on conv delete.
         conversationId = null,
+        // Explicit bucket override. When set (e.g. 'agent-<apiKeyId>' for Pi /
+        // bearer-key callers) it wins over conversationId/global so a single
+        // agent gets one persistent, manageable workspace across every turn.
+        workspaceBucket = null,
     } = opts;
 
     if (typeof code !== 'string' || !code.trim()) {
@@ -167,7 +171,7 @@ async function runPythonSkill(opts) {
     let workspaceInfo = null;
     let resolvedParams = params;
     if (workspace) {
-        workspaceInfo = await ensureWorkspace(userId, conversationId);
+        workspaceInfo = await ensureWorkspace(userId, conversationId, workspaceBucket);
         try {
             if (pathNormalize) {
                 resolvedParams = normalizePathArgs(params, workspaceInfo.containerMount);
@@ -535,22 +539,25 @@ const PATH_ARG_NAMES = [
  *  Returns both the in-container path and the host path for the bind mount.
  *
  *  Bucket layout:
+ *    <base>/workspaces/<userId>/agent-<apiKeyId>/        (bearer-key / Pi caller)
  *    <base>/workspaces/<userId>/conv-<conversationId>/   (chat turn with a conv)
- *    <base>/workspaces/<userId>/global/                  (non-chat callers,
- *                                                         e.g. direct skill execute)
+ *    <base>/workspaces/<userId>/global/                  (other non-chat callers)
  *
  *  Per-conv scoping lets us wipe everything a chat produced (git clones,
  *  files, downloads) when the conversation is deleted — clean cleanup semantics
- *  with no cross-conversation leakage. Non-chat callers still get persistent
- *  state under `global/`. */
-async function ensureWorkspace(userId, conversationId = null) {
+ *  with no cross-conversation leakage. A `bucketOverride` (e.g. agent-<keyId>)
+ *  pins one persistent, user-manageable workspace to a single bearer key/agent
+ *  across all of its turns. Other non-chat callers still get `global/`. */
+async function ensureWorkspace(userId, conversationId = null, bucketOverride = null) {
     if (!sandboxHostBase) {
         throw new Error('sandboxRunner: hostBase not set — workspace unavailable');
     }
     const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
-    const bucket = conversationId
-        ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_')
-        : 'global';
+    const bucket = bucketOverride
+        ? String(bucketOverride).replace(/[^A-Za-z0-9_-]/g, '_')
+        : conversationId
+            ? 'conv-' + String(conversationId).replace(/[^A-Za-z0-9_-]/g, '_')
+            : 'global';
     const userDirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, owner, bucket);
     // Host workspace base lives next to the sandbox base.
     const workspaceHostBase = path.posix.join(
@@ -617,6 +624,68 @@ async function* walkFiles(dir) {
             yield p;
         }
     }
+}
+
+/** Enumerate one owner's workspace buckets for the Agent-tab management UI.
+ *  Returns [{ bucket, type, sizeBytes, fileCount, mtimeMs }]; empty array when
+ *  the owner has no workspace yet. `type` classifies the bucket so the UI can
+ *  label agent (Pi/bearer-key) vs conversation vs global state. */
+async function listWorkspaces(userId) {
+    const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const ownerDir = path.join(WORKSPACE_DIR_IN_CONTAINER, owner);
+    let entries;
+    try {
+        entries = await fs.readdir(ownerDir, { withFileTypes: true });
+    } catch {
+        return [];
+    }
+    const out = [];
+    for (const b of entries) {
+        if (!b.isDirectory()) continue;
+        const bucketDir = path.join(ownerDir, b.name);
+        let sizeBytes = 0, fileCount = 0, mtimeMs = 0;
+        for await (const f of walkFiles(bucketDir)) {
+            try {
+                const st = await fs.stat(f);
+                sizeBytes += st.size;
+                fileCount += 1;
+                if (st.mtimeMs > mtimeMs) mtimeMs = st.mtimeMs;
+            } catch { /* ignore */ }
+        }
+        if (!mtimeMs) {
+            try { mtimeMs = (await fs.stat(bucketDir)).mtimeMs; } catch { /* ignore */ }
+        }
+        const type = b.name.startsWith('agent-') ? 'agent'
+            : b.name.startsWith('conv-') ? 'conversation'
+            : b.name === 'global' ? 'global'
+            : 'other';
+        out.push({ bucket: b.name, type, sizeBytes, fileCount, mtimeMs });
+    }
+    return out;
+}
+
+/** Delete a single workspace bucket by name for an owner. Bucket name is
+ *  re-sanitized defensively (the route validates it too). Returns
+ *  { deleted, byteCount, fileCount } for audit logging. */
+async function deleteWorkspaceBucket(userId, bucket) {
+    const owner = userId == null ? 'global' : String(userId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const safeBucket = String(bucket || '').replace(/[^A-Za-z0-9_-]/g, '_');
+    if (!safeBucket) return { deleted: false, error: 'empty bucket' };
+    const dirIn = path.join(WORKSPACE_DIR_IN_CONTAINER, owner, safeBucket);
+    let byteCount = 0, fileCount = 0;
+    try {
+        for await (const f of walkFiles(dirIn)) {
+            try {
+                const st = await fs.stat(f);
+                byteCount += st.size;
+                fileCount += 1;
+            } catch { /* ignore */ }
+        }
+        await fs.rm(dirIn, { recursive: true, force: true });
+    } catch (e) {
+        return { deleted: false, error: e.message };
+    }
+    return { deleted: true, path: dirIn, byteCount, fileCount };
 }
 
 /** One-shot migration: any legacy per-user workspace whose contents sit
@@ -726,6 +795,8 @@ module.exports = {
     cleanupRun,
     setHostBase,
     deleteConversationWorkspace,
+    listWorkspaces,
+    deleteWorkspaceBucket,
     migrateLegacyWorkspaces,
     ensureWorkspace,
     resolveInWorkspace,

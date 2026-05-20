@@ -121,6 +121,27 @@ const LOCAL_SHADOW_SKILLS = new Set<string>([
     "make_downloadable", "screenshot", "download_file",
 ]);
 
+// A curated subset of the otherwise-shadowed file ops that we DO register for
+// Pi. They operate on the persistent per-agent server workspace (mounted at
+// /workspace inside the sandbox, backed by workspaces/<userId>/agent-<keyId>/
+// on the server). Registering them is what lets a Pi agent assemble a file
+// across turns — e.g. build /workspace/report.md with create_file +
+// append_to_file, then call create_pdf with contentFile='/workspace/report.md'
+// for long reports that blow past the per-turn arg-token cap. The user's own
+// local filesystem stays the domain of Pi's built-in read/write/bash.
+const AGENT_WORKSPACE_TOOLS = new Set<string>([
+    "create_file", "append_to_file", "read_file", "list_directory",
+]);
+
+// Prepended to these tools' descriptions/promptSnippet so the model never
+// confuses the server workspace with the user's machine.
+const WORKSPACE_TOOL_NOTE =
+    "[SERVER WORKSPACE] This operates on your persistent server-side workspace " +
+    "at /workspace — NOT your local computer. Use it to stage files the model " +
+    "server's document renderers consume (e.g. write /workspace/report.md, then " +
+    "create_pdf contentFile='/workspace/report.md'). For files on the user's own " +
+    "machine, use Pi's built-in read/write/bash instead. ";
+
 export default async function (pi: ExtensionAPI) {
     const baseUrl = (process.env.MODELSERVER_BASE_URL || SERVER_BAKED_BASE_URL).replace(/\/+$/, "");
     const apiKey = process.env.MODELSERVER_API_KEY;
@@ -211,21 +232,29 @@ export default async function (pi: ExtensionAPI) {
         // bash/read/edit and read_file/list_directory, and routinely
         // picks the modelserver one — operating on /workspace inside
         // the webapp container instead of the user's $PWD.
-        if (!includeLocalShadow && LOCAL_SHADOW_SKILLS.has(skill.name)) {
+        // AGENT_WORKSPACE_TOOLS are deliberately exempt from shadowing — they
+        // target the persistent server workspace, which is the whole point of
+        // letting a Pi agent build files the server's renderers can consume.
+        const isWorkspaceTool = AGENT_WORKSPACE_TOOLS.has(skill.name);
+        if (!includeLocalShadow && LOCAL_SHADOW_SKILLS.has(skill.name) && !isWorkspaceTool) {
             skippedShadow++;
             continue;
         }
 
         const params = toTypeboxSchema(skill.parameters || {});
-        const description = skill.description
+        const baseDescription = skill.description
             || (skill.systemPrompt ? skill.systemPrompt.split(/[.\n]/)[0] : skill.name);
+        const description = isWorkspaceTool ? WORKSPACE_TOOL_NOTE + baseDescription : baseDescription;
+        const promptSnippet = isWorkspaceTool
+            ? WORKSPACE_TOOL_NOTE + (skill.systemPrompt || "")
+            : (skill.systemPrompt || undefined);
 
         try {
             (pi as any).registerTool({
                 name: skill.name,
                 label: skill.name,
                 description,
-                promptSnippet: skill.systemPrompt || undefined,
+                promptSnippet,
                 parameters: params,
                 async execute(_toolCallId: string, args: unknown, signal: AbortSignal | undefined) {
                     let r: Response;
@@ -252,6 +281,33 @@ export default async function (pi: ExtensionAPI) {
                     if (!r.ok) {
                         const msg = (parsed && parsed.error) ? parsed.error : `HTTP ${r.status}`;
                         throw new Error(`[${skill.name}] ${msg}`);
+                    }
+                    // Skills that write files (create_pdf, create_docx,
+                    // create_xlsx, render_chart, image transforms, …) drop them
+                    // in the server-side sandbox at /workspace/artifacts/ and
+                    // return `_artifacts: [{ name, url, … }]`. Two things break
+                    // this for Pi: (1) the URL is relative to the webapp, and
+                    // (2) the skills bake in a chat-UI note ("shown as a
+                    // download chip — do NOT copy_file") that is actively wrong
+                    // here — there is no chip in a terminal, the copy/move
+                    // skills aren't even registered (LOCAL_SHADOW_SKILLS), and
+                    // the sandbox path does not exist on the user's machine.
+                    // Absolutize the URL, drop the misleading note, and rewrite
+                    // the result into host-correct download guidance so the
+                    // agent fetches the file to wherever the user asked instead
+                    // of cp-ing from a /workspace path that isn't on its fs.
+                    if (parsed && typeof parsed === "object"
+                        && Array.isArray(parsed._artifacts) && parsed._artifacts.length) {
+                        for (const a of parsed._artifacts) {
+                            if (a && typeof a.url === "string" && a.url.startsWith("/")) {
+                                a.url = `${baseUrl}${a.url}`;
+                            }
+                        }
+                        if ("note" in parsed) delete parsed.note;
+                        return {
+                            content: [{ type: "text", text: describeArtifacts(parsed, insecure) }],
+                            details: parsed
+                        };
                     }
                     return {
                         content: [{ type: "text", text: summarize(parsed) }],
@@ -325,6 +381,47 @@ function toTypeboxSchema(params: SkillParam) {
         props[key] = Type.Optional(t);
     }
     return Type.Object(props);
+}
+
+// Server-side skills write generated files into the webapp container's
+// sandbox (/workspace/artifacts/) and return `_artifacts` with a download
+// URL. In the web chat UI those surface as download chips; in Pi there is
+// no chip and the sandbox is a different filesystem from the user's host, so
+// the only way to deliver a file to the path the user asked for is to
+// download it from the URL. Build that instruction with a ready-to-run curl
+// command — auth via the MODELSERVER_API_KEY env var Pi already has (so the
+// secret never lands in the transcript), and -k when the cert is self-signed.
+function describeArtifacts(parsed: any, insecure: boolean): string {
+    const arts = (parsed._artifacts || []) as Array<{ name: string; size?: number; url: string }>;
+    const kFlag = insecure ? " -k" : "";
+    const lines: string[] = [];
+    lines.push(
+        `Generated ${arts.length} file(s) on the model server — these live in the ` +
+        `server-side sandbox, NOT on your local filesystem. The /workspace/... path in ` +
+        `the result does not exist on your machine, so do NOT cp it. To deliver a file ` +
+        `to the location the user asked for, download its URL straight to that path:`
+    );
+    for (const a of arts) {
+        const sz = typeof a.size === "number" ? ` (${a.size} bytes)` : "";
+        lines.push("");
+        lines.push(`• ${a.name}${sz}`);
+        lines.push(
+            `  curl -fsSL${kFlag} -H "Authorization: Bearer $MODELSERVER_API_KEY" ` +
+            `"${a.url}" -o "<DEST_PATH>/${a.name}"`
+        );
+    }
+    lines.push("");
+    lines.push(
+        `Replace <DEST_PATH> with the directory the user wants (mkdir -p it first if ` +
+        `needed). $MODELSERVER_API_KEY is already exported in your environment.`
+    );
+    // Keep any human-facing summary the skill returned (the misleading
+    // chat-chip note was already stripped by the caller).
+    if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+        lines.push("");
+        lines.push(parsed.summary.trim());
+    }
+    return lines.join("\n");
 }
 
 function summarize(payload: any): string {
