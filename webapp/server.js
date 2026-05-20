@@ -479,6 +479,50 @@ function isTargetedDocQuery(q) {
     return false;
 }
 
+// Split merged user content into (1) the user's actual question and (2) the
+// bulk content to index for the agentic large-document flow.
+//
+// The chat UI appends uploads as:
+//   <header>\n\n=== FILE N ===…=== END FILE N ===\n\n---\n\nUser message: <typed prompt>
+// so the real question is at the END behind a "User message:" label and the
+// document body sits in the middle. Extracting it explicitly is essential:
+// the fallback last-lines scan misses the labelled line (it neither ends in
+// "?" nor starts with a question word), so EVERY uploaded-file question used
+// to fall through to the summarise default — which both told the model to
+// summarise and suppressed targeted priming. Returns { queryPart, contentPart };
+// queryPart is '' when no question can be located (caller supplies a default).
+function extractAgenticQuery(textContent) {
+    if (typeof textContent !== 'string' || !textContent) {
+        return { queryPart: '', contentPart: textContent || '' };
+    }
+    // 1. Client's explicit "User message:" delimiter (uploads path).
+    const label = 'User message:';
+    const mIdx = textContent.lastIndexOf(label);
+    if (mIdx !== -1) {
+        const q = textContent.slice(mIdx + label.length).trim();
+        if (q) {
+            // Strip the trailing "\n\n---\n\n" (or similar) separator that the
+            // client puts between the file blocks and the label.
+            const contentPart = textContent.slice(0, mIdx).replace(/\s*-{0,}\s*$/, '');
+            return { queryPart: q, contentPart };
+        }
+    }
+    // 2. Fallback: scan the last 10 lines for a question, tolerating a
+    //    leading "User message:" label and not requiring a trailing "?".
+    const lines = textContent.split('\n');
+    const starter = /^(please|can you|could you|would you|what|whats|which|who|whom|where|when|how|why|summar|analy|explain|describe|list|find|search|give|show|tell|extract|title|name|value|page|define|locate|quote|cite|compare|count|identify)\b/i;
+    for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
+        const line = lines[j].trim().replace(/^User message:\s*/i, '');
+        if (!line) continue;
+        if (line.endsWith('?') || starter.test(line)) {
+            const queryPart = lines.slice(j).join('\n').replace(/^\s*User message:\s*/i, '');
+            const contentPart = lines.slice(0, j).join('\n');
+            return { queryPart, contentPart };
+        }
+    }
+    return { queryPart: '', contentPart: textContent };
+}
+
 /**
  * Condense content using query-focused extractive summarization
  * @param {string} content - The content to condense
@@ -13232,18 +13276,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 // Pull the user's actual question off the end of
                                 // the blob the same way map-reduce does, so the
                                 // rewritten message keeps it visible to the model.
-                                const lines = textContent.split('\n');
-                                let queryPart = '';
-                                let contentPart = textContent;
-                                for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
-                                    const line = lines[j].trim();
-                                    if (line.endsWith('?') || line.match(/^(please|can you|what|how|why|summarize|analyze|explain|describe|list|find|search)/i)) {
-                                        queryPart = lines.slice(j).join('\n');
-                                        contentPart = lines.slice(0, j).join('\n');
-                                        break;
-                                    }
-                                }
-                                if (!queryPart) queryPart = 'Please analyze and summarize this content using query_document and read_document_chunk.';
+                                const { queryPart: qExtracted, contentPart } = extractAgenticQuery(textContent);
+                                let queryPart = qExtracted || 'Please analyze and summarize this content using query_document and read_document_chunk.';
 
                                 const documentIndex = require('./services/documentIndex');
                                 const indexed = await documentIndex.saveAndIndex(req.userId || userId, {
@@ -13470,18 +13504,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 let agenticFallbackOk = false;
                 if (fallbackToAgentic) {
                     try {
-                        const lines = lastUserContent.split('\n');
-                        let queryPart = '';
-                        let contentPart = lastUserContent;
-                        for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
-                            const line = lines[j].trim();
-                            if (line.endsWith('?') || line.match(/^(please|can you|what|how|why|summarize|analyze|explain|describe|list|find|search)/i)) {
-                                queryPart = lines.slice(j).join('\n');
-                                contentPart = lines.slice(0, j).join('\n');
-                                break;
-                            }
-                        }
-                        if (!queryPart) queryPart = 'Please analyze and summarize this content using query_document and read_document_chunk.';
+                        const { queryPart: qExtracted, contentPart } = extractAgenticQuery(lastUserContent);
+                        let queryPart = qExtracted || 'Please analyze and summarize this content using query_document and read_document_chunk.';
 
                         const documentIndex = require('./services/documentIndex');
                         const indexed = await documentIndex.saveAndIndex(req.userId || userId, {
