@@ -456,6 +456,29 @@ function looksLikeCode(content) {
     return symbolDensity >= 0.06 || patternHits >= 2;
 }
 
+// Decide how to auto-prime the agentic document flow on the upload turn.
+// A *targeted lookup* ("what is the title of section 17.6.2", "find the value
+// of X", "which port…") is best served by priming with a relevance query so
+// the relevant chunk is in context from token zero — otherwise the model gets
+// only the document's opening chunks (read_document_chunk(0,5)) and, seeing
+// overview material instead of the section it asked about, summarises the doc
+// rather than calling query_document. A *whole-document task* ("summarize",
+// "overview", "what is this paper about") is best served by the linear
+// opening-chunk prime, so those keep returning false here.
+function isTargetedDocQuery(q) {
+    if (!q) return false;
+    const s = String(q).toLowerCase();
+    // Whole-document intent → keep the linear opening-chunk prime.
+    if (/\b(summar(y|ise|ize|ies)|overview|tl;?dr|the gist|what(?:'s| is) this (?:document|file|paper|text)\b|describe the (?:document|whole|entire)|main (?:points|ideas|themes)|key (?:points|takeaways|themes))\b/.test(s)) {
+        return false;
+    }
+    // A dotted section/figure/table number is an unambiguous targeted lookup.
+    if (/\b\d+(?:\.\d+)+\b/.test(s)) return true;
+    // Common targeted-retrieval phrasings.
+    if (/\b(what|which|who|where|when|how many|how much|find|locate|search for|title|name of|value of|define|definition|list the|extract|quote|cite|does|is there|are there|section|figure|table|chapter|appendix)\b/.test(s)) return true;
+    return false;
+}
+
 /**
  * Condense content using query-focused extractive summarization
  * @param {string} content - The content to condense
@@ -13233,7 +13256,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 const handleNotice =
                                     `[SYSTEM: A large document was indexed for retrieval. You CANNOT see the full document body — it is NOT in your context.\n` +
                                     `documentId="${indexed.id}"  •  chunks=${indexed.totalChunks}  •  chars=${indexed.totalChars.toLocaleString()}\n\n` +
-                                    `An auto-prime tool call has already been issued for you: read_document_chunk(documentId, chunkIndex=0, count=5). The result is the assistant→tool message pair immediately following this user turn — read it before you answer.\n\n` +
+                                    `An auto-prime tool call has already been issued for you — a query_document relevance search when your question targets something specific (a section number, a value, a named thing), or read_document_chunk over the opening of the document for a whole-document task. Its result is the assistant→tool message pair immediately following this user turn — read it before you answer.\n\n` +
                                     `Tools available:\n` +
                                     `  • query_document(documentId, query, topK?) — TF-IDF top-K relevance search (use for "find X", "highest/lowest Y", "rows where Z", any targeted lookup)\n` +
                                     `  • read_document_chunk(documentId, chunkIndex, count?) — sequential read; the prior result returned a nextChunkIndex you can pass to continue\n\n` +
@@ -13255,6 +13278,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     documentId: indexed.id,
                                     totalChunks: indexed.totalChunks,
                                     totalChars: indexed.totalChars,
+                                    query: queryPart,
                                 };
                                 pendingAgenticNotice = {
                                     type: 'chunking_progress',
@@ -13490,6 +13514,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             documentId: indexed.id,
                             totalChunks: indexed.totalChunks,
                             totalChars: indexed.totalChars,
+                            query: queryPart,
                         };
                         pendingAgenticNotice = {
                             type: 'chunking_progress',
@@ -13637,37 +13662,108 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         if (useAgentic && agenticInfo && agenticInfo.documentId) {
             try {
                 const documentIndex = require('./services/documentIndex');
-                const primeCount = Math.min(5, agenticInfo.totalChunks || 1);
-                const primed = await documentIndex.readChunk(
-                    req.userId || userId,
-                    agenticInfo.documentId,
-                    0,
-                    { count: primeCount }
-                );
-                if (primed && Array.isArray(primed.chunks) && primed.chunks.length > 0) {
+                const docId = agenticInfo.documentId;
+                const targeted = isTargetedDocQuery(agenticInfo.query);
+
+                // Build the prime as either a query_document relevance search
+                // (targeted questions) or a read_document_chunk over the
+                // document opening (whole-document tasks). Priming a targeted
+                // question with the opening chunks makes the model summarise
+                // the overview instead of answering — query-priming puts the
+                // relevant chunk in context from token zero so the answer
+                // lands on the FIRST turn instead of only after the user
+                // re-asks. Falls back to the opening-chunk prime when not
+                // targeted, or when the query surfaces no matches.
+                let primeName = null;
+                let primeArgs = null;
+                let primeToolContent = null;   // JSON string for the tool message
+                let primeResult = null;        // trimmed object for the SSE result chip
+                let primePreview = null;
+                let primeLog = '';
+                let primeChunksRead = 0;
+                let primeNextChunkIndex = null;
+
+                if (targeted) {
+                    const q = String(agenticInfo.query || '').slice(0, 500);
+                    const queried = await documentIndex.queryDocument(
+                        req.userId || userId,
+                        docId,
+                        q,
+                        { topK: 5, activeDocumentId: docId }
+                    );
+                    if (queried && Array.isArray(queried.matches) && queried.matches.length > 0) {
+                        primeName = 'query_document';
+                        primeArgs = JSON.stringify({ documentId: docId, query: q, topK: 5 });
+                        primeToolContent = JSON.stringify(queried);
+                        primeResult = {
+                            documentId: queried.documentId,
+                            totalChunks: queried.totalChunks,
+                            query: queried.query,
+                            matches: (queried.matches || []).map(mt => ({
+                                chunkIndex: mt.chunkIndex,
+                                score: mt.score,
+                                lineRange: mt.lineRange,
+                            })),
+                        };
+                        primePreview = JSON.stringify(primeResult).slice(0, 4000);
+                        primeChunksRead = queried.matches.length;
+                        primeLog = `query_document(query=${JSON.stringify(q)}, topK=5) → ${queried.matches.length} matches`;
+                    }
+                }
+
+                if (!primeName) {
+                    const primeCount = Math.min(5, agenticInfo.totalChunks || 1);
+                    const primed = await documentIndex.readChunk(
+                        req.userId || userId,
+                        docId,
+                        0,
+                        { count: primeCount }
+                    );
+                    if (primed && Array.isArray(primed.chunks) && primed.chunks.length > 0) {
+                        primeName = 'read_document_chunk';
+                        primeArgs = JSON.stringify({ documentId: docId, chunkIndex: 0, count: primeCount });
+                        primeToolContent = JSON.stringify(primed);
+                        primeResult = {
+                            documentId: primed.documentId,
+                            totalChunks: primed.totalChunks,
+                            nextChunkIndex: primed.nextChunkIndex,
+                            chunks: (primed.chunks || []).map(c => ({
+                                chunkIndex: c.chunkIndex,
+                                lineRange: c.lineRange,
+                            })),
+                        };
+                        primePreview = JSON.stringify({
+                            documentId: primed.documentId,
+                            totalChunks: primed.totalChunks,
+                            nextChunkIndex: primed.nextChunkIndex,
+                            chunks: (primed.chunks || []).map(c => ({
+                                chunkIndex: c.chunkIndex,
+                                lineRange: c.lineRange,
+                                textLength: c.text.length,
+                            })),
+                        }).slice(0, 4000);
+                        primeChunksRead = primed.chunks.length;
+                        primeNextChunkIndex = primed.nextChunkIndex;
+                        primeLog = `read_document_chunk(0, ${primeCount}) → ${primed.chunks.length} chunks, nextChunkIndex=${primed.nextChunkIndex}`;
+                    }
+                }
+
+                if (primeName) {
                     const primeCallId = `call_agentic_prime_${Date.now()}`;
-                    const primeArgs = JSON.stringify({
-                        documentId: agenticInfo.documentId,
-                        chunkIndex: 0,
-                        count: primeCount,
-                    });
                     const primeAssistantMsg = {
                         role: 'assistant',
                         content: '',
                         tool_calls: [{
                             id: primeCallId,
                             type: 'function',
-                            function: {
-                                name: 'read_document_chunk',
-                                arguments: primeArgs,
-                            },
+                            function: { name: primeName, arguments: primeArgs },
                         }],
                     };
                     const primeToolMsg = {
                         role: 'tool',
                         tool_call_id: primeCallId,
-                        name: 'read_document_chunk',
-                        content: JSON.stringify(primed),
+                        name: primeName,
+                        content: primeToolContent,
                     };
                     // Insert after the (rewritten) last user message. Find
                     // it again here — the for-loop above and the safety-net
@@ -13678,45 +13774,28 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         chatMessages.splice(lastUserIdx + 1, 0, primeAssistantMsg, primeToolMsg);
                         agenticPrimeInfo = {
                             callId: primeCallId,
-                            chunksRead: primed.chunks.length,
-                            nextChunkIndex: primed.nextChunkIndex,
+                            tool: primeName,
+                            chunksRead: primeChunksRead,
+                            nextChunkIndex: primeNextChunkIndex,
                         };
                         // Surface the prime as real tool_executing + tool_result
                         // SSE events so the chat UI renders a chip identical to
                         // a model-issued call. Held in pendingPrimedToolEvents
                         // and flushed once SSE headers are written below.
-                        const primePreview = JSON.stringify({
-                            documentId: primed.documentId,
-                            totalChunks: primed.totalChunks,
-                            nextChunkIndex: primed.nextChunkIndex,
-                            chunks: (primed.chunks || []).map(c => ({
-                                chunkIndex: c.chunkIndex,
-                                lineRange: c.lineRange,
-                                textLength: c.text.length,
-                            })),
-                        }).slice(0, 4000);
                         pendingPrimedToolEvents = [
                             {
                                 type: 'tool_executing',
                                 tool_call_id: primeCallId,
-                                name: 'read_document_chunk',
+                                name: primeName,
                                 arguments: primeArgs,
                                 source: 'agentic_auto_prime',
                             },
                             {
                                 type: 'tool_result',
                                 tool_call_id: primeCallId,
-                                name: 'read_document_chunk',
+                                name: primeName,
                                 preview: primePreview,
-                                result: {
-                                    documentId: primed.documentId,
-                                    totalChunks: primed.totalChunks,
-                                    nextChunkIndex: primed.nextChunkIndex,
-                                    chunks: (primed.chunks || []).map(c => ({
-                                        chunkIndex: c.chunkIndex,
-                                        lineRange: c.lineRange,
-                                    })),
-                                },
+                                result: primeResult,
                             },
                         ];
                         // Refresh totalInputTokens so any downstream check
@@ -13726,7 +13805,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         for (const msg of chatMessages) {
                             totalInputTokens += estimateTokens(msg.content);
                         }
-                        console.log(`[Chat Stream] Agentic auto-prime: injected read_document_chunk(0, ${primeCount}) tool result (${primed.chunks.length} chunks, nextChunkIndex=${primed.nextChunkIndex}). New totalInputTokens=${totalInputTokens}`);
+                        console.log(`[Chat Stream] Agentic auto-prime: injected ${primeLog}. New totalInputTokens=${totalInputTokens}`);
                     }
                 }
             } catch (primeErr) {
@@ -14082,6 +14161,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // tools (e.g. base64_decode) can salvage from it when the model
         // invokes them with empty/unusable args.
         let latestUserText = '';
+        let latestUserMsgIdx = -1;
         for (let i = chatMessages.length - 1; i >= 0; i--) {
             if (chatMessages[i].role === 'user') {
                 const c = chatMessages[i].content;
@@ -14090,9 +14170,62 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     latestUserText = c.filter(p => p?.type === 'text' && typeof p.text === 'string')
                         .map(p => p.text).join('\n');
                 }
+                latestUserMsgIdx = i;
                 break;
             }
         }
+
+        // Follow-up document context: when the agentic flow did NOT activate
+        // this turn (no fresh large upload) but the conversation has
+        // previously-indexed documents, the documentId handle is gone from
+        // context — it lived only in the rewritten upload-turn user message
+        // and the synthetic prime tool messages, NEITHER of which is
+        // persisted (the client saves the ORIGINAL user text; the server only
+        // saves the assistant reply). Without the handle the model concludes
+        // "no document is available" and wanders off to web_search/fetch_url
+        // instead of querying the file the user uploaded earlier. Re-establish
+        // the handle by listing the conversation's indexed docs and prepending
+        // a notice to this turn's user message.
+        let followupActiveDocId = null;
+        if (!useAgentic && streamingConversationId && latestUserMsgIdx >= 0) {
+            try {
+                const documentIndex = require('./services/documentIndex');
+                const all = await documentIndex.listIndexes(req.userId || userId);
+                const convDocs = all.filter(d => d.conversationId === streamingConversationId);
+                if (convDocs.length > 0) {
+                    const docLines = convDocs.map(d =>
+                        `  • documentId="${d.id}"${d.filename ? ` ("${d.filename}")` : ''} — ${d.totalChunks} chunks`
+                    ).join('\n');
+                    const isOne = convDocs.length === 1;
+                    const followupDocNote =
+                        `[SYSTEM: ${isOne ? 'A document was' : `${convDocs.length} documents were`} uploaded earlier in THIS conversation and ${isOne ? 'is' : 'are'} still indexed for retrieval. ` +
+                        `You CANNOT see the document body in your context, but you CAN read it with the tools below — use these instead of web_search/fetch_url for anything that lives in the uploaded ${isOne ? 'document' : 'documents'}:\n` +
+                        `${docLines}\n` +
+                        `  • query_document(documentId, query, topK?) — relevance search (use for a section number, "find X", "the page of Y", any targeted lookup)\n` +
+                        `  • read_document_chunk(documentId, chunkIndex, count?) — sequential read\n` +
+                        `Cite line ranges from the tool results. Do NOT fabricate content the tools didn't return.]\n\n`;
+
+                    const um = chatMessages[latestUserMsgIdx];
+                    if (typeof um.content === 'string') {
+                        um.content = followupDocNote + um.content;
+                    } else if (Array.isArray(um.content)) {
+                        const tIdx = um.content.findIndex(p => p?.type === 'text' && typeof p.text === 'string');
+                        if (tIdx >= 0) um.content[tIdx].text = followupDocNote + um.content[tIdx].text;
+                        else um.content.unshift({ type: 'text', text: followupDocNote });
+                    }
+                    // With a single indexed doc the reference is unambiguous —
+                    // force doc-tool calls onto it so a fumbled/missing id
+                    // still resolves. With several, leave resolution to the
+                    // model (the note lists every id) + resolveIndex's
+                    // most-recent fallback.
+                    if (isOne) followupActiveDocId = convDocs[0].id;
+                    console.log(`[Chat Stream] Follow-up doc context: ${convDocs.length} indexed doc(s) for conv ${streamingConversationId.slice(0, 8)}…; notice injected${followupActiveDocId ? `, activeDocumentId=${followupActiveDocId}` : ''}`);
+                }
+            } catch (e) {
+                console.warn('[Chat Stream] follow-up doc context lookup failed:', e.message);
+            }
+        }
+
         const toolCtx = {
             userId: req.userId,
             apiKeyData: req.apiKeyData,
@@ -14102,8 +14235,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // Document indexed for THIS turn (large user content stashed via
             // documentIndex). query_document / read_document_chunk force their
             // calls onto this id so a model that fumbles the 32-hex handle
-            // can't wander onto a stale document from a previous turn.
-            activeDocumentId: (useAgentic && agenticInfo) ? agenticInfo.documentId : null,
+            // can't wander onto a stale document from a previous turn. On a
+            // follow-up turn (no fresh upload) we instead pin to the
+            // conversation's single indexed doc when there is exactly one.
+            activeDocumentId: (useAgentic && agenticInfo) ? agenticInfo.documentId : followupActiveDocId,
         };
         let toolCatalog = [];
         try {

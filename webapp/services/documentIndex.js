@@ -276,11 +276,13 @@ async function listIndexes(userId) {
         try {
             const idx = JSON.parse(await fs.readFile(path.join(dir, ent.name, 'index.json'), 'utf8'));
             let filename = '';
+            let conversationId = null;
             try {
                 const meta = JSON.parse(await fs.readFile(path.join(dir, ent.name, 'meta.json'), 'utf8'));
                 filename = meta?.filename || '';
+                conversationId = meta?.conversationId || null;
             } catch (_) { /* meta optional */ }
-            out.push({ id: ent.name, filename, totalChunks: idx.totalChunks || 0, createdAt: idx.createdAt || 0 });
+            out.push({ id: ent.name, filename, conversationId, totalChunks: idx.totalChunks || 0, createdAt: idx.createdAt || 0 });
         } catch (_) { /* not an indexed document — skip */ }
     }
     out.sort((a, b) => b.createdAt - a.createdAt);
