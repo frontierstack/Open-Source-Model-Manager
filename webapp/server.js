@@ -112,12 +112,28 @@ try {
 
 const app = express();
 
+// Per-request CSP nonce. Generated before helmet so the script-src directive
+// (a function below) can read it, and reused when we render index.html so the
+// inline bootstrap <script> carries the matching nonce. Lets us drop
+// 'unsafe-inline' from script-src without breaking the pre-mount theme script.
+app.use((req, res, next) => {
+    res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
+    next();
+});
+
 // Security: HTTP headers via helmet
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'"],
+            // No 'unsafe-inline' for scripts — the only inline script (the
+            // pre-mount theme bootstrap in index.html) is allowed via a
+            // per-request nonce stamped at render time. External bundles are
+            // covered by 'self'.
+            scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.cspNonce}'`],
+            // style-src keeps 'unsafe-inline': MUI/emotion injects <style>
+            // elements at runtime without a nonce, so removing it would break
+            // styling. (Tracked as accepted risk.)
             styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],  // Required for MUI and Google Fonts
             imgSrc: ["'self'", "data:", "https:"],
             connectSrc: ["'self'", "wss:", "ws:"],  // WebSocket connections
@@ -128,6 +144,11 @@ app.use(helmet({
     },
     crossOriginEmbedderPolicy: false,  // Required for some external resources
     crossOriginResourcePolicy: { policy: "same-origin" },
+    // Don't emit the deprecated X-XSS-Protection header at all. Helmet's
+    // default sets it to "0" (the modern, OWASP-aligned value that disables
+    // the buggy legacy XSS auditor), but the cleanest posture is to omit the
+    // dead header entirely rather than ship a 0 that scanners still flag.
+    xXssProtection: false,
     // HSTS off: the dev cert is self-signed, so once Chrome caches an HSTS
     // policy for this origin it refuses to honor the user's "proceed past
     // cert warning" exception for background requests — artifact downloads
@@ -151,6 +172,19 @@ const authRateLimiter = rateLimit({
 const apiRateLimiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
     max: 100, // 100 requests per minute
+    message: { error: 'Too many requests, please slow down' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Security: dedicated limiter for the unauthenticated bootstrap probe
+// (/api/auth/has-users). Decoupled from authRateLimiter so polling this
+// endpoint can't drain the login/register budget and so it can't be used as a
+// recon prelude to brute force. It returns only a single boolean, so the
+// window stays generous enough for ordinary page reloads.
+const hasUsersRateLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 30,
     message: { error: 'Too many requests, please slow down' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -2437,7 +2471,60 @@ app.use(passport.session());
 // auth runs. Mounted before the global 50 MB parser so it wins for /api/auth/*.
 app.use('/api/auth', express.json({ limit: '16kb' }));
 app.use(express.json({ limit: '50mb' }));
+
+// CSRF defense-in-depth for cookie-authenticated requests.
+// A cross-site page can make the browser send our session cookie on a
+// "simple" request (form POST, etc.) but cannot set a custom header
+// cross-origin without a CORS preflight we never approve. So we require a
+// custom header on state-changing requests that rely on the session cookie.
+// API-key / Bearer callers (Pi, /v1/*, scripts) are unaffected: they
+// authenticate via a non-forgeable header and don't carry the session cookie.
+// Both frontends tag every same-origin request via a window.fetch wrapper
+// (src/csrfFetch.js), so this is transparent to normal use.
+const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+app.use((req, res, next) => {
+    if (CSRF_SAFE_METHODS.has(req.method)) return next();
+    // API-key / Bearer auth is not CSRF-exposed (header can't be forged
+    // cross-site, and these callers don't ride the session cookie).
+    const authHeader = (req.headers['authorization'] || '').toLowerCase();
+    if (req.headers['x-api-key'] || authHeader.startsWith('bearer ')) return next();
+    // No session cookie → not a cookie-authenticated browser request; nothing
+    // for CSRF to protect (e.g. first-time login/register still send the
+    // header via the fetch wrapper, but we don't hard-require it pre-session).
+    if (!/(?:^|;\s*)modelserver\.sid=/.test(req.headers.cookie || '')) return next();
+    // Cookie-authenticated state change: require the custom header.
+    if ((req.headers['x-requested-with'] || '').toLowerCase() === 'xmlhttprequest') return next();
+    return res.status(403).json({ error: 'Missing required request header' });
+});
+
+// index.html is rendered (not statically served) so we can stamp the
+// per-request CSP nonce onto the inline bootstrap <script>. Cached in memory
+// after first read — a frontend rebuild restarts the webapp container, so the
+// cache can't go stale across deploys.
+let _indexHtmlCache = null;
+async function renderIndexHtml(res) {
+    if (_indexHtmlCache == null) {
+        _indexHtmlCache = await fs.readFile(path.join(__dirname, 'public', 'index.html'), 'utf8');
+    }
+    const nonce = res.locals.cspNonce;
+    // Stamp the nonce onto every inline <script> (those without a src=); the
+    // hashed bundle <script src=...> is left untouched (covered by 'self').
+    return _indexHtmlCache.replace(/<script(?![^>]*\bsrc=)([^>]*)>/gi, `<script nonce="${nonce}"$1>`);
+}
+app.get(['/', '/index.html'], async (req, res) => {
+    try {
+        const html = await renderIndexHtml(res);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        res.send(html);
+    } catch (err) {
+        console.error('Failed to render index.html:', err.message);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
 app.use(express.static(path.join(__dirname, 'public'), {
+    index: false,  // index.html is served by the nonce-injecting route above
     setHeaders: (res, filePath) => {
         if (filePath.endsWith('.js') || filePath.endsWith('.css')) {
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
@@ -2537,7 +2624,19 @@ const broadcast = (data, targetUserId = null) => {
         wss.clients.forEach((client) => {
             try {
                 if (client.readyState === WebSocket.OPEN) {
-                    // If no target user specified, send to all
+                    // Sessionless sockets receive NOTHING — not even global
+                    // broadcasts. An unauthenticated WS upgrade is tolerated
+                    // (startup-race reconnects), but system_stats / model /
+                    // download / log frames leak host CPU+RAM+GPU inventory and
+                    // the running model stack (name, backend, port, ctx) to
+                    // anyone who can open a socket. Gating global broadcasts on
+                    // a bound userId closes that info-disclosure (CWE-200) while
+                    // matching the long-documented intent ("Connection without
+                    // session — will not receive messages").
+                    if (!client.userId) {
+                        return;
+                    }
+                    // If no target user specified, send to all authenticated clients
                     if (!targetUserId) {
                         client.send(jsonData);
                     }
@@ -2643,7 +2742,7 @@ function isSkillBlocked(policy, skillName) {
 }
 
 // Check if any users exist (for first admin setup)
-app.get('/api/auth/has-users', authRateLimiter, async (req, res) => {
+app.get('/api/auth/has-users', hasUsersRateLimiter, async (req, res) => {
     try {
         const hasUsers = await hasAnyUsers();
         res.json({ hasUsers });

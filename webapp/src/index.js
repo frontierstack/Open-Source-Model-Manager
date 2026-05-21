@@ -1,3 +1,4 @@
+import './csrfFetch'; // Patch window.fetch with CSRF header before any request runs
 import React from 'react';
 import ReactDOM from 'react-dom';
 import { ThemeProvider } from '@mui/material/styles';
