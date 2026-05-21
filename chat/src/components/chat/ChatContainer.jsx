@@ -35,6 +35,15 @@ function useSlideTransition(isEmpty) {
 // so the namespaced form works without further pattern changes.
 const REASONING_TAG_NAMES = ['think', 'thinking', 'reasoning', 'reasoning_engine', 'antThinking', 'antml:thinking', 'scratchpad'];
 const REASONING_TAG_ALT = REASONING_TAG_NAMES.join('|');
+// Tag matchers tolerate attributes / trailing whitespace before '>' (e.g.
+// `<thinking lang="en">`, `<reasoning >`). The old `<(name)>` patterns required
+// '>' to immediately follow the name, so any such variant leaked the whole
+// reasoning block verbatim into the bubble — the "I still see <thinking> tags"
+// report. The close matcher does NOT capture/require the same name as the open
+// tag, so a mismatched `<think>…</thinking>` pair is still stripped instead of
+// swallowing the rest of the response.
+const OPEN_TAG_SRC = `<(${REASONING_TAG_ALT})(?:\\s[^>]*)?>`;   // group 1 = tag name
+const CLOSE_TAG_SRC = `<\\/(?:${REASONING_TAG_ALT})\\s*>`;       // name not captured
 
 /**
  * Parse reasoning tags from content and separate thinking from response.
@@ -60,11 +69,13 @@ function parseThinkTags(content, streaming = false) {
     // would otherwise leak straight into the visible bubble. If a close tag
     // appears before any matching open tag, synthesize the missing opening
     // tag so the paired extraction below captures it as reasoning.
-    const firstClose = content.match(new RegExp(`</(${REASONING_TAG_ALT})>`, 'i'));
+    const firstClose = content.match(new RegExp(CLOSE_TAG_SRC, 'i'));
     if (firstClose) {
-        const firstOpen = content.match(new RegExp(`<(${REASONING_TAG_ALT})>`, 'i'));
+        const firstOpen = content.match(new RegExp(OPEN_TAG_SRC, 'i'));
         if (!firstOpen || firstOpen.index > firstClose.index) {
-            content = `<${firstClose[1]}>${content}`;
+            // Synthesize a generic opening tag; completeRegex pairs any open
+            // with any close, so the specific name doesn't matter here.
+            content = `<think>${content}`;
         }
     }
 
@@ -73,7 +84,7 @@ function parseThinkTags(content, streaming = false) {
     let hasCompletedThinkBlock = false;
 
     // Find all complete <tag>...</tag> blocks with matching open/close names
-    const completeRegex = new RegExp(`<(${REASONING_TAG_ALT})>([\\s\\S]*?)<\\/\\1>`, 'gi');
+    const completeRegex = new RegExp(`${OPEN_TAG_SRC}([\\s\\S]*?)${CLOSE_TAG_SRC}`, 'gi');
     let match;
     while ((match = completeRegex.exec(content)) !== null) {
         reasoning += match[2];
@@ -83,7 +94,7 @@ function parseThinkTags(content, streaming = false) {
 
     // Handle unclosed opening tag (content is still streaming).
     // After removing completed pairs, any remaining opening tag must be unclosed.
-    const openRegex = new RegExp(`<(${REASONING_TAG_ALT})>`, 'gi');
+    const openRegex = new RegExp(OPEN_TAG_SRC, 'gi');
     let lastOpen = null;
     let m;
     while ((m = openRegex.exec(cleanContent)) !== null) {
@@ -92,12 +103,13 @@ function parseThinkTags(content, streaming = false) {
 
     let hasUnclosedThink = false;
     if (lastOpen) {
-        const lowerClean = cleanContent.toLowerCase();
-        const lastCloseIdx = lowerClean.lastIndexOf(`</${lastOpen.tag.toLowerCase()}>`);
-        if (lastOpen.index > lastCloseIdx) {
+        // completeRegex already stripped every matched pair, so a remaining
+        // open tag with no reasoning close after it is genuinely unclosed
+        // (still streaming). Match any reasoning close, not just the same name.
+        const afterOpen = cleanContent.slice(lastOpen.index + lastOpen.fullLength);
+        if (!new RegExp(CLOSE_TAG_SRC, 'i').test(afterOpen)) {
             hasUnclosedThink = true;
-            const partialReasoning = cleanContent.substring(lastOpen.index + lastOpen.fullLength);
-            reasoning += partialReasoning;
+            reasoning += afterOpen;
             cleanContent = cleanContent.substring(0, lastOpen.index);
         }
     }
@@ -115,6 +127,16 @@ function parseThinkTags(content, streaming = false) {
     const partialTagAtEnd = cleanContent.match(/<[a-zA-Z][a-zA-Z0-9_:]*$/);
     if (partialTagAtEnd) {
         cleanContent = cleanContent.slice(0, partialTagAtEnd.index);
+    }
+    // Same guard for a fully-named reasoning open tag whose attributes /
+    // closing '>' are still arriving (`<thinking `, `<reasoning lang="e`).
+    // The plain guard above stops at the first space, so this catches the
+    // attribute case before the half-tag flashes into the bubble.
+    const partialAttrTagAtEnd = cleanContent.match(
+        new RegExp(`<(?:${REASONING_TAG_ALT})\\s[^>]*$`, 'i')
+    );
+    if (partialAttrTagAtEnd) {
+        cleanContent = cleanContent.slice(0, partialAttrTagAtEnd.index);
     }
 
     // Clean up extra whitespace
@@ -1881,21 +1903,48 @@ export default function ChatContainer({
                 }
             }
 
-            // Stream is done — stop the pump and reveal the full buffer
-            // immediately (no lingering smoothing past stream-end).
+            // Stream is done. Don't dump the full buffer in one frame: at the
+            // pump's steady-state lag that's a 50-400 char jump right as the
+            // response finishes — the "jitter when completing" the user saw.
+            // Instead stop accepting new tokens and let the existing rAF pump
+            // drain the remaining backlog at its normal cadence, then commit.
+            // The pump keeps ticking while there's undrained content (its
+            // `moreContent` branch), so the streaming bubble reaches 100%
+            // before commitStreamingMessage swaps it out — no end-of-stream
+            // lurch. Capped at 600ms so a huge tail can't stall the commit.
             streamActiveRef.current = false;
-            if (throttleTimerRef.current) {
-                cancelAnimationFrame(throttleTimerRef.current);
-                throttleTimerRef.current = null;
-            }
             const currentActiveIdFlush = useChatStore.getState().activeConversationId;
-            if (currentActiveIdFlush === conversationId) {
+            if (currentActiveIdFlush === conversationId && pendingContentRef.current) {
+                ensureSmoothPump(conversationId); // keep it ticking to drain
+                const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+                await new Promise((resolve) => {
+                    const t0 = now();
+                    const check = () => {
+                        const target = pendingContentRef.current || '';
+                        const drained = displayedContentLenRef.current >= target.length;
+                        if (drained || now() - t0 > 600 || throttleTimerRef.current == null) {
+                            resolve();
+                        } else {
+                            requestAnimationFrame(check);
+                        }
+                    };
+                    requestAnimationFrame(check);
+                });
+            }
+            // Show whatever's left (cap hit, or the un-smoothed reasoning),
+            // then stop the pump. Re-read the active id — the drain awaited a
+            // few frames, during which the user may have switched away.
+            if (useChatStore.getState().activeConversationId === conversationId) {
                 if (pendingContentRef.current) {
                     setStreamingContent(pendingContentRef.current);
                 }
                 if (pendingReasoningRef.current) {
                     setStreamingReasoning(pendingReasoningRef.current);
                 }
+            }
+            if (throttleTimerRef.current) {
+                cancelAnimationFrame(throttleTimerRef.current);
+                throttleTimerRef.current = null;
             }
             pendingContentRef.current = '';
             pendingReasoningRef.current = '';

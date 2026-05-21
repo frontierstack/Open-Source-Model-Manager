@@ -18,36 +18,40 @@ import CodePreviewBlock from './CodePreviewBlock';
  * when the stream finishes either.
  */
 
-// Shared markdown component maps — defined once outside the component
-// to keep stable references (prevents ReactMarkdown from re-mounting internals).
-const markdownComponents = {
-    code({ node, inline, className, children, ...props }) {
-        const match = /language-(\w+)/.exec(className || '');
-        const code = String(children).replace(/\n$/, '');
+// Shared markdown component maps — built once outside the component to keep
+// stable references (prevents ReactMarkdown from re-mounting internals each
+// render). The `code` renderer is the only streaming-sensitive piece: while
+// the stream is live we pass isStreaming through so CodePreviewBlock keeps its
+// Run buttons / iframes inert until a fenced block has fully arrived;
+// everything else is identical between the two maps.
+const makeCodeComponent = (isStreaming) => function CodeRenderer({ node, inline, className, children, ...props }) {
+    const match = /language-(\w+)/.exec(className || '');
+    const code = String(children).replace(/\n$/, '');
 
-        if (!inline && (match || code.includes('\n'))) {
-            // CodePreviewBlock gates on the codePreviewEnabled setting
-            // internally — when off, it falls through to a plain
-            // CodeBlock with zero Run-related rendering.
-            return (
-                <CodePreviewBlock
-                    code={code}
-                    language={match ? match[1] : 'text'}
-                    isStreaming={false}
-                />
-            );
-        }
-
+    if (!inline && (match || code.includes('\n'))) {
+        // CodePreviewBlock gates on the codePreviewEnabled setting
+        // internally — when off, it falls through to a plain
+        // CodeBlock with zero Run-related rendering.
         return (
-            <code
-                className="px-1.5 py-0.5 mx-0.5 bg-white/10 rounded text-accent-400 font-mono text-[0.85em]"
-                {...props}
-            >
-                {children}
-            </code>
+            <CodePreviewBlock
+                code={code}
+                language={match ? match[1] : 'text'}
+                isStreaming={isStreaming}
+            />
         );
-    },
+    }
 
+    return (
+        <code
+            className="px-1.5 py-0.5 mx-0.5 bg-white/10 rounded text-accent-400 font-mono text-[0.85em]"
+            {...props}
+        >
+            {children}
+        </code>
+    );
+};
+
+const sharedMarkdownComponents = {
     p({ children }) {
         return <p className="mb-4 leading-relaxed last:mb-0">{children}</p>;
     },
@@ -133,6 +137,10 @@ const markdownComponents = {
     },
 };
 
+// Two frozen maps: live stream (code previews inert) vs finalized message.
+const streamingMarkdownComponents = { ...sharedMarkdownComponents, code: makeCodeComponent(true) };
+const markdownComponents = { ...sharedMarkdownComponents, code: makeCodeComponent(false) };
+
 // remark-math parses both inline ($...$) and block ($$...$$) math; rehype-katex
 // renders it via KaTeX. Models emit chemistry like $\text{C}_{16}\text{H}_8...$
 // and physics/units like $466.36 \text{ g/mol}$ — without these plugins the raw
@@ -146,28 +154,15 @@ const rehypePlugins = [[rehypeKatex, { strict: false, output: 'html', throwOnErr
 export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
 
-    if (isStreaming) {
-        // During streaming we render plain text in a single <pre>-style
-        // block. The previous two-layer setup (throttled markdown + tail
-        // span sibling) was smooth in principle but visibly jittered every
-        // 120 ms when a throttle tick moved tokens from the tail <span>
-        // into the parsed markdown <p>: the paragraph grew, the span
-        // shrank to empty, and the line-break between them collapsed —
-        // a small vertical jump every tick. A single plain-text block
-        // grows monotonically from one line into many without any layout
-        // shift until the atomic stream→final swap happens at stream-end
-        // (handled in commitStreamingMessage).
-        return (
-            <div className="markdown-content">
-                <div className="whitespace-pre-wrap leading-relaxed break-words">
-                    {content}
-                </div>
-            </div>
-        );
-    }
-
-    // Finalised message: full markdown with syntax-highlighted code blocks
-    // and all the trimmings. Only runs once per completed response.
+    // Render markdown for BOTH the in-progress stream and the finalized
+    // message, so formatting and ```html / code previews appear progressively
+    // as tokens arrive. Previously the stream rendered as raw plain text and
+    // only swapped to markdown at stream-end, which (a) made HTML/markdown
+    // "only show up once the response was done" and (b) produced a visible
+    // layout reflow at the swap. The smooth-reveal pump in ChatContainer feeds
+    // this a steadily-growing prefix, so structure forms at a readable cadence
+    // rather than per-token; the streaming map keeps code-block previews inert
+    // until a fenced block is complete (makeCodeComponent(true)).
     // Repair GFM tables emitted on a single line (models sometimes skip
     // the newlines between rows, leaving remark-gfm to render raw pipes).
     const repairedTables = content.includes('|')
@@ -183,7 +178,7 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
             <ReactMarkdown
                 remarkPlugins={remarkPlugins}
                 rehypePlugins={rehypePlugins}
-                components={markdownComponents}
+                components={isStreaming ? streamingMarkdownComponents : markdownComponents}
             >
                 {processed}
             </ReactMarkdown>

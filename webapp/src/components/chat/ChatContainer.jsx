@@ -10,9 +10,19 @@ import WebSearchIndicator from './WebSearchIndicator';
 
 // Reasoning tag names emitted by various thinking models
 // (Qwen/DeepSeek use <think>; some llama.cpp templates and fine-tunes emit
-// <thinking>, <reasoning>, or <reasoning_engine>)
-const REASONING_TAG_NAMES = ['think', 'thinking', 'reasoning', 'reasoning_engine'];
+// <thinking>, <reasoning>, or <reasoning_engine>). `antThinking` /
+// `antml:thinking` cover Anthropic-style scratchpad tags some fine-tunes emit.
+// Kept in sync with chat/src/components/chat/ChatContainer.jsx.
+const REASONING_TAG_NAMES = ['think', 'thinking', 'reasoning', 'reasoning_engine', 'antThinking', 'antml:thinking', 'scratchpad'];
 const REASONING_TAG_ALT = REASONING_TAG_NAMES.join('|');
+// Tag matchers tolerate attributes / trailing whitespace before '>' (e.g.
+// `<thinking lang="en">`, `<reasoning >`). The old `<(name)>` patterns required
+// '>' to immediately follow the name, so any such variant leaked the whole
+// reasoning block verbatim into the bubble. The close matcher does NOT
+// capture/require the same name as the open tag, so a mismatched
+// `<think>…</thinking>` pair is still stripped instead of swallowing the rest.
+const OPEN_TAG_SRC = `<(${REASONING_TAG_ALT})(?:\\s[^>]*)?>`;   // group 1 = tag name
+const CLOSE_TAG_SRC = `<\\/(?:${REASONING_TAG_ALT})\\s*>`;       // name not captured
 
 /**
  * Parse reasoning tags from content and separate thinking from response.
@@ -31,11 +41,13 @@ function parseThinkTags(content) {
     // tag inside a content chunk. Without this, the reasoning text and the
     // bare </think> leak into the visible bubble. If a close tag appears
     // before any matching open tag, synthesize the missing opening tag.
-    const firstClose = content.match(new RegExp(`</(${REASONING_TAG_ALT})>`, 'i'));
+    const firstClose = content.match(new RegExp(CLOSE_TAG_SRC, 'i'));
     if (firstClose) {
-        const firstOpen = content.match(new RegExp(`<(${REASONING_TAG_ALT})>`, 'i'));
+        const firstOpen = content.match(new RegExp(OPEN_TAG_SRC, 'i'));
         if (!firstOpen || firstOpen.index > firstClose.index) {
-            content = `<${firstClose[1]}>${content}`;
+            // Synthesize a generic opening tag; completeRegex pairs any open
+            // with any close, so the specific name doesn't matter here.
+            content = `<think>${content}`;
         }
     }
 
@@ -43,8 +55,8 @@ function parseThinkTags(content) {
     let cleanContent = content;
     let hasCompletedThinkBlock = false;
 
-    // Find all complete <tag>...</tag> blocks with matching open/close names
-    const completeRegex = new RegExp(`<(${REASONING_TAG_ALT})>([\\s\\S]*?)<\\/\\1>`, 'gi');
+    // Find all complete reasoning blocks. Open/close names need not match.
+    const completeRegex = new RegExp(`${OPEN_TAG_SRC}([\\s\\S]*?)${CLOSE_TAG_SRC}`, 'gi');
     let match;
     while ((match = completeRegex.exec(content)) !== null) {
         reasoning += match[2];
@@ -54,7 +66,7 @@ function parseThinkTags(content) {
 
     // Handle unclosed opening tag (content is still streaming).
     // After removing completed pairs, any remaining opening tag must be unclosed.
-    const openRegex = new RegExp(`<(${REASONING_TAG_ALT})>`, 'gi');
+    const openRegex = new RegExp(OPEN_TAG_SRC, 'gi');
     let lastOpen = null;
     let m;
     while ((m = openRegex.exec(cleanContent)) !== null) {
@@ -63,12 +75,13 @@ function parseThinkTags(content) {
 
     let hasUnclosedThink = false;
     if (lastOpen) {
-        const lowerClean = cleanContent.toLowerCase();
-        const lastCloseIdx = lowerClean.lastIndexOf(`</${lastOpen.tag.toLowerCase()}>`);
-        if (lastOpen.index > lastCloseIdx) {
+        // completeRegex already stripped every matched pair, so a remaining
+        // open tag with no reasoning close after it is genuinely unclosed
+        // (still streaming). Match any reasoning close, not just the same name.
+        const afterOpen = cleanContent.slice(lastOpen.index + lastOpen.fullLength);
+        if (!new RegExp(CLOSE_TAG_SRC, 'i').test(afterOpen)) {
             hasUnclosedThink = true;
-            const partialReasoning = cleanContent.substring(lastOpen.index + lastOpen.fullLength);
-            reasoning += partialReasoning;
+            reasoning += afterOpen;
             cleanContent = cleanContent.substring(0, lastOpen.index);
         }
     }
