@@ -85,6 +85,7 @@ echo -e "  ${BOLD}Update Webapp${NC}"
 # Parse arguments
 STOP_INSTANCES=false
 NO_CACHE=false
+UPDATE_N8N=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -96,6 +97,10 @@ while [[ $# -gt 0 ]]; do
             NO_CACHE=true
             shift
             ;;
+        --n8n)
+            UPDATE_N8N=true
+            shift
+            ;;
         -h|--help)
             echo ""
             echo "  Usage: $0 [OPTIONS]"
@@ -103,6 +108,7 @@ while [[ $# -gt 0 ]]; do
             echo "  Options:"
             echo "    --stop-instances   Stop running model instances before update"
             echo "    --no-cache         Rebuild without Docker cache"
+            echo "    --n8n              Update n8n instead of the webapp (pull + recreate)"
             echo "    -h, --help         Show this help message"
             echo ""
             exit 0
@@ -113,6 +119,25 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# n8n update path — n8n is a pulled image, not built, so it updates by pulling
+# the latest tag and recreating just the n8n services (independent of the
+# webapp rebuild below).
+if [ "$UPDATE_N8N" = true ]; then
+    section "Update n8n"
+    start_spinner "Pulling n8n + postgres images"
+    docker compose pull n8n n8n-postgres > /dev/null 2>&1 || true
+    stop_spinner
+    log_success "Images pulled"
+    start_spinner "Recreating n8n services"
+    docker compose up -d n8n-postgres n8n > /dev/null 2>&1
+    stop_spinner
+    log_success "n8n recreated"
+    echo ""
+    echo -e "  ${BOLD}https://localhost:5678${NC}"
+    echo ""
+    exit 0
+fi
 
 # Optionally stop model instances
 if [ "$STOP_INSTANCES" = true ]; then

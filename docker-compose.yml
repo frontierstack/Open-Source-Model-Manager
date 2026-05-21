@@ -85,9 +85,82 @@ services:
     depends_on:
       - webapp
 
+  # Postgres backing store for n8n. Internal-only (no host port published);
+  # n8n reaches it over the compose network as host "n8n-postgres". Password
+  # comes from .env (N8N_DB_PASSWORD), seeded by build.sh/start.sh.
+  n8n-postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_DB=n8n
+      - POSTGRES_PASSWORD=${N8N_DB_PASSWORD:-}
+    volumes:
+      - n8n_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # n8n's depends_on waits on this so it never starts before the DB is up.
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # n8n workflow automation. Served over HTTPS on 5678 reusing the same
+  # self-signed certs as webapp/chat (https://localhost:5678). Pre-wired to
+  # this server's OpenAI-compatible API so workflows can drive the locally
+  # served LLMs — see MODELSERVER_BASE_URL below and the Docs tab "n8n" section.
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"      # HTTPS (self-signed, reuses ./certs)
+    environment:
+      # --- Postgres backend ---
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=n8n-postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD:-}
+      # --- HTTPS via the shared self-signed certs ---
+      - N8N_PROTOCOL=https
+      - N8N_SSL_KEY=/certs/server.key
+      - N8N_SSL_CERT=/certs/server.crt
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - WEBHOOK_URL=https://localhost:5678/
+      - N8N_EDITOR_BASE_URL=https://localhost:5678/
+      # Encrypts saved credentials. MUST stay stable across restarts or saved
+      # credentials become unreadable — generated once into .env by build.sh.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
+      # --- Model server integration (pre-wired) ---
+      # n8n reaches the webapp's OpenAI-compatible API over the docker network.
+      # host.docker.internal is in the cert SAN so TLS hostname-verifies, and
+      # the cert is trusted as a CA (NODE_EXTRA_CA_CERTS) so Node accepts the
+      # self-signed chain. Use this base URL when creating the OpenAI credential.
+      - MODELSERVER_BASE_URL=https://host.docker.internal:3001/v1
+      - NODE_EXTRA_CA_CERTS=/certs/server.crt
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - GENERIC_TIMEZONE=${TZ:-UTC}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./certs:/certs:ro
+    # Run as root so the process can read the 0600 self-signed key (owned by
+    # host root) for N8N_SSL_KEY without loosening host cert permissions. The
+    # webapp already runs as root in this stack.
+    user: root
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      n8n-postgres:
+        condition: service_healthy
+      webapp:
+        condition: service_started
+
 volumes:
   webapp_data:
   # HuggingFace cache for sglang HF-repo loads (safetensors / AWQ / GPTQ /
   # FP8 / NVFP4 / BnB). Survives model-instance container restarts so big
   # weights aren't redownloaded each time.
   hf_cache:
+  # n8n workflow data (~/.n8n) and its Postgres data directory.
+  n8n_data:
+  n8n_postgres_data:
