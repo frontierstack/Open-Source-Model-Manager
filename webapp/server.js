@@ -89,6 +89,10 @@ try {
 // require it once.
 const attachmentStore = require('./services/attachmentStore');
 
+// Automation engine (in-process DAG executor) + per-user run-history store.
+const automationEngine = require('./services/automationEngine');
+const workflowRunStore = require('./services/workflowRunStore');
+
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
 let scraplingEnabled = false;
@@ -2113,6 +2117,8 @@ const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
 const SKILLS_FILE = path.join(DATA_DIR, 'skills.json');
 const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
 const AGENT_PERMISSIONS_FILE = path.join(DATA_DIR, 'agent-permissions.json');
+const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');     // automation workflow definitions
+const NODE_TYPES_FILE = path.join(DATA_DIR, 'node-types.json');   // user-authored triggers/gates/connectors
 
 // ============================================================================
 // IN-MEMORY CACHE FOR PERFORMANCE
@@ -2125,7 +2131,9 @@ const dataCache = {
     tasks: { data: null, timestamp: 0 },
     agentPermissions: { data: null, timestamp: 0 },
     systemPrompts: { data: null, timestamp: 0 },
-    modelConfigs: { data: null, timestamp: 0 }
+    modelConfigs: { data: null, timestamp: 0 },
+    workflows: { data: null, timestamp: 0 },
+    nodeTypes: { data: null, timestamp: 0 }
 };
 
 // Cache TTL in milliseconds (5 minutes — matches CLAUDE.md)
@@ -2243,6 +2251,54 @@ async function saveSkills(skills) {
     await fs.writeFile(SKILLS_FILE, JSON.stringify(skills, null, 2));
     // Invalidate cache on write
     invalidateCache('skills');
+}
+
+// --- Automation workflows (definitions) — same flat-JSON + 5-min cache pattern as skills ---
+async function loadWorkflows() {
+    if (isCacheValid('workflows')) {
+        return dataCache.workflows.data;
+    }
+    try {
+        const data = await fs.readFile(WORKFLOWS_FILE, 'utf8');
+        const workflows = JSON.parse(data);
+        dataCache.workflows.data = workflows;
+        dataCache.workflows.timestamp = Date.now();
+        return workflows;
+    } catch (err) {
+        if (err.code === 'ENOENT') return [];
+        console.error('Error loading workflows:', err);
+        return [];
+    }
+}
+
+async function saveWorkflows(workflows) {
+    await ensureDataDir();
+    await fs.writeFile(WORKFLOWS_FILE, JSON.stringify(workflows, null, 2));
+    invalidateCache('workflows');
+}
+
+// --- User-authored node-types (triggers / gates / connectors building blocks) ---
+async function loadNodeTypes() {
+    if (isCacheValid('nodeTypes')) {
+        return dataCache.nodeTypes.data;
+    }
+    try {
+        const data = await fs.readFile(NODE_TYPES_FILE, 'utf8');
+        const nodeTypes = JSON.parse(data);
+        dataCache.nodeTypes.data = nodeTypes;
+        dataCache.nodeTypes.timestamp = Date.now();
+        return nodeTypes;
+    } catch (err) {
+        if (err.code === 'ENOENT') return [];
+        console.error('Error loading node-types:', err);
+        return [];
+    }
+}
+
+async function saveNodeTypes(nodeTypes) {
+    await ensureDataDir();
+    await fs.writeFile(NODE_TYPES_FILE, JSON.stringify(nodeTypes, null, 2));
+    invalidateCache('nodeTypes');
 }
 
 async function loadTasks() {
@@ -7721,6 +7777,422 @@ app.delete('/api/skills/:id', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error deleting skill:', error);
         res.status(500).json({ error: 'Failed to delete skill' });
+    }
+});
+
+// ============================================================================
+// AUTOMATION ENGINE ENDPOINTS
+// Workflow definitions + user-authored node-types + run/control. Mirrors the
+// /api/skills CRUD pattern: requireAuth + checkPermission('automation') +
+// filterByUserId + checkOwnership + crypto-random ids. Session/UI callers
+// (no apiKeyData) bypass the permission check; API-key/bearer callers need
+// the 'automation' permission. Telegram nodes are intentionally not wired yet.
+// ============================================================================
+
+// Tracks in-flight automation runs so they can be cancelled. runId -> { abort, userId, workflowId }
+const activeAutomationRuns = new Map();
+
+const AUTOMATION_PERM = 'automation';
+
+// --- Workflow (automation) CRUD ---
+
+app.get('/api/automations', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        res.json(filterByUserId(workflows, req.userId));
+    } catch (error) {
+        console.error('Error loading automations:', error);
+        res.status(500).json({ error: 'Failed to load automations' });
+    }
+});
+
+app.get('/api/automations/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const wf = workflows.find(w => w.id === req.params.id);
+        if (!wf) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(wf, req.userId)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        res.json(wf);
+    } catch (error) {
+        console.error('Error loading automation:', error);
+        res.status(500).json({ error: 'Failed to load automation' });
+    }
+});
+
+app.post('/api/automations', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const { name, description, nodes, edges, enabled, archived } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'Automation name is required' });
+    try {
+        const workflows = await loadWorkflows();
+        const now = new Date().toISOString();
+        const wf = {
+            id: crypto.randomBytes(16).toString('hex'),
+            name,
+            description: description || '',
+            nodes: Array.isArray(nodes) ? nodes : [],
+            edges: Array.isArray(edges) ? edges : [],
+            enabled: enabled !== false,
+            archived: archived === true,
+            userId: req.userId || null,
+            createdAt: now,
+            updatedAt: now
+        };
+        workflows.push(wf);
+        await saveWorkflows(workflows);
+        res.status(201).json(wf);
+    } catch (error) {
+        console.error('Error creating automation:', error);
+        res.status(500).json({ error: 'Failed to create automation' });
+    }
+});
+
+app.put('/api/automations/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const { name, description, nodes, edges, enabled, archived } = req.body || {};
+    try {
+        const workflows = await loadWorkflows();
+        const idx = workflows.findIndex(w => w.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(workflows[idx], req.userId)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        workflows[idx] = {
+            ...workflows[idx],
+            name: name !== undefined ? name : workflows[idx].name,
+            description: description !== undefined ? description : workflows[idx].description,
+            nodes: Array.isArray(nodes) ? nodes : workflows[idx].nodes,
+            edges: Array.isArray(edges) ? edges : workflows[idx].edges,
+            enabled: enabled !== undefined ? enabled : workflows[idx].enabled,
+            archived: archived !== undefined ? archived : workflows[idx].archived,
+            updatedAt: new Date().toISOString()
+        };
+        await saveWorkflows(workflows);
+        res.json(workflows[idx]);
+    } catch (error) {
+        console.error('Error updating automation:', error);
+        res.status(500).json({ error: 'Failed to update automation' });
+    }
+});
+
+app.delete('/api/automations/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const idx = workflows.findIndex(w => w.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(workflows[idx], req.userId)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        workflows.splice(idx, 1);
+        await saveWorkflows(workflows);
+        // Best-effort: drop this workflow's run history too.
+        try { await workflowRunStore.deleteRunsForWorkflow(req.userId, req.params.id); } catch (_) {}
+        res.json({ message: 'Automation deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting automation:', error);
+        res.status(500).json({ error: 'Failed to delete automation' });
+    }
+});
+
+// Convenience toggles for enable/disable and archive/unarchive.
+async function patchWorkflowFlag(req, res, field) {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const idx = workflows.findIndex(w => w.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(workflows[idx], req.userId)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        const value = req.body && req.body[field] !== undefined ? !!req.body[field] : !workflows[idx][field];
+        workflows[idx] = { ...workflows[idx], [field]: value, updatedAt: new Date().toISOString() };
+        await saveWorkflows(workflows);
+        res.json(workflows[idx]);
+    } catch (error) {
+        console.error(`Error toggling automation ${field}:`, error);
+        res.status(500).json({ error: `Failed to update automation` });
+    }
+}
+app.post('/api/automations/:id/enable', requireAuth, (req, res) => patchWorkflowFlag(req, res, 'enabled'));
+app.post('/api/automations/:id/archive', requireAuth, (req, res) => patchWorkflowFlag(req, res, 'archived'));
+
+// Run a workflow now (manual trigger), streaming live status over SSE and
+// mirroring each event to the owner's WebSocket clients for the editor animation.
+app.post('/api/automations/:id/run', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    let wf;
+    try {
+        const workflows = await loadWorkflows();
+        wf = workflows.find(w => w.id === req.params.id);
+        if (!wf) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(wf, req.userId)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+    } catch (error) {
+        return res.status(500).json({ error: 'Failed to load automation' });
+    }
+
+    // SSE setup
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+    const userId = req.userId;
+    const chatTools = require('./services/chatTools');
+    const input = (req.body && typeof req.body.input === 'object' && req.body.input) || {};
+
+    const abort = new AbortController();
+    let runId;
+    try {
+        runId = await workflowRunStore.createRun(userId, { workflowId: wf.id, workflowName: wf.name, trigger: 'manual' });
+    } catch (e) {
+        runId = crypto.randomBytes(16).toString('hex'); // run still streams even if history write failed
+    }
+    activeAutomationRuns.set(runId, { abort, userId, workflowId: wf.id });
+
+    const sse = (event) => {
+        try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch (_) {}
+    };
+    const onEvent = (evt) => {
+        const framed = { ...evt, runId, workflowId: wf.id };
+        sse(framed);
+        // Per-user WS mirror for the webapp UI / editor animation.
+        try { broadcast({ type: 'automation_event', ...framed }, userId); } catch (_) {}
+    };
+
+    // Cancel if the client disconnects mid-run.
+    req.on('close', () => { if (!res.writableEnded) abort.abort(); });
+
+    sse({ type: 'run_created', runId, workflowId: wf.id });
+
+    const deps = {
+        runModelCompletion,
+        executeToolCall: chatTools.executeToolCall,
+    };
+    const ctx = { userId, apiKeyData: req.apiKeyData || null, workspaceBucket: `automation-${wf.id}` };
+
+    let outcome;
+    try {
+        outcome = await automationEngine.runWorkflow(wf, { input, deps, onEvent, ctx, signal: abort.signal });
+    } catch (e) {
+        outcome = { status: 'failed', result: null, error: e.message || String(e), timeline: [] };
+        onEvent({ type: 'run_finish', status: 'failed', error: outcome.error });
+    } finally {
+        activeAutomationRuns.delete(runId);
+    }
+
+    // Persist the final run record.
+    try {
+        await workflowRunStore.updateRun(userId, runId, {
+            status: outcome.status,
+            finishedAt: new Date().toISOString(),
+            error: outcome.error,
+            nodes: outcome.timeline,
+            result: outcome.result,
+        });
+    } catch (_) {}
+
+    sse({ type: 'done', runId, status: outcome.status, result: outcome.result, error: outcome.error });
+    try { res.end(); } catch (_) {}
+});
+
+// Cancel an in-flight run.
+app.post('/api/automations/runs/:runId/stop', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const entry = activeAutomationRuns.get(req.params.runId);
+    if (!entry) return res.status(404).json({ error: 'Run not active' });
+    if (entry.userId !== req.userId) {
+        return res.status(403).json({ error: 'Access denied: run belongs to another user' });
+    }
+    try { entry.abort.abort(); } catch (_) {}
+    res.json({ message: 'Run cancellation requested', runId: req.params.runId });
+});
+
+// Run history for a workflow.
+app.get('/api/automations/:id/runs', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+        const runs = await workflowRunStore.listRuns(req.userId, { workflowId: req.params.id, limit });
+        res.json(runs);
+    } catch (error) {
+        console.error('Error listing automation runs:', error);
+        res.status(500).json({ error: 'Failed to list runs' });
+    }
+});
+
+// A single run record (full node timeline + outputs).
+app.get('/api/automations/runs/:runId', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const run = await workflowRunStore.getRun(req.userId, req.params.runId);
+        if (!run) return res.status(404).json({ error: 'Run not found' });
+        res.json(run);
+    } catch (error) {
+        console.error('Error loading run:', error);
+        res.status(500).json({ error: 'Failed to load run' });
+    }
+});
+
+// --- Node-types: built-in palette primitives + user-authored building blocks ---
+
+// Built-in primitives the executor understands natively (drives the editor palette).
+// Registered BEFORE the :id route so 'builtin' isn't captured as an id.
+app.get('/api/node-types/builtin', requireAuth, (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    res.json(automationEngine.BUILTIN_NODE_TYPES);
+});
+
+app.get('/api/node-types', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const nodeTypes = await loadNodeTypes();
+        res.json(filterByUserId(nodeTypes, req.userId));
+    } catch (error) {
+        console.error('Error loading node-types:', error);
+        res.status(500).json({ error: 'Failed to load node-types' });
+    }
+});
+
+app.get('/api/node-types/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const nodeTypes = await loadNodeTypes();
+        const nt = nodeTypes.find(n => n.id === req.params.id);
+        if (!nt) return res.status(404).json({ error: 'Node-type not found' });
+        if (!checkOwnership(nt, req.userId)) {
+            return res.status(403).json({ error: 'Access denied: node-type belongs to another user' });
+        }
+        res.json(nt);
+    } catch (error) {
+        console.error('Error loading node-type:', error);
+        res.status(500).json({ error: 'Failed to load node-type' });
+    }
+});
+
+app.post('/api/node-types', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const { name, category, description, baseType, defaults, fields, condition } = req.body || {};
+    if (!name || !category) return res.status(400).json({ error: 'Node-type name and category are required' });
+    if (!['trigger', 'gate', 'connector'].includes(category)) {
+        return res.status(400).json({ error: 'category must be trigger, gate, or connector' });
+    }
+    try {
+        const nodeTypes = await loadNodeTypes();
+        if (nodeTypes.find(n => n.name === name)) {
+            return res.status(400).json({ error: 'Node-type with this name already exists' });
+        }
+        const now = new Date().toISOString();
+        const nt = {
+            id: crypto.randomBytes(16).toString('hex'),
+            name,
+            category,                       // 'trigger' | 'gate' | 'connector'
+            description: description || '',
+            baseType: baseType || 'tool',   // which built-in primitive it specializes
+            defaults: defaults && typeof defaults === 'object' ? defaults : {},
+            fields: Array.isArray(fields) ? fields : [],
+            condition: condition !== undefined ? condition : null,
+            enabled: true,
+            userId: req.userId || null,
+            createdAt: now,
+            updatedAt: now
+        };
+        nodeTypes.push(nt);
+        await saveNodeTypes(nodeTypes);
+        res.status(201).json(nt);
+    } catch (error) {
+        console.error('Error creating node-type:', error);
+        res.status(500).json({ error: 'Failed to create node-type' });
+    }
+});
+
+app.put('/api/node-types/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const { name, category, description, baseType, defaults, fields, condition, enabled } = req.body || {};
+    try {
+        const nodeTypes = await loadNodeTypes();
+        const idx = nodeTypes.findIndex(n => n.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Node-type not found' });
+        if (!checkOwnership(nodeTypes[idx], req.userId)) {
+            return res.status(403).json({ error: 'Access denied: node-type belongs to another user' });
+        }
+        if (name && name !== nodeTypes[idx].name && nodeTypes.find(n => n.name === name)) {
+            return res.status(400).json({ error: 'Node-type with this name already exists' });
+        }
+        nodeTypes[idx] = {
+            ...nodeTypes[idx],
+            name: name !== undefined ? name : nodeTypes[idx].name,
+            category: category !== undefined ? category : nodeTypes[idx].category,
+            description: description !== undefined ? description : nodeTypes[idx].description,
+            baseType: baseType !== undefined ? baseType : nodeTypes[idx].baseType,
+            defaults: defaults !== undefined ? defaults : nodeTypes[idx].defaults,
+            fields: fields !== undefined ? fields : nodeTypes[idx].fields,
+            condition: condition !== undefined ? condition : nodeTypes[idx].condition,
+            enabled: enabled !== undefined ? enabled : nodeTypes[idx].enabled,
+            updatedAt: new Date().toISOString()
+        };
+        await saveNodeTypes(nodeTypes);
+        res.json(nodeTypes[idx]);
+    } catch (error) {
+        console.error('Error updating node-type:', error);
+        res.status(500).json({ error: 'Failed to update node-type' });
+    }
+});
+
+app.delete('/api/node-types/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const nodeTypes = await loadNodeTypes();
+        const idx = nodeTypes.findIndex(n => n.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Node-type not found' });
+        if (!checkOwnership(nodeTypes[idx], req.userId)) {
+            return res.status(403).json({ error: 'Access denied: node-type belongs to another user' });
+        }
+        nodeTypes.splice(idx, 1);
+        await saveNodeTypes(nodeTypes);
+        res.json({ message: 'Node-type deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting node-type:', error);
+        res.status(500).json({ error: 'Failed to delete node-type' });
     }
 });
 
@@ -16204,6 +16676,63 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         }
     }
 });
+
+// Reusable, non-streaming chat-completion against a loaded model. Extracted
+// so the automation engine (and any future internal caller) can run a prompt
+// through the current model without going back out over HTTP. Combines the
+// running-instance resolution used by the /v1 proxy with the max_tokens clamp
+// from /api/complete (sglang/llama.cpp reject input+max_tokens > contextSize).
+//   opts: { messages:[{role,content}], model?, temperature?, maxTokens?, userId? }
+//   returns: the assistant text (string)
+async function runModelCompletion({ messages, model, temperature, maxTokens } = {}) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        throw new Error('messages[] is required');
+    }
+    // Prefer a running instance; match by name when one is requested.
+    const running = Array.from(modelInstances.values()).filter(i => i.status === 'running');
+    let targetInstance;
+    if (model) {
+        targetInstance = running.find(i => i.modelName === model)
+            || modelInstances.get(model)
+            || running[0];
+    } else {
+        targetInstance = running[0] || Array.from(modelInstances.values())[0];
+    }
+    if (!targetInstance) {
+        throw new Error('No running models. Load a model first.');
+    }
+
+    const targetModel = model || targetInstance.modelName || 'default';
+    const targetHost = targetInstance.containerName || 'host.docker.internal';
+    const targetPort = targetInstance.internalPort || targetInstance.port;
+
+    const contextSize = (targetInstance.config && (targetInstance.config.contextSize || targetInstance.config.maxModelLen)) || 4096;
+    const inputChars = messages.reduce((n, m) => n + String(m.content || '').length, 0);
+    const estimatedInputTokens = Math.ceil(inputChars / 4);
+    const safetyMargin = 200;
+    const minResponse = Math.min(512, Math.max(64, Math.floor(contextSize * 0.1)));
+    const available = Math.max(minResponse, contextSize - estimatedInputTokens - safetyMargin);
+    const safeMaxTokens = maxTokens
+        ? Math.min(maxTokens, available)
+        : Math.min(Math.max(2048, Math.floor(contextSize * 0.2)), available);
+
+    const requestBody = {
+        model: targetModel,
+        messages,
+        temperature: temperature != null ? temperature : 0.7,
+        max_tokens: safeMaxTokens,
+        stop: DEFAULT_STOP_STRINGS
+    };
+
+    const response = await axios.post(
+        `http://${targetHost}:${targetPort}/v1/chat/completions`,
+        requestBody,
+        { timeout: 300000 }
+    );
+    const choice = response.data && response.data.choices && response.data.choices[0];
+    const msg = choice && choice.message;
+    return (msg && (msg.content || msg.reasoning_content)) || '';
+}
 
 // Simplified completion endpoint
 app.post('/api/complete', requireAuth, async (req, res) => {
