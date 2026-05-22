@@ -100,15 +100,21 @@ The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil
 - **Bearer-mode API key required** — the Pi extension uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
 - **Auto-config in Docs tab** — the install one-liner, `settings.json` snippet, and extension package are all pre-baked with your API key + endpoint
 
-### n8n — Workflow Automation
+### Automation — Workflow Engine
 
-[n8n](https://n8n.io) ships as part of the stack so you can build automation workflows (scheduled jobs, webhooks, multi-step pipelines, integrations) that drive the **locally served LLMs** — no external AI provider required.
+A first-party visual **workflow engine** is built into the chat UI (the **Automation** button next to "+ New chat") — no external service, no extra container. Workflows drive the **locally served LLMs** and the same sandboxed skill catalog the chat uses, and run **manually, on a schedule, by webhook, on a system event, or from a Telegram/Slack message**.
 
-- **Bundled & auto-configured** — `./build.sh` pulls the n8n + PostgreSQL images and generates the encryption/DB secrets into `.env`; `./start.sh` brings n8n up alongside the webapp and chat UIs
-- **Served over HTTPS at [https://localhost:5678](https://localhost:5678)** — reuses the same self-signed certs as the rest of the stack
-- **PostgreSQL-backed** — workflows and credentials persist in a dedicated Postgres container (volume `n8n_postgres_data`); n8n data lives in `n8n_data`
-- **Pre-wired to this server** — the n8n container exposes `MODELSERVER_BASE_URL` (`https://host.docker.internal:3001/v1`) and trusts the stack's cert, so an OpenAI credential pointing at your local models works out of the box. See the **Docs tab → n8n** section for the step-by-step credential setup
-- **Update independently** — `./update.sh --n8n` pulls the latest n8n image and recreates just the n8n services
+<p align="center">
+  <img src="docs/images/automation-flow.png" alt="Automation editor showing an example change-monitor flow: Schedule → Fetch data → Parse JSON → Database: Store → If new → Summarize → Notify" width="900">
+</p>
+
+- **Palette** — drag-and-drop nodes grouped into **Triggers** (Manual, Schedule, Webhook, On Event, Loop), **Tools** (Model, Web Search, Fetch URL, HTTP Request, Crawl Pages, Parse JSON, Render HTML/Chart, SQLite, Create PDF/File, **Run Python**, …), **Connectors** (Slack & Telegram — each with new-message trigger / send / get), and **Logic Gates** (If/Else, Switch, Filter, Merge, Delay, Set). A live search filters the palette.
+- **Database nodes** — *Database: Store* keeps a persistent per-workflow SQLite collection; set a unique **key** (with optional ignore-words, normalize, and a comma-separated fallback like `link,post_title`) to deduplicate and emit only newly-seen records as `.new` — i.e. **change-tracking across runs**. *Database: Query* reads rows back (newest-first, or a raw `SELECT` a model can generate) to feed a model, Telegram, or a file.
+- **Robust logic gates** — text operators (equals, contains, starts/ends with, regex, `>`, `<`, is-empty, …); a blank *Value to check* defaults to the previous node's output.
+- **Data wiring** — reference any upstream step with `{{nodes.<id>.field}}` tags; the config panel lists clickable tags from all upstream nodes (with expected fields shown before a run). Independent non-LLM steps at the same depth run **in parallel**.
+- **Runnable everywhere** — build it in the UI or drive it over the API: `POST /api/automations/:id/run-sync` (plus full CRUD under `/api/automations`). Persists to `/models/.modelserver/` — no database service required.
+
+> **Example change-monitor:** `Schedule → HTTP Request (API) → Parse JSON → Database: Store (key) → If/Else (new is not empty) → Model → Telegram` — fetches a feed daily, stores it with a dedup key, and pings you only when genuinely-new items appear.
 
 ---
 
@@ -138,7 +144,6 @@ echo "HUGGING_FACE_HUB_TOKEN=hf_xxx" > .env
 |-----------|-----|
 | Web UI | https://localhost:3001 |
 | Chat UI | https://localhost:3002 |
-| n8n | https://localhost:5678 |
 
 ### Build Options
 
@@ -182,7 +187,6 @@ wsl --shutdown
 # After WSL restarts, open the firewall (Admin PowerShell):
 New-NetFirewallRule -DisplayName "ModelServer 3001" -Direction Inbound -LocalPort 3001 -Protocol TCP -Profile Any -Action Allow
 New-NetFirewallRule -DisplayName "ModelServer 3002" -Direction Inbound -LocalPort 3002 -Protocol TCP -Profile Any -Action Allow
-New-NetFirewallRule -DisplayName "ModelServer n8n 5678" -Direction Inbound -LocalPort 5678 -Protocol TCP -Profile Any -Action Allow
 # If WSL's Hyper-V firewall is gating traffic too:
 Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow
 ```
@@ -254,8 +258,6 @@ HOST_IP=192.168.1.100                  # Container networking (auto-detected)
 HOST_MODELS_PATH=/mnt/d/models         # Override models path (Windows+WSL)
 NODE_TLS_REJECT_UNAUTHORIZED=0         # SSL bypass for corporate proxies
 SESSION_SECRET=your-secret             # Auto-generated if not set
-N8N_ENCRYPTION_KEY=...                  # n8n credential encryption (auto-generated by build.sh — keep stable)
-N8N_DB_PASSWORD=...                     # n8n Postgres password (auto-generated by build.sh — fixed at first DB init)
 ```
 
 ### Ports
@@ -263,8 +265,7 @@ N8N_DB_PASSWORD=...                     # n8n Postgres password (auto-generated 
 | Service | Port | Purpose |
 |---------|------|---------|
 | Webapp | 3001 | HTTPS — Management UI, REST API, WebSocket, OpenAI-compatible endpoints |
-| Chat | 3002 | HTTPS — Lightweight chat-only interface (proxies to Webapp API) |
-| n8n | 5678 | HTTPS — Workflow automation UI (PostgreSQL-backed, pre-wired to the model API) |
+| Chat | 3002 | HTTPS — Lightweight chat-only interface (proxies to Webapp API); hosts the Automation workflow editor |
 | Models | 8001+ | Model inference instances, bound to localhost only (not network-exposed) |
 
 ---

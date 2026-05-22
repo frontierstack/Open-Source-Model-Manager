@@ -329,6 +329,7 @@ const DOC_SECTIONS = [
     { id: 'quick-start',     label: 'Quick Start'         },
     { id: 'api-builder',     label: 'API Code Builder'    },
     { id: 'pi-setup',        label: 'Pi setup'            },
+    { id: 'automation',      label: 'Automation'          },
     { id: 'web-search',      label: 'Web Search & Fetch'  },
     { id: 'sandbox-skills',  label: 'Sandbox Skills'      },
     { id: 'config-flags',    label: 'Configuration Flags' },
@@ -719,6 +720,9 @@ const App = () => {
         // api-permissions was folded into api-endpoints — redirect any
         // stale-localStorage users so they don't land on a missing section.
         if (saved === 'api-permissions') return 'api-endpoints';
+        // n8n was removed in favor of the first-party Automation engine —
+        // redirect stale-localStorage users to the new section.
+        if (saved === 'n8n') return 'automation';
         // Guard against a removed section id lingering in localStorage (e.g.
         // a dropped section) so users don't land on a blank panel.
         if (saved && DOC_SECTIONS.some(s => s.id === saved)) return saved;
@@ -10598,6 +10602,128 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Box>
                                         </Box>
 
+
+                                    </Box>
+
+                                </Box>
+
+                                )}
+
+
+                                {/* Automation */}
+                                {activeDocSection === 'automation' && (
+
+                                <Box sx={docSectionSx}>
+
+                                    <Box sx={docSectionHeaderSx}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                            <Box>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Automation</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>First-party visual workflow engine — built into the chat app, no external service</Typography>
+                                            </Box>
+                                        </Box>
+                                    </Box>
+
+                                    <Box sx={docSectionBodySx}>
+
+                                        {/* Intro callout */}
+                                        <Box sx={{ p: 1.5, mb: 2, bgcolor: 'var(--accent-muted)', borderRadius: 1.5, border: '1px solid var(--accent-muted)' }}>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
+                                                <CheckCircleIcon sx={{ fontSize: 18, color: 'var(--accent-primary)' }} />
+                                                <Typography sx={{ fontSize: '0.85rem', fontWeight: 600 }}>Built in — no separate service</Typography>
+                                            </Box>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                                Open the <strong style={{ color: 'var(--text-primary)' }}>Automation</strong> button next to <strong style={{ color: 'var(--text-primary)' }}>+ New chat</strong> in the chat app to drag-and-drop a workflow on a visual canvas. Workflows run <strong style={{ color: 'var(--text-primary)' }}>manually</strong>, on a <strong style={{ color: 'var(--text-primary)' }}>schedule</strong>, by inbound <strong style={{ color: 'var(--text-primary)' }}>webhook</strong>, on a system <strong style={{ color: 'var(--text-primary)' }}>event</strong>, or when a <strong style={{ color: 'var(--text-primary)' }}>Telegram / Slack</strong> message arrives. Everything runs in-process and reuses this server&apos;s auth, models, and skill catalog.
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Palette groups */}
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Node palette</Typography>
+                                            <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.72rem' } }}>
+                                                <TableBody>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 130, whiteSpace: 'nowrap', verticalAlign: 'top' }}>Triggers</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Manual, Schedule, Inbound Webhook, On Event, Loop</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Tools</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Model, Web Search, Fetch URL, Render HTML, Parse JSON, Export File, HTTP Request, Crawl Pages, SQLite Query, Render Chart, Create PDF / File, Run Python</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Connectors</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Slack, Telegram — each with sub-actions: new-message trigger / send / get</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Logic Gates</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>If / Else, Switch, Filter, Merge, Delay, Set</TableCell>
+                                                    </TableRow>
+                                                </TableBody>
+                                            </Table>
+                                        </Box>
+
+                                        {/* Database nodes */}
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Database nodes — change tracking across runs</Typography>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', mb: 1 }}>
+                                                <strong style={{ color: 'var(--text-primary)' }}>Database: Store</strong> keeps a persistent per-workflow SQLite collection. Set a <strong style={{ color: 'var(--text-primary)' }}>Unique key</strong> field — with optional <em>ignore words</em>, <em>normalize</em>, and a comma-separated fallback like <code>link,post_title</code> — and the node deduplicates against everything it has already seen, emitting only the newly-seen records as <code>.new</code>. That makes it trivial to diff a feed run-over-run and act only on what changed.
+                                            </Typography>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                                <strong style={{ color: 'var(--text-primary)' }}>Database: Query</strong> reads rows back — recent-first, or a raw <code>SELECT</code> a model can generate — to feed a model, a Telegram message, or a file.
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Wiring nodes together */}
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Wiring nodes together</Typography>
+                                            <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { fontSize: '0.8rem', color: 'var(--text-secondary)', mb: 0.75 } }}>
+                                                <li>Reference upstream data with <code>{'{{nodes.<id>.field}}'}</code> tags. The config panel lists clickable tags from every upstream step — with the expected fields shown before a run, so you can wire a flow without executing it first.</li>
+                                                <li><strong style={{ color: 'var(--text-primary)' }}>Logic gates</strong> support text operators: <code>equals</code>, <code>contains</code>, <code>starts with</code> / <code>ends with</code>, <code>regex</code>, <code>&gt;</code>, <code>&lt;</code>, <code>is-empty</code>, and more. Leave the &quot;Value to check&quot; blank and it defaults to the previous node&apos;s output.</li>
+                                                <li>Independent non-LLM nodes at the same depth run <strong style={{ color: 'var(--text-primary)' }}>in parallel</strong> — fan out, then <code>Merge</code> back together.</li>
+                                            </Box>
+                                        </Box>
+
+                                        {/* Example flow */}
+                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Example — change-monitor flow</Typography>
+                                            <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0.5, mb: 1 }}>
+                                                <Chip label="Schedule" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                <Chip label="HTTP Request (API)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                <Chip label="Parse JSON" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                <Chip label="Database: Store (key)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }} />
+                                                <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                <Chip label="If/Else (new is not empty)" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(251,191,36,0.15)', color: 'var(--warning)', border: '1px solid rgba(251,191,36,0.25)' }} />
+                                                <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                <Chip label="Model" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)', border: '1px solid var(--accent-muted)', fontWeight: 600 }} />
+                                                <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>→</Typography>
+                                                <Chip label="Telegram" size="small" sx={{ height: 22, fontSize: '0.68rem', bgcolor: 'rgba(59,130,246,0.15)', color: 'var(--accent-secondary)', border: '1px solid rgba(59,130,246,0.25)' }} />
+                                            </Box>
+                                            <Typography sx={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                                Poll an API on a schedule, parse it, store records under a unique key so only newly-seen items pass, then summarize the changes with a model and push the result to Telegram.
+                                            </Typography>
+                                        </Box>
+
+                                        {/* Run via API */}
+                                        <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 1, color: 'var(--accent-primary)' }}>Run via the API</Typography>
+                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', mb: 1 }}>
+                                                Workflows are scriptable too — trigger one and get the final JSON back synchronously, or manage them via CRUD (requires the <code>automation</code> permission):
+                                            </Typography>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
+                                                <span>{`# Run a workflow and get the final result (non-streaming)
+POST ${baseUrl}/api/automations/:id/run-sync
+
+# CRUD
+GET    ${baseUrl}/api/automations          # list
+POST   ${baseUrl}/api/automations          # create
+GET    ${baseUrl}/api/automations/:id      # fetch
+PUT    ${baseUrl}/api/automations/:id      # update
+DELETE ${baseUrl}/api/automations/:id      # delete`}</span>
+                                            </Box>
+                                        </Box>
 
                                     </Box>
 
