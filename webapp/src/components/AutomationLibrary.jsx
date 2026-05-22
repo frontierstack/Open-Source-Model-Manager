@@ -15,7 +15,7 @@ export default function AutomationLibrary({ showSnackbar, isAdmin = false }) {
                 automations visually in the Chat app (sidebar → Automation).
                 {isAdmin ? ' As an admin you see every user’s building blocks (owner shown on each).' : ''}
             </Typography>
-            <AutomationAppsPanel category="trigger" showSnackbar={showSnackbar} isAdmin={isAdmin} defaultExpanded />
+            <AutomationAppsPanel category="trigger" showSnackbar={showSnackbar} isAdmin={isAdmin} />
             <AutomationAppsPanel category="connector" showSnackbar={showSnackbar} isAdmin={isAdmin} />
             <AutomationAppsPanel category="gate" showSnackbar={showSnackbar} isAdmin={isAdmin} />
         </Box>

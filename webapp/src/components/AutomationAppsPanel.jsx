@@ -27,6 +27,53 @@ const cardSx = {
     flexDirection: 'column',
 };
 
+// Friendly explanations for each configurable field a built-in exposes, so the
+// detail card explains how the block is set up rather than just listing keys.
+const FIELD_HELP = {
+    cron:         'Cron expression (min hour dom mon dow), e.g. "0 9 * * 1-5".',
+    intervalMs:   'Fixed interval in milliseconds (minimum 60000) — used instead of cron.',
+    event:        'System event name to listen for, e.g. "model.loaded".',
+    prompt:       'User prompt sent to the model. Leave blank to receive the upstream node\'s output automatically, or template with {{last}} / {{nodes.id.field}}.',
+    systemPrompt: 'Optional system prompt that frames the model\'s behavior.',
+    model:        'Which loaded model to run (defaults to the current model).',
+    temperature:  'Sampling temperature (higher = more random).',
+    maxTokens:    'Maximum tokens to generate in the response.',
+    query:        'Search query string.',
+    limit:        'Maximum number of results to return.',
+    url:          'URL to fetch and extract content from.',
+    maxLength:    'Maximum characters of extracted content to keep.',
+    args:         'Arguments object (JSON) passed to the underlying tool/skill. Values support {{...}} templating.',
+    tool:         'Name of the skill or native tool to invoke.',
+    ms:           'How long to pause, in milliseconds.',
+    name:         'Variable name to store in the run scope.',
+    value:        'Value to store (supports {{...}} templating).',
+    condition:    'Condition to evaluate — { left, op, right } or a {{...}} expression.',
+    cases:        'Array of { equals, handle } cases; the first match routes the flow, else "default".',
+    source:       'JSON string or value to parse. Leave blank to use the previous node\'s output.',
+    path:         'Dotted path to extract, e.g. "results.0.title". Blank passes the whole object through.',
+    html:         'HTML (or text) to render. Leave blank to wrap the previous node\'s output.',
+    format:       'Output file format: txt, csv, json, md, html, or pdf.',
+    filename:     'Output filename (the extension is added automatically if omitted).',
+    content:      'File contents. Leave blank to use the previous node\'s output.',
+    webhookUrl:   'Slack Incoming Webhook URL (from your Slack app settings).',
+    text:         'Message text to send. Leave blank to send the previous node\'s output.',
+    botToken:     'Telegram bot token from @BotFather.',
+    chatId:       'Telegram chat id (a number, or @channelname).',
+};
+
+// Build a starter "Default values" object for a built-in: its own presets plus a
+// blank slot for each configurable field, so the author sees exactly what they
+// can preset and just fills in the values.
+function buildDefaultsSkeleton(b) {
+    if (!b) return {};
+    const out = { ...(b.defaults || {}) };
+    for (const f of (b.fields || [])) {
+        if (out[f] !== undefined) continue;
+        out[f] = f === 'args' ? {} : f === 'cases' ? [] : '';
+    }
+    return out;
+}
+
 const clamp2 = {
     display: '-webkit-box',
     WebkitLineClamp: 2,
@@ -47,6 +94,7 @@ export default function AutomationAppsPanel({ category, showSnackbar, isAdmin = 
     const [dialogOpen, setDialogOpen] = useState(false);
     const [editing, setEditing] = useState(null);
     const [form, setForm] = useState({ name: '', description: '', baseType: '', defaults: '{}' });
+    const [detail, setDetail] = useState(null); // built-in being inspected
 
     const notify = (msg, sev = 'success') => { if (showSnackbar) showSnackbar(msg, sev); };
 
@@ -202,7 +250,13 @@ export default function AutomationAppsPanel({ category, showSnackbar, isAdmin = 
                     <Grid container spacing={1.5} sx={{ mb: 3, mt: 0 }}>
                         {shownBuiltins.map((t) => (
                             <Grid item xs={12} sm={6} md={4} key={t.key || t.type}>
-                                <Card variant="outlined" sx={cardSx}>
+                                <Card
+                                    variant="outlined"
+                                    onClick={() => setDetail(t)}
+                                    role="button" tabIndex={0}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDetail(t); } }}
+                                    sx={{ ...cardSx, cursor: 'pointer', transition: 'border-color 0.15s, background-color 0.15s', '&:hover': { borderColor: 'var(--accent-primary)', bgcolor: 'var(--bg-hover)' } }}
+                                >
                                     <CardContent sx={{ flexGrow: 1, pb: 1 }}>
                                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, mb: 0.5 }}>
                                             <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{t.label}</Typography>
@@ -282,34 +336,168 @@ export default function AutomationAppsPanel({ category, showSnackbar, isAdmin = 
             </Box>
             </Collapse>
 
+            {/* Built-in detail dialog */}
+            <Dialog open={!!detail} onClose={() => setDetail(null)} maxWidth="sm" fullWidth>
+                {detail && (() => {
+                    const inputs = Array.isArray(detail.inputs) ? detail.inputs : [];
+                    const outputs = Array.isArray(detail.outputs) ? detail.outputs : [];
+                    const fields = Array.isArray(detail.fields) ? detail.fields : [];
+                    const hasDefaults = detail.defaults && Object.keys(detail.defaults).length > 0;
+                    return (
+                        <>
+                            <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                {detail.label}
+                                <Chip label="Built-in" size="small" variant="outlined" sx={{ height: 20 }} />
+                                <IconButton size="small" onClick={() => setDetail(null)} sx={{ ml: 'auto' }}><ClearIcon size={16} /></IconButton>
+                            </DialogTitle>
+                            <DialogContent dividers>
+                                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                                    {detail.description}
+                                </Typography>
+
+                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
+                                    <Chip label={`type: ${detail.type}`} size="small" sx={{ height: 22, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)' }} />
+                                    <Chip label={`category: ${meta.label}`} size="small" variant="outlined" sx={{ height: 22 }} />
+                                    {detail.defaults?.tool && (
+                                        <Chip label={`tool: ${detail.defaults.tool}`} size="small" variant="outlined" sx={{ height: 22 }} />
+                                    )}
+                                </Box>
+
+                                <Typography variant="overline" color="text.secondary">Handles</Typography>
+                                <Box sx={{ display: 'flex', gap: 3, mb: 2, mt: 0.5 }}>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>Inputs</Typography>
+                                        {inputs.length ? inputs.map((h) => (
+                                            <Chip key={h} label={h} size="small" variant="outlined" sx={{ height: 20, mr: 0.5, mb: 0.5 }} />
+                                        )) : <Typography variant="caption" color="text.secondary">— none (entry point)</Typography>}
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>Outputs</Typography>
+                                        {outputs.length ? outputs.map((h) => (
+                                            <Chip key={h} label={h} size="small" variant="outlined" sx={{ height: 20, mr: 0.5, mb: 0.5 }} />
+                                        )) : <Typography variant="caption" color="text.secondary">— none (terminal)</Typography>}
+                                    </Box>
+                                </Box>
+
+                                <Typography variant="overline" color="text.secondary">Configurable fields</Typography>
+                                {fields.length ? (
+                                    <Box component="ul" sx={{ pl: 2, mt: 0.5, mb: 2 }}>
+                                        {fields.map((f) => (
+                                            <Box component="li" key={f} sx={{ mb: 0.75 }}>
+                                                <Typography variant="body2" component="span" sx={{ fontWeight: 600, fontFamily: 'monospace' }}>{f}</Typography>
+                                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                                    {FIELD_HELP[f] || 'Configured per node in the editor.'}
+                                                </Typography>
+                                            </Box>
+                                        ))}
+                                    </Box>
+                                ) : (
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
+                                        No configuration — this block works as-is.
+                                    </Typography>
+                                )}
+
+                                {hasDefaults && (<>
+                                    <Typography variant="overline" color="text.secondary">Preset values</Typography>
+                                    <Box component="pre" sx={{ mt: 0.5, mb: 2, p: 1.25, bgcolor: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', borderRadius: 1, fontFamily: 'monospace', fontSize: 12, overflow: 'auto' }}>
+                                        {JSON.stringify(detail.defaults, null, 2)}
+                                    </Box>
+                                </>)}
+
+                                <Alert severity="info" sx={{ mt: 1 }}>
+                                    Drag this block onto the canvas in the chat <strong>Automation</strong> editor, then set its fields per node. To make a reusable preset, click <strong>New {meta.singular}</strong> and choose <em>{detail.type}</em> as the base type.
+                                </Alert>
+                            </DialogContent>
+                            <DialogActions>
+                                <Button onClick={() => setDetail(null)}>Close</Button>
+                            </DialogActions>
+                        </>
+                    );
+                })()}
+            </Dialog>
+
             {/* Create / Edit dialog */}
             <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
                 <DialogTitle>{editing ? `Edit ${meta.singular}` : `New ${meta.singular}`}</DialogTitle>
                 <DialogContent>
-                    <TextField
-                        label="Name" fullWidth size="small" sx={{ mt: 1, mb: 2 }}
-                        value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-                        autoFocus
-                    />
-                    <TextField
-                        label="Description" fullWidth size="small" multiline minRows={2} sx={{ mb: 2 }}
-                        value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })}
-                    />
-                    <TextField
-                        select label="Base type" fullWidth size="small" sx={{ mb: 2 }}
-                        value={form.baseType} onChange={(e) => setForm({ ...form, baseType: e.target.value })}
-                        helperText="Which built-in primitive this building block specializes."
-                    >
-                        {builtins.map((b) => (
-                            <MenuItem key={b.key || b.type} value={b.type}>{b.label} ({b.type})</MenuItem>
-                        ))}
-                    </TextField>
-                    <TextField
-                        label="Default values (JSON)" fullWidth size="small" multiline minRows={4}
-                        value={form.defaults} onChange={(e) => setForm({ ...form, defaults: e.target.value })}
-                        InputProps={{ sx: { fontFamily: 'monospace', fontSize: 13 } }}
-                        helperText='Preset data merged into a node when dropped. e.g. { "tool": "query_sqlite", "args": { "query": "SELECT 1" } }'
-                    />
+                    {(() => {
+                        // Resolve which built-in the current form maps to, for live
+                        // field guidance under the JSON editor.
+                        let parsed = {};
+                        try { parsed = form.defaults.trim() ? JSON.parse(form.defaults) : {}; } catch (_) { /* mid-edit */ }
+                        const activeBuiltin =
+                            (parsed.tool && builtins.find(b => b.defaults?.tool === parsed.tool)) ||
+                            builtins.find(b => b.type === form.baseType) || null;
+                        const guideFields = (activeBuiltin && Array.isArray(activeBuiltin.fields)) ? activeBuiltin.fields : [];
+                        const applyTemplate = (b) => {
+                            setForm(prev => ({
+                                ...prev,
+                                baseType: b.type,
+                                description: prev.description || b.description || '',
+                                defaults: JSON.stringify(buildDefaultsSkeleton(b), null, 2),
+                            }));
+                        };
+                        return (<>
+                            <Alert severity="info" sx={{ mt: 1, mb: 2 }}>
+                                A custom {meta.singular.toLowerCase()} is a built-in primitive plus <strong>preset values</strong>.
+                                It then appears in the editor palette ready to drop in. Pick a starting point below,
+                                fill in the values you want baked in, and save.
+                            </Alert>
+                            <TextField
+                                label="Name" fullWidth size="small" sx={{ mb: 2 }}
+                                value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                                autoFocus
+                                helperText={`How it appears in the palette, e.g. "${category === 'trigger' ? 'Every weekday 9am' : category === 'gate' ? 'Only if score > 80' : 'Search cybersecurity news'}".`}
+                            />
+                            {!editing && (
+                                <TextField
+                                    select label="Start from a built-in" fullWidth size="small" sx={{ mb: 2 }}
+                                    value="" displayEmpty
+                                    onChange={(e) => { const b = builtins.find(x => (x.key || x.type) === e.target.value); if (b) applyTemplate(b); }}
+                                    helperText="Loads that block's fields into the defaults below as a starting template."
+                                >
+                                    <MenuItem value="" disabled>Choose a built-in to start from…</MenuItem>
+                                    {builtins.map((b) => (
+                                        <MenuItem key={b.key || b.type} value={b.key || b.type}>{b.label}</MenuItem>
+                                    ))}
+                                </TextField>
+                            )}
+                            <TextField
+                                label="Description" fullWidth size="small" multiline minRows={2} sx={{ mb: 2 }}
+                                value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })}
+                            />
+                            <TextField
+                                select label="Base type" fullWidth size="small" sx={{ mb: 2 }}
+                                value={form.baseType} onChange={(e) => setForm({ ...form, baseType: e.target.value })}
+                                helperText="Which built-in primitive this building block specializes."
+                            >
+                                {builtins.map((b) => (
+                                    <MenuItem key={b.key || b.type} value={b.type}>{b.label} ({b.type})</MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                label="Default values (JSON)" fullWidth size="small" multiline minRows={4}
+                                value={form.defaults} onChange={(e) => setForm({ ...form, defaults: e.target.value })}
+                                InputProps={{ sx: { fontFamily: 'monospace', fontSize: 13 } }}
+                                helperText='Preset data merged into a node when dropped. Keep only the fields you want baked in; remove the rest.'
+                            />
+                            {guideFields.length > 0 && (
+                                <Box sx={{ mt: 1.5, p: 1.25, bgcolor: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', borderRadius: 1 }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>
+                                        Fields you can preset for {activeBuiltin.label}:
+                                    </Typography>
+                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
+                                        {guideFields.map((f) => (
+                                            <Box component="li" key={f} sx={{ mb: 0.5 }}>
+                                                <Typography variant="caption" component="span" sx={{ fontWeight: 600, fontFamily: 'monospace' }}>{f}</Typography>
+                                                <Typography variant="caption" color="text.secondary"> — {FIELD_HELP[f] || 'configured per node.'}</Typography>
+                                            </Box>
+                                        ))}
+                                    </Box>
+                                </Box>
+                            )}
+                        </>);
+                    })()}
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={() => setDialogOpen(false)}>Cancel</Button>

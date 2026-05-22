@@ -61,6 +61,118 @@ const fieldInput = {
     background: 'var(--bg)', color: 'var(--ink)', fontSize: 12.5, marginBottom: 10, boxSizing: 'border-box',
 };
 
+// Module-scope so its identity is stable across NodeConfig re-renders — defining
+// it inside NodeConfig remounted every input on each keystroke (focus loss bug).
+function Field({ label, children }) {
+    return <div><label style={fieldLabel}>{label}</label>{children}</div>;
+}
+
+// Drag-and-drop "{{...}}" reference support: a tag dragged from the data palette
+// carries an 'application/automation-ref' payload; dropping onto these inputs
+// inserts it at the caret.
+const REF_MIME = 'application/automation-ref';
+function insertRefAtCaret(el, ref, value, onChange) {
+    const s = (el && el.selectionStart != null) ? el.selectionStart : value.length;
+    const e = (el && el.selectionEnd != null) ? el.selectionEnd : value.length;
+    onChange(`${value.slice(0, s)}${ref}${value.slice(e)}`);
+}
+function makeDropHandlers(value, onChange, elRef) {
+    return {
+        onDragOver: (ev) => { if (Array.from(ev.dataTransfer.types || []).includes(REF_MIME)) ev.preventDefault(); },
+        onDrop: (ev) => {
+            const ref = ev.dataTransfer.getData(REF_MIME);
+            if (!ref) return;
+            ev.preventDefault();
+            insertRefAtCaret(elRef.current, ref, value || '', onChange);
+        },
+    };
+}
+function TemplInput({ value = '', onChange, style, ...rest }) {
+    const elRef = useRef(null);
+    return <input ref={elRef} value={value} onChange={(e) => onChange(e.target.value)} style={{ ...fieldInput, ...style }} {...makeDropHandlers(value, onChange, elRef)} {...rest} />;
+}
+function TemplTextarea({ value = '', onChange, style, ...rest }) {
+    const elRef = useRef(null);
+    return <textarea ref={elRef} value={value} onChange={(e) => onChange(e.target.value)} style={{ ...fieldInput, ...style }} {...makeDropHandlers(value, onChange, elRef)} {...rest} />;
+}
+
+// Flatten a node's output into draggable dotted paths (arrays collapse to index 0).
+function flattenForTags(obj, prefix = '', out = [], depth = 0) {
+    if (out.length >= 50 || depth > 4) return out;
+    if (Array.isArray(obj)) {
+        if (obj.length) flattenForTags(obj[0], `${prefix}.0`, out, depth + 1);
+        return out;
+    }
+    if (obj && typeof obj === 'object') {
+        for (const k of Object.keys(obj)) {
+            if (k === '_handle') continue;
+            const p = prefix ? `${prefix}.${k}` : k;
+            const v = obj[k];
+            const isObj = v && typeof v === 'object';
+            out.push({ path: p, leaf: !isObj, sample: isObj ? (Array.isArray(v) ? `[${v.length}]` : '{…}') : String(v).slice(0, 30) });
+            if (isObj) flattenForTags(v, p, out, depth + 1);
+            if (out.length >= 50) break;
+        }
+    }
+    return out;
+}
+
+function DataTag({ refStr, label, sample }) {
+    const [copied, setCopied] = useState(false);
+    return (
+        <span
+            draggable
+            onDragStart={(e) => { e.dataTransfer.setData(REF_MIME, refStr); e.dataTransfer.setData('text/plain', refStr); e.dataTransfer.effectAllowed = 'copy'; }}
+            onClick={() => { navigator.clipboard?.writeText(refStr); setCopied(true); setTimeout(() => setCopied(false), 1000); }}
+            title={`${refStr}${sample ? `  ·  e.g. ${sample}` : ''} — drag into a field, or click to copy`}
+            style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'grab', fontSize: 10.5, fontFamily: 'monospace',
+                background: copied ? 'var(--accent-soft)' : 'var(--bg)', color: copied ? 'var(--accent)' : 'var(--ink-2)',
+                border: '1px solid var(--rule-2)', borderRadius: 5, padding: '2px 6px', margin: '0 4px 4px 0', maxWidth: '100%',
+            }}
+        >
+            <span style={{ opacity: 0.6 }}>{'{ }'}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+        </span>
+    );
+}
+
+// Collapsible palette of draggable data tags drawn from OTHER nodes' captured
+// outputs, so you can extract a specific field ({{nodes.id.results.0.title}}).
+function DataTagPalette({ outputs = {}, nodes = [], currentNodeId }) {
+    const [open, setOpen] = useState(false);
+    const sources = nodes
+        .filter(n => n.id !== currentNodeId && outputs[n.id] && outputs[n.id].output != null)
+        .map(n => ({ id: n.id, label: (n.data && n.data.label) || (n.data && n.data.kind) || n.id, out: outputs[n.id].output }));
+    if (!sources.length) return null;
+    return (
+        <div style={{ marginBottom: 12, border: '1px solid var(--rule-2)', borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => setOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 8px', background: 'var(--bg)', border: 'none', borderBottom: open ? '1px solid var(--rule-2)' : 'none', cursor: 'pointer', color: 'var(--ink-2)' }}>
+                {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                <span style={{ fontSize: 11, fontWeight: 600 }}>Insert data from other nodes</span>
+                <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-3)' }}>{sources.length}</span>
+            </button>
+            {open && (
+                <div style={{ padding: 8 }}>
+                    <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 6 }}>Drag a tag into a field below, or click to copy.</div>
+                    {sources.map(s => (
+                        <div key={s.id} style={{ marginBottom: 8 }}>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-3)', marginBottom: 4 }}>{s.label}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                                <DataTag refStr={`{{nodes.${s.id}}}`} label="(whole output)" />
+                                {flattenForTags(s.out).map(t => (
+                                    <DataTag key={t.path} refStr={`{{nodes.${s.id}.${t.path}}}`} label={t.path} sample={t.leaf ? t.sample : ''} />
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                    <DataTag refStr="{{last}}" label="last (previous node)" />
+                </div>
+            )}
+        </div>
+    );
+}
+
 function FlowEditor({ showSnackbar, models }) {
     const setView = useChatStore(s => s.setView);
     const confirm = useConfirm();
@@ -84,6 +196,7 @@ function FlowEditor({ showSnackbar, models }) {
     const [showHistory, setShowHistory] = useState(false);
     const [runs, setRuns] = useState([]);
     const [runDetail, setRunDetail] = useState(null);
+    const [nodeOutputs, setNodeOutputs] = useState({}); // nodeId -> { status, output, error }
     const runAbortRef = useRef(null);
     const addCountRef = useRef(0);
 
@@ -121,6 +234,24 @@ function FlowEditor({ showSnackbar, models }) {
         })();
     }, [loadAutomations]);
 
+    // Seed per-node results from the most recent run so clicking a node shows
+    // its last output even after a page reload (best-effort; silent on failure).
+    const seedNodeOutputs = useCallback(async (automationId) => {
+        try {
+            const listRes = await fetch(`/api/automations/${automationId}/runs?limit=1`, { credentials: 'include' });
+            const list = listRes.ok ? await listRes.json() : [];
+            if (!Array.isArray(list) || !list.length) return;
+            const detRes = await fetch(`/api/automations/runs/${list[0].id}`, { credentials: 'include' });
+            if (!detRes.ok) return;
+            const det = await detRes.json();
+            const map = {};
+            for (const n of (det.nodes || [])) {
+                if (n.nodeId) map[n.nodeId] = { status: n.status, output: n.output, error: n.error };
+            }
+            setNodeOutputs(map);
+        } catch (_) { /* best-effort */ }
+    }, []);
+
     // ---- selection ----
     const selectAutomation = useCallback(async (id) => {
         try {
@@ -136,9 +267,11 @@ function FlowEditor({ showSnackbar, models }) {
             setDirty(false);
             setRunResult(null);
             setWebhookUrl('');
+            setNodeOutputs({});
             addCountRef.current = n.length;
+            seedNodeOutputs(id);
         } catch (err) { notify(err.message, 'error'); }
-    }, [labelFor, setNodes, setEdges]);
+    }, [labelFor, setNodes, setEdges, seedNodeOutputs]);
 
     const newAutomation = useCallback(async () => {
         try {
@@ -267,6 +400,7 @@ function FlowEditor({ showSnackbar, models }) {
     const resetRunVisuals = useCallback(() => {
         setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, status: undefined } })));
         setEdges(es => es.map(e => ({ ...e, className: undefined, animated: false })));
+        setNodeOutputs({});
     }, [setNodes, setEdges]);
 
     const handleRunEvent = useCallback((evt) => {
@@ -274,9 +408,11 @@ function FlowEditor({ showSnackbar, models }) {
             case 'run_created': setRunId(evt.runId); break;
             case 'node_start':
                 setNodes(ns => ns.map(n => n.id === evt.nodeId ? { ...n, data: { ...n.data, status: 'running' } } : n));
+                setNodeOutputs(o => ({ ...o, [evt.nodeId]: { status: 'running' } }));
                 break;
             case 'node_finish':
                 setNodes(ns => ns.map(n => n.id === evt.nodeId ? { ...n, data: { ...n.data, status: evt.status } } : n));
+                setNodeOutputs(o => ({ ...o, [evt.nodeId]: { status: evt.status, output: evt.output, error: evt.error } }));
                 break;
             case 'edge_active':
                 setEdges(es => es.map(e => (e.id === evt.edgeId || (e.source === evt.source && e.target === evt.target))
@@ -542,6 +678,9 @@ function FlowEditor({ showSnackbar, models }) {
                         key={selectedNode.id}
                         node={selectedNode}
                         runningModels={runningModels}
+                        lastRun={nodeOutputs[selectedNode.id]}
+                        allOutputs={nodeOutputs}
+                        nodeList={nodes}
                         onChange={(patch) => updateNodeData(selectedNode.id, patch)}
                         onDelete={deleteSelectedNode}
                         webhookUrl={webhookUrl}
@@ -566,15 +705,12 @@ function FlowEditor({ showSnackbar, models }) {
 }
 
 // ---- per-node config panel ----
-function NodeConfig({ node, runningModels = [], onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
+function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
     const kind = node.data.kind;
     const d = node.data;
     const cond = (d.condition && typeof d.condition === 'object') ? d.condition : { left: '', op: '==', right: '' };
     const setCond = (patch) => onChange({ condition: { ...cond, ...patch } });
-
-    const Field = ({ label, children }) => (
-        <div><label style={fieldLabel}>{label}</label>{children}</div>
-    );
+    const isTrigger = typeof kind === 'string' && kind.startsWith('trigger.');
 
     return (
         <div style={{ width: 270, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
@@ -583,12 +719,16 @@ function NodeConfig({ node, runningModels = [], onChange, onDelete, webhookUrl, 
                 <button onClick={onDelete} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger, #ef4444)', display: 'flex' }} title="Delete node"><Trash2 size={15} /></button>
             </div>
 
+            <NodeResult lastRun={lastRun} nodeId={node.id} isTrigger={isTrigger} />
+
+            {!isTrigger && <DataTagPalette outputs={allOutputs} nodes={nodeList} currentNodeId={node.id} />}
+
             <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} /></Field>
 
             {kind === 'model' && (<>
-                <Field label="Prompt"><textarea style={{ ...fieldInput, minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(e) => onChange({ prompt: e.target.value })} placeholder="Leave blank to receive the previous node's output, or use {{last}} / {{nodes.id.field}}" /></Field>
+                <Field label="Prompt"><TemplTextarea style={{ minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(v) => onChange({ prompt: v })} placeholder="Leave blank to receive the previous node's output, or use {{last}} / {{nodes.id.field}}" /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -6, marginBottom: 8 }}>The connected node's output is passed in automatically unless you reference data with {'{{…}}'}.</p>
-                <Field label="System prompt"><textarea style={{ ...fieldInput, minHeight: 48, resize: 'vertical' }} value={d.systemPrompt || ''} onChange={(e) => onChange({ systemPrompt: e.target.value })} /></Field>
+                <Field label="System prompt"><TemplTextarea style={{ minHeight: 48, resize: 'vertical' }} value={d.systemPrompt || ''} onChange={(v) => onChange({ systemPrompt: v })} /></Field>
                 <Field label="Model">
                     <select style={fieldInput} value={d.model || ''} onChange={(e) => onChange({ model: e.target.value || undefined })}>
                         <option value="">Current model{runningModels[0] ? ` (${runningModels[0].name})` : ''}</option>
@@ -603,23 +743,55 @@ function NodeConfig({ node, runningModels = [], onChange, onDelete, webhookUrl, 
                         <div style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: -6, marginBottom: 8 }}>No models loaded right now — load one to run this node.</div>
                     )}
                 </Field>
-                <Field label="Temperature"><input type="number" step="0.1" style={fieldInput} value={d.temperature ?? ''} onChange={(e) => onChange({ temperature: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
-                <Field label="Max tokens"><input type="number" style={fieldInput} value={d.maxTokens ?? ''} onChange={(e) => onChange({ maxTokens: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
             </>)}
 
             {kind === 'tool' && (<>
-                <Field label="Tool / skill name"><input style={fieldInput} value={d.tool || ''} onChange={(e) => onChange({ tool: e.target.value })} placeholder="e.g. query_sqlite" /></Field>
+                <Field label="Tool / skill name"><TemplInput value={d.tool || ''} onChange={(v) => onChange({ tool: v })} placeholder="e.g. query_sqlite" /></Field>
                 <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} /></Field>
             </>)}
 
             {kind === 'web_search' && (<>
-                <Field label="Query"><input style={fieldInput} value={d.query || ''} onChange={(e) => onChange({ query: e.target.value })} /></Field>
+                <Field label="Query"><TemplInput value={d.query || ''} onChange={(v) => onChange({ query: v })} /></Field>
                 <Field label="Limit"><input type="number" style={fieldInput} value={d.limit ?? ''} onChange={(e) => onChange({ limit: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
             </>)}
 
             {kind === 'fetch_url' && (<>
-                <Field label="URL"><input style={fieldInput} value={d.url || ''} onChange={(e) => onChange({ url: e.target.value })} /></Field>
+                <Field label="URL"><TemplInput value={d.url || ''} onChange={(v) => onChange({ url: v })} /></Field>
                 <Field label="Max length"><input type="number" style={fieldInput} value={d.maxLength ?? ''} onChange={(e) => onChange({ maxLength: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
+            </>)}
+
+            {kind === 'parse_json' && (<>
+                <Field label="Source"><TemplTextarea style={{ minHeight: 48, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.source || ''} onChange={(v) => onChange({ source: v })} placeholder="Leave blank for the previous node, or paste/template a JSON string" /></Field>
+                <Field label="Extract path (optional)"><TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder="e.g. results.0.title" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Dotted path into the JSON. Leave blank to pass the whole object through.</p>
+            </>)}
+
+            {kind === 'render_html' && (
+                <Field label="HTML"><TemplTextarea style={{ minHeight: 120, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.html || ''} onChange={(v) => onChange({ html: v })} placeholder="<h1>Report</h1>{{last}} — leave blank to wrap the previous node's output" /></Field>
+            )}
+
+            {kind === 'export_file' && (<>
+                <Field label="Format">
+                    <select style={fieldInput} value={d.format || 'txt'} onChange={(e) => onChange({ format: e.target.value })}>
+                        {['txt', 'csv', 'json', 'md', 'html', 'pdf'].map(f => <option key={f} value={f}>{f.toUpperCase()}</option>)}
+                    </select>
+                </Field>
+                <Field label="Filename"><TemplInput value={d.filename || ''} onChange={(v) => onChange({ filename: v })} placeholder="report (extension added automatically)" /></Field>
+                <Field label="Content"><TemplTextarea style={{ minHeight: 80, resize: 'vertical' }} value={d.content || ''} onChange={(v) => onChange({ content: v })} placeholder="Leave blank to use the previous node's output" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>The file is written to the run workspace and surfaced as a download.</p>
+            </>)}
+
+            {kind === 'slack' && (<>
+                <Field label="Webhook URL"><TemplInput value={d.webhookUrl || ''} onChange={(v) => onChange({ webhookUrl: v })} placeholder="https://hooks.slack.com/services/…" /></Field>
+                <Field label="Message"><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Create an Incoming Webhook in your Slack app settings and paste its URL here.</p>
+            </>)}
+
+            {kind === 'telegram' && (<>
+                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
+                <Field label="Chat ID"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="e.g. 123456789 or @channelname" /></Field>
+                <Field label="Message"><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Create a bot with @BotFather for the token; get the chat id from @userinfobot or the bot's getUpdates.</p>
             </>)}
 
             {kind === 'delay' && (
@@ -628,24 +800,24 @@ function NodeConfig({ node, runningModels = [], onChange, onDelete, webhookUrl, 
 
             {kind === 'set' && (<>
                 <Field label="Variable name"><input style={fieldInput} value={d.name || ''} onChange={(e) => onChange({ name: e.target.value })} /></Field>
-                <Field label="Value"><input style={fieldInput} value={d.value ?? ''} onChange={(e) => onChange({ value: e.target.value })} placeholder="Supports {{...}}" /></Field>
+                <Field label="Value"><TemplInput value={d.value ?? ''} onChange={(v) => onChange({ value: v })} placeholder="Supports {{...}}" /></Field>
             </>)}
 
             {(kind === 'gate.if' || kind === 'gate.filter') && (<>
-                <Field label="Left (supports {{...}})"><input style={fieldInput} value={cond.left || ''} onChange={(e) => setCond({ left: e.target.value })} /></Field>
+                <Field label="Left (supports {{...}})"><TemplInput value={cond.left || ''} onChange={(v) => setCond({ left: v })} /></Field>
                 <Field label="Operator">
                     <select style={fieldInput} value={cond.op || '=='} onChange={(e) => setCond({ op: e.target.value })}>
                         {COND_OPS.map(o => <option key={o} value={o}>{o}</option>)}
                     </select>
                 </Field>
-                <Field label="Right"><input style={fieldInput} value={cond.right || ''} onChange={(e) => setCond({ right: e.target.value })} /></Field>
+                <Field label="Right"><TemplInput value={cond.right || ''} onChange={(v) => setCond({ right: v })} /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>
                     {kind === 'gate.if' ? 'Wire the "true" / "false" handles to branches.' : 'Continues down "out" only when true.'}
                 </p>
             </>)}
 
             {kind === 'gate.switch' && (<>
-                <Field label="Value (supports {{...}})"><input style={fieldInput} value={d.value || ''} onChange={(e) => onChange({ value: e.target.value })} /></Field>
+                <Field label="Value (supports {{...}})"><TemplInput value={d.value || ''} onChange={(v) => onChange({ value: v })} /></Field>
                 <Field label="Cases (JSON)"><JsonField value={d.cases} onChange={(v) => onChange({ cases: v })} placeholder='[{"equals":"a","handle":"a"}]' /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Unmatched routes to the "default" handle.</p>
             </>)}
@@ -694,6 +866,69 @@ function JsonField({ value, onChange, placeholder }) {
             />
             {err && <div style={{ fontSize: 10, color: 'var(--danger, #ef4444)', marginTop: -6, marginBottom: 8 }}>Invalid JSON</div>}
         </>
+    );
+}
+
+// Render a node's captured output as readable text (handles strings, objects,
+// and the engine's {_truncated, preview} summary blobs).
+function formatNodeOutput(out) {
+    if (out == null) return '';
+    if (typeof out === 'string') return out;
+    if (typeof out === 'object' && out._truncated && typeof out.preview === 'string') return out.preview;
+    try { return JSON.stringify(out, null, 2); } catch { return String(out); }
+}
+
+// "Last result" card shown at the top of the node config panel — live during a
+// run, and seeded from the most recent run on load. Lets you inspect exactly
+// what a connector/gate/trigger returned, plus the reference to pipe it forward.
+function NodeResult({ lastRun, nodeId, isTrigger }) {
+    const [copied, setCopied] = useState(false);
+    const ref = `{{nodes.${nodeId}}}`;
+    const status = lastRun && lastRun.status;
+    const hasOutput = lastRun && lastRun.output != null;
+    // Any node whose output carries an `html` string (Render HTML) gets a live,
+    // sandboxed preview (sandbox="" → no script execution; images/CSS still render).
+    const htmlPreview = (lastRun && lastRun.output && typeof lastRun.output === 'object' && typeof lastRun.output.html === 'string')
+        ? lastRun.output.html : null;
+    return (
+        <div style={{ marginBottom: 12, border: '1px solid var(--rule-2)', borderRadius: 8, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', background: 'var(--bg)', borderBottom: '1px solid var(--rule-2)' }}>
+                {status && <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: runStatusColor(status) }} />}
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-2)' }}>Last result</span>
+                {status && <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-3)', textTransform: 'capitalize' }}>{status}</span>}
+            </div>
+            <div style={{ padding: 8 }}>
+                {!lastRun && <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>No run yet — hit Run to capture this node's output.</div>}
+                {status === 'running' && <div style={{ fontSize: 10.5, color: 'var(--accent)' }}>Running…</div>}
+                {lastRun && lastRun.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginBottom: hasOutput ? 6 : 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{lastRun.error}</div>}
+                {htmlPreview != null && (
+                    <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 4 }}>Preview</div>
+                        <iframe
+                            title="HTML preview"
+                            sandbox=""
+                            srcDoc={htmlPreview}
+                            style={{ width: '100%', height: 240, border: '1px solid var(--rule-2)', borderRadius: 6, background: '#fff' }}
+                        />
+                    </div>
+                )}
+                {hasOutput && (
+                    <pre style={{ margin: 0, fontSize: 10.5, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: htmlPreview != null ? 100 : 220, overflow: 'auto', fontFamily: 'monospace' }}>{formatNodeOutput(lastRun.output)}</pre>
+                )}
+                {lastRun && status !== 'running' && !hasOutput && !lastRun.error && (
+                    <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>Completed with no output.</div>
+                )}
+            </div>
+            {!isTrigger && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderTop: '1px solid var(--rule-2)', background: 'var(--bg)' }}>
+                    <span style={{ fontSize: 10, color: 'var(--ink-3)', flexShrink: 0 }}>Pipe forward:</span>
+                    <code style={{ fontSize: 10, color: 'var(--ink-2)', background: 'var(--surface)', padding: '1px 4px', borderRadius: 4, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${ref}  (or {{last}} for the previous node)`}>{ref}</code>
+                    <button onClick={() => { navigator.clipboard?.writeText(ref); setCopied(true); setTimeout(() => setCopied(false), 1200); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: copied ? 'var(--ok, #22c55e)' : 'var(--ink-3)', display: 'flex', flexShrink: 0 }} title="Copy reference">
+                        {copied ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                </div>
+            )}
+        </div>
     );
 }
 

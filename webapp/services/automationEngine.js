@@ -37,6 +37,11 @@ const BUILTIN_NODE_TYPES = [
     { key: 'model',       type: 'model',      category: 'connector', label: 'Model / LLM call', description: 'Runs a prompt through a loaded model.', inputs: ['in'], outputs: ['out'], fields: ['prompt', 'systemPrompt', 'model', 'temperature', 'maxTokens'] },
     { key: 'web_search',  type: 'web_search', category: 'connector', label: 'Web Search',       description: 'Searches the web (DuckDuckGo → Brave fallback).', inputs: ['in'], outputs: ['out'], fields: ['query', 'limit'] },
     { key: 'fetch_url',   type: 'fetch_url',  category: 'connector', label: 'Fetch URL',        description: 'Fetches and extracts the content of a URL.', inputs: ['in'], outputs: ['out'], fields: ['url', 'maxLength'] },
+    { key: 'parse_json',  type: 'parse_json', category: 'connector', label: 'Parse JSON',       description: 'Parses a JSON string (or passes an object through) and optionally extracts a dotted path.', inputs: ['in'], outputs: ['out'], fields: ['source', 'path'] },
+    { key: 'render_html', type: 'render_html',category: 'connector', label: 'Render HTML',      description: 'Renders HTML (or wraps text/JSON) into a viewable HTML result.', inputs: ['in'], outputs: ['out'], fields: ['html'] },
+    { key: 'export_file', type: 'export_file',category: 'connector', label: 'Export File',      description: 'Writes the incoming data to a downloadable file (pdf, csv, txt, md, html, json).', inputs: ['in'], outputs: ['out'], fields: ['format', 'filename', 'content'] },
+    { key: 'slack',       type: 'slack',      category: 'connector', label: 'Slack Message',    description: 'Posts a message to a Slack incoming-webhook URL.', inputs: ['in'], outputs: ['out'], fields: ['webhookUrl', 'text'] },
+    { key: 'telegram',    type: 'telegram',   category: 'connector', label: 'Telegram Message', description: 'Sends a message via a Telegram bot (Bot API token + chat id).', inputs: ['in'], outputs: ['out'], fields: ['botToken', 'chatId', 'text'] },
     { key: 'http_request',type: 'tool',       category: 'connector', label: 'HTTP Request',     description: 'Calls an HTTP endpoint (SSRF-guarded — private IPs blocked).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'http_request' }, fields: ['args'] },
     { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
     { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
@@ -155,6 +160,48 @@ function evalCondition(condition, scope) {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers for delivery / transform nodes
+// ---------------------------------------------------------------------------
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Render a node's "previous output" as a string for message/file bodies.
+function stringifyValue(v) {
+    if (v === undefined || v === null) return '';
+    if (typeof v === 'string') return v;
+    if (typeof v === 'object' && typeof v.text === 'string') return v.text; // model node shape
+    try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+// Best-effort array-of-objects → CSV.
+function toCSV(rows) {
+    if (!Array.isArray(rows) || !rows.length) return '';
+    const cols = [];
+    for (const r of rows) if (r && typeof r === 'object') for (const k of Object.keys(r)) if (!cols.includes(k)) cols.push(k);
+    const esc = (v) => {
+        const s = v === undefined || v === null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const head = cols.map(esc).join(',');
+    const body = rows.map(r => cols.map(c => esc(r ? r[c] : '')).join(',')).join('\n');
+    return `${head}\n${body}`;
+}
+
+function toolCallCtx(ctx, node) {
+    return { userId: ctx.userId, apiKeyData: ctx.apiKeyData, conversationId: null, workspaceBucket: ctx.workspaceBucket };
+}
+
+async function dispatchTool(deps, ctx, node, name, args) {
+    const msg = await deps.executeToolCall(
+        { id: `auto-${node.id}`, function: { name, arguments: JSON.stringify(args) } },
+        toolCallCtx(ctx, node),
+    );
+    try { return JSON.parse(msg.content); } catch { return { raw: msg.content }; }
+}
+
+// ---------------------------------------------------------------------------
 // Node handlers
 // ---------------------------------------------------------------------------
 
@@ -224,6 +271,68 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             let parsed;
             try { parsed = JSON.parse(msg.content); } catch { parsed = { raw: msg.content }; }
             return parsed;
+        }
+
+        case 'parse_json': {
+            // source: explicit value/template, else the previous node's output.
+            let src = (data.source === undefined || data.source === '') ? scope.last : data.source;
+            let obj = src;
+            if (typeof src === 'string') { try { obj = JSON.parse(src); } catch { obj = src; } }
+            if (data.path) {
+                const val = resolvePath(obj, data.path);
+                return (val !== null && typeof val === 'object') ? val : { value: val };
+            }
+            return (obj !== null && typeof obj === 'object') ? obj : { value: obj };
+        }
+
+        case 'render_html': {
+            let html = data.html;
+            if (html === undefined || html === '') {
+                const last = scope.last;
+                html = typeof last === 'string' ? last : `<pre>${escapeHtml(JSON.stringify(last, null, 2))}</pre>`;
+            } else {
+                html = String(html);
+            }
+            return { html, contentType: 'text/html' };
+        }
+
+        case 'export_file': {
+            if (!deps.executeToolCall) throw new Error('Export File needs the tool dispatcher.');
+            const fmt = String(data.format || 'txt').toLowerCase();
+            let filename = String(data.filename || `export.${fmt}`).trim();
+            if (!/\.[a-z0-9]+$/i.test(filename)) filename += `.${fmt}`;
+            const rawContent = (data.content === undefined || data.content === '') ? scope.last : data.content;
+            let content;
+            if (fmt === 'csv' && Array.isArray(rawContent)) content = toCSV(rawContent);
+            else if (fmt === 'json') content = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent, null, 2);
+            else content = stringifyValue(rawContent);
+            if (fmt === 'pdf') return dispatchTool(deps, ctx, node, 'create_pdf', { content, filename });
+            return dispatchTool(deps, ctx, node, 'create_file', { filePath: `artifacts/${filename}`, content });
+        }
+
+        case 'slack': {
+            if (!deps.executeToolCall) throw new Error('Slack node needs the tool dispatcher.');
+            const url = String(data.webhookUrl || '').trim();
+            if (!url) throw new Error('Slack node requires a webhook URL.');
+            const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
+            const response = await dispatchTool(deps, ctx, node, 'http_request', {
+                url, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+            });
+            return { sent: true, response };
+        }
+
+        case 'telegram': {
+            if (!deps.executeToolCall) throw new Error('Telegram node needs the tool dispatcher.');
+            const token = String(data.botToken || '').trim();
+            const chatId = String(data.chatId || '').trim();
+            if (!token || !chatId) throw new Error('Telegram node requires a bot token and chat id.');
+            const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
+            const response = await dispatchTool(deps, ctx, node, 'http_request', {
+                url: `https://api.telegram.org/bot${token}/sendMessage`,
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, text }),
+            });
+            return { sent: true, response };
         }
 
         case 'delay': {

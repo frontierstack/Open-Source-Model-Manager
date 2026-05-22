@@ -3,6 +3,7 @@ import { Handle, Position } from '@xyflow/react';
 import {
     Zap, Clock, Webhook, Bell, Cpu, Wrench, Search, Globe, Database,
     BarChart3, FileText, Timer, Variable, GitBranch, Filter, Merge, Flag, Box as BoxIcon,
+    Braces, Code, Download, MessageSquare, Send,
 } from 'lucide-react';
 
 // Which handles a node exposes, by engine kind. Triggers are sources only,
@@ -29,6 +30,11 @@ function pickIcon(kind) {
         case 'model': return Cpu;
         case 'web_search': return Search;
         case 'fetch_url': return Globe;
+        case 'parse_json': return Braces;
+        case 'render_html': return Code;
+        case 'export_file': return Download;
+        case 'slack': return MessageSquare;
+        case 'telegram': return Send;
         case 'delay': return Timer;
         case 'set': return Variable;
         case 'gate.if': return GitBranch;
@@ -71,6 +77,11 @@ function subtitleFor(kind, data) {
     if (kind === 'trigger.event') return data.event || 'event';
     if (kind === 'web_search') return data.query ? `“${String(data.query).slice(0, 24)}”` : 'query';
     if (kind === 'fetch_url') return data.url || 'url';
+    if (kind === 'parse_json') return data.path ? `→ ${data.path}` : 'parse';
+    if (kind === 'render_html') return 'html';
+    if (kind === 'export_file') return (data.format || 'txt').toUpperCase();
+    if (kind === 'slack') return 'slack';
+    if (kind === 'telegram') return 'telegram';
     if (kind === 'set') return data.name || 'variable';
     return '';
 }
