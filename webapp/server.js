@@ -7997,7 +7997,7 @@ function pushAutomationSSE(userId, evt) {
 // Mirror an engine run event to both WebSocket clients (webapp) and the live SSE
 // listeners (chat editor). Use everywhere a run's onEvent fires.
 function mirrorAutomationEvent(userId, evt) {
-    mirrorAutomationEvent(userId, evt);
+    try { broadcast({ type: 'automation_event', ...evt }, userId); } catch (_) {}
     try { pushAutomationSSE(userId, evt); } catch (_) {}
 }
 

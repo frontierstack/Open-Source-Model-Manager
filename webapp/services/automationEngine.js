@@ -95,13 +95,14 @@ function resolvePath(scope, pathStr) {
 }
 
 // Interpolate {{ path }} references in a template.
-//   - A string that is EXACTLY "{{ path }}" returns the raw resolved value
-//     (preserving objects/numbers/booleans).
-//   - Embedded references are stringified into the surrounding text.
+//   - A string that is EXACTLY "{{ path }}" (no surrounding text OR whitespace)
+//     returns the raw resolved value (preserving objects/numbers/booleans).
+//   - Any surrounding text/newlines → string interpolation, so the author's
+//     spacing/newlines are preserved (a leading newline must shift content down).
 //   - Objects/arrays are deep-mapped.
 function interpolate(template, scope) {
     if (typeof template === 'string') {
-        const exact = template.match(/^\s*\{\{\s*([^}]+?)\s*\}\}\s*$/);
+        const exact = template.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
         if (exact) {
             const val = resolvePath(scope, exact[1]);
             return val === undefined ? '' : val;

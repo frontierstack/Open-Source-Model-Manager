@@ -82,16 +82,29 @@ const railBtn = {
     color: 'var(--ink-2)', fontSize: 12.5, fontWeight: 500, background: 'transparent',
     cursor: 'pointer',
 };
-const fieldLabel = { fontSize: 11, color: 'var(--ink-3, var(--ink-2))', marginBottom: 3, display: 'block', fontWeight: 500 };
+const fieldLabel = { fontSize: 12.5, color: 'var(--ink-3, var(--ink-2))', marginBottom: 4, display: 'block', fontWeight: 500 };
 const fieldInput = {
-    width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--rule-2)',
-    background: 'var(--bg)', color: 'var(--ink)', fontSize: 12.5, marginBottom: 10, boxSizing: 'border-box',
+    width: '100%', padding: '7px 9px', borderRadius: 6, border: '1px solid var(--rule-2)',
+    background: 'var(--bg)', color: 'var(--ink)', fontSize: 14, marginBottom: 11, boxSizing: 'border-box',
 };
 
 // Module-scope so its identity is stable across NodeConfig re-renders — defining
 // it inside NodeConfig remounted every input on each keystroke (focus loss bug).
 function Field({ label, children }) {
     return <div><label style={fieldLabel}>{label}</label>{children}</div>;
+}
+
+// Drag-to-resize bar on the left edge of the right-hand panels.
+function ResizeHandle({ onResizeStart }) {
+    return (
+        <div
+            onMouseDown={onResizeStart}
+            title="Drag to resize"
+            style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 6 }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+        />
+    );
 }
 
 // Click-to-insert for "{{...}}" data tags. Templatable inputs register
@@ -239,8 +252,29 @@ function FlowEditor({ showSnackbar, models }) {
     const [runs, setRuns] = useState([]);
     const [runDetail, setRunDetail] = useState(null);
     const [nodeOutputs, setNodeOutputs] = useState({}); // nodeId -> { status, output, error }
+    const [panelWidth, setPanelWidth] = useState(() => {
+        const v = Number(localStorage.getItem('automationPanelWidth'));
+        return v >= 280 && v <= 760 ? v : 320;
+    });
     const runAbortRef = useRef(null);
     const addCountRef = useRef(0);
+
+    useEffect(() => { try { localStorage.setItem('automationPanelWidth', String(panelWidth)); } catch (_) {} }, [panelWidth]);
+    // Drag the left edge of the config / history panel to widen it (pull leftward).
+    const onPanelResizeStart = useCallback((e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = panelWidth;
+        const onMove = (ev) => setPanelWidth(Math.min(760, Math.max(280, startW + (startX - ev.clientX))));
+        const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            document.body.style.userSelect = '';
+        };
+        document.body.style.userSelect = 'none';
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    }, [panelWidth]);
 
     const notify = (m, s = 'success') => { if (showSnackbar) showSnackbar(m, s); };
 
@@ -763,6 +797,8 @@ function FlowEditor({ showSnackbar, models }) {
                         lastRun={nodeOutputs[selectedNode.id]}
                         allOutputs={nodeOutputs}
                         nodeList={nodes}
+                        width={panelWidth}
+                        onResizeStart={onPanelResizeStart}
                         onChange={(patch) => updateNodeData(selectedNode.id, patch)}
                         onDelete={deleteSelectedNode}
                         webhookUrl={webhookUrl}
@@ -777,6 +813,8 @@ function FlowEditor({ showSnackbar, models }) {
                     <RunHistoryPanel
                         runs={runs}
                         runDetail={runDetail}
+                        width={panelWidth}
+                        onResizeStart={onPanelResizeStart}
                         onSelect={openRunDetail}
                         onClose={() => { setShowHistory(false); setRunDetail(null); }}
                     />
@@ -810,7 +848,7 @@ function previewInterpolate(tmpl, scope) {
         if (Array.isArray(v)) return v.every(x => x === null || typeof x !== 'object') ? v.join('\n') : JSON.stringify(v, null, 2);
         return typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
     };
-    const exact = tmpl.match(/^\s*\{\{\s*([^}]+?)\s*\}\}\s*$/);
+    const exact = tmpl.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
     if (exact) return fmt(previewResolveParts(scope, exact[1].trim().split('.').filter(Boolean)));
     return tmpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, p) => fmt(previewResolveParts(scope, p.trim().split('.').filter(Boolean))));
 }
@@ -870,7 +908,7 @@ function ScheduleConfig({ d, onChange }) {
 }
 
 // ---- per-node config panel ----
-function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
+function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
     const kind = node.data.kind;
     const d = node.data;
     const cond = (d.condition && typeof d.condition === 'object') ? d.condition : { left: '', op: '==', right: '' };
@@ -896,10 +934,11 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
 
     return (
         <FieldInsertContext.Provider value={fieldInsert}>
-        <div style={{ width: 270, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
+        <div style={{ position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
+            {onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 12.5 }}>{kind}</span>
-                <button onClick={onDelete} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger, #ef4444)', display: 'flex' }} title="Delete node"><Trash2 size={15} /></button>
+                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 14 }}>{kind}</span>
+                <button onClick={onDelete} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger, #ef4444)', display: 'flex' }} title="Delete node"><Trash2 size={16} /></button>
             </div>
 
             <NodeResult lastRun={lastRun} nodeId={node.id} isTrigger={isTrigger} />
@@ -1063,7 +1102,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                                 <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 3 }}>
                                     Sends to next node{haveData ? '' : ' (run once to fill in tag values)'}:
                                 </div>
-                                <pre style={{ margin: 0, fontSize: 11, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 150, overflow: 'auto', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 7 }}>{preview === '' ? '(empty)' : preview}</pre>
+                                <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 180, overflow: 'auto', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 8 }}>{preview === '' ? '(empty)' : preview}</pre>
                                 <button onClick={() => onChange({ forward: '' })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0, marginTop: 4 }}>
                                     ↺ reset to send everything
                                 </button>
@@ -1167,11 +1206,12 @@ function runStatusColor(s) {
         : 'var(--ink-4, #64748b)';
 }
 
-function RunHistoryPanel({ runs, runDetail, onSelect, onClose }) {
+function RunHistoryPanel({ runs, runDetail, width = 300, onResizeStart, onSelect, onClose }) {
     return (
-        <div style={{ width: 290, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
+        <div style={{ position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
+            {onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 12.5 }}>Run history</span>
+                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 14 }}>Run history</span>
                 <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Close"><CloseIcon size={15} /></button>
             </div>
             {runs.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>No runs yet — hit Run to create one.</div>}
