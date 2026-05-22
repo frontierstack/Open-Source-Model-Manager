@@ -62,6 +62,9 @@ const FIELD_HELP = {
     keyword:      'For the Telegram trigger: only fire when the message text matches (blank = any message).',
     match:        'How to match the keyword: contains (default), equals, startsWith, or regex.',
     forward:      'Optional output mapping — what this node passes to the next node. Blank forwards the whole output; drag data tags to forward only specific fields.',
+    items:        'The list to loop over (e.g. {{nodes.id.results.*.url}} or {{last}}). Each element runs the action once.',
+    action:       'What to do per item: run a tool/skill, or run the model.',
+    maxConcurrency: 'How many items to process in parallel (default 3, max 8).',
 };
 
 // Build a starter "Default values" object for a built-in: its own presets plus a

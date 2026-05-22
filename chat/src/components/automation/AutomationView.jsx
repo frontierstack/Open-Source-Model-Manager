@@ -1037,6 +1037,30 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 <Field label="Value"><TemplInput value={d.value ?? ''} onChange={(v) => onChange({ value: v })} placeholder="Supports {{...}}" /></Field>
             </>)}
 
+            {kind === 'map' && (<>
+                <Field label="Items to loop over"><TemplInput value={d.items || ''} onChange={(v) => onChange({ items: v })} placeholder="{{nodes.id.results.*.url}} or {{last}}" /></Field>
+                <Field label="For each item">
+                    <select style={fieldInput} value={d.action || 'tool'} onChange={(e) => onChange({ action: e.target.value })}>
+                        <option value="tool">Run a tool / skill</option>
+                        <option value="model">Run the model</option>
+                    </select>
+                </Field>
+                {(d.action || 'tool') === 'tool' ? (<>
+                    <Field label="Tool / skill name"><TemplInput value={d.tool || ''} onChange={(v) => onChange({ tool: v })} placeholder="e.g. fetch_url" /></Field>
+                    <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} placeholder={'{ "url": "{{item}}" }'} /></Field>
+                </>) : (<>
+                    <Field label="Prompt"><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.prompt || ''} onChange={(v) => onChange({ prompt: v })} placeholder="Summarize this: {{item}}" /></Field>
+                    <Field label="Model">
+                        <select style={fieldInput} value={d.model || ''} onChange={(e) => onChange({ model: e.target.value || undefined })}>
+                            <option value="">Current model{runningModels[0] ? ` (${runningModels[0].name})` : ''}</option>
+                            {runningModels.map(m => <option key={m.name} value={m.name}>{m.name}{m.backend ? ` · ${m.backend}` : ''}</option>)}
+                        </select>
+                    </Field>
+                </>)}
+                <Field label="Max parallel"><input type="number" style={fieldInput} value={d.maxConcurrency ?? ''} onChange={(e) => onChange({ maxConcurrency: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="3" /></Field>
+                <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -4 }}>Runs once per item (max 50). Use <code>{'{{item}}'}</code> for the current item (or <code>{'{{item.url}}'}</code> if items are objects) and <code>{'{{index}}'}</code>. Returns a list of results — reference it as <code>{'{{nodes.id.results}}'}</code>.</p>
+            </>)}
+
             {(kind === 'gate.if' || kind === 'gate.filter') && (<>
                 <Field label="Left (supports {{...}})"><TemplInput value={cond.left || ''} onChange={(v) => setCond({ left: v })} /></Field>
                 <Field label="Operator">

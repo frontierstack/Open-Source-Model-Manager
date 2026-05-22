@@ -53,6 +53,7 @@ const BUILTIN_NODE_TYPES = [
     { key: 'tool',        type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
     { key: 'delay',       type: 'delay',      category: 'connector', label: 'Delay / Wait',     description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
     { key: 'set',         type: 'set',        category: 'connector', label: 'Set Variable',     description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
+    { key: 'map',         type: 'map',        category: 'connector', label: 'Loop / Map',       description: 'Runs an action for each item of a list (e.g. fetch each search-result URL) and collects the results. Each item is available as {{item}} (and {{index}}).', inputs: ['in'], outputs: ['out'], fields: ['items', 'action', 'tool', 'args', 'prompt', 'systemPrompt', 'model', 'maxConcurrency'] },
 
     // --- Logic gates ---
     { key: 'gate.if',     type: 'gate.if',     category: 'gate', label: 'If / Else', description: 'Branches on a condition (true / false handles).', inputs: ['in'], outputs: ['true', 'false'], fields: ['condition'] },
@@ -443,6 +444,62 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
         case 'merge': {
             // Collect every active incoming branch's output into one list.
             return { items: inputs, count: inputs.length };
+        }
+
+        case 'map': {
+            // Loop/Map: run a per-item action over a list and collect results.
+            // `items` resolves against the run scope; the per-item action templates
+            // (args / prompt) are interpolated PER ITEM with {{item}}/{{index}} in
+            // scope — so they must come from the RAW node.data (the top-of-runNode
+            // `data` already stripped {{item}} against the item-less scope).
+            let items = (data.items === undefined || data.items === '') ? scope.last : data.items;
+            if (!Array.isArray(items)) items = (items == null) ? [] : [items];
+            const MAX_ITEMS = 50;
+            if (items.length > MAX_ITEMS) items = items.slice(0, MAX_ITEMS);
+            const action = data.action || 'tool';
+            const conc = Math.max(1, Math.min(8, Number(data.maxConcurrency) || 3));
+            const itemVar = (node.data && node.data.itemVar) || 'item';
+            const rawArgs = node.data ? node.data.args : undefined;
+            const rawPrompt = node.data ? node.data.prompt : '';
+            const rawSystem = node.data ? node.data.systemPrompt : '';
+            const results = new Array(items.length);
+            let next = 0;
+            const worker = async () => {
+                for (;;) {
+                    const i = next++;
+                    if (i >= items.length) return;
+                    const item = items[i];
+                    const itemScope = { ...scope, [itemVar]: item, index: i };
+                    try {
+                        if (action === 'model') {
+                            if (!deps.runModelCompletion) throw new Error('Map model action needs the model runner.');
+                            const sys = interpolate(rawSystem || '', itemScope);
+                            let prompt = interpolate(rawPrompt || '', itemScope);
+                            if (!prompt) prompt = (typeof item === 'string') ? item : JSON.stringify(item);
+                            const messages = [];
+                            if (sys) messages.push({ role: 'system', content: String(sys) });
+                            messages.push({ role: 'user', content: String(prompt) });
+                            const text = await deps.runModelCompletion({
+                                messages, model: data.model || undefined,
+                                temperature: data.temperature != null ? Number(data.temperature) : undefined,
+                                maxTokens: data.maxTokens != null ? Number(data.maxTokens) : undefined,
+                                userId: ctx.userId,
+                            });
+                            results[i] = text != null ? String(text) : '';
+                        } else {
+                            if (!deps.executeToolCall) throw new Error('Map tool action needs the tool dispatcher.');
+                            const toolName = data.tool;
+                            if (!toolName) throw new Error('Map "tool" action needs a tool/skill name.');
+                            const args = (rawArgs && typeof rawArgs === 'object') ? interpolate(rawArgs, itemScope) : {};
+                            results[i] = await dispatchTool(deps, ctx, node, toolName, args);
+                        }
+                    } catch (e) {
+                        results[i] = { error: e.message || String(e) };
+                    }
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(conc, items.length) }, worker));
+            return { count: results.length, results };
         }
 
         case 'output':
