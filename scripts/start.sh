@@ -127,21 +127,6 @@ else
     log_success "SSL certificates found"
 fi
 
-# n8n secrets — build.sh normally seeds these; cover the case where start.sh
-# runs first or .env predates the n8n integration. Both must stay stable
-# across restarts (encryption key decrypts saved credentials; DB password is
-# fixed at first Postgres init), so append only when absent.
-_env_file="$PROJECT_DIR/.env"
-touch "$_env_file"
-if ! grep -q '^N8N_ENCRYPTION_KEY=' "$_env_file" 2>/dev/null; then
-    echo "N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> "$_env_file"
-    log_success "Seeded N8N_ENCRYPTION_KEY in .env"
-fi
-if ! grep -q '^N8N_DB_PASSWORD=' "$_env_file" 2>/dev/null; then
-    echo "N8N_DB_PASSWORD=$(openssl rand -hex 24)" >> "$_env_file"
-    log_success "Seeded N8N_DB_PASSWORD in .env"
-fi
-
 # ============================================================================
 # START SERVICES
 # ============================================================================
@@ -190,14 +175,6 @@ else
     log_warning "Chat UI not responding yet"
 fi
 
-# Check n8n (HTTPS healthz). n8n + Postgres take longer to come up than the
-# webapp (DB init + first boot), so don't block — just report.
-if curl -sk https://localhost:5678/healthz 2>/dev/null | grep -q "ok"; then
-    log_success "n8n ready"
-else
-    log_warning "n8n still starting — Postgres init + first boot can take ~30s"
-fi
-
 # ============================================================================
 # SUMMARY
 # ============================================================================
@@ -206,7 +183,6 @@ section "Ready"
 
 echo -e "  ${BOLD}Webapp${NC}   https://localhost:3001"
 echo -e "  ${BOLD}Chat UI${NC}  https://localhost:3002"
-echo -e "  ${BOLD}n8n${NC}      https://localhost:5678"
 echo ""
 echo -e "  ${DIM}Your browser will show a certificate warning — this is expected.${NC}"
 echo ""

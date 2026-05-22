@@ -176,15 +176,6 @@ if [ "$FULL_WIPE" = true ]; then
     fi
     stop_spinner
     log_success "Models deleted"
-
-    # n8n workflows + database. Only wiped on --full; a normal reset keeps
-    # them (they're user-authored content, like models). Try the common
-    # compose-project volume prefixes.
-    start_spinner "Removing n8n workflow + database volumes"
-    docker volume rm modelserver_n8n_data modelserver_n8n_postgres_data 2>/dev/null || true
-    docker volume rm n8n_data n8n_postgres_data 2>/dev/null || true
-    stop_spinner
-    log_success "n8n data removed"
 fi
 
 if [ "$REBUILD_IMAGES" = true ]; then
@@ -197,10 +188,6 @@ if [ "$REBUILD_IMAGES" = true ]; then
     log_success "sglang rebuilt"
     docker compose build webapp --no-cache 2>&1 | tail -3
     log_success "webapp rebuilt"
-    # n8n + postgres are pulled, not built — refresh them too.
-    docker pull n8nio/n8n:latest 2>&1 | tail -1
-    docker pull postgres:16-alpine 2>&1 | tail -1
-    log_success "n8n + postgres images pulled"
 fi
 
 section "Restart"
@@ -221,14 +208,6 @@ if [ ! -f "$PROJECT_DIR/certs/server.key" ] || [ ! -f "$PROJECT_DIR/certs/server
 else
     log_success "SSL certificates found"
 fi
-
-# Ensure n8n secrets exist before bringing services up (a --full wipe leaves
-# .env intact, but a fresh checkout reset before build.sh would not). Stable
-# across restarts — append only when absent.
-_env_file="$PROJECT_DIR/.env"
-touch "$_env_file"
-grep -q '^N8N_ENCRYPTION_KEY=' "$_env_file" 2>/dev/null || echo "N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> "$_env_file"
-grep -q '^N8N_DB_PASSWORD=' "$_env_file" 2>/dev/null || echo "N8N_DB_PASSWORD=$(openssl rand -hex 24)" >> "$_env_file"
 
 start_spinner "Starting services"
 docker compose up -d > /dev/null 2>&1

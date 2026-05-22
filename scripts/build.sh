@@ -521,20 +521,6 @@ if ! grep -q '^HUGGING_FACE_HUB_TOKEN=' "$_env_file" 2>/dev/null; then
     log_success ".env seeded with empty HUGGING_FACE_HUB_TOKEN (silences Compose warning)"
 fi
 
-# n8n secrets — generated once and persisted so they survive rebuilds. The
-# encryption key MUST stay stable (it decrypts saved n8n credentials); the DB
-# password is set at first Postgres init and can't change afterward. Both are
-# referenced by the n8n / n8n-postgres services in docker-compose.yml. Appended
-# only when absent, so existing values are never clobbered.
-if ! grep -q '^N8N_ENCRYPTION_KEY=' "$_env_file" 2>/dev/null; then
-    echo "N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> "$_env_file"
-    log_success ".env seeded with a generated N8N_ENCRYPTION_KEY"
-fi
-if ! grep -q '^N8N_DB_PASSWORD=' "$_env_file" 2>/dev/null; then
-    echo "N8N_DB_PASSWORD=$(openssl rand -hex 24)" >> "$_env_file"
-    log_success ".env seeded with a generated N8N_DB_PASSWORD"
-fi
-
 # gVisor / sandbox runtime — required for the tool-execution sandbox the
 # webapp uses to run skills and tool calls. Idempotent: no-ops when runsc is
 # already registered as a Docker runtime. Honors SKIP_SANDBOX_SETUP=1 for
@@ -811,62 +797,6 @@ else
     log_success "sandbox-runtime  ${DIM}${BUILD_REASON[sandbox-runtime]}${NC}"
 fi
 
-# ----------------------------------------------------------------------------
-# n8n + Postgres runtime images (pulled, not built)
-# ----------------------------------------------------------------------------
-# Done here — before the "nothing to build" early-exit — so n8n is always set
-# up even when all built images are current. There's no Dockerfile, so the
-# Dockerfile-checksum build-state machinery doesn't apply: track a small state
-# file keyed on the image tags and re-pull only when the tag set changes, the
-# images are missing locally, or --no-cache is passed. The n8n / n8n-postgres
-# compose services live in docker-compose.yml; a failed pull is non-fatal
-# (compose will pull on first ./start.sh).
-N8N_IMAGE="n8nio/n8n:latest"
-N8N_PG_IMAGE="postgres:16-alpine"
-N8N_STATE_KEY="${N8N_IMAGE}|${N8N_PG_IMAGE}"
-N8N_STATE_FILE="$BUILD_STATE_DIR/n8n.state"
-PULLED_N8N=false
-
-_n8n_images_present() {
-    [ -n "$(docker images -q "$N8N_IMAGE" 2>/dev/null)" ] \
-        && [ -n "$(docker images -q "$N8N_PG_IMAGE" 2>/dev/null)" ]
-}
-
-section "n8n"
-
-if [ "$NO_CACHE" = false ] \
-   && [ -f "$N8N_STATE_FILE" ] \
-   && [ "$(cat "$N8N_STATE_FILE" 2>/dev/null)" = "$N8N_STATE_KEY" ] \
-   && _n8n_images_present; then
-    log_success "n8n + postgres images present  ${DIM}skipped${NC}"
-else
-    _n8n_pull_ok=true
-    start_spinner "Pulling n8n image ($N8N_IMAGE)"
-    if docker pull "$N8N_IMAGE" > "$BUILD_STATE_DIR/n8n.log" 2>&1; then
-        stop_spinner
-        log_success "n8n image pulled"
-    else
-        stop_spinner
-        log_warning "n8n image pull failed — compose will retry on ./start.sh"
-        tail -8 "$BUILD_STATE_DIR/n8n.log" 2>/dev/null | sed 's/^/    /'
-        _n8n_pull_ok=false
-    fi
-    start_spinner "Pulling Postgres image ($N8N_PG_IMAGE)"
-    if docker pull "$N8N_PG_IMAGE" >> "$BUILD_STATE_DIR/n8n.log" 2>&1; then
-        stop_spinner
-        log_success "Postgres image pulled"
-    else
-        stop_spinner
-        log_warning "Postgres image pull failed — compose will retry on ./start.sh"
-        tail -8 "$BUILD_STATE_DIR/n8n.log" 2>/dev/null | sed 's/^/    /'
-        _n8n_pull_ok=false
-    fi
-    if [ "$_n8n_pull_ok" = true ]; then
-        echo "$N8N_STATE_KEY" > "$N8N_STATE_FILE"
-        PULLED_N8N=true
-    fi
-fi
-
 # Check if anything needs building
 if [ "$BUILD_LLAMACPP" = false ] && [ "$BUILD_SGLANG" = false ] && [ "$BUILD_WEBAPP" = false ] && [ "$BUILD_SANDBOX" = false ]; then
     echo ""
@@ -1078,12 +1008,6 @@ elif [ "$BUILD_SANDBOX" = true ]; then
     echo -e "  ${SYM_OK}  sandbox-runtime  ${DIM}built${NC}"
 else
     echo -e "  ${SYM_SKIP}  sandbox-runtime  ${DIM}skipped${NC}"
-fi
-
-if [ "$PULLED_N8N" = true ]; then
-    echo -e "  ${SYM_OK}  n8n + postgres  ${DIM}pulled${NC}"
-else
-    echo -e "  ${SYM_SKIP}  n8n + postgres  ${DIM}skipped${NC}"
 fi
 
 echo ""

@@ -29,7 +29,6 @@ sudo ./start.sh
 Starts all services in detached mode:
 - Webapp (port 3001) - Main management UI
 - Chat (port 3002) - Lightweight chat-only UI
-- n8n (port 5678) - Workflow automation UI + its PostgreSQL backend
 - Base model containers (llamacpp, sglang)
 
 ### Stop Services
@@ -76,12 +75,12 @@ sudo ./reset.sh --full -f       # Full factory reset without prompts
 
 **Reset Levels:**
 
-| Option | Models | Webapp Users | API Keys | n8n Data |
-|--------|--------|--------------|----------|----------|
-| `./reset.sh` | KEPT | Removed | Removed | KEPT |
-| `./reset.sh --full` | Removed | Removed | Removed | Removed |
+| Option | Models | Webapp Users | API Keys |
+|--------|--------|--------------|----------|
+| `./reset.sh` | KEPT | Removed | Removed |
+| `./reset.sh --full` | Removed | Removed | Removed |
 
-**Warning:** The `--full` flag will permanently delete all downloaded models **and all n8n workflows/credentials**! A normal `./reset.sh` keeps n8n data (workflows are user-authored content, like models).
+**Warning:** The `--full` flag will permanently delete all downloaded models!
 
 ### Update Webapp
 
@@ -92,22 +91,6 @@ sudo ./update.sh
 ```
 
 Rebuilds and restarts only the webapp service without affecting running models.
-
-### n8n
-
-Workflow automation, served over HTTPS at **https://localhost:5678** (self-signed cert — same browser warning as the rest of the stack). Backed by a dedicated PostgreSQL container and pre-wired to this server's OpenAI-compatible API (`MODELSERVER_BASE_URL=https://host.docker.internal:3001/v1`). See the in-app **Docs tab → n8n** section for credential setup.
-
-```bash
-# Update n8n only (pull latest image + recreate the n8n services)
-sudo ./update.sh --n8n
-
-# Restart / inspect n8n directly
-docker compose restart n8n
-docker compose logs -f n8n
-docker compose logs -f n8n-postgres
-```
-
-n8n secrets (`N8N_ENCRYPTION_KEY`, `N8N_DB_PASSWORD`) are generated into `.env` by `./build.sh`/`./start.sh` and must stay stable — the encryption key decrypts saved credentials, and the DB password is fixed at first Postgres init.
 
 ---
 

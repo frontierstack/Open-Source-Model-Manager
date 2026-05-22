@@ -327,7 +327,6 @@ const DOC_SECTIONS = [
     { id: 'quick-start',     label: 'Quick Start'         },
     { id: 'api-builder',     label: 'API Code Builder'    },
     { id: 'pi-setup',        label: 'Pi setup'            },
-    { id: 'n8n',             label: 'n8n'                 },
     { id: 'web-search',      label: 'Web Search & Fetch'  },
     { id: 'sandbox-skills',  label: 'Sandbox Skills'      },
     { id: 'config-flags',    label: 'Configuration Flags' },
@@ -718,7 +717,10 @@ const App = () => {
         // api-permissions was folded into api-endpoints — redirect any
         // stale-localStorage users so they don't land on a missing section.
         if (saved === 'api-permissions') return 'api-endpoints';
-        return saved || 'quick-start';
+        // Guard against a removed section id lingering in localStorage (e.g.
+        // a dropped section) so users don't land on a blank panel.
+        if (saved && DOC_SECTIONS.some(s => s.id === saved)) return saved;
+        return 'quick-start';
     });
     useEffect(() => {
         try { localStorage.setItem('docsActiveSection', activeDocSection); } catch (_) {}
@@ -10591,107 +10593,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                             </Box>
                                         </Box>
 
-
-                                    </Box>
-
-                                </Box>
-
-                                )}
-
-
-                                {/* n8n */}
-                                {activeDocSection === 'n8n' && (
-
-                                <Box sx={docSectionSx}>
-
-                                    <Box sx={docSectionHeaderSx}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                            <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>n8n</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Build workflows that drive your local models</Typography>
-                                            </Box>
-                                        </Box>
-                                    </Box>
-
-                                    <Box sx={docSectionBodySx}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
-                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                <strong style={{ color: 'var(--text-primary)' }}>n8n</strong> (<a href="https://n8n.io" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>n8n.io</a>) is a workflow-automation tool bundled with this stack. It runs over HTTPS, is backed by its own PostgreSQL database, and is pre-wired to this server's OpenAI-compatible API so workflows can call your <strong style={{ color: 'var(--text-primary)' }}>locally served models</strong> — no external AI provider needed.
-                                            </Typography>
-                                        </Box>
-
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>1. Open n8n</Typography>
-                                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                                                <span>https://localhost:5678</span>
-                                                <Tooltip title="Copy URL">
-                                                    <IconButton size="small" onClick={() => copyToClipboard('https://localhost:5678')}>
-                                                        <ContentCopyIcon sx={{ fontSize: 14 }} />
-                                                    </IconButton>
-                                                </Tooltip>
-                                            </Box>
-                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                The first visit asks you to create an n8n owner account — this is separate from your model-server login and is stored in n8n's own database. Accept the browser certificate warning (same self-signed cert as this UI).
-                                            </Typography>
-                                        </Box>
-
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>2. Connect your local models (OpenAI credential)</Typography>
-                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', mb: 1.5 }}>
-                                                In n8n, add an <strong style={{ color: 'var(--text-primary)' }}>OpenAI</strong> credential (used by the OpenAI node and the AI Agent's "OpenAI Chat Model"). Fill two fields:
-                                            </Typography>
-                                            <Typography sx={{ fontSize: '0.72rem', color: 'var(--text-secondary)', mb: 0.5, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Base URL</Typography>
-                                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 1.5, bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.78rem' }}>
-                                                <span>https://host.docker.internal:3001/v1</span>
-                                                <Tooltip title="Copy base URL">
-                                                    <IconButton size="small" onClick={() => copyToClipboard('https://host.docker.internal:3001/v1')}>
-                                                        <ContentCopyIcon sx={{ fontSize: 14 }} />
-                                                    </IconButton>
-                                                </Tooltip>
-                                            </Box>
-                                            <Typography sx={{ fontSize: '0.72rem', color: 'var(--text-secondary)', mb: 0.5, textTransform: 'uppercase', letterSpacing: '0.5px' }}>API Key</Typography>
-                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                A <strong style={{ color: 'var(--text-primary)' }}>bearer-mode API key</strong> from the <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>API Keys</code> tab (must have the <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>query</code> permission).
-                                            </Typography>
-                                            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: 'var(--accent-muted)', borderRadius: 1.5 }}>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>
-                                                    The base URL above is already exposed inside the n8n container as <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>MODELSERVER_BASE_URL</code>, and the stack's certificate is trusted by the container — so the connection works <strong style={{ color: 'var(--text-primary)' }}>without</strong> disabling SSL verification. Use <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>host.docker.internal</code> (not <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>localhost</code>) — n8n calls the API from inside Docker.
-                                                </Typography>
-                                            </Box>
-                                        </Box>
-
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Pick a model</Typography>
-                                            <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', mb: 1 }}>
-                                                Use the model name exactly as it appears in <strong style={{ color: 'var(--text-primary)' }}>My Models</strong> (or <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>GET /v1/models</code>). A loaded model is required for requests to succeed.
-                                            </Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
-                                                <span>{`# List available models (run on the host)\ncurl -sk ${baseUrl}/v1/models \\\n  -H "Authorization: Bearer <your-bearer-key>"`}</span>
-                                            </Box>
-                                        </Box>
-
-                                        <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Manage</Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
-                                                <span>{`sudo ./update.sh --n8n            # pull latest n8n + recreate\ndocker compose logs -f n8n         # follow n8n logs\ndocker compose restart n8n         # restart n8n only\nsudo ./reset.sh --full             # wipes ALL n8n workflows + creds`}</span>
-                                            </Box>
-                                            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                A normal <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>./reset.sh</code> keeps n8n data. Workflows + credentials persist in PostgreSQL; the encryption key in <code style={{ background: 'var(--border-hover)', padding: '2px 6px', borderRadius: '4px' }}>.env</code> must stay stable or saved credentials become unreadable.
-                                            </Typography>
-                                        </Box>
-
-                                        <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
-                                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>At a glance</Typography>
-                                            <Table size="small" sx={compactTableSx}>
-                                                <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>URL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>https://localhost:5678 (HTTPS, self-signed)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>backend</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PostgreSQL (service n8n-postgres, internal only)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>model API</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>https://host.docker.internal:3001/v1 (MODELSERVER_BASE_URL)</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>volumes</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>n8n_data, n8n_postgres_data</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>secrets</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>N8N_ENCRYPTION_KEY, N8N_DB_PASSWORD (.env, auto-generated)</TableCell></TableRow>
-                                                </TableBody>
-                                            </Table>
-                                        </Box>
 
                                     </Box>
 
