@@ -138,10 +138,13 @@ function TemplInput({ value = '', onChange, style, ...rest }) {
         onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
         style={{ ...fieldInput, ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />;
 }
-function TemplTextarea({ value = '', onChange, style, ...rest }) {
+function TemplTextarea({ value = '', onChange, style, registerAsDefault, ...rest }) {
     const elRef = useRef(null);
     const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
     const ctx = React.useContext(FieldInsertContext);
+    // The Output box registers itself as the default insert target so clicking a
+    // data tag drops it here even before the field is explicitly focused.
+    useEffect(() => { if (registerAsDefault && ctx && elRef.current) ctx.setActive({ el: elRef.current, onChangeRef }); }, [registerAsDefault]); // eslint-disable-line react-hooks/exhaustive-deps
     return <textarea ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
         onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
         style={{ ...fieldInput, ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />;
@@ -212,7 +215,7 @@ function DataTagPalette({ outputs = {}, nodes = [], currentNodeId }) {
     if (!sources.length) return null;
     return (
         <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 5 }}>Click a field, then a tag, to insert it:</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 5 }}>Click a tag to add it to the <strong>Output</strong> box below (or click another field first to insert there):</div>
             {sources.map(s => (
                 <div key={s.id} style={{ marginBottom: 6 }}>
                     <div style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3 }}>{s.label}</div>
@@ -924,8 +927,11 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             if (!f || !f.el) return false;
             const el = f.el;
             const v = el.value || '';
-            const s = el.selectionStart != null ? el.selectionStart : v.length;
-            const e = el.selectionEnd != null ? el.selectionEnd : v.length;
+            // Insert at the caret only when the field is actually focused; otherwise
+            // append at the end (the field is the default target, e.g. the Output box).
+            const focused = document.activeElement === el;
+            const s = (focused && el.selectionStart != null) ? el.selectionStart : v.length;
+            const e = (focused && el.selectionEnd != null) ? el.selectionEnd : v.length;
             f.onChangeRef.current(`${v.slice(0, s)}${refStr}${v.slice(e)}`);
             requestAnimationFrame(() => { try { el.focus(); const p = s + refStr.length; el.setSelectionRange(p, p); } catch (_) {} });
             return true;
@@ -945,7 +951,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
 
             {!isTrigger && <DataTagPalette outputs={allOutputs} nodes={nodeList} currentNodeId={node.id} />}
 
-            <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} onFocus={() => { activeFieldRef.current = null; }} /></Field>
+            <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} /></Field>
 
             {kind === 'model' && (<>
                 <Field label="Prompt"><TemplTextarea style={{ minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(v) => onChange({ prompt: v })} placeholder="Leave blank to receive the previous node's output, or use {{last}} / {{nodes.id.field}}" /></Field>
@@ -1096,7 +1102,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                         <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 6 }}>
                             Type any text and insert data tags anywhere — it's sent in order, exactly as written. Leave blank to send the whole output.
                         </div>
-                        <TemplTextarea style={{ minHeight: 56, fontFamily: 'inherit', fontSize: 12, resize: 'vertical' }} value={fwd} onChange={(v) => onChange({ forward: v })} placeholder={'e.g.  Top results:\n{{nodes.id.results.*.url}}'} />
+                        <TemplTextarea registerAsDefault style={{ minHeight: 56, fontFamily: 'inherit', fontSize: 13.5, resize: 'vertical' }} value={fwd} onChange={(v) => onChange({ forward: v })} placeholder={'e.g.  Top results:\n{{nodes.id.results.*.url}}'} />
                         {hasFwd ? (
                             <div style={{ marginTop: 5 }}>
                                 <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 3 }}>

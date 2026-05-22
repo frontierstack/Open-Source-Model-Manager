@@ -287,7 +287,10 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 maxTokens: data.maxTokens != null ? Number(data.maxTokens) : undefined,
                 userId: ctx.userId,
             });
-            return { text };
+            // The model's response IS the node's output, so it flows cleanly to the
+            // next node (and the Output box defaults to forwarding it as-is). The
+            // author can still reshape it with {{last}} / text in the Output box.
+            return text != null ? String(text) : '';
         }
 
         case 'tool':
