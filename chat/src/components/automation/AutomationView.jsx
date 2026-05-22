@@ -1092,8 +1092,9 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             {kind === 'db_store' && (<>
                 <Field label="Table"><TemplInput value={d.table || ''} onChange={(v) => onChange({ table: v })} placeholder="records" /></Field>
                 <Field label="Data to store"><TemplTextarea style={{ minHeight: 48, resize: 'vertical' }} value={d.value || ''} onChange={(v) => onChange({ value: v })} placeholder="Leave blank to store the previous node's output ({{last}})" /></Field>
+                <Field label="Unique key field — track changes (optional)"><TemplInput value={d.key || ''} onChange={(v) => onChange({ key: v })} placeholder="e.g. url or id — only store unseen items" /></Field>
                 <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Appends to a SQLite table in this automation's workspace (auto-created). A list is stored as one row per item, so data accumulates across runs.</p>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Appends to a SQLite table in this automation's workspace (auto-created); a list is stored as one row per item. Set a <b>key field</b> to deduplicate across runs — only new items are stored, and they're returned as <code>{'{{nodes.<id>.new}}'}</code> (the change feed); <code>{'{{nodes.<id>.stored}}'}</code> is how many were new.</p>
             </>)}
 
             {kind === 'db_query' && (<>

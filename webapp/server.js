@@ -17862,43 +17862,57 @@ async function addMissingDefaultSkills() {
         const defaultSkillsPath = path.join(__dirname, 'default-skills.json');
         const template = JSON.parse(await fs.readFile(defaultSkillsPath, 'utf8'));
         const skills = await loadSkills();
-        const existingNames = new Set(
-            skills.filter(s => !s.userId).map(s => s.name)
-        );
-        const missing = template.filter(t => t && t.name && !existingNames.has(t.name));
-        if (!missing.length) return;
-        const stamped = missing.map(skill => {
-            const out = {
-                id: crypto.randomBytes(16).toString('hex'),
-                ...skill,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            };
-            // Honor sandbox/workspace/network flags declared on the template,
-            // then layer the global WORKSPACE_/NETWORK_SANDBOX_DEFAULTS maps
-            // so older defaults still get the right policy. NETWORK first —
-            // a skill in BOTH sets (e.g. download_file) needs `network=allowlist`,
-            // not `network=none`, while still getting the workspace mount.
-            // The pre-existing if/else here silently downgraded such skills to
-            // network=none, so download_file couldn't reach the internet.
+        const byName = new Map(skills.filter(s => !s.userId).map(s => [s.name, s]));
+
+        // Apply sandbox/workspace/network policy. NETWORK first — a skill in
+        // BOTH sets (e.g. download_file) needs network=allowlist (not none) while
+        // still getting the workspace mount.
+        const applyPolicy = (out) => {
             if (NETWORK_SANDBOX_DEFAULTS[out.name]) {
                 const spec = NETWORK_SANDBOX_DEFAULTS[out.name];
                 out.sandbox = true;
                 out.network = out.network || 'allowlist';
                 out.allowlist = out.allowlist || spec.allowlist;
-                if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
-                    out.workspace = true;
-                }
+                if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) out.workspace = true;
             } else if (WORKSPACE_SANDBOX_DEFAULTS.has(out.name)) {
                 out.sandbox = true;
                 out.workspace = true;
                 out.network = out.network || 'none';
             }
             return out;
-        });
-        const merged = [...skills, ...stamped];
-        await saveSkills(merged);
-        console.log(`[skill-migration] added ${stamped.length} missing default skill(s): ${stamped.map(s => s.name).join(', ')}`);
+        };
+
+        const added = [];
+        const updated = [];
+        for (const t of template) {
+            if (!t || !t.name) continue;
+            const existing = byName.get(t.name);
+            if (!existing) {
+                skills.push(applyPolicy({
+                    id: crypto.randomBytes(16).toString('hex'),
+                    ...t,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                }));
+                added.push(t.name);
+            } else if ((existing.code || '') !== (t.code || '')) {
+                // The managed default's definition changed in the template —
+                // refresh it in place (preserve id/createdAt/userId/enabled).
+                // Default (no-userId) skills are an app-managed catalog; this is
+                // how shipped-skill fixes reach already-installed instances.
+                existing.code = t.code;
+                existing.description = t.description;
+                existing.parameters = t.parameters;
+                if (t.type !== undefined) existing.type = t.type;
+                if (t.systemPrompt !== undefined) existing.systemPrompt = t.systemPrompt;
+                existing.updatedAt = new Date().toISOString();
+                applyPolicy(existing);
+                updated.push(t.name);
+            }
+        }
+        if (!added.length && !updated.length) return;
+        await saveSkills(skills);
+        console.log(`[skill-migration] default skills — added: [${added.join(', ')}] updated: [${updated.join(', ')}]`);
     } catch (e) {
         console.error('[skill-migration] addMissingDefaultSkills failed (non-fatal):', e.message);
     }

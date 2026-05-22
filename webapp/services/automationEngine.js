@@ -52,8 +52,8 @@ const BUILTIN_NODE_TYPES = [
     { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from markdown/HTML content.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
     { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
     { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Run Python',       description: 'Runs a Python snippet in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
-    { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value'] },
-    { key: 'db_query',    type: 'db_query',   category: 'connector', label: 'Database: Query',   description: 'Reads rows back from the database (newest first) so you can feed the collected data into a model / Telegram / file. Defaults: table "records", limit 100, order "id DESC". Provide a raw SQL SELECT for advanced queries. Output is the array of stored records.', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'limit', 'order', 'sql'] },
+    { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Set a Unique key field (e.g. "url" or "id") to deduplicate — only unseen records are stored and the new ones are returned in `.new` (use this to track changes between runs). Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value', 'key'] },
+    { key: 'db_query',    type: 'db_query',   category: 'connector', label: 'Database: Query',   description: 'Reads rows back from the database (newest first) so you can feed the collected data into a model / Telegram / file. Defaults: table "records", limit 100, order "id DESC". For advanced reads provide a raw SELECT (records are JSON in a `data` column alongside `id`,`ts`; filter with json_extract(data,\'$.field\')) — a model node can generate this SQL. Output is the array of stored records.', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'limit', 'order', 'sql'] },
     { key: 'tool',        type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
     { key: 'delay',       type: 'delay',      category: 'connector', label: 'Delay / Wait',     description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
     { key: 'set',         type: 'set',        category: 'connector', label: 'Set Variable',     description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
@@ -361,15 +361,18 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
 
         case 'db_store': {
             // Append incoming data to a persistent per-workflow SQLite collection.
+            // With `key`, only unseen records are stored and returned in `.new`.
             const value = (data.value === undefined || data.value === '') ? scope.last : data.value;
-            const r = await dispatchTool(deps, ctx, node, 'workspace_db', {
+            const args = {
                 action: 'store',
                 db: data.db || 'automation.db',
                 table: data.table || 'records',
                 value,
-            });
+            };
+            if (data.key && String(data.key).trim()) args.key = String(data.key).trim();
+            const r = await dispatchTool(deps, ctx, node, 'workspace_db', args);
             if (r && r.success === false) throw new Error(`Database store failed — ${r.error || 'unknown error'}`);
-            return r; // { stored, total, table, db }
+            return r; // { stored, skipped, total, new, table, db }
         }
 
         case 'db_query': {
