@@ -201,6 +201,22 @@ async function dispatchTool(deps, ctx, node, name, args) {
     try { return JSON.parse(msg.content); } catch { return { raw: msg.content }; }
 }
 
+// Inspect an http_request result for an API/transport failure and return a
+// human message (or null when it looks like a success). Covers the common
+// shapes: { success:false, error, status }, a 4xx/5xx status, and a Telegram
+// Bot-API body of { ok:false, description }.
+function httpFailureMessage(response) {
+    if (!response || typeof response !== 'object') return null;
+    const d = response.data;
+    if (d && typeof d === 'object' && d.ok === false) return d.description || `error_code ${d.error_code || '?'}`;
+    if (response.success === false) return response.error || (response.status ? `HTTP ${response.status}` : 'request failed');
+    if (typeof response.status === 'number' && response.status >= 400) {
+        const body = (d && typeof d === 'object') ? (d.description || JSON.stringify(d)) : (typeof d === 'string' ? d.slice(0, 200) : '');
+        return `HTTP ${response.status}${body ? `: ${body}` : ''}`;
+    }
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 // Node handlers
 // ---------------------------------------------------------------------------
@@ -318,6 +334,8 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             const response = await dispatchTool(deps, ctx, node, 'http_request', {
                 url, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
             });
+            const slackFail = httpFailureMessage(response);
+            if (slackFail) throw new Error(`Slack send failed — ${slackFail}`);
             return { sent: true, response };
         }
 
@@ -332,6 +350,14 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ chat_id: chatId, text }),
             });
+            const tgFail = httpFailureMessage(response);
+            if (tgFail) {
+                // 403 = valid token but the bot can't message this chat.
+                const hint = /403|forbidden/i.test(tgFail)
+                    ? ' (the chat must message the bot first, or check the chat id / that the bot is a channel admin)'
+                    : '';
+                throw new Error(`Telegram send failed — ${tgFail}${hint}`);
+            }
             return { sent: true, response };
         }
 
