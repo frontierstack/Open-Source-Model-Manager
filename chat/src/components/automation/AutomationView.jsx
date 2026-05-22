@@ -255,7 +255,13 @@ function DataTagPalette({ outputs = {}, nodes = [], currentNodeId }) {
             out: outputs[n.id].output,
         }))
         .sort((a, b) => (a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1)); // this node first
-    if (!sources.length) return null;
+    if (!sources.length) {
+        return (
+            <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+                Tip: <strong>Run</strong> this automation once — then clickable data tags (<code>{'{{nodes.…}}'}</code>) from every step show up here to insert into any field.
+            </div>
+        );
+    }
     return (
         <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 5 }}>Click a tag to add it to the <strong>Output</strong> box below (or click another field first to insert there):</div>
@@ -895,6 +901,7 @@ function FlowEditor({ showSnackbar, models }) {
                         lastRun={nodeOutputs[selectedNode.id]}
                         allOutputs={nodeOutputs}
                         nodeList={nodes}
+                        edgeList={edges}
                         width={panelWidth}
                         onResizeStart={onPanelResizeStart}
                         onChange={(patch) => updateNodeData(selectedNode.id, patch)}
@@ -1006,9 +1013,27 @@ function ScheduleConfig({ d, onChange }) {
 }
 
 // ---- per-node config panel ----
-function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
+// Collect the record field names from a captured node output (array-of-objects
+// or a single object) — used to populate field dropdowns (e.g. the dedup key).
+function recordFieldsFromOutput(output) {
+    const fields = [];
+    const addKeys = (o) => { if (o && typeof o === 'object' && !Array.isArray(o)) for (const k of Object.keys(o)) if (k !== '_handle' && !fields.includes(k)) fields.push(k); };
+    if (Array.isArray(output)) { for (const item of output.slice(0, 5)) addKeys(item); }
+    else if (output && typeof output === 'object' && Array.isArray(output.rows)) { for (const item of output.rows.slice(0, 5)) addKeys(item); }
+    else if (output && typeof output === 'object' && Array.isArray(output.new)) { for (const item of output.new.slice(0, 5)) addKeys(item); }
+    else addKeys(output);
+    return fields;
+}
+
+function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
     const kind = node.data.kind;
     const d = node.data;
+    // Fields available from the node feeding into this one (for the dedup-key
+    // dropdown) — derived from the upstream node's captured output after a run.
+    const incomingNodeId = (edgeList.find(e => e.target === node.id) || {}).source;
+    const incomingFields = incomingNodeId && allOutputs[incomingNodeId]
+        ? recordFieldsFromOutput(allOutputs[incomingNodeId].output)
+        : [];
     const cond = (d.condition && typeof d.condition === 'object') ? d.condition : { left: '', op: '==', right: '' };
     const setCond = (patch) => onChange({ condition: { ...cond, ...patch } });
     const isTrigger = typeof kind === 'string' && kind.startsWith('trigger.');
@@ -1092,7 +1117,16 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             {kind === 'db_store' && (<>
                 <Field label="Table"><TemplInput value={d.table || ''} onChange={(v) => onChange({ table: v })} placeholder="records" /></Field>
                 <Field label="Data to store"><TemplTextarea style={{ minHeight: 48, resize: 'vertical' }} value={d.value || ''} onChange={(v) => onChange({ value: v })} placeholder="Leave blank to store the previous node's output ({{last}})" /></Field>
-                <Field label="Unique key field — track changes (optional)"><TemplInput value={d.key || ''} onChange={(v) => onChange({ key: v })} placeholder="e.g. url or id — only store unseen items" /></Field>
+                <Field label="Unique key field — track changes (optional)">
+                    {incomingFields.length > 0 && (
+                        <select style={{ ...fieldInput, marginBottom: 6 }} value={incomingFields.includes(d.key) ? d.key : (d.key ? '__custom__' : '')} onChange={(e) => { if (e.target.value !== '__custom__') onChange({ key: e.target.value }); }}>
+                            <option value="">— no key (store everything) —</option>
+                            {incomingFields.map(f => <option key={f} value={f}>{f}</option>)}
+                            <option value="__custom__">Custom… (type below)</option>
+                        </select>
+                    )}
+                    <TemplInput value={d.key || ''} onChange={(v) => onChange({ key: v })} placeholder={incomingFields.length ? 'or type a field name' : 'e.g. id or url — run once to list fields'} />
+                </Field>
                 <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Appends to a SQLite table in this automation's workspace (auto-created); a list is stored as one row per item. Set a <b>key field</b> to deduplicate across runs — only new items are stored, and they're returned as <code>{'{{nodes.<id>.new}}'}</code> (the change feed); <code>{'{{nodes.<id>.stored}}'}</code> is how many were new.</p>
             </>)}
@@ -1191,7 +1225,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                     <Field label="Compare to"><TemplInput value={cond.right || ''} onChange={(v) => setCond({ right: v })} placeholder="value to compare against" /></Field>
                 )}
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>
-                    {kind === 'gate.if' ? 'Wire the "true" / "false" handles to branches.' : 'Continues down "out" only when true.'}
+                    Leave <b>Value to check</b> blank to test the previous node's output. {kind === 'gate.if' ? 'Wire the "true" / "false" handles to branches.' : 'Continues down "out" only when true.'}
                 </p>
             </>)}
 

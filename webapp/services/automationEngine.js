@@ -214,7 +214,12 @@ function evalCondition(condition, scope) {
         return truthy(interpolate(condition, scope));
     }
     if (typeof condition === 'object') {
-        const left = interpolate(condition.left, scope);
+        // A blank "Value to check" defaults to the previous node's output, so
+        // "is not empty" / "contains" etc. work against the incoming data without
+        // having to type {{last}} — matching the blank=previous-output convention
+        // used by every other node.
+        const hasLeft = condition.left !== undefined && condition.left !== null && String(condition.left).trim() !== '';
+        const left = hasLeft ? interpolate(condition.left, scope) : scope.last;
         const right = interpolate(condition.right, scope);
         return compareOp(left, right, condition.op);
     }
