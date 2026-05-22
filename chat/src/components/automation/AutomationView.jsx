@@ -1113,6 +1113,17 @@ function previewResolveParts(cur, parts) {
     }
     return cur;
 }
+// Mirror the engine: a bare field ref ({{title}}) resolves against `last`.
+function previewResolvePath(scope, pathStr) {
+    const parts = String(pathStr).trim().split('.').filter(Boolean);
+    if (!parts.length) return undefined;
+    const head = parts[0];
+    if (!['input', 'vars', 'nodes', 'last'].includes(head) && scope && scope.last != null && typeof scope.last === 'object') {
+        const viaLast = previewResolveParts(scope.last, parts);
+        if (viaLast !== undefined) return viaLast;
+    }
+    return previewResolveParts(scope, parts);
+}
 function previewInterpolate(tmpl, scope) {
     if (typeof tmpl !== 'string') return '';
     const fmt = (v) => {
@@ -1121,8 +1132,8 @@ function previewInterpolate(tmpl, scope) {
         return typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
     };
     const exact = tmpl.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
-    if (exact) return fmt(previewResolveParts(scope, exact[1].trim().split('.').filter(Boolean)));
-    return tmpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, p) => fmt(previewResolveParts(scope, p.trim().split('.').filter(Boolean))));
+    if (exact) return fmt(previewResolvePath(scope, exact[1]));
+    return tmpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, p) => fmt(previewResolvePath(scope, p)));
 }
 
 // ---- schedule builder (unit picker + live countdown) ----
@@ -1192,15 +1203,41 @@ function recordFieldsFromOutput(output) {
     return fields;
 }
 
+// Dotted field paths within a value (for the parse_json "keep field" dropdown).
+// Arrays contribute a `*` segment: { results:[{url}] } → ['results','results.*.url'].
+function fieldPathOptions(value, prefix = '', out = [], depth = 0) {
+    if (out.length >= 40 || depth > 3) return out;
+    if (Array.isArray(value)) {
+        if (value.length) fieldPathOptions(value[0], prefix ? prefix + '.*' : '*', out, depth + 1);
+        return out;
+    }
+    if (value && typeof value === 'object') {
+        for (const k of Object.keys(value)) {
+            if (k === '_handle') continue;
+            const p = prefix ? `${prefix}.${k}` : k;
+            out.push(p);
+            const v = value[k];
+            if (v && typeof v === 'object') fieldPathOptions(v, p, out, depth + 1);
+            if (out.length >= 40) break;
+        }
+    }
+    return out;
+}
+
 function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
     const kind = node.data.kind;
     const d = node.data;
     // Fields available from the node feeding into this one (for the dedup-key
     // dropdown) — derived from the upstream node's captured output after a run.
     const incomingNodeId = (edgeList.find(e => e.target === node.id) || {}).source;
-    const incomingFields = incomingNodeId && allOutputs[incomingNodeId]
-        ? recordFieldsFromOutput(allOutputs[incomingNodeId].output)
-        : [];
+    const incomingOutput = incomingNodeId && allOutputs[incomingNodeId] ? allOutputs[incomingNodeId].output : undefined;
+    const incomingFields = incomingOutput !== undefined ? recordFieldsFromOutput(incomingOutput) : [];
+    // For parse_json: the JSON it will parse (the upstream output, unwrapping a
+    // JSON-string `data` field e.g. from http_request) → pickable field paths.
+    let parseSrc = incomingOutput;
+    if (parseSrc && typeof parseSrc === 'object' && typeof parseSrc.data === 'string') { try { parseSrc = JSON.parse(parseSrc.data); } catch (_) {} }
+    else if (typeof parseSrc === 'string') { try { parseSrc = JSON.parse(parseSrc); } catch (_) {} }
+    const parseFields = parseSrc && typeof parseSrc === 'object' ? fieldPathOptions(parseSrc) : [];
     const cond = (d.condition && typeof d.condition === 'object') ? d.condition : { left: '', op: '==', right: '' };
     const setCond = (patch) => onChange({ condition: { ...cond, ...patch } });
     const isTrigger = typeof kind === 'string' && kind.startsWith('trigger.');
@@ -1277,8 +1314,17 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             </>)}
 
             {kind === 'parse_json' && (<>
-                <Field label="Pull out a field (optional)"><TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder="e.g. results.*.url" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Use this when the previous step returns JSON (or JSON text). Enter a path to keep just that part — e.g. <code>results.*.url</code> for every url, or <code>results.0.title</code> for the first. Leave blank to pass the whole thing through.</p>
+                <Field label="Keep only this field (optional)">
+                    {parseFields.length > 0 && (
+                        <select style={{ ...fieldInput, marginBottom: 6 }} value={parseFields.includes(d.path) ? d.path : (d.path ? '__custom__' : '')} onChange={(e) => { if (e.target.value !== '__custom__') onChange({ path: e.target.value }); }}>
+                            <option value="">— keep the whole result —</option>
+                            {parseFields.map(f => <option key={f} value={f}>{f}</option>)}
+                            <option value="__custom__">Custom… (type below)</option>
+                        </select>
+                    )}
+                    <TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder={parseFields.length ? 'or type a field path' : 'e.g. results.*.url — run once to list fields'} />
+                </Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Parses the previous step's JSON and keeps just the field you pick — e.g. <code>title</code>, or <code>results.*.url</code> for every url. Leave blank to pass the whole thing through. <em>Run once to list the available fields.</em></p>
             </>)}
 
             {kind === 'db_store' && (<>
@@ -1485,7 +1531,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                     <div style={{ marginTop: 14, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
                         <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>Output → next node</div>
                         <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 6 }}>
-                            Type any text and insert data tags anywhere — it's sent in order, exactly as written. Leave blank to send the whole output.
+                            Type any text and insert data tags anywhere. Use <code>{'{{last}}'}</code> for this step's whole output, or <code>{'{{field}}'}</code> for one of its fields (e.g. <code>{'{{title}}'}</code>). Leave blank to send the whole output.
                         </div>
                         <TemplTextarea registerAsDefault style={{ minHeight: 56, fontFamily: 'inherit', fontSize: 13.5, resize: 'vertical' }} value={fwd} onChange={(v) => onChange({ forward: v })} placeholder={'e.g.  Top results:\n{{nodes.id.results.*.url}}'} />
                         {hasFwd ? (

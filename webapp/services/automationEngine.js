@@ -111,7 +111,17 @@ function resolveParts(cur, parts) {
     return cur;
 }
 function resolvePath(scope, pathStr) {
-    return resolveParts(scope, String(pathStr).trim().split('.').filter(Boolean));
+    const parts = String(pathStr).trim().split('.').filter(Boolean);
+    if (!parts.length) return undefined;
+    const head = parts[0];
+    // A bare field ref — anything that isn't input/vars/nodes/last — resolves
+    // against the previous node's output, so {{title}} means {{last.title}}
+    // (what users intuitively type). Falls back to the top scope if not found.
+    if (!['input', 'vars', 'nodes', 'last'].includes(head) && scope && scope.last != null && typeof scope.last === 'object') {
+        const viaLast = resolveParts(scope.last, parts);
+        if (viaLast !== undefined) return viaLast;
+    }
+    return resolveParts(scope, parts);
 }
 
 // Interpolate {{ path }} references in a template.
