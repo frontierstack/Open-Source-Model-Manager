@@ -7829,6 +7829,31 @@ app.get('/api/automations', requireAuth, async (req, res) => {
     }
 });
 
+// Live run-event stream (SSE) — the chat editor subscribes while open so
+// server-triggered runs (schedule / telegram / webhook / event) animate too.
+// Registered before the `:id` route so "events" isn't treated as an id.
+app.get('/api/automations/events', requireAuth, (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    const userId = req.userId;
+    if (!automationEventListeners.has(userId)) automationEventListeners.set(userId, new Set());
+    const set = automationEventListeners.get(userId);
+    set.add(res);
+    try { res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`); } catch (_) {}
+    const keepalive = setInterval(() => { try { res.write(': keepalive\n\n'); } catch (_) {} }, 25000);
+    req.on('close', () => {
+        clearInterval(keepalive);
+        const s = automationEventListeners.get(userId);
+        if (s) { s.delete(res); if (!s.size) automationEventListeners.delete(userId); }
+    });
+});
+
 app.get('/api/automations/:id', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });
@@ -7959,6 +7984,23 @@ app.post('/api/automations/:id/archive', requireAuth, (req, res) => patchWorkflo
 // writes + WS mirror; background triggers pass a broadcast-only onEvent).
 // Emits a 'run_created' event first so callers can capture the runId (e.g. to
 // wire client-disconnect cancellation). Returns { runId, outcome }.
+// Per-user SSE listeners for live automation run events. The chat editor has no
+// WebSocket, so server-triggered runs (schedule / telegram / webhook / event)
+// would never animate there. This streams each engine event to any open editor.
+const automationEventListeners = new Map(); // userId -> Set<res>
+function pushAutomationSSE(userId, evt) {
+    const set = automationEventListeners.get(userId);
+    if (!set || !set.size) return;
+    const line = `data: ${JSON.stringify(evt)}\n\n`;
+    for (const res of set) { try { res.write(line); } catch (_) {} }
+}
+// Mirror an engine run event to both WebSocket clients (webapp) and the live SSE
+// listeners (chat editor). Use everywhere a run's onEvent fires.
+function mirrorAutomationEvent(userId, evt) {
+    mirrorAutomationEvent(userId, evt);
+    try { pushAutomationSSE(userId, evt); } catch (_) {}
+}
+
 async function executeWorkflowRun(wf, { userId = null, apiKeyData = null, trigger = 'manual', input = {}, onEvent = () => {} } = {}) {
     const chatTools = require('./services/chatTools');
     const abort = new AbortController();
@@ -8031,7 +8073,7 @@ app.post('/api/automations/:id/run', requireAuth, async (req, res) => {
     const onEvent = (evt) => {
         if (evt.type === 'run_created') capturedRunId = evt.runId;
         try { res.write(`data: ${JSON.stringify(evt)}\n\n`); } catch (_) {}
-        try { broadcast({ type: 'automation_event', ...evt }, userId); } catch (_) {}
+        mirrorAutomationEvent(userId, evt);
     };
 
     // Cancel if the client disconnects mid-run.
@@ -8066,7 +8108,7 @@ app.post('/api/automations/:id/run-sync', requireAuth, async (req, res) => {
         const input = (req.body && typeof req.body.input === 'object' && req.body.input) || {};
         const { runId, outcome } = await executeWorkflowRun(wf, {
             userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'api', input,
-            onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, req.userId); } catch (_) {} },
+            onEvent: (evt) => { mirrorAutomationEvent(req.userId, evt); },
         });
         res.json({ runId, status: outcome.status, result: outcome.result, error: outcome.error });
     } catch (error) {
@@ -8304,7 +8346,7 @@ app.post('/api/automations/webhook/:token', async (req, res) => {
             userId: wf.userId || null,
             trigger: 'webhook',
             input,
-            onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} }
+            onEvent: (evt) => { mirrorAutomationEvent(wf.userId, evt); }
         }).catch(e => console.error('[automation] webhook run failed:', e.message));
 
         res.status(202).json({ message: 'Automation triggered', workflowId: wf.id });
@@ -8329,7 +8371,7 @@ async function fireAutomationEvent(eventName, payload = {}) {
                 userId: wf.userId || null,
                 trigger: `event:${eventName}`,
                 input: { event: eventName, ...payload },
-                onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} }
+                onEvent: (evt) => { mirrorAutomationEvent(wf.userId, evt); }
             }).catch(e => console.error(`[automation] event "${eventName}" run failed:`, e.message));
         }
     } catch (e) {
@@ -8383,7 +8425,7 @@ async function automationSchedulerTick() {
                         userId: wf.userId || null,
                         trigger: 'schedule',
                         input: { firedAt: now.toISOString(), node: node.id },
-                        onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} }
+                        onEvent: (evt) => { mirrorAutomationEvent(wf.userId, evt); }
                     }).catch(e => console.error('[automation] scheduled run failed:', e.message));
                 }
             }
@@ -8474,7 +8516,7 @@ async function automationTelegramTick() {
                             userId: wf.userId || null,
                             trigger: 'telegram',
                             input: message,
-                            onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} },
+                            onEvent: (evt) => { mirrorAutomationEvent(wf.userId, evt); },
                         }).catch(e => console.error('[automation] telegram run failed:', e.message));
                     }
                 }

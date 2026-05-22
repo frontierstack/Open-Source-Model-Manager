@@ -474,6 +474,34 @@ function FlowEditor({ showSnackbar, models }) {
         }
     }, [setNodes, setEdges]);
 
+    // Live run events over SSE — animates server-triggered runs (schedule,
+    // telegram, webhook, event) for whichever automation is open. Manual runs
+    // drive their own animation via the run() fetch stream, so we skip live
+    // events while a manual run is in progress. Stable refs let the single
+    // EventSource read the current selection / running state / handlers.
+    const selectedIdRef = useRef(null);
+    const runningRef = useRef(false);
+    const handleRunEventRef = useRef(handleRunEvent);
+    const resetRunVisualsRef = useRef(resetRunVisuals);
+    useEffect(() => { selectedIdRef.current = selected ? selected.id : null; }, [selected]);
+    useEffect(() => { runningRef.current = running; }, [running]);
+    useEffect(() => { handleRunEventRef.current = handleRunEvent; }, [handleRunEvent]);
+    useEffect(() => { resetRunVisualsRef.current = resetRunVisuals; }, [resetRunVisuals]);
+    useEffect(() => {
+        let es;
+        try { es = new EventSource('/api/automations/events', { withCredentials: true }); } catch (_) { return undefined; }
+        es.onmessage = (e) => {
+            let evt; try { evt = JSON.parse(e.data); } catch { return; }
+            if (!evt || runningRef.current) return;                       // manual run owns the animation
+            if (!evt.workflowId || evt.workflowId !== selectedIdRef.current) return;
+            if (evt.type === 'run_start' || evt.type === 'run_created') resetRunVisualsRef.current();
+            if (evt.type === 'done') { handleRunEventRef.current({ type: 'run_finish', status: evt.status }); return; }
+            handleRunEventRef.current(evt);
+        };
+        es.onerror = () => {}; // EventSource auto-reconnects
+        return () => { try { es.close(); } catch (_) {} };
+    }, []);
+
     const run = useCallback(async () => {
         if (!selected) return;
         const wf = await save(); // persist current graph first
@@ -1079,6 +1107,7 @@ function formatNodeOutput(out) {
     if (out == null) return '';
     if (typeof out === 'string') return out;
     if (typeof out === 'object' && out._truncated && typeof out.preview === 'string') return out.preview;
+    if (Array.isArray(out) && out.every(x => x === null || typeof x !== 'object')) return out.filter(x => x != null).join('\n');
     try { return JSON.stringify(out, null, 2); } catch { return String(out); }
 }
 

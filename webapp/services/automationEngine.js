@@ -187,10 +187,15 @@ function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Render a node's "previous output" as a string for message/file bodies.
+// Render a node's "previous output" as a string for message/file/prompt bodies.
+// Arrays of scalars (e.g. all urls from results.*.url) become a clean newline
+// list — no [, "", ] noise; arrays of objects keep JSON so structure survives.
 function stringifyValue(v) {
     if (v === undefined || v === null) return '';
     if (typeof v === 'string') return v;
+    if (Array.isArray(v)) {
+        return v.every(x => x === null || typeof x !== 'object') ? v.filter(x => x != null).join('\n') : JSON.stringify(v, null, 2);
+    }
     if (typeof v === 'object' && typeof v.text === 'string') return v.text; // model node shape
     try { return JSON.stringify(v, null, 2); } catch { return String(v); }
 }
@@ -268,7 +273,7 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             const hasTemplateRef = /\{\{[\s\S]*?\}\}/.test(rawPrompt);
             if (!hasTemplateRef && Array.isArray(inputs) && inputs.length) {
                 let ctxText = inputs
-                    .map(v => (typeof v === 'string' ? v : JSON.stringify(v, null, 2)))
+                    .map(v => stringifyValue(v))
                     .join('\n\n');
                 if (ctxText.length > 16000) ctxText = ctxText.slice(0, 16000) + '\n…[truncated]';
                 userContent = userContent ? `${userContent}\n\n${ctxText}` : ctxText;
