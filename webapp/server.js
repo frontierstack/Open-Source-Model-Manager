@@ -7902,6 +7902,59 @@ app.post('/api/automations', requireAuth, async (req, res) => {
     }
 });
 
+// Build an automation from a natural-language prompt: the model emits a workflow
+// spec, which is validated + auto-laid-out + saved. Returns the created workflow.
+app.post('/api/automations/build', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const { prompt, model } = req.body || {};
+    if (!prompt || !String(prompt).trim()) {
+        return res.status(400).json({ error: 'A prompt describing the automation is required' });
+    }
+    try {
+        const messages = [
+            { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
+            { role: 'user', content: `Build an automation for this request:\n\n${String(prompt).trim()}\n\nRespond with ONLY the JSON object.` },
+        ];
+        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3000 });
+        // Robustly extract the JSON object from the model output.
+        let raw = String(text || '').trim();
+        const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fence) raw = fence[1].trim();
+        const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}');
+        if (lo !== -1 && hi !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
+        let spec = null;
+        try { spec = JSON.parse(raw); } catch (_) { spec = null; }
+        if (!spec || typeof spec !== 'object') {
+            return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your request.' });
+        }
+        let built;
+        try { built = automationEngine.materializeWorkflow(spec); }
+        catch (e) { return res.status(422).json({ error: `Could not assemble the workflow: ${e.message}` }); }
+        const workflows = await loadWorkflows();
+        const now = new Date().toISOString();
+        const wf = {
+            id: crypto.randomBytes(16).toString('hex'),
+            name: built.name,
+            description: `Built with LLM — ${String(prompt).trim().slice(0, 160)}`,
+            nodes: built.nodes,
+            edges: built.edges,
+            enabled: true,
+            archived: false,
+            userId: req.userId || null,
+            createdAt: now,
+            updatedAt: now,
+        };
+        workflows.push(wf);
+        await saveWorkflows(workflows);
+        res.status(201).json(wf);
+    } catch (error) {
+        console.error('Error building automation:', error);
+        res.status(500).json({ error: `Failed to build automation: ${error.message}` });
+    }
+});
+
 app.put('/api/automations/:id', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });

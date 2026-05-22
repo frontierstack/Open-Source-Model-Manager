@@ -108,6 +108,7 @@ A first-party visual **workflow engine** is built into the chat UI (the **Automa
   <img src="docs/images/automation-flow.png" alt="Automation editor showing an example change-monitor flow: Schedule → Fetch data → Parse JSON → Database: Store → If new → Summarize → Notify" width="900">
 </p>
 
+- **Build with LLM** — describe the automation you want in plain language and the model assembles the nodes + wiring for you (the **Build with LLM** button under *New automation*); open it in the editor to review and tweak.
 - **Palette** — drag-and-drop nodes grouped into **Triggers** (Manual, Schedule, Webhook, On Event, Loop), **Tools** (Model, Web Search, Fetch URL, HTTP Request, Crawl Pages, Parse JSON, Render HTML/Chart, SQLite, Create PDF/File, **Run Python**, …), **Connectors** (Slack & Telegram — each with new-message trigger / send / get), and **Logic Gates** (If/Else, Switch, Filter, Merge, Delay, Set). A live search filters the palette.
 - **Database nodes** — *Database: Store* keeps a persistent per-workflow SQLite collection; set a unique **key** (with optional ignore-words, normalize, and a comma-separated fallback like `link,post_title`) to deduplicate and emit only newly-seen records as `.new` — i.e. **change-tracking across runs**. *Database: Query* reads rows back (newest-first, or a raw `SELECT` a model can generate) to feed a model, Telegram, or a file.
 - **Robust logic gates** — text operators (equals, contains, starts/ends with, regex, `>`, `<`, is-empty, …); a blank *Value to check* defaults to the previous node's output.

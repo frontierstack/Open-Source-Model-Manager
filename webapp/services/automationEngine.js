@@ -836,10 +836,143 @@ function cronMatches(expr, date = new Date()) {
     return mt(min, M) && mt(hour, H) && dayMatch && mt(mon, MO);
 }
 
+// ---------------------------------------------------------------------------
+// "Build with LLM" — turn a natural-language request into a workflow
+// ---------------------------------------------------------------------------
+
+// System prompt enumerating the node catalog (from BUILTIN_NODE_TYPES) plus the
+// JSON shape, wiring rules, per-node data shapes, and one worked example.
+function buildBuilderSystemPrompt() {
+    const cat = { trigger: [], tools: [], connector: [], gate: [], output: [] };
+    // mirror the chat palette grouping so the model sees sensible categories
+    const TOOLS = new Set(['model','web_search','fetch_url','render_html','parse_json','export_file','http_request','crawl','sqlite','render_chart','create_pdf','create_file','run_python','db_store','db_query','tool']);
+    const GATEX = new Set(['delay','set']);
+    for (const b of BUILTIN_NODE_TYPES) {
+        if (b.key === 'output') continue; // hidden / not needed
+        let g = b.category;
+        if (TOOLS.has(b.key)) g = 'tools';
+        else if (GATEX.has(b.key)) g = 'gate';
+        (cat[g] || cat.tools).push(b);
+    }
+    const line = (b) => `- ${b.key} — ${b.description}${Array.isArray(b.fields) && b.fields.length ? ` [fields: ${b.fields.join(', ')}]` : ''}`;
+    const section = (label, arr) => arr.length ? `\n${label}:\n${arr.map(line).join('\n')}` : '';
+    return [
+        'You build automation workflows. Given a user request, output a SINGLE JSON object and NOTHING else — no markdown, no code fences, no commentary.',
+        '',
+        'JSON shape:',
+        '{"name":"<short title>","nodes":[{"id":"n1","type":"<type>","data":{...}}],"edges":[{"source":"n1","target":"n2"}]}',
+        '',
+        'Rules:',
+        '- Use short ids n1, n2, n3 … in flow order.',
+        '- Exactly ONE trigger node is the entry point. Use "trigger.manual" unless the user asks for a schedule/webhook/event/telegram/slack trigger.',
+        '- Wire every step with edges (source→target). Data flows trigger → … → final step.',
+        '- Reference a previous step inside any text/arg with {{nodes.<id>.<field>}} or {{last}} (previous output). Exact {{nodes.<id>}} is that node\'s whole output.',
+        '- Branch from gates with sourceHandle on the OUTGOING edge: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case.',
+        '',
+        'Per-node data (set only what is needed):',
+        '- model: { "prompt": "...", "systemPrompt": "..."? }  (the answer string is the output)',
+        '- fetch_url: { "url": "..." }   web_search: { "query": "...", "limit": 5 }',
+        '- http_request: { "args": { "url": "...", "method": "GET" } }   run_python: { "args": { "code": "print(1)" } }',
+        '- parse_json: { "source": "{{nodes.<id>.data}}", "path": "results.*.url"? }',
+        '- db_store: { "table": "items", "key": "id"?, "keyNormalize": true?, "value": "{{nodes.<id>}}"? } → outputs { new, stored, total }',
+        '- db_query: { "table": "items", "limit": 100?, "order": "id DESC"?, "sql": "SELECT ..."? } → outputs the rows array',
+        '- telegram: { "botToken": "...", "chatId": "...", "text": "..." }   slack: { "webhookUrl": "...", "text": "..." }',
+        '- gate.if / gate.filter: { "condition": { "left": "{{last}}", "op": "not_empty", "right": "" } } (ops: ==,!=,>,<,>=,<=,contains,not_contains,startsWith,endsWith,matches,empty,not_empty)',
+        '- gate.switch: { "value": "{{last}}", "cases": [{ "op": "==", "value": "x", "handle": "x" }] }',
+        '- set: { "name": "var", "value": "..." }   delay: { "ms": 1000 }',
+        '',
+        'Available node types:',
+        section('Triggers', cat.trigger),
+        section('Tools', cat.tools),
+        section('Connectors', cat.connector),
+        section('Logic gates', cat.gate),
+        '',
+        'Example — "every morning fetch a JSON feed and DM me only new items on Telegram":',
+        '{"name":"New items to Telegram","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":86400000}},{"id":"n2","type":"http_request","data":{"args":{"url":"https://example.com/feed.json","method":"GET"}}},{"id":"n3","type":"parse_json","data":{"source":"{{nodes.n2.data}}"}},{"id":"n4","type":"db_store","data":{"table":"items","key":"id","value":"{{nodes.n3}}"}},{"id":"n5","type":"gate.if","data":{"condition":{"left":"{{nodes.n4.new}}","op":"not_empty","right":""}}},{"id":"n6","type":"model","data":{"prompt":"Summarize these new items as a short list:\\n{{nodes.n4.new}}"}},{"id":"n7","type":"telegram","data":{"botToken":"<BOT_TOKEN>","chatId":"<CHAT_ID>","text":"{{nodes.n6}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6","sourceHandle":"true"},{"source":"n6","target":"n7"}]}',
+    ].join('\n');
+}
+
+// Lay nodes out left→right by dependency depth (Kahn levels), stacking siblings.
+function layoutWorkflow(nodes, edges) {
+    const adj = new Map(nodes.map(n => [n.id, []]));
+    const indeg = new Map(nodes.map(n => [n.id, 0]));
+    for (const e of edges) {
+        if (adj.has(e.source) && indeg.has(e.target)) { adj.get(e.source).push(e.target); indeg.set(e.target, indeg.get(e.target) + 1); }
+    }
+    const level = new Map();
+    let frontier = nodes.filter(n => indeg.get(n.id) === 0).map(n => n.id);
+    if (!frontier.length && nodes.length) frontier = [nodes[0].id];
+    const deg = new Map(indeg);
+    let lvl = 0;
+    const seen = new Set();
+    while (frontier.length) {
+        const next = [];
+        for (const id of frontier) {
+            if (seen.has(id)) continue;
+            seen.add(id); level.set(id, lvl);
+            for (const t of (adj.get(id) || [])) { deg.set(t, deg.get(t) - 1); if (deg.get(t) <= 0 && !seen.has(t)) next.push(t); }
+        }
+        frontier = next; lvl++;
+    }
+    for (const n of nodes) if (!level.has(n.id)) level.set(n.id, lvl);
+    const byLevel = {};
+    for (const n of nodes) { const L = level.get(n.id); (byLevel[L] || (byLevel[L] = [])).push(n); }
+    for (const L of Object.keys(byLevel)) byLevel[L].forEach((n, idx) => { n.position = { x: Number(L) * 250, y: idx * 120 }; });
+}
+
+// Resolve a model-produced spec into a valid, laid-out { name, nodes, edges }.
+// Accepts node "type" as either a builtin key (e.g. http_request) or its engine
+// type (e.g. tool); merges builtin defaults; drops unknown nodes / dangling
+// edges; ensures a trigger entry exists.
+function materializeWorkflow(spec) {
+    const byKey = new Map(), byType = new Map();
+    for (const b of BUILTIN_NODE_TYPES) { byKey.set(b.key, b); byType.set(b.type, b); }
+    const rawNodes = Array.isArray(spec && spec.nodes) ? spec.nodes : [];
+    const idMap = new Map();
+    const nodes = [];
+    let i = 0;
+    for (const n of rawNodes) {
+        const k = String((n && (n.type || n.kind)) || '').trim();
+        const b = byKey.get(k) || byType.get(k);
+        if (!b) continue;
+        const newId = `n${++i}`;
+        if (n && n.id != null) idMap.set(String(n.id), newId);
+        const data = { ...(b.defaults || {}), ...(n && n.data && typeof n.data === 'object' ? n.data : {}) };
+        if (!data.label) data.label = b.label;
+        nodes.push({ id: newId, type: b.type, position: { x: 0, y: 0 }, data });
+    }
+    if (!nodes.length) throw new Error('the model produced no recognizable nodes');
+    const hasTrigger = nodes.some(n => typeof n.type === 'string' && n.type.startsWith('trigger.'));
+    const ids = new Set(nodes.map(n => n.id));
+    const edges = [];
+    let e = 0;
+    for (const ed of (Array.isArray(spec && spec.edges) ? spec.edges : [])) {
+        if (!ed) continue;
+        const s = idMap.get(String(ed.source)) || String(ed.source);
+        const t = idMap.get(String(ed.target)) || String(ed.target);
+        if (!ids.has(s) || !ids.has(t) || s === t) continue;
+        const edge = { id: `e${++e}`, source: s, target: t };
+        if (ed.sourceHandle) edge.sourceHandle = String(ed.sourceHandle);
+        edges.push(edge);
+    }
+    if (!hasTrigger) {
+        const trig = { id: 'n0', type: 'trigger.manual', position: { x: 0, y: 0 }, data: { label: 'Manual / Run now' } };
+        nodes.unshift(trig);
+        const withIncoming = new Set(edges.map(x => x.target));
+        const first = nodes.find(n => n.id !== 'n0' && !withIncoming.has(n.id)) || nodes.find(n => n.id !== 'n0');
+        if (first) edges.unshift({ id: `e${++e}`, source: 'n0', target: first.id });
+    }
+    layoutWorkflow(nodes, edges);
+    const name = (spec && typeof spec.name === 'string' && spec.name.trim()) ? spec.name.trim().slice(0, 80) : 'Generated automation';
+    return { name, nodes, edges };
+}
+
 module.exports = {
     runWorkflow,
     evalCondition,
     interpolate,
     cronMatches,
     BUILTIN_NODE_TYPES,
+    buildBuilderSystemPrompt,
+    materializeWorkflow,
 };

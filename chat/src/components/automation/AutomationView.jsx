@@ -8,7 +8,7 @@ import '@xyflow/react/dist/style.css';
 import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
-    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon,
+    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -463,6 +463,30 @@ function FlowEditor({ showSnackbar, models }) {
         } catch (err) { notify(err.message, 'error'); }
     }, [loadAutomations, selectAutomation]);
 
+    // Build with LLM — describe an automation in plain language, the model assembles it.
+    const [buildOpen, setBuildOpen] = useState(false);
+    const [buildPrompt, setBuildPrompt] = useState('');
+    const [building, setBuilding] = useState(false);
+    const buildAutomation = useCallback(async () => {
+        const p = buildPrompt.trim();
+        if (!p || building) return;
+        setBuilding(true);
+        try {
+            const res = await fetch('/api/automations/build', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: p }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to build automation');
+            await loadAutomations();
+            selectAutomation(data.id);
+            setBuildPrompt(''); setBuildOpen(false);
+            notify('Built with LLM — review and tweak the steps before running', 'success');
+        } catch (err) { notify(err.message, 'error'); }
+        finally { setBuilding(false); }
+    }, [buildPrompt, building, loadAutomations, selectAutomation]);
+
     // ---- graph edits ----
     const onConnect = useCallback((params) => {
         setEdges(eds => addEdge({ ...params, id: uid('e') }, eds));
@@ -779,6 +803,29 @@ function FlowEditor({ showSnackbar, models }) {
                         <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', color: 'var(--accent)', borderColor: 'var(--accent)' }}>
                             <Plus size={14} /> <span>New automation</span>
                         </button>
+                        <button onClick={() => setBuildOpen(o => !o)} style={{ ...railBtn, justifyContent: 'center', marginTop: 6 }}>
+                            <Sparkles size={14} /> <span>Build with LLM</span>
+                        </button>
+                        {buildOpen && (
+                            <div style={{ marginTop: 6 }}>
+                                <textarea
+                                    value={buildPrompt}
+                                    onChange={(e) => setBuildPrompt(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) buildAutomation(); }}
+                                    placeholder="Describe the automation you want… e.g. every morning fetch a feed and Telegram me only the new items"
+                                    rows={3}
+                                    disabled={building}
+                                    style={{ ...fieldInput, resize: 'vertical', minHeight: 64, lineHeight: 1.4 }}
+                                />
+                                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                                    <button onClick={buildAutomation} disabled={building || !buildPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)', opacity: (building || !buildPrompt.trim()) ? 0.55 : 1, cursor: (building || !buildPrompt.trim()) ? 'default' : 'pointer' }}>
+                                        {building ? 'Building…' : 'Build'}
+                                    </button>
+                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); }} disabled={building} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
+                                </div>
+                                {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>The model is assembling your workflow…</div>}
+                            </div>
+                        )}
                     </div>
                     <div style={{ overflowY: 'auto', flex: '0 0 auto', maxHeight: '38%', padding: '6px 8px' }}>
                         {automations.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--ink-3)', padding: 8 }}>No automations yet.</div>}
