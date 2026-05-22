@@ -243,22 +243,28 @@ function DataTag({ refStr, label, sample }) {
     );
 }
 
-// Lightweight, always-visible tag list drawn from captured node outputs. Click a
-// field, then a tag, to insert {{nodes.id.path}}. Appears only after a run.
-function DataTagPalette({ outputs = {}, nodes = [], currentNodeId }) {
-    const sources = nodes
-        .filter(n => outputs[n.id] && outputs[n.id].output != null)
+// Lightweight tag list drawn from captured node outputs. Click a field, then a
+// tag, to insert {{nodes.id.path}}. Scoped to the node(s) wired DIRECTLY into
+// this one — that's the data actually flowing in — so earlier/unrelated steps
+// don't clutter the list. Appears only after a run.
+function DataTagPalette({ outputs = {}, nodes = [], edges = [], currentNodeId }) {
+    const prevIds = new Set(edges.filter(e => e.target === currentNodeId).map(e => e.source));
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    const sources = [...prevIds]
+        .map(id => byId.get(id))
+        .filter(n => n && outputs[n.id] && outputs[n.id].output != null)
         .map(n => ({
             id: n.id,
-            label: ((n.data && n.data.label) || (n.data && n.data.kind) || n.id) + (n.id === currentNodeId ? ' (this node)' : ''),
-            isSelf: n.id === currentNodeId,
+            label: (n.data && n.data.label) || (n.data && n.data.kind) || n.id,
             out: outputs[n.id].output,
-        }))
-        .sort((a, b) => (a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1)); // this node first
+        }));
     if (!sources.length) {
+        const hasPrev = prevIds.size > 0;
         return (
             <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-                Tip: <strong>Run</strong> this automation once — then clickable data tags (<code>{'{{nodes.…}}'}</code>) from every step show up here to insert into any field.
+                {hasPrev
+                    ? <>Tip: <strong>Run</strong> the automation once — then the previous step's data tags (<code>{'{{nodes.…}}'}</code>) show up here to insert into any field.</>
+                    : <>Connect a node into this one to pull its data here as clickable <code>{'{{nodes.…}}'}</code> tags (after a run).</>}
             </div>
         );
     }
@@ -1069,7 +1075,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
 
             <NodeResult lastRun={lastRun} nodeId={node.id} isTrigger={isTrigger} />
 
-            {!isTrigger && <DataTagPalette outputs={allOutputs} nodes={nodeList} currentNodeId={node.id} />}
+            {!isTrigger && <DataTagPalette outputs={allOutputs} nodes={nodeList} edges={edgeList} currentNodeId={node.id} />}
 
             <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} /></Field>
 
@@ -1127,6 +1133,13 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                     )}
                     <TemplInput value={d.key || ''} onChange={(v) => onChange({ key: v })} placeholder={incomingFields.length ? 'or type a field name' : 'e.g. id or url — run once to list fields'} />
                 </Field>
+                {d.key ? (<>
+                    <Field label="Ignore words in key (optional)"><TemplInput value={d.keyStrip || ''} onChange={(v) => onChange({ keyStrip: v })} placeholder="e.g. NEW (comma-separated)" /></Field>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--ink-3)', margin: '0 0 10px', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={!!d.keyNormalize} onChange={(e) => onChange({ keyNormalize: e.target.checked })} />
+                        Normalize key (ignore case &amp; punctuation)
+                    </label>
+                </>) : null}
                 <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Appends to a SQLite table in this automation's workspace (auto-created); a list is stored as one row per item. Set a <b>key field</b> to deduplicate across runs — only new items are stored, and they're returned as <code>{'{{nodes.<id>.new}}'}</code> (the change feed); <code>{'{{nodes.<id>.stored}}'}</code> is how many were new.</p>
             </>)}
