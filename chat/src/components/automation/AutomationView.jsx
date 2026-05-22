@@ -1165,7 +1165,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                             <option value="__custom__">Custom… (type below)</option>
                         </select>
                     )}
-                    <TemplInput value={d.key || ''} onChange={(v) => onChange({ key: v })} placeholder={incomingFields.length ? 'or type a field name' : 'e.g. id or url — run once to list fields'} />
+                    <TemplInput value={d.key || ''} onChange={(v) => onChange({ key: v })} placeholder={incomingFields.length ? 'or type field(s), e.g. link,post_title' : 'e.g. link,post_title — run once to list fields'} />
                 </Field>
                 {d.key ? (<>
                     <Field label="Ignore words in key (optional)"><TemplInput value={d.keyStrip || ''} onChange={(v) => onChange({ keyStrip: v })} placeholder="e.g. NEW (comma-separated)" /></Field>
