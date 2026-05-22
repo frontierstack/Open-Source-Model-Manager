@@ -586,7 +586,8 @@ function NodeConfig({ node, runningModels = [], onChange, onDelete, webhookUrl, 
             <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} /></Field>
 
             {kind === 'model' && (<>
-                <Field label="Prompt"><textarea style={{ ...fieldInput, minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(e) => onChange({ prompt: e.target.value })} placeholder="Use {{input.x}} or {{nodes.id.text}}" /></Field>
+                <Field label="Prompt"><textarea style={{ ...fieldInput, minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(e) => onChange({ prompt: e.target.value })} placeholder="Leave blank to receive the previous node's output, or use {{last}} / {{nodes.id.field}}" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -6, marginBottom: 8 }}>The connected node's output is passed in automatically unless you reference data with {'{{…}}'}.</p>
                 <Field label="System prompt"><textarea style={{ ...fieldInput, minHeight: 48, resize: 'vertical' }} value={d.systemPrompt || ''} onChange={(e) => onChange({ systemPrompt: e.target.value })} /></Field>
                 <Field label="Model">
                     <select style={fieldInput} value={d.model || ''} onChange={(e) => onChange({ model: e.target.value || undefined })}>

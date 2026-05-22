@@ -176,7 +176,21 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             if (!deps.runModelCompletion) throw new Error('Model nodes are unavailable (no model runner wired).');
             const messages = [];
             if (data.systemPrompt) messages.push({ role: 'system', content: String(data.systemPrompt) });
-            messages.push({ role: 'user', content: String(data.prompt ?? '') });
+            let userContent = String(data.prompt ?? '');
+            // Auto-flow: if the prompt doesn't explicitly pull upstream data via
+            // {{...}}, attach the incoming node output(s) so a connected
+            // Web Search → Model (etc.) "just works" without manual templating.
+            // Explicit {{...}} references opt out (the author is in control).
+            const rawPrompt = (node.data && typeof node.data.prompt === 'string') ? node.data.prompt : '';
+            const hasTemplateRef = /\{\{[\s\S]*?\}\}/.test(rawPrompt);
+            if (!hasTemplateRef && Array.isArray(inputs) && inputs.length) {
+                let ctxText = inputs
+                    .map(v => (typeof v === 'string' ? v : JSON.stringify(v, null, 2)))
+                    .join('\n\n');
+                if (ctxText.length > 16000) ctxText = ctxText.slice(0, 16000) + '\n…[truncated]';
+                userContent = userContent ? `${userContent}\n\n${ctxText}` : ctxText;
+            }
+            messages.push({ role: 'user', content: userContent });
             const text = await deps.runModelCompletion({
                 messages,
                 model: data.model || undefined,
