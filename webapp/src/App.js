@@ -116,13 +116,14 @@ import {
     Terminal as LucideTerminal,
     LayoutGrid as LucideLayoutGrid,
     Boxes as LucideBoxes,
+    Workflow as LucideWorkflow,
 } from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
 import AppsPanel from './components/AppsPanel';
-import AutomationAppsPanel from './components/AutomationAppsPanel';
+import AutomationLibrary from './components/AutomationLibrary';
 import MyModelsPanel from './components/MyModelsPanel';
 import RunningInstancesPanel from './components/RunningInstancesPanel';
 import UserDialog from './components/UserDialog';
@@ -632,7 +633,7 @@ const App = () => {
 
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
-        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7];
+        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 8];
         try {
             const saved = localStorage.getItem('tabOrder');
             if (saved) {
@@ -7014,7 +7015,8 @@ console.log(await res.json());`
         { id: 4, icon: <LucideBookOpen size={18} strokeWidth={1.75} />,  label: 'Docs' },
         { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
         { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
-        { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' }
+        { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' },
+        { id: 8, icon: <LucideWorkflow size={18} strokeWidth={1.75} />,   label: 'Automations' }
     ];
 
     // Filter tabs based on user role - hide admin-only tabs for non-admin users
@@ -11755,9 +11757,6 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
                                                         <Tab label="Tools" />
                                                         <Tab label="Skills" />
-                                                        <Tab label="Triggers" />
-                                                        <Tab label="Logic Gates" />
-                                                        <Tab label="Connectors" />
                                                     </Tabs>
 
                                                     {/* Tools Sub-Tab */}
@@ -12168,23 +12167,17 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                         );
                                                     })()}
 
-                                                    {/* Automation building-block libraries (next to Tools/Skills) */}
-                                                    {agentSubTab === 2 && (
-                                                        <AutomationAppsPanel category="trigger" showSnackbar={showSnackbar} />
-                                                    )}
-                                                    {agentSubTab === 3 && (
-                                                        <AutomationAppsPanel category="gate" showSnackbar={showSnackbar} />
-                                                    )}
-                                                    {agentSubTab === 4 && (
-                                                        <AutomationAppsPanel category="connector" showSnackbar={showSnackbar} />
-                                                    )}
-
                                                 </CardContent>
                                             </Card>
                                         </Grid>
                                     ))}
                                 </Grid>
                             </AppsPanel>
+                        )}
+
+                        {/* Automations Tab — building-block library (user-visible) */}
+                        {visibleTabOrder[activeTab] === 8 && (
+                            <AutomationLibrary showSnackbar={showSnackbar} isAdmin={isAdmin} />
                         )}
                     </Box>
                 </Box>

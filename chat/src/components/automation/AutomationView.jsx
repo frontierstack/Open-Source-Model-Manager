@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
     ReactFlow, ReactFlowProvider, Background, Controls, MiniMap,
-    useNodesState, useEdgesState, addEdge,
+    useNodesState, useEdgesState, addEdge, useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
-    Power, PowerOff, Copy, Check,
+    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
+import { useConfirm } from '../ConfirmDialog';
 import AutomationNode from './AutomationNode';
 
 const nodeTypes = { automation: AutomationNode };
@@ -60,8 +61,11 @@ const fieldInput = {
     background: 'var(--bg)', color: 'var(--ink)', fontSize: 12.5, marginBottom: 10, boxSizing: 'border-box',
 };
 
-function FlowEditor({ showSnackbar }) {
+function FlowEditor({ showSnackbar, models }) {
     const setView = useChatStore(s => s.setView);
+    const confirm = useConfirm();
+    const { screenToFlowPosition } = useReactFlow();
+    const runningModels = useMemo(() => (models || []).filter(m => m.status === 'running'), [models]);
 
     const [automations, setAutomations] = useState([]);
     const [palette, setPalette] = useState([]); // {key, kind, label, category, defaults, custom}
@@ -76,6 +80,7 @@ function FlowEditor({ showSnackbar }) {
     const [runResult, setRunResult] = useState(null);
     const [webhookUrl, setWebhookUrl] = useState('');
     const [copied, setCopied] = useState(false);
+    const [collapsedCats, setCollapsedCats] = useState({}); // palette category collapse state
     const runAbortRef = useRef(null);
     const addCountRef = useRef(0);
 
@@ -152,10 +157,10 @@ function FlowEditor({ showSnackbar }) {
         setDirty(true);
     }, [setEdges]);
 
-    const addFromPalette = useCallback((item) => {
+    const addFromPalette = useCallback((item, dropPos) => {
         const id = uid('node');
         const i = addCountRef.current++;
-        const position = { x: 240 + (i % 5) * 36, y: 110 + (i % 8) * 70 };
+        const position = dropPos || { x: 240 + (i % 5) * 36, y: 110 + (i % 8) * 70 };
         setNodes(ns => ns.concat({
             id, type: 'automation', position,
             data: { kind: item.kind, label: item.label, ...(item.defaults || {}) },
@@ -163,6 +168,22 @@ function FlowEditor({ showSnackbar }) {
         setSelectedNodeId(id);
         setDirty(true);
     }, [setNodes]);
+
+    // Drag-and-drop from the palette onto the canvas.
+    const onPaletteDragStart = useCallback((e, item) => {
+        e.dataTransfer.setData('application/automation-node', JSON.stringify({ kind: item.kind, label: item.label, defaults: item.defaults || {} }));
+        e.dataTransfer.effectAllowed = 'move';
+    }, []);
+    const onDragOver = useCallback((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }, []);
+    const onDrop = useCallback((e) => {
+        e.preventDefault();
+        if (!selected) return;
+        const raw = e.dataTransfer.getData('application/automation-node');
+        if (!raw) return;
+        let item; try { item = JSON.parse(raw); } catch { return; }
+        const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+        addFromPalette(item, position);
+    }, [selected, screenToFlowPosition, addFromPalette]);
 
     const updateNodeData = useCallback((id, patch) => {
         setNodes(ns => ns.map(n => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
@@ -211,13 +232,20 @@ function FlowEditor({ showSnackbar }) {
     }, [selected, loadAutomations]);
 
     const deleteAutomation = useCallback(async (id) => {
-        if (!window.confirm('Delete this automation?')) return;
+        const confirmed = await confirm({
+            title: 'Delete automation',
+            message: 'Delete this automation? This cannot be undone.',
+            confirmText: 'Delete', cancelText: 'Cancel', variant: 'danger',
+        });
+        if (!confirmed) return;
         try {
-            await fetch(`/api/automations/${id}`, { method: 'DELETE', credentials: 'include' });
+            const res = await fetch(`/api/automations/${id}`, { method: 'DELETE', credentials: 'include' });
+            if (!res.ok) throw new Error('Delete failed');
             if (selected && selected.id === id) { setSelected(null); setNodes([]); setEdges([]); }
+            notify('Automation deleted');
             loadAutomations();
         } catch (err) { notify(err.message, 'error'); }
-    }, [selected, loadAutomations, setNodes, setEdges]);
+    }, [selected, loadAutomations, setNodes, setEdges, confirm]);
 
     const genWebhook = useCallback(async () => {
         if (!selected) return;
@@ -388,6 +416,9 @@ function FlowEditor({ showSnackbar }) {
                             >
                                 <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: a.enabled !== false ? 'var(--ok, #22c55e)' : 'var(--ink-4, #64748b)' }} />
                                 <span style={{ flex: 1, fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Untitled'}</span>
+                                {a._ownerName && (
+                                    <span style={{ flexShrink: 0, fontSize: 9.5, color: 'var(--accent)', background: 'var(--accent-soft)', borderRadius: 4, padding: '1px 5px' }} title={`Owner: ${a._ownerName}`}>{a._ownerName}</span>
+                                )}
                                 <button onClick={(e) => { e.stopPropagation(); deleteAutomation(a.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Delete">
                                     <Trash2 size={13} />
                                 </button>
@@ -399,27 +430,42 @@ function FlowEditor({ showSnackbar }) {
                         NODE PALETTE {selected ? '' : '(select an automation)'}
                     </div>
                     <div style={{ overflowY: 'auto', flex: 1, padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
-                        {CATEGORY_ORDER.map(cat => (groupedPalette[cat] && groupedPalette[cat].length > 0) && (
-                            <div key={cat} style={{ marginBottom: 8 }}>
-                                <div style={{ fontSize: 10, color: 'var(--ink-3)', margin: '6px 2px 4px', textTransform: 'uppercase', letterSpacing: 0.4 }}>{CATEGORY_LABEL[cat] || cat}</div>
-                                {groupedPalette[cat].map(item => (
-                                    <button key={item.key} onClick={() => addFromPalette(item)}
-                                        style={{ ...railBtn, padding: '6px 8px', marginBottom: 3, fontSize: 12 }}
-                                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-2)'; }}
-                                        title={item.custom ? 'Custom building block' : 'Built-in'}
+                        {CATEGORY_ORDER.map(cat => {
+                            const items = groupedPalette[cat];
+                            if (!items || items.length === 0) return null;
+                            const collapsed = !!collapsedCats[cat];
+                            return (
+                                <div key={cat} style={{ marginBottom: 6 }}>
+                                    <button
+                                        onClick={() => setCollapsedCats(c => ({ ...c, [cat]: !c[cat] }))}
+                                        style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', padding: '6px 2px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}
                                     >
-                                        <Plus size={12} /> <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>
-                                        {item.custom && <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent)' }}>★</span>}
+                                        {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                                        <span>{CATEGORY_LABEL[cat] || cat}</span>
+                                        <span style={{ marginLeft: 'auto', color: 'var(--ink-4, var(--ink-3))' }}>{items.length}</span>
                                     </button>
-                                ))}
-                            </div>
-                        ))}
+                                    {!collapsed && items.map(item => (
+                                        <button key={item.key}
+                                            draggable
+                                            onDragStart={(e) => onPaletteDragStart(e, item)}
+                                            onClick={() => addFromPalette(item)}
+                                            style={{ ...railBtn, padding: '6px 8px', marginBottom: 3, fontSize: 12, cursor: 'grab' }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; e.currentTarget.style.color = 'var(--accent)'; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-2)'; }}
+                                            title={item.custom ? 'Custom building block — drag onto the canvas or click to add' : 'Built-in — drag onto the canvas or click to add'}
+                                        >
+                                            <Plus size={12} /> <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>
+                                            {item.custom && <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent)' }}>★</span>}
+                                        </button>
+                                    ))}
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
 
                 {/* Canvas */}
-                <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+                <div style={{ flex: 1, minWidth: 0, position: 'relative' }} onDragOver={onDragOver} onDrop={onDrop}>
                     {!selected ? (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--ink-3)', fontSize: 13, textAlign: 'center', padding: 24 }}>
                             Select an automation on the left, or create a new one to start building a workflow.
@@ -464,6 +510,7 @@ function FlowEditor({ showSnackbar }) {
                     <NodeConfig
                         key={selectedNode.id}
                         node={selectedNode}
+                        runningModels={runningModels}
                         onChange={(patch) => updateNodeData(selectedNode.id, patch)}
                         onDelete={deleteSelectedNode}
                         webhookUrl={webhookUrl}
@@ -478,7 +525,7 @@ function FlowEditor({ showSnackbar }) {
 }
 
 // ---- per-node config panel ----
-function NodeConfig({ node, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
+function NodeConfig({ node, runningModels = [], onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
     const kind = node.data.kind;
     const d = node.data;
     const cond = (d.condition && typeof d.condition === 'object') ? d.condition : { left: '', op: '==', right: '' };
@@ -500,7 +547,20 @@ function NodeConfig({ node, onChange, onDelete, webhookUrl, onGenWebhook, copied
             {kind === 'model' && (<>
                 <Field label="Prompt"><textarea style={{ ...fieldInput, minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(e) => onChange({ prompt: e.target.value })} placeholder="Use {{input.x}} or {{nodes.id.text}}" /></Field>
                 <Field label="System prompt"><textarea style={{ ...fieldInput, minHeight: 48, resize: 'vertical' }} value={d.systemPrompt || ''} onChange={(e) => onChange({ systemPrompt: e.target.value })} /></Field>
-                <Field label="Model (blank = current)"><input style={fieldInput} value={d.model || ''} onChange={(e) => onChange({ model: e.target.value })} /></Field>
+                <Field label="Model">
+                    <select style={fieldInput} value={d.model || ''} onChange={(e) => onChange({ model: e.target.value || undefined })}>
+                        <option value="">Current model{runningModels[0] ? ` (${runningModels[0].name})` : ''}</option>
+                        {runningModels.map(m => (
+                            <option key={m.name} value={m.name}>{m.name}{m.backend ? ` · ${m.backend}` : ''}</option>
+                        ))}
+                        {d.model && !runningModels.some(m => m.name === d.model) && (
+                            <option value={d.model}>{d.model} (not currently loaded)</option>
+                        )}
+                    </select>
+                    {runningModels.length === 0 && (
+                        <div style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: -6, marginBottom: 8 }}>No models loaded right now — load one to run this node.</div>
+                    )}
+                </Field>
                 <Field label="Temperature"><input type="number" step="0.1" style={fieldInput} value={d.temperature ?? ''} onChange={(e) => onChange({ temperature: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
                 <Field label="Max tokens"><input type="number" style={fieldInput} value={d.maxTokens ?? ''} onChange={(e) => onChange({ maxTokens: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
             </>)}
@@ -595,10 +655,10 @@ function JsonField({ value, onChange, placeholder }) {
     );
 }
 
-export default function AutomationView({ showSnackbar }) {
+export default function AutomationView({ showSnackbar, models }) {
     return (
         <ReactFlowProvider>
-            <FlowEditor showSnackbar={showSnackbar} />
+            <FlowEditor showSnackbar={showSnackbar} models={models} />
         </ReactFlowProvider>
     );
 }

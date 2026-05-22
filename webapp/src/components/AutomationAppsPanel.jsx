@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react';
 import {
     Box, Typography, Button, Card, CardContent, CardActions, Chip, Switch,
     TextField, Grid, Dialog, DialogTitle, DialogContent, DialogActions,
-    MenuItem, Alert, IconButton, Tooltip, CircularProgress, InputAdornment
+    MenuItem, Alert, IconButton, Tooltip, CircularProgress, InputAdornment, Collapse
 } from '@mui/material';
-import { Plus, Pencil, Trash2, Search as SearchIcon, X as ClearIcon } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search as SearchIcon, X as ClearIcon, ChevronDown } from 'lucide-react';
 
 // Automation building-block library for ONE category, shown as a sub-tab next
 // to Tools and Skills in the Apps tab. Lists the read-only built-in palette
@@ -34,9 +34,10 @@ const clamp2 = {
     overflow: 'hidden',
 };
 
-export default function AutomationAppsPanel({ category, showSnackbar }) {
+export default function AutomationAppsPanel({ category, showSnackbar, isAdmin = false, defaultExpanded = false }) {
     const meta = CATEGORY_META[category] || { label: category, singular: category, blurb: '' };
 
+    const [expanded, setExpanded] = useState(defaultExpanded);
     const [builtins, setBuiltins] = useState([]);
     const [custom, setCustom] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -140,24 +141,39 @@ export default function AutomationAppsPanel({ category, showSnackbar }) {
     const shownBuiltins = builtins.filter(matchq);
     const shownCustom = custom.filter(matchq);
 
+    const totalCount = builtins.length + custom.length;
+
     return (
-        <Box>
-            {/* Header */}
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1.5, gap: 2, flexWrap: 'wrap' }}>
-                <Box>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{meta.label}</Typography>
-                    <Typography variant="body2" color="text.secondary">{meta.blurb}</Typography>
+        <Box sx={{ mb: 2, border: '1px solid var(--border-primary)', borderRadius: 1.5, overflow: 'hidden' }}>
+            {/* Collapsible header */}
+            <Box
+                onClick={() => setExpanded(v => !v)}
+                role="button" tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+                sx={{
+                    display: 'flex', alignItems: 'center', gap: 1, p: 1.25, cursor: 'pointer',
+                    bgcolor: 'var(--bg-tertiary)', '&:hover': { bgcolor: 'var(--bg-hover)' },
+                }}
+            >
+                <ChevronDown size={18} style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', flexShrink: 0 }} />
+                <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                        {meta.label} <Typography component="span" variant="caption" color="text.secondary">· {totalCount}</Typography>
+                    </Typography>
+                    {expanded && <Typography variant="body2" color="text.secondary">{meta.blurb}</Typography>}
                 </Box>
                 <Button
                     variant="contained" size="small"
                     startIcon={<Plus size={16} />}
-                    onClick={openCreate}
-                    sx={{ flexShrink: 0 }}
+                    onClick={(e) => { e.stopPropagation(); setExpanded(true); openCreate(); }}
+                    sx={{ flexShrink: 0, ml: 'auto' }}
                 >
                     New {meta.singular}
                 </Button>
             </Box>
 
+            <Collapse in={expanded} timeout="auto" unmountOnExit>
+            <Box sx={{ p: 1.5 }}>
             <TextField
                 size="small" fullWidth placeholder={`Search ${meta.label.toLowerCase()}…`}
                 value={search} onChange={(e) => setSearch(e.target.value)}
@@ -232,9 +248,14 @@ export default function AutomationAppsPanel({ category, showSnackbar }) {
                                                     onChange={() => toggleEnabled(nt)}
                                                 />
                                             </Box>
-                                            {nt.baseType && (
-                                                <Chip label={nt.baseType} size="small" variant="outlined" sx={{ height: 20, my: 0.5 }} />
-                                            )}
+                                            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', my: 0.5 }}>
+                                                {nt.baseType && (
+                                                    <Chip label={nt.baseType} size="small" variant="outlined" sx={{ height: 20 }} />
+                                                )}
+                                                {isAdmin && nt._ownerName && (
+                                                    <Chip label={nt._ownerName} size="small" sx={{ height: 20, bgcolor: 'var(--accent-muted)', color: 'var(--accent-primary)' }} />
+                                                )}
+                                            </Box>
                                             <Typography variant="caption" color="text.secondary" sx={{ ...clamp2, display: '-webkit-box' }}>
                                                 {nt.description || 'No description'}
                                             </Typography>
@@ -258,6 +279,8 @@ export default function AutomationAppsPanel({ category, showSnackbar }) {
                     )}
                 </>
             )}
+            </Box>
+            </Collapse>
 
             {/* Create / Edit dialog */}
             <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>

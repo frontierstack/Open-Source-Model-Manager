@@ -6251,5 +6251,10 @@ svg.react-flow__connectionline {
 }
 @keyframes autoDash { to { stroke-dashoffset: -20; } }
 
-.react-flow__edge-path { stroke: var(--rule-2, var(--rule)); stroke-width: 1.5; }
+/* Idle connector lines — kept high-contrast against the canvas so the graph
+   reads clearly (was --rule-2, which washed out on darker themes). */
+.react-flow__edge-path { stroke: var(--ink-3, #94a3b8); stroke-width: 2; }
+.automation-flow .react-flow__edge:hover .react-flow__edge-path { stroke: var(--ink-2, #cbd5e1); }
+.automation-flow .react-flow__connectionline .react-flow__connection-path,
+.automation-flow .react-flow__connection-path { stroke: var(--accent); stroke-width: 2.5; }
 

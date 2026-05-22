@@ -7801,12 +7801,27 @@ const AUTOMATION_PERM = 'automation';
 
 // --- Workflow (automation) CRUD ---
 
+// Attach a resolved _ownerName to each item (for the admin-wide view).
+// global/no-userId items get null; unknown ids fall back to the raw id.
+async function attachOwnerNames(items) {
+    try {
+        const users = await getAllUsers();
+        const byId = new Map((users || []).map(u => [String(u.id), u.username]));
+        return items.map(it => ({ ...it, _ownerName: it.userId ? (byId.get(String(it.userId)) || it.userId) : null }));
+    } catch (_) {
+        return items.map(it => ({ ...it, _ownerName: it.userId || null }));
+    }
+}
+
 app.get('/api/automations', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });
     }
     try {
         const workflows = await loadWorkflows();
+        // Admins (session or admin-keyed) get an org-wide view with owner names;
+        // everyone else sees their own + global items.
+        if (callerIsAdmin(req)) return res.json(await attachOwnerNames(workflows));
         res.json(filterByUserId(workflows, req.userId));
     } catch (error) {
         console.error('Error loading automations:', error);
@@ -7822,7 +7837,7 @@ app.get('/api/automations/:id', requireAuth, async (req, res) => {
         const workflows = await loadWorkflows();
         const wf = workflows.find(w => w.id === req.params.id);
         if (!wf) return res.status(404).json({ error: 'Automation not found' });
-        if (!checkOwnership(wf, req.userId)) {
+        if (!checkOwnership(wf, req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
         }
         res.json(wf);
@@ -7871,7 +7886,7 @@ app.put('/api/automations/:id', requireAuth, async (req, res) => {
         const workflows = await loadWorkflows();
         const idx = workflows.findIndex(w => w.id === req.params.id);
         if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
-        if (!checkOwnership(workflows[idx], req.userId)) {
+        if (!checkOwnership(workflows[idx], req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
         }
         workflows[idx] = {
@@ -7900,7 +7915,7 @@ app.delete('/api/automations/:id', requireAuth, async (req, res) => {
         const workflows = await loadWorkflows();
         const idx = workflows.findIndex(w => w.id === req.params.id);
         if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
-        if (!checkOwnership(workflows[idx], req.userId)) {
+        if (!checkOwnership(workflows[idx], req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
         }
         workflows.splice(idx, 1);
@@ -7923,7 +7938,7 @@ async function patchWorkflowFlag(req, res, field) {
         const workflows = await loadWorkflows();
         const idx = workflows.findIndex(w => w.id === req.params.id);
         if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
-        if (!checkOwnership(workflows[idx], req.userId)) {
+        if (!checkOwnership(workflows[idx], req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
         }
         const value = req.body && req.body[field] !== undefined ? !!req.body[field] : !workflows[idx][field];
@@ -7995,7 +8010,7 @@ app.post('/api/automations/:id/run', requireAuth, async (req, res) => {
         const workflows = await loadWorkflows();
         wf = workflows.find(w => w.id === req.params.id);
         if (!wf) return res.status(404).json({ error: 'Automation not found' });
-        if (!checkOwnership(wf, req.userId)) {
+        if (!checkOwnership(wf, req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
         }
     } catch (error) {
@@ -8033,6 +8048,31 @@ app.post('/api/automations/:id/run', requireAuth, async (req, res) => {
 
     try { res.write(`data: ${JSON.stringify({ type: 'done', runId, status: outcome.status, result: outcome.result, error: outcome.error })}\n\n`); } catch (_) {}
     try { res.end(); } catch (_) {}
+});
+
+// Synchronous run for API / Pi / programmatic callers — runs the workflow and
+// returns the final JSON (no SSE). Same auth + ownership as the streaming route.
+app.post('/api/automations/:id/run-sync', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const wf = workflows.find(w => w.id === req.params.id);
+        if (!wf) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(wf, req.userId) && !callerIsAdmin(req)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        const input = (req.body && typeof req.body.input === 'object' && req.body.input) || {};
+        const { runId, outcome } = await executeWorkflowRun(wf, {
+            userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'api', input,
+            onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, req.userId); } catch (_) {} },
+        });
+        res.json({ runId, status: outcome.status, result: outcome.result, error: outcome.error });
+    } catch (error) {
+        console.error('Error running automation (sync):', error);
+        res.status(500).json({ error: 'Failed to run automation' });
+    }
 });
 
 // Cancel an in-flight run.
@@ -8096,6 +8136,7 @@ app.get('/api/node-types', requireAuth, async (req, res) => {
     }
     try {
         const nodeTypes = await loadNodeTypes();
+        if (callerIsAdmin(req)) return res.json(await attachOwnerNames(nodeTypes));
         res.json(filterByUserId(nodeTypes, req.userId));
     } catch (error) {
         console.error('Error loading node-types:', error);
@@ -8111,7 +8152,7 @@ app.get('/api/node-types/:id', requireAuth, async (req, res) => {
         const nodeTypes = await loadNodeTypes();
         const nt = nodeTypes.find(n => n.id === req.params.id);
         if (!nt) return res.status(404).json({ error: 'Node-type not found' });
-        if (!checkOwnership(nt, req.userId)) {
+        if (!checkOwnership(nt, req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: node-type belongs to another user' });
         }
         res.json(nt);
@@ -8168,7 +8209,7 @@ app.put('/api/node-types/:id', requireAuth, async (req, res) => {
         const nodeTypes = await loadNodeTypes();
         const idx = nodeTypes.findIndex(n => n.id === req.params.id);
         if (idx === -1) return res.status(404).json({ error: 'Node-type not found' });
-        if (!checkOwnership(nodeTypes[idx], req.userId)) {
+        if (!checkOwnership(nodeTypes[idx], req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: node-type belongs to another user' });
         }
         if (name && name !== nodeTypes[idx].name && nodeTypes.find(n => n.name === name)) {
@@ -8202,7 +8243,7 @@ app.delete('/api/node-types/:id', requireAuth, async (req, res) => {
         const nodeTypes = await loadNodeTypes();
         const idx = nodeTypes.findIndex(n => n.id === req.params.id);
         if (idx === -1) return res.status(404).json({ error: 'Node-type not found' });
-        if (!checkOwnership(nodeTypes[idx], req.userId)) {
+        if (!checkOwnership(nodeTypes[idx], req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: node-type belongs to another user' });
         }
         nodeTypes.splice(idx, 1);
@@ -8226,7 +8267,7 @@ app.post('/api/automations/:id/webhook-token', requireAuth, async (req, res) => 
         const workflows = await loadWorkflows();
         const idx = workflows.findIndex(w => w.id === req.params.id);
         if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
-        if (!checkOwnership(workflows[idx], req.userId)) {
+        if (!checkOwnership(workflows[idx], req.userId) && !callerIsAdmin(req)) {
             return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
         }
         const token = crypto.randomBytes(24).toString('hex');
