@@ -122,6 +122,7 @@ import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
 import AppsPanel from './components/AppsPanel';
+import AutomationAppsPanel from './components/AutomationAppsPanel';
 import MyModelsPanel from './components/MyModelsPanel';
 import RunningInstancesPanel from './components/RunningInstancesPanel';
 import UserDialog from './components/UserDialog';
@@ -9612,6 +9613,7 @@ console.log(await res.json());`
                                                                     <MenuItem value="query_web">Query Web</MenuItem>
                                                                     <MenuItem value="agents">Manage Agents</MenuItem>
                                                                     <MenuItem value="skills">Manage Tools</MenuItem>
+                                                                    <MenuItem value="automation">Automation</MenuItem>
                                                                     <MenuItem value="models">Manage Models</MenuItem>
                                                                     <MenuItem value="instances">Manage Instances</MenuItem>
                                                                     <MenuItem value="admin">Admin Access</MenuItem>
@@ -9793,6 +9795,7 @@ console.log(await res.json());`
                                                                     <MenuItem value="query_web">Query Web</MenuItem>
                                                                     <MenuItem value="agents">Manage Agents</MenuItem>
                                                                     <MenuItem value="skills">Manage Tools</MenuItem>
+                                                                    <MenuItem value="automation">Automation</MenuItem>
                                                                     <MenuItem value="models">Manage Models</MenuItem>
                                                                     <MenuItem value="instances">Manage Instances</MenuItem>
                                                                     <MenuItem value="admin">Admin Access</MenuItem>
@@ -10956,6 +10959,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 { label: 'models',    desc: 'List, download, load/unload, configs',      style: accentScope  },
                                                 { label: 'instances', desc: 'List, stop, slots, clear KV cache',         style: successScope },
                                                 { label: 'agents',    desc: 'Agents, tools, tasks, file ops',            style: accentScope  },
+                                                { label: 'automation', desc: 'Workflow automations + node-types',        style: accentScope  },
                                                 { label: 'admin',     desc: 'API keys, backend, system, apps',           style: errorScope   },
                                             ];
                                             return (
@@ -11751,6 +11755,9 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     <Tabs value={agentSubTab} onChange={(e, v) => setAgentSubTab(v)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
                                                         <Tab label="Tools" />
                                                         <Tab label="Skills" />
+                                                        <Tab label="Triggers" />
+                                                        <Tab label="Logic Gates" />
+                                                        <Tab label="Connectors" />
                                                     </Tabs>
 
                                                     {/* Tools Sub-Tab */}
@@ -12160,6 +12167,17 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                         </Box>
                                                         );
                                                     })()}
+
+                                                    {/* Automation building-block libraries (next to Tools/Skills) */}
+                                                    {agentSubTab === 2 && (
+                                                        <AutomationAppsPanel category="trigger" showSnackbar={showSnackbar} />
+                                                    )}
+                                                    {agentSubTab === 3 && (
+                                                        <AutomationAppsPanel category="gate" showSnackbar={showSnackbar} />
+                                                    )}
+                                                    {agentSubTab === 4 && (
+                                                        <AutomationAppsPanel category="connector" showSnackbar={showSnackbar} />
+                                                    )}
 
                                                 </CardContent>
                                             </Card>
