@@ -839,6 +839,12 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Create a bot with @BotFather for the token; get the chat id from @userinfobot or the bot's getUpdates.</p>
             </>)}
 
+            {kind === 'telegram_get' && (<>
+                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
+                <Field label="Limit"><input type="number" style={fieldInput} value={d.limit ?? ''} onChange={(e) => onChange({ limit: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="10" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Fetches recent messages: <code>{'{{nodes.id.messages}}'}</code>, <code>{'{{nodes.id.latest.text}}'}</code>, <code>{'{{nodes.id.text}}'}</code> (latest). Don't use on a bot that also has a Telegram trigger — getUpdates conflicts.</p>
+            </>)}
+
             {kind === 'delay' && (
                 <Field label="Delay (ms)"><input type="number" style={fieldInput} value={d.ms ?? ''} onChange={(e) => onChange({ ms: Number(e.target.value) })} /></Field>
             )}

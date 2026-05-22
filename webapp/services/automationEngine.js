@@ -43,6 +43,7 @@ const BUILTIN_NODE_TYPES = [
     { key: 'export_file', type: 'export_file',category: 'connector', label: 'Export File',      description: 'Writes the incoming data to a downloadable file (pdf, csv, txt, md, html, json).', inputs: ['in'], outputs: ['out'], fields: ['format', 'filename', 'content'] },
     { key: 'slack',       type: 'slack',      category: 'connector', label: 'Slack Message',    description: 'Posts a message to a Slack incoming-webhook URL.', inputs: ['in'], outputs: ['out'], fields: ['webhookUrl', 'text'] },
     { key: 'telegram',    type: 'telegram',   category: 'connector', label: 'Telegram Message', description: 'Sends a message via a Telegram bot (Bot API token + chat id).', inputs: ['in'], outputs: ['out'], fields: ['botToken', 'chatId', 'text'] },
+    { key: 'telegram_get',type: 'telegram_get',category: 'connector', label: 'Get Telegram Messages', description: 'Fetches the bot\'s recent messages on demand (getUpdates). Do NOT use on a bot that also has a Telegram trigger — getUpdates conflicts.', inputs: ['in'], outputs: ['out'], fields: ['botToken', 'limit'] },
     { key: 'http_request',type: 'tool',       category: 'connector', label: 'HTTP Request',     description: 'Calls an HTTP endpoint (SSRF-guarded — private IPs blocked).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'http_request' }, fields: ['args'] },
     { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
     { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
@@ -362,6 +363,22 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             return { sent: true, response };
         }
 
+        case 'telegram_get': {
+            if (!deps.executeToolCall) throw new Error('Get Telegram Messages needs the tool dispatcher.');
+            const token = String(data.botToken || '').trim();
+            if (!token) throw new Error('Get Telegram Messages requires a bot token.');
+            const limit = (data.limit != null && data.limit !== '') ? Math.max(1, Number(data.limit) || 10) : 10;
+            const response = await dispatchTool(deps, ctx, node, 'http_request', {
+                url: `https://api.telegram.org/bot${token}/getUpdates?timeout=0`, method: 'GET',
+            });
+            const fail = httpFailureMessage(response);
+            if (fail) throw new Error(`Telegram getUpdates failed — ${fail}`);
+            const result = (response && response.data && Array.isArray(response.data.result)) ? response.data.result : [];
+            const messages = result.map(u => u.message).filter(Boolean).slice(-limit);
+            const latest = messages.length ? messages[messages.length - 1] : null;
+            return { count: messages.length, messages, latest, text: latest ? (latest.text || latest.caption || '') : '' };
+        }
+
         case 'delay': {
             const ms = Math.max(0, Math.min(MAX_DELAY_MS, Number(data.ms) || 0));
             if (ms > 0) await new Promise(r => setTimeout(r, ms));
@@ -449,6 +466,14 @@ async function runWorkflow(workflow, opts = {}) {
 
     const aborted = () => signal && signal.aborted;
 
+    // A node with no incoming edges is a valid entry point only if it's a trigger
+    // — or, for trigger-less manual workflows, when the graph has no triggers at
+    // all. A non-trigger node left unconnected (no incoming line) is an orphan and
+    // must NOT run as a stray entry.
+    const isTriggerNode = (n) => typeof n.type === 'string' && n.type.startsWith('trigger.');
+    const hasTrigger = nodes.some(isTriggerNode);
+    const isEntry = (n) => incoming.get(n.id).length === 0 && (isTriggerNode(n) || !hasTrigger);
+
     onEvent({ type: 'run_start', nodeCount: nodes.length });
 
     let result = null;
@@ -459,12 +484,20 @@ async function runWorkflow(workflow, opts = {}) {
         while (steps++ < stepCap) {
             if (aborted()) throw new Error('aborted');
 
-            // 1. Skip any node whose every incoming edge is resolved-and-pruned.
+            // 1. Skip orphan nodes (no incoming line, not a valid entry) and any
+            //    node whose every incoming edge is resolved-and-pruned.
             let changed = false;
             for (const n of nodes) {
                 if (nodeState.get(n.id) !== 'pending') continue;
                 const inc = incoming.get(n.id);
-                if (inc.length === 0) continue; // entry node — never auto-skipped
+                if (inc.length === 0) {
+                    if (isEntry(n)) continue; // genuine entry — never auto-skipped
+                    // unconnected non-trigger node: never runs; prune its outputs.
+                    nodeState.set(n.id, 'skipped');
+                    for (const e of outgoing.get(n.id)) edgeState.set(edgeKey(e), 'pruned');
+                    changed = true;
+                    continue;
+                }
                 if (inc.every(isResolved) && !inc.some(isActive)) {
                     nodeState.set(n.id, 'skipped');
                     for (const e of outgoing.get(n.id)) edgeState.set(edgeKey(e), 'pruned');
@@ -472,12 +505,12 @@ async function runWorkflow(workflow, opts = {}) {
                 }
             }
 
-            // 2. Find a runnable node: entry (no incoming) OR all incoming
-            //    resolved with at least one active.
+            // 2. Find a runnable node: a valid entry, OR all incoming resolved
+            //    with at least one active.
             const runnable = nodes.find(n => {
                 if (nodeState.get(n.id) !== 'pending') return false;
                 const inc = incoming.get(n.id);
-                if (inc.length === 0) return true;
+                if (inc.length === 0) return isEntry(n);
                 return inc.every(isResolved) && inc.some(isActive);
             });
 

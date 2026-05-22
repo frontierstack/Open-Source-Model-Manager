@@ -3,7 +3,7 @@ import { Handle, Position } from '@xyflow/react';
 import {
     Zap, Clock, Webhook, Bell, Cpu, Wrench, Search, Globe, Database,
     BarChart3, FileText, Timer, Variable, GitBranch, Filter, Merge, Flag, Box as BoxIcon,
-    Braces, Code, Download, MessageSquare, MessagesSquare, Send,
+    Braces, Code, Download, MessageSquare, MessagesSquare, Send, Inbox,
 } from 'lucide-react';
 
 // Which handles a node exposes, by engine kind. Triggers are sources only,
@@ -36,6 +36,7 @@ function pickIcon(kind) {
         case 'export_file': return Download;
         case 'slack': return MessageSquare;
         case 'telegram': return Send;
+        case 'telegram_get': return Inbox;
         case 'delay': return Timer;
         case 'set': return Variable;
         case 'gate.if': return GitBranch;
@@ -84,6 +85,7 @@ function subtitleFor(kind, data) {
     if (kind === 'export_file') return (data.format || 'txt').toUpperCase();
     if (kind === 'slack') return 'slack';
     if (kind === 'telegram') return 'telegram';
+    if (kind === 'telegram_get') return 'get messages';
     if (kind === 'set') return data.name || 'variable';
     return '';
 }
