@@ -17,31 +17,44 @@
 
 // ---------------------------------------------------------------------------
 // Built-in node-type catalog (drives the editor palette + validation).
-// User-authored node-types (from node-types.json) are layered on top by the
-// API; these are the primitives the executor understands natively.
+//
+// These are TEMPLATES, not a 1:1 type map: several connector templates share
+// the engine `type: 'tool'` but ship different `defaults` (the tool name) so
+// the palette can present "SQLite Query", "Create PDF", etc. as distinct cards
+// that all execute through the one tool handler. `key` is the unique template
+// id; `type` is what the executor dispatches on at runtime. User-authored
+// node-types (from node-types.json) are layered on top of this by the API.
+// Telegram trigger/connector templates are intentionally omitted (later phase).
 // ---------------------------------------------------------------------------
 const BUILTIN_NODE_TYPES = [
-    // Triggers (entry points; emit the run input as their output)
-    { type: 'trigger.manual',   category: 'trigger',   label: 'Manual / Run now', description: 'Starts the workflow when run manually.', outputs: ['out'] },
-    { type: 'trigger.webhook',  category: 'trigger',   label: 'Inbound Webhook',  description: 'Starts when its webhook URL is called. (Wiring added in Phase 2.)', outputs: ['out'] },
-    { type: 'trigger.schedule', category: 'trigger',   label: 'Schedule',         description: 'Starts on a cron/interval. (Scheduler added in Phase 2.)', outputs: ['out'] },
-    { type: 'trigger.event',    category: 'trigger',   label: 'On Event',         description: 'Starts on a system event (model loaded, etc). (Phase 2.)', outputs: ['out'] },
+    // --- Triggers (entry points; emit the run input as their output) ---
+    { key: 'trigger.manual',   type: 'trigger.manual',   category: 'trigger', label: 'Manual / Run now', description: 'Starts the workflow when run manually.', outputs: ['out'] },
+    { key: 'trigger.schedule', type: 'trigger.schedule', category: 'trigger', label: 'Schedule',         description: 'Starts on a cron expression or fixed interval.', outputs: ['out'], fields: ['cron', 'intervalMs'] },
+    { key: 'trigger.webhook',  type: 'trigger.webhook',  category: 'trigger', label: 'Inbound Webhook',  description: 'Starts when its (token-gated) webhook URL is POSTed to. The request body becomes the run input.', outputs: ['out'] },
+    { key: 'trigger.event',    type: 'trigger.event',    category: 'trigger', label: 'On Event',         description: 'Starts on a system event (e.g. model.loaded). The event payload becomes the run input.', outputs: ['out'], fields: ['event'] },
 
-    // Connectors (do work)
-    { type: 'model',      category: 'connector', label: 'Model / LLM call', description: 'Runs a prompt through a loaded model.', inputs: ['in'], outputs: ['out'], fields: ['prompt', 'systemPrompt', 'model', 'temperature', 'maxTokens'] },
-    { type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
-    { type: 'web_search', category: 'connector', label: 'Web Search',        description: 'Searches the web (DuckDuckGo → Brave fallback).', inputs: ['in'], outputs: ['out'], fields: ['query', 'limit'] },
-    { type: 'fetch_url',  category: 'connector', label: 'Fetch URL',         description: 'Fetches and extracts the content of a URL.', inputs: ['in'], outputs: ['out'], fields: ['url', 'maxLength'] },
-    { type: 'http_request', category: 'connector', label: 'HTTP Request',    description: 'Calls an HTTP endpoint (SSRF-guarded). (Phase 2 connector.)', inputs: ['in'], outputs: ['out'], fields: ['url', 'method', 'headers', 'body'] },
-    { type: 'delay',      category: 'connector', label: 'Delay / Wait',      description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
-    { type: 'set',        category: 'connector', label: 'Set Variable',      description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
+    // --- Connectors (do work) ---
+    { key: 'model',       type: 'model',      category: 'connector', label: 'Model / LLM call', description: 'Runs a prompt through a loaded model.', inputs: ['in'], outputs: ['out'], fields: ['prompt', 'systemPrompt', 'model', 'temperature', 'maxTokens'] },
+    { key: 'web_search',  type: 'web_search', category: 'connector', label: 'Web Search',       description: 'Searches the web (DuckDuckGo → Brave fallback).', inputs: ['in'], outputs: ['out'], fields: ['query', 'limit'] },
+    { key: 'fetch_url',   type: 'fetch_url',  category: 'connector', label: 'Fetch URL',        description: 'Fetches and extracts the content of a URL.', inputs: ['in'], outputs: ['out'], fields: ['url', 'maxLength'] },
+    { key: 'http_request',type: 'tool',       category: 'connector', label: 'HTTP Request',     description: 'Calls an HTTP endpoint (SSRF-guarded — private IPs blocked).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'http_request' }, fields: ['args'] },
+    { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
+    { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
+    { key: 'render_chart',type: 'tool',       category: 'connector', label: 'Render Chart',     description: 'Renders a chart spec for display/download.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'render_chart' }, fields: ['args'] },
+    { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from markdown/HTML content.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
+    { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
+    { key: 'tool',        type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
+    { key: 'delay',       type: 'delay',      category: 'connector', label: 'Delay / Wait',     description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
+    { key: 'set',         type: 'set',        category: 'connector', label: 'Set Variable',     description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
 
-    // Logic gates
-    { type: 'gate.if',     category: 'gate', label: 'If / Else',  description: 'Branches on a condition.', inputs: ['in'], outputs: ['true', 'false'], fields: ['condition'] },
-    { type: 'gate.switch', category: 'gate', label: 'Switch',     description: 'N-way branch on a value. (Phase 2.)', inputs: ['in'], outputs: ['default'], fields: ['value', 'cases'] },
+    // --- Logic gates ---
+    { key: 'gate.if',     type: 'gate.if',     category: 'gate', label: 'If / Else', description: 'Branches on a condition (true / false handles).', inputs: ['in'], outputs: ['true', 'false'], fields: ['condition'] },
+    { key: 'gate.switch', type: 'gate.switch', category: 'gate', label: 'Switch',    description: 'N-way branch: routes to the handle of the first matching case, else "default".', inputs: ['in'], outputs: ['default'], fields: ['value', 'cases'] },
+    { key: 'gate.filter', type: 'gate.filter', category: 'gate', label: 'Filter',    description: 'Continues only when its condition holds; otherwise that branch stops.', inputs: ['in'], outputs: ['out'], fields: ['condition'] },
+    { key: 'merge',       type: 'merge',       category: 'gate', label: 'Merge',     description: 'Joins multiple branches: collects all incoming outputs into one list.', inputs: ['in'], outputs: ['out'] },
 
-    // Terminal
-    { type: 'output', category: 'output', label: 'Output / End', description: 'Marks a workflow result.', inputs: ['in'] },
+    // --- Terminal ---
+    { key: 'output', type: 'output', category: 'output', label: 'Output / End', description: 'Marks a workflow result.', inputs: ['in'] },
 ];
 
 const MAX_DELAY_MS = 5 * 60 * 1000; // a delay node can wait at most 5 minutes
@@ -145,7 +158,7 @@ function evalCondition(condition, scope) {
 // Node handlers
 // ---------------------------------------------------------------------------
 
-async function runNode(node, scope, deps, ctx) {
+async function runNode(node, scope, deps, ctx, inputs = []) {
     const type = node.type || 'output';
     const data = interpolate(node.data || {}, scope);
 
@@ -214,6 +227,28 @@ async function runNode(node, scope, deps, ctx) {
         case 'gate.if': {
             const result = evalCondition(node.data ? node.data.condition : null, scope);
             return { result, _handle: result ? 'true' : 'false' };
+        }
+
+        case 'gate.switch': {
+            // data.value is compared (as string) against each case's `equals`.
+            // cases: [{ equals, handle }]. First match wins, else 'default'.
+            const value = String(toComparable(data.value));
+            const cases = Array.isArray(data.cases) ? data.cases : [];
+            const hit = cases.find(c => String(toComparable(c.equals)) === value);
+            const handle = hit ? (hit.handle || String(hit.equals)) : 'default';
+            return { value: data.value, matched: !!hit, _handle: handle };
+        }
+
+        case 'gate.filter': {
+            // Continue down the 'out' handle only when the condition holds;
+            // otherwise route to 'blocked' (usually unwired → branch stops).
+            const pass = evalCondition(node.data ? node.data.condition : null, scope);
+            return { pass, _handle: pass ? 'out' : 'blocked', value: scope.last ?? {} };
+        }
+
+        case 'merge': {
+            // Collect every active incoming branch's output into one list.
+            return { items: inputs, count: inputs.length };
         }
 
         case 'output':
@@ -309,9 +344,16 @@ async function runWorkflow(workflow, opts = {}) {
             timeline.push(entry);
             onEvent({ type: 'node_start', nodeId: node.id, nodeType: node.type });
 
+            // Outputs of the active incoming branches (used by merge; available
+            // to any handler that wants its direct predecessors).
+            const activeInputs = incoming.get(node.id)
+                .filter(isActive)
+                .map(e => scope.nodes[e.source])
+                .filter(v => v !== undefined);
+
             let output;
             try {
-                output = await runNode(node, scope, deps, ctx);
+                output = await runNode(node, scope, deps, ctx, activeInputs);
             } catch (err) {
                 entry.status = 'failed';
                 entry.finishedAt = new Date().toISOString();
@@ -329,8 +371,10 @@ async function runWorkflow(workflow, opts = {}) {
             entry.output = summarizeOutput(output);
             onEvent({ type: 'node_finish', nodeId: node.id, status: 'completed', output: entry.output });
 
-            // 4. Activate/prune outgoing edges.
-            const chosenHandle = (node.type === 'gate.if') ? output._handle : null;
+            // 4. Activate/prune outgoing edges. Any node whose output carries a
+            //    `_handle` (gate.if / gate.switch / gate.filter) routes only the
+            //    edges leaving that handle; edges with no sourceHandle stay active.
+            const chosenHandle = (output && typeof output._handle === 'string') ? output._handle : null;
             for (const e of outgoing.get(node.id)) {
                 let active = true;
                 if (chosenHandle != null && e.sourceHandle != null) {
@@ -361,9 +405,55 @@ function summarizeOutput(output) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cron matching (self-contained — no dependency). The scheduler ticks every
+// 60s, so we only need "does this minute match the expression", not next-run
+// computation. Supports the standard 5 fields (min hour dom month dow) with
+// *, */n, a, a-b, a,b,c and combinations. Sunday is 0 or 7.
+// ---------------------------------------------------------------------------
+function parseCronField(field, min, max) {
+    if (field === '*' || field === '?') return null; // null = wildcard (matches anything)
+    const allowed = new Set();
+    for (const part of String(field).split(',')) {
+        let step = 1;
+        let range = part;
+        const slash = part.split('/');
+        if (slash.length === 2) { range = slash[0]; step = parseInt(slash[1], 10) || 1; }
+        let lo, hi;
+        if (range === '*') { lo = min; hi = max; }
+        else if (range.includes('-')) { const [a, b] = range.split('-'); lo = parseInt(a, 10); hi = parseInt(b, 10); }
+        else { lo = hi = parseInt(range, 10); }
+        if (Number.isNaN(lo) || Number.isNaN(hi)) continue;
+        for (let v = lo; v <= hi; v += step) if (v >= min && v <= max) allowed.add(v);
+    }
+    return allowed;
+}
+
+function cronMatches(expr, date = new Date()) {
+    if (!expr || typeof expr !== 'string') return false;
+    const parts = expr.trim().split(/\s+/);
+    if (parts.length !== 5) return false;
+    const [minF, hourF, domF, monF, dowF] = parts;
+    const min = parseCronField(minF, 0, 59);
+    const hour = parseCronField(hourF, 0, 23);
+    const dom = parseCronField(domF, 1, 31);
+    const mon = parseCronField(monF, 1, 12);
+    const dow = parseCronField(dowF, 0, 7);
+    const mt = (set, v) => set === null || set.has(v);
+
+    const M = date.getMinutes(), H = date.getHours(), D = date.getDate(), MO = date.getMonth() + 1, DW = date.getDay();
+    const dowMatch = dow === null ? true : (dow.has(DW) || (DW === 0 && dow.has(7)));
+    // cron quirk: when BOTH day-of-month and day-of-week are restricted, the
+    // day matches if EITHER does; otherwise both must hold.
+    const dayMatch = (dom !== null && dow !== null) ? (mt(dom, D) || dowMatch) : (mt(dom, D) && dowMatch);
+
+    return mt(min, M) && mt(hour, H) && dayMatch && mt(mon, MO);
+}
+
 module.exports = {
     runWorkflow,
     evalCondition,
     interpolate,
+    cronMatches,
     BUILTIN_NODE_TYPES,
 };

@@ -4715,6 +4715,11 @@ async function monitorContainerHealth(container, modelName, port) {
                                 level: 'success'
                             });
                         }
+                        // Fire automations subscribed to the model.loaded event
+                        // (only on the loading→running transition, not every poll).
+                        if (wasLoading && typeof fireAutomationEvent === 'function') {
+                            fireAutomationEvent('model.loaded', { modelName, backend: instance.backend, port });
+                        }
                     }
 
                     // Continue monitoring in phase 3 to detect future issues
@@ -7933,6 +7938,52 @@ async function patchWorkflowFlag(req, res, field) {
 app.post('/api/automations/:id/enable', requireAuth, (req, res) => patchWorkflowFlag(req, res, 'enabled'));
 app.post('/api/automations/:id/archive', requireAuth, (req, res) => patchWorkflowFlag(req, res, 'archived'));
 
+// Shared workflow runner used by the SSE route, the scheduler, the webhook
+// route, and system events. Creates a run record, runs the engine, persists
+// the final record, and emits status via onEvent (the SSE route adds SSE
+// writes + WS mirror; background triggers pass a broadcast-only onEvent).
+// Emits a 'run_created' event first so callers can capture the runId (e.g. to
+// wire client-disconnect cancellation). Returns { runId, outcome }.
+async function executeWorkflowRun(wf, { userId = null, apiKeyData = null, trigger = 'manual', input = {}, onEvent = () => {} } = {}) {
+    const chatTools = require('./services/chatTools');
+    const abort = new AbortController();
+    let runId;
+    try {
+        runId = await workflowRunStore.createRun(userId, { workflowId: wf.id, workflowName: wf.name, trigger });
+    } catch (_) {
+        runId = crypto.randomBytes(16).toString('hex'); // still run even if history write failed
+    }
+    activeAutomationRuns.set(runId, { abort, userId, workflowId: wf.id });
+
+    const emit = (evt) => { try { onEvent({ ...evt, runId, workflowId: wf.id }); } catch (_) {} };
+    emit({ type: 'run_created' });
+
+    const deps = { runModelCompletion, executeToolCall: chatTools.executeToolCall };
+    const ctx = { userId, apiKeyData, workspaceBucket: `automation-${wf.id}` };
+
+    let outcome;
+    try {
+        outcome = await automationEngine.runWorkflow(wf, { input, deps, onEvent: emit, ctx, signal: abort.signal });
+    } catch (e) {
+        outcome = { status: 'failed', result: null, error: e.message || String(e), timeline: [] };
+        emit({ type: 'run_finish', status: 'failed', error: outcome.error });
+    } finally {
+        activeAutomationRuns.delete(runId);
+    }
+
+    try {
+        await workflowRunStore.updateRun(userId, runId, {
+            status: outcome.status,
+            finishedAt: new Date().toISOString(),
+            error: outcome.error,
+            nodes: outcome.timeline,
+            result: outcome.result,
+        });
+    } catch (_) {}
+
+    return { runId, outcome };
+}
+
 // Run a workflow now (manual trigger), streaming live status over SSE and
 // mirroring each event to the owner's WebSocket clients for the editor animation.
 app.post('/api/automations/:id/run', requireAuth, async (req, res) => {
@@ -7959,61 +8010,28 @@ app.post('/api/automations/:id/run', requireAuth, async (req, res) => {
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
     const userId = req.userId;
-    const chatTools = require('./services/chatTools');
     const input = (req.body && typeof req.body.input === 'object' && req.body.input) || {};
 
-    const abort = new AbortController();
-    let runId;
-    try {
-        runId = await workflowRunStore.createRun(userId, { workflowId: wf.id, workflowName: wf.name, trigger: 'manual' });
-    } catch (e) {
-        runId = crypto.randomBytes(16).toString('hex'); // run still streams even if history write failed
-    }
-    activeAutomationRuns.set(runId, { abort, userId, workflowId: wf.id });
-
-    const sse = (event) => {
-        try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch (_) {}
-    };
+    let capturedRunId = null;
     const onEvent = (evt) => {
-        const framed = { ...evt, runId, workflowId: wf.id };
-        sse(framed);
-        // Per-user WS mirror for the webapp UI / editor animation.
-        try { broadcast({ type: 'automation_event', ...framed }, userId); } catch (_) {}
+        if (evt.type === 'run_created') capturedRunId = evt.runId;
+        try { res.write(`data: ${JSON.stringify(evt)}\n\n`); } catch (_) {}
+        try { broadcast({ type: 'automation_event', ...evt }, userId); } catch (_) {}
     };
 
     // Cancel if the client disconnects mid-run.
-    req.on('close', () => { if (!res.writableEnded) abort.abort(); });
+    req.on('close', () => {
+        if (!res.writableEnded && capturedRunId) {
+            const e = activeAutomationRuns.get(capturedRunId);
+            if (e) { try { e.abort.abort(); } catch (_) {} }
+        }
+    });
 
-    sse({ type: 'run_created', runId, workflowId: wf.id });
+    const { runId, outcome } = await executeWorkflowRun(wf, {
+        userId, apiKeyData: req.apiKeyData || null, trigger: 'manual', input, onEvent
+    });
 
-    const deps = {
-        runModelCompletion,
-        executeToolCall: chatTools.executeToolCall,
-    };
-    const ctx = { userId, apiKeyData: req.apiKeyData || null, workspaceBucket: `automation-${wf.id}` };
-
-    let outcome;
-    try {
-        outcome = await automationEngine.runWorkflow(wf, { input, deps, onEvent, ctx, signal: abort.signal });
-    } catch (e) {
-        outcome = { status: 'failed', result: null, error: e.message || String(e), timeline: [] };
-        onEvent({ type: 'run_finish', status: 'failed', error: outcome.error });
-    } finally {
-        activeAutomationRuns.delete(runId);
-    }
-
-    // Persist the final run record.
-    try {
-        await workflowRunStore.updateRun(userId, runId, {
-            status: outcome.status,
-            finishedAt: new Date().toISOString(),
-            error: outcome.error,
-            nodes: outcome.timeline,
-            result: outcome.result,
-        });
-    } catch (_) {}
-
-    sse({ type: 'done', runId, status: outcome.status, result: outcome.result, error: outcome.error });
+    try { res.write(`data: ${JSON.stringify({ type: 'done', runId, status: outcome.status, result: outcome.result, error: outcome.error })}\n\n`); } catch (_) {}
     try { res.end(); } catch (_) {}
 });
 
@@ -8195,6 +8213,140 @@ app.delete('/api/node-types/:id', requireAuth, async (req, res) => {
         res.status(500).json({ error: 'Failed to delete node-type' });
     }
 });
+
+// --- Webhook triggers ---
+
+// Generate (or rotate) the webhook token for a workflow that has a
+// trigger.webhook node. Stored at the workflow level so it survives node edits.
+app.post('/api/automations/:id/webhook-token', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const idx = workflows.findIndex(w => w.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(workflows[idx], req.userId)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        const token = crypto.randomBytes(24).toString('hex');
+        workflows[idx] = { ...workflows[idx], webhookToken: token, updatedAt: new Date().toISOString() };
+        await saveWorkflows(workflows);
+        res.json({ token, url: `/api/automations/webhook/${token}` });
+    } catch (error) {
+        console.error('Error generating webhook token:', error);
+        res.status(500).json({ error: 'Failed to generate webhook token' });
+    }
+});
+
+// Public webhook entry point — gated only by the unguessable token, runs as
+// the workflow owner. No requireAuth (external services call this); the global
+// CSRF check is cookie-auth-only so token callers are exempt. Fires in the
+// background and returns 202 so the caller isn't blocked on the run.
+app.post('/api/automations/webhook/:token', async (req, res) => {
+    const token = req.params.token;
+    if (!token || token.length < 24) return res.status(404).json({ error: 'Not found' });
+    try {
+        const workflows = await loadWorkflows();
+        const wf = workflows.find(w =>
+            w.webhookToken === token && w.enabled && !w.archived &&
+            (w.nodes || []).some(n => n.type === 'trigger.webhook')
+        );
+        if (!wf) return res.status(404).json({ error: 'No active automation for this webhook' });
+
+        const input = {
+            body: req.body,
+            query: req.query,
+            receivedAt: new Date().toISOString()
+        };
+        executeWorkflowRun(wf, {
+            userId: wf.userId || null,
+            trigger: 'webhook',
+            input,
+            onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} }
+        }).catch(e => console.error('[automation] webhook run failed:', e.message));
+
+        res.status(202).json({ message: 'Automation triggered', workflowId: wf.id });
+    } catch (error) {
+        console.error('Error handling webhook:', error);
+        res.status(500).json({ error: 'Failed to trigger automation' });
+    }
+});
+
+// --- Event triggers + scheduler (fired internally, not over HTTP) ---
+
+// Run every enabled workflow that has a trigger.event node matching eventName.
+// Called from existing event points (e.g. a model finishing load). Best-effort.
+async function fireAutomationEvent(eventName, payload = {}) {
+    try {
+        const workflows = await loadWorkflows();
+        for (const wf of workflows) {
+            if (!wf.enabled || wf.archived) continue;
+            const matches = (wf.nodes || []).some(n => n.type === 'trigger.event' && n.data && n.data.event === eventName);
+            if (!matches) continue;
+            executeWorkflowRun(wf, {
+                userId: wf.userId || null,
+                trigger: `event:${eventName}`,
+                input: { event: eventName, ...payload },
+                onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} }
+            }).catch(e => console.error(`[automation] event "${eventName}" run failed:`, e.message));
+        }
+    } catch (e) {
+        console.error('[automation] fireAutomationEvent failed:', e.message);
+    }
+}
+
+// Per-trigger scheduler state (in-memory; recomputed from "now" on restart).
+const automationScheduleState = new Map(); // `${wfId}:${nodeId}` -> { nextRunAt?, lastFiredMinute? }
+
+// Coarse scheduler tick (called every 60s). Fires due trigger.schedule nodes.
+// cron → fire once per matching minute; intervalMs → fire every N ms (min 60s).
+async function automationSchedulerTick() {
+    try {
+        const workflows = await loadWorkflows();
+        const now = new Date();
+        const nowMs = now.getTime();
+        const minuteKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
+        const liveKeys = new Set();
+        for (const wf of workflows) {
+            if (!wf.enabled || wf.archived) continue;
+            for (const node of (wf.nodes || [])) {
+                if (node.type !== 'trigger.schedule') continue;
+                const key = `${wf.id}:${node.id}`;
+                liveKeys.add(key);
+                const d = node.data || {};
+                let due = false;
+                if (d.cron) {
+                    if (automationEngine.cronMatches(d.cron, now)) {
+                        const st = automationScheduleState.get(key) || {};
+                        if (st.lastFiredMinute !== minuteKey) {
+                            due = true;
+                            automationScheduleState.set(key, { ...st, lastFiredMinute: minuteKey });
+                        }
+                    }
+                } else if (d.intervalMs) {
+                    const interval = Math.max(60000, Number(d.intervalMs) || 0);
+                    const st = automationScheduleState.get(key) || { nextRunAt: nowMs + interval };
+                    if (!st.nextRunAt) st.nextRunAt = nowMs + interval;
+                    if (nowMs >= st.nextRunAt) { due = true; st.nextRunAt = nowMs + interval; }
+                    automationScheduleState.set(key, st);
+                }
+                if (due) {
+                    executeWorkflowRun(wf, {
+                        userId: wf.userId || null,
+                        trigger: 'schedule',
+                        input: { firedAt: now.toISOString(), node: node.id },
+                        onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} }
+                    }).catch(e => console.error('[automation] scheduled run failed:', e.message));
+                }
+            }
+        }
+        // Drop state for triggers that no longer exist so the map can't grow unbounded.
+        for (const k of automationScheduleState.keys()) if (!liveKeys.has(k)) automationScheduleState.delete(k);
+    } catch (e) {
+        console.error('[automation] scheduler tick failed:', e.message);
+    }
+}
 
 // ============================================================================
 // AGENT-SKILL INTEGRATION ENDPOINTS
@@ -20799,6 +20951,12 @@ server.listen(PORT, async () => {
             console.warn('[SandboxSweeper] failed:', e.message);
         }
     }, SANDBOX_SWEEP_INTERVAL_MS).unref();
+
+    // Automation scheduler — one coarse 60s tick fires due trigger.schedule
+    // nodes (cron + interval). Single timer for all workflows; .unref()'d so it
+    // never keeps the process alive.
+    const AUTOMATION_TICK_MS = 60 * 1000;
+    setInterval(automationSchedulerTick, AUTOMATION_TICK_MS).unref();
 
     console.log('Initialization complete');
 });
