@@ -975,7 +975,8 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
 
             {kind === 'tool' && (<>
                 <Field label="Tool / skill name"><TemplInput value={d.tool || ''} onChange={(v) => onChange({ tool: v })} placeholder="e.g. query_sqlite" /></Field>
-                <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} /></Field>
+                <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} placeholder={'{ "url": "{{nodes.id.results.0.url}}" }'} /></Field>
+                <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -4 }}>This tool reads its data from these Arguments — click a data tag to drop it into a value. (The incoming line isn't passed in automatically.)</p>
             </>)}
 
             {kind === 'web_search' && (<>
@@ -1128,18 +1129,27 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
 function JsonField({ value, onChange, placeholder }) {
     const [text, setText] = useState(() => value == null ? '' : JSON.stringify(value, null, 2));
     const [err, setErr] = useState(false);
+    const elRef = useRef(null);
+    const ctx = React.useContext(FieldInsertContext);
+    // Apply new text + reparse. Wrapped in a ref so click-to-insert data tags can
+    // drop {{...}} into the JSON args (e.g. {"url": "{{nodes.id.results.0.url}}"}).
+    const applyText = (t) => {
+        setText(t);
+        if (!t.trim()) { setErr(false); onChange(undefined); return; }
+        try { const parsed = JSON.parse(t); setErr(false); onChange(parsed); }
+        catch { setErr(true); }
+    };
+    const onChangeRef = useRef(applyText); onChangeRef.current = applyText;
     return (
         <>
             <textarea
-                style={{ ...fieldInput, minHeight: 70, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical', borderColor: err ? 'var(--danger, #ef4444)' : 'var(--rule-2)' }}
+                ref={elRef}
+                style={{ ...fieldInput, minHeight: 70, fontFamily: 'monospace', fontSize: 12.5, resize: 'vertical', borderColor: err ? 'var(--danger, #ef4444)' : 'var(--rule-2)' }}
                 value={text}
                 placeholder={placeholder || '{}'}
-                onChange={(e) => {
-                    setText(e.target.value);
-                    if (!e.target.value.trim()) { setErr(false); onChange(undefined); return; }
-                    try { const parsed = JSON.parse(e.target.value); setErr(false); onChange(parsed); }
-                    catch { setErr(true); }
-                }}
+                onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
+                onChange={(e) => applyText(e.target.value)}
+                {...makeDropHandlers(elRef, onChangeRef)}
             />
             {err && <div style={{ fontSize: 10, color: 'var(--danger, #ef4444)', marginTop: -6, marginBottom: 8 }}>Invalid JSON</div>}
         </>
