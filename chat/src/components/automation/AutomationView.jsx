@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
     ReactFlow, ReactFlowProvider, Background, Controls, MiniMap,
     useNodesState, useEdgesState, addEdge, useReactFlow,
+    BaseEdge, EdgeLabelRenderer, getBezierPath,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './automation.css';
@@ -14,6 +15,32 @@ import { useConfirm } from '../ConfirmDialog';
 import AutomationNode from './AutomationNode';
 
 const nodeTypes = { automation: AutomationNode };
+
+// Edges carry a hover-revealed "×" that removes the connection without touching
+// the nodes. The delete action comes from context so it uses the parent's
+// useEdgesState setter (controlled mode) and marks the graph dirty.
+const EdgeActionsContext = React.createContext(null);
+
+function DeletableEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style }) {
+    const actions = React.useContext(EdgeActionsContext);
+    const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+    return (
+        <>
+            <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
+            <EdgeLabelRenderer>
+                <button
+                    className="auto-edge-delete nodrag nopan"
+                    style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}
+                    title="Delete connection"
+                    onClick={(e) => { e.stopPropagation(); if (actions) actions.deleteEdge(id); }}
+                >
+                    ×
+                </button>
+            </EdgeLabelRenderer>
+        </>
+    );
+}
+const edgeTypes = { default: DeletableEdge };
 
 const uid = (p = 'n') => `${p}_${Math.random().toString(36).slice(2, 10)}`;
 const CATEGORY_ORDER = ['trigger', 'connector', 'gate', 'output'];
@@ -292,6 +319,13 @@ function FlowEditor({ showSnackbar, models }) {
         setEdges(eds => addEdge({ ...params, id: uid('e') }, eds));
         setDirty(true);
     }, [setEdges]);
+
+    // Delete a single connection line (leaves the nodes intact) and mark dirty.
+    const deleteEdge = useCallback((id) => {
+        setEdges(es => es.filter(e => e.id !== id));
+        setDirty(true);
+    }, [setEdges]);
+    const edgeActions = useMemo(() => ({ deleteEdge }), [deleteEdge]);
 
     const addFromPalette = useCallback((item, dropPos) => {
         const id = uid('node');
@@ -638,6 +672,7 @@ function FlowEditor({ showSnackbar, models }) {
                             Select an automation on the left, or create a new one to start building a workflow.
                         </div>
                     ) : (
+                        <EdgeActionsContext.Provider value={edgeActions}>
                         <ReactFlow
                             className="automation-flow"
                             nodes={nodes}
@@ -647,7 +682,10 @@ function FlowEditor({ showSnackbar, models }) {
                             onConnect={onConnect}
                             onNodeClick={onNodeClick}
                             onPaneClick={onPaneClick}
+                            onEdgesDelete={() => setDirty(true)}
+                            onNodesDelete={() => setDirty(true)}
                             nodeTypes={nodeTypes}
+                            edgeTypes={edgeTypes}
                             fitView
                             deleteKeyCode={['Backspace', 'Delete']}
                             proOptions={{ hideAttribution: true }}
@@ -656,6 +694,7 @@ function FlowEditor({ showSnackbar, models }) {
                             <Controls />
                             <MiniMap pannable zoomable style={{ width: 130, height: 90 }} />
                         </ReactFlow>
+                        </EdgeActionsContext.Provider>
                     )}
                     {runResult && (
                         <div style={{ position: 'absolute', bottom: 12, left: 12, right: 150, maxHeight: 140, overflow: 'auto', background: 'var(--surface)', border: `1px solid ${runResult.status === 'failed' ? 'var(--danger, #ef4444)' : 'var(--ok, #22c55e)'}`, borderRadius: 8, padding: '8px 10px', fontSize: 11.5, color: 'var(--ink-2)' }}>
