@@ -94,36 +94,47 @@ function Field({ label, children }) {
     return <div><label style={fieldLabel}>{label}</label>{children}</div>;
 }
 
-// Drag-and-drop "{{...}}" reference support: a tag dragged from the data palette
-// carries an 'application/automation-ref' payload; dropping onto these inputs
-// inserts it at the caret.
+// Click-to-insert for "{{...}}" data tags. Templatable inputs register
+// themselves as the "active field" on focus (via context); clicking a tag then
+// inserts its reference at the caret of that field. Far easier than dragging —
+// dragging is kept as a secondary path. The active field is tracked by ref so
+// repeated inserts read the live DOM value/caret.
 const REF_MIME = 'application/automation-ref';
-function insertRefAtCaret(el, ref, value, onChange) {
-    const s = (el && el.selectionStart != null) ? el.selectionStart : value.length;
-    const e = (el && el.selectionEnd != null) ? el.selectionEnd : value.length;
-    onChange(`${value.slice(0, s)}${ref}${value.slice(e)}`);
-}
-function makeDropHandlers(value, onChange, elRef) {
+const FieldInsertContext = React.createContext(null);
+
+function makeDropHandlers(elRef, onChangeRef) {
     return {
         onDragOver: (ev) => { if (Array.from(ev.dataTransfer.types || []).includes(REF_MIME)) ev.preventDefault(); },
         onDrop: (ev) => {
             const ref = ev.dataTransfer.getData(REF_MIME);
             if (!ref) return;
             ev.preventDefault();
-            insertRefAtCaret(elRef.current, ref, value || '', onChange);
+            const el = elRef.current;
+            const v = (el && el.value) || '';
+            const s = (el && el.selectionStart != null) ? el.selectionStart : v.length;
+            const e = (el && el.selectionEnd != null) ? el.selectionEnd : v.length;
+            onChangeRef.current(`${v.slice(0, s)}${ref}${v.slice(e)}`);
         },
     };
 }
 function TemplInput({ value = '', onChange, style, ...rest }) {
     const elRef = useRef(null);
-    return <input ref={elRef} value={value} onChange={(e) => onChange(e.target.value)} style={{ ...fieldInput, ...style }} {...makeDropHandlers(value, onChange, elRef)} {...rest} />;
+    const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
+    const ctx = React.useContext(FieldInsertContext);
+    return <input ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
+        onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
+        style={{ ...fieldInput, ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />;
 }
 function TemplTextarea({ value = '', onChange, style, ...rest }) {
     const elRef = useRef(null);
-    return <textarea ref={elRef} value={value} onChange={(e) => onChange(e.target.value)} style={{ ...fieldInput, ...style }} {...makeDropHandlers(value, onChange, elRef)} {...rest} />;
+    const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
+    const ctx = React.useContext(FieldInsertContext);
+    return <textarea ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
+        onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
+        style={{ ...fieldInput, ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />;
 }
 
-// Flatten a node's output into draggable dotted paths (arrays collapse to index 0).
+// Flatten a node's output into dotted paths (arrays collapse to index 0).
 function flattenForTags(obj, prefix = '', out = [], depth = 0) {
     if (out.length >= 50 || depth > 4) return out;
     if (Array.isArray(obj)) {
@@ -145,29 +156,35 @@ function flattenForTags(obj, prefix = '', out = [], depth = 0) {
 }
 
 function DataTag({ refStr, label, sample }) {
-    const [copied, setCopied] = useState(false);
+    const ctx = React.useContext(FieldInsertContext);
+    const [flash, setFlash] = useState(false);
+    const pick = () => {
+        const inserted = ctx && ctx.insert(refStr);
+        if (!inserted) navigator.clipboard?.writeText(refStr); // no field focused → copy
+        setFlash(true); setTimeout(() => setFlash(false), 450);
+    };
     return (
         <span
             draggable
             onDragStart={(e) => { e.dataTransfer.setData(REF_MIME, refStr); e.dataTransfer.setData('text/plain', refStr); e.dataTransfer.effectAllowed = 'copy'; }}
-            onClick={() => { navigator.clipboard?.writeText(refStr); setCopied(true); setTimeout(() => setCopied(false), 1000); }}
-            title={`${refStr}${sample ? `  ·  e.g. ${sample}` : ''} — drag into a field, or click to copy`}
+            onMouseDown={(e) => e.preventDefault()}  // keep the focused field focused
+            onClick={pick}
+            title={`${refStr}${sample ? `  ·  e.g. ${sample}` : ''}`}
             style={{
-                display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'grab', fontSize: 10.5, fontFamily: 'monospace',
-                background: copied ? 'var(--accent-soft)' : 'var(--bg)', color: copied ? 'var(--accent)' : 'var(--ink-2)',
-                border: '1px solid var(--rule-2)', borderRadius: 5, padding: '2px 6px', margin: '0 4px 4px 0', maxWidth: '100%',
+                display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 10.5, fontFamily: 'monospace',
+                background: flash ? 'var(--accent)' : 'var(--bg)', color: flash ? 'var(--accent-ink, #fff)' : 'var(--ink-2)',
+                border: `1px solid ${flash ? 'var(--accent)' : 'var(--rule-2)'}`, borderRadius: 5, padding: '2px 6px', margin: '0 4px 4px 0', maxWidth: '100%',
             }}
         >
-            <span style={{ opacity: 0.6 }}>{'{ }'}</span>
+            <span style={{ opacity: 0.55 }}>+</span>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
         </span>
     );
 }
 
-// Collapsible palette of draggable data tags drawn from OTHER nodes' captured
-// outputs, so you can extract a specific field ({{nodes.id.results.0.title}}).
+// Lightweight, always-visible tag list drawn from captured node outputs. Click a
+// field, then a tag, to insert {{nodes.id.path}}. Appears only after a run.
 function DataTagPalette({ outputs = {}, nodes = [], currentNodeId }) {
-    const [open, setOpen] = useState(false);
     const sources = nodes
         .filter(n => outputs[n.id] && outputs[n.id].output != null)
         .map(n => ({
@@ -179,29 +196,19 @@ function DataTagPalette({ outputs = {}, nodes = [], currentNodeId }) {
         .sort((a, b) => (a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1)); // this node first
     if (!sources.length) return null;
     return (
-        <div style={{ marginBottom: 12, border: '1px solid var(--rule-2)', borderRadius: 8, overflow: 'hidden' }}>
-            <button onClick={() => setOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 8px', background: 'var(--bg)', border: 'none', borderBottom: open ? '1px solid var(--rule-2)' : 'none', cursor: 'pointer', color: 'var(--ink-2)' }}>
-                {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                <span style={{ fontSize: 11, fontWeight: 600 }}>Data tags</span>
-                <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-3)' }}>{sources.length}</span>
-            </button>
-            {open && (
-                <div style={{ padding: 8 }}>
-                    <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 6 }}>Drag a tag into any field (or the Output box), or click to copy.</div>
-                    {sources.map(s => (
-                        <div key={s.id} style={{ marginBottom: 8 }}>
-                            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-3)', marginBottom: 4 }}>{s.label}</div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-                                <DataTag refStr={`{{nodes.${s.id}}}`} label="(whole output)" />
-                                {flattenForTags(s.out).map(t => (
-                                    <DataTag key={t.path} refStr={`{{nodes.${s.id}.${t.path}}}`} label={t.path} sample={t.leaf ? t.sample : ''} />
-                                ))}
-                            </div>
-                        </div>
-                    ))}
-                    <DataTag refStr="{{last}}" label="last (previous node)" />
+        <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 5 }}>Click a field, then a tag, to insert it:</div>
+            {sources.map(s => (
+                <div key={s.id} style={{ marginBottom: 6 }}>
+                    <div style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3 }}>{s.label}</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                        <DataTag refStr={`{{nodes.${s.id}}}`} label="whole output" />
+                        {flattenForTags(s.out).map(t => (
+                            <DataTag key={t.path} refStr={`{{nodes.${s.id}.${t.path}}}`} label={t.path} sample={t.leaf ? t.sample : ''} />
+                        ))}
+                    </div>
                 </div>
-            )}
+            ))}
         </div>
     );
 }
@@ -749,6 +756,60 @@ function FlowEditor({ showSnackbar, models }) {
     );
 }
 
+// ---- schedule builder (unit picker + live countdown) ----
+const SCHEDULE_UNITS = [['seconds', 1000], ['minutes', 60000], ['hours', 3600000], ['days', 86400000]];
+function fmtCountdown(ms) {
+    let s = Math.max(0, Math.round(ms / 1000));
+    const d = Math.floor(s / 86400); s %= 86400;
+    const h = Math.floor(s / 3600); s %= 3600;
+    const m = Math.floor(s / 60); s %= 60;
+    if (d) return `${d}d ${h}h ${m}m`;
+    if (h) return `${h}h ${m}m ${s}s`;
+    if (m) return `${m}m ${s}s`;
+    return `${s}s`;
+}
+function CountdownLine({ intervalMs }) {
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => { if (!intervalMs) return undefined; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [intervalMs]);
+    if (!intervalMs) return null;
+    const next = (Math.floor(now / intervalMs) + 1) * intervalMs;
+    return (
+        <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontVariantNumeric: 'tabular-nums' }}>
+            Next run in {fmtCountdown(next - now)} <span style={{ color: 'var(--ink-3)' }}>· {new Date(next).toLocaleTimeString()}</span>
+        </div>
+    );
+}
+function ScheduleConfig({ d, onChange }) {
+    const ms = Number(d.intervalMs) || 0;
+    let unit = 'minutes', amount = 5;
+    if (ms > 0) {
+        const u = [...SCHEDULE_UNITS].reverse().find(([, m]) => ms % m === 0) || SCHEDULE_UNITS[0];
+        unit = u[0]; amount = Math.round(ms / u[1]);
+    }
+    const [useCron, setUseCron] = useState(!!d.cron);
+    const apply = (amt, un) => {
+        const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1];
+        onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), cron: '' });
+    };
+    if (useCron) {
+        return (<>
+            <Field label="Cron (min hour dom mon dow)"><input style={fieldInput} value={d.cron || ''} onChange={(e) => onChange({ cron: e.target.value })} placeholder="0 9 * * 1-5" /></Field>
+            <button onClick={() => { setUseCron(false); onChange({ cron: '' }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0 }}>← Use a simple interval instead</button>
+        </>);
+    }
+    return (<>
+        <label style={fieldLabel}>Run every</label>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            <input type="number" min="1" style={{ ...fieldInput, marginBottom: 0, width: 78 }} value={amount} onChange={(e) => apply(e.target.value, unit)} />
+            <select style={{ ...fieldInput, marginBottom: 0 }} value={unit} onChange={(e) => apply(amount, e.target.value)}>
+                {SCHEDULE_UNITS.map(([n]) => <option key={n} value={n}>{n}</option>)}
+            </select>
+        </div>
+        <CountdownLine intervalMs={ms} />
+        <button onClick={() => setUseCron(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0 }}>Advanced: use a cron expression →</button>
+    </>);
+}
+
 // ---- per-node config panel ----
 function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
     const kind = node.data.kind;
@@ -757,7 +818,25 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
     const setCond = (patch) => onChange({ condition: { ...cond, ...patch } });
     const isTrigger = typeof kind === 'string' && kind.startsWith('trigger.');
 
+    // Track the focused templatable field so clicking a data tag inserts into it.
+    const activeFieldRef = useRef(null);
+    const fieldInsert = useMemo(() => ({
+        setActive: (f) => { activeFieldRef.current = f; },
+        insert: (refStr) => {
+            const f = activeFieldRef.current;
+            if (!f || !f.el) return false;
+            const el = f.el;
+            const v = el.value || '';
+            const s = el.selectionStart != null ? el.selectionStart : v.length;
+            const e = el.selectionEnd != null ? el.selectionEnd : v.length;
+            f.onChangeRef.current(`${v.slice(0, s)}${refStr}${v.slice(e)}`);
+            requestAnimationFrame(() => { try { el.focus(); const p = s + refStr.length; el.setSelectionRange(p, p); } catch (_) {} });
+            return true;
+        },
+    }), []);
+
     return (
+        <FieldInsertContext.Provider value={fieldInsert}>
         <div style={{ width: 270, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                 <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 12.5 }}>{kind}</span>
@@ -768,7 +847,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
 
             {!isTrigger && <DataTagPalette outputs={allOutputs} nodes={nodeList} currentNodeId={node.id} />}
 
-            <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} /></Field>
+            <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} onFocus={() => { activeFieldRef.current = null; }} /></Field>
 
             {kind === 'model' && (<>
                 <Field label="Prompt"><TemplTextarea style={{ minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(v) => onChange({ prompt: v })} placeholder="Leave blank to receive the previous node's output, or use {{last}} / {{nodes.id.field}}" /></Field>
@@ -806,9 +885,8 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             </>)}
 
             {kind === 'parse_json' && (<>
-                <Field label="Source"><TemplTextarea style={{ minHeight: 48, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.source || ''} onChange={(v) => onChange({ source: v })} placeholder="Leave blank for the previous node, or paste/template a JSON string" /></Field>
                 <Field label="Extract path (optional)"><TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder="e.g. results.0.title" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Dotted path into the JSON. Leave blank to pass the whole object through.</p>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Parses the previous node's JSON. Add a dotted path to pull one field, or leave blank to pass the whole object.</p>
             </>)}
 
             {kind === 'render_html' && (
@@ -873,10 +951,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Unmatched routes to the "default" handle.</p>
             </>)}
 
-            {kind === 'trigger.schedule' && (<>
-                <Field label="Cron (min hour dom mon dow)"><input style={fieldInput} value={d.cron || ''} onChange={(e) => onChange({ cron: e.target.value })} placeholder="0 9 * * 1-5" /></Field>
-                <Field label="…or interval (ms, min 60000)"><input type="number" style={fieldInput} value={d.intervalMs ?? ''} onChange={(e) => onChange({ intervalMs: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
-            </>)}
+            {kind === 'trigger.schedule' && <ScheduleConfig d={d} onChange={onChange} />}
 
             {kind === 'trigger.event' && (
                 <Field label="Event name"><input style={fieldInput} value={d.event || ''} onChange={(e) => onChange({ event: e.target.value })} placeholder="model.loaded" /></Field>
@@ -907,15 +982,26 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 8 }}>POST to this URL to trigger the workflow; the request body becomes the run input. Save the automation and keep it enabled.</p>
             </>)}
 
-            {!isTrigger && kind !== 'output' && kind !== 'merge' && !String(kind).startsWith('gate.') && (
-                <div style={{ marginTop: 14, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
-                    <Field label="Output → next node (optional)">
-                        <TemplTextarea style={{ minHeight: 44, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.forward || ''} onChange={(v) => onChange({ forward: v })} placeholder="Blank = forward everything. Drag data tags here to forward only those." />
-                    </Field>
-                    <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Shapes what this node passes downstream. Drag a single tag for raw data (e.g. an array), or mix tags + text. Leave blank to send the whole output.</p>
-                </div>
-            )}
+            {!isTrigger && kind !== 'output' && kind !== 'merge' && !String(kind).startsWith('gate.') && (() => {
+                const hasFwd = !!(d.forward && String(d.forward).trim());
+                return (
+                    <div style={{ marginTop: 14, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>Forwards to next node</div>
+                        <div style={{ fontSize: 11, color: hasFwd ? 'var(--accent)' : 'var(--ink-2)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{ fontWeight: 700 }}>→</span>
+                            <span>{hasFwd ? 'only the data below' : 'the entire output'}</span>
+                        </div>
+                        <TemplTextarea style={{ minHeight: 44, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.forward || ''} onChange={(v) => onChange({ forward: v })} placeholder="Leave blank to send everything. Click a tag above to send only that field." />
+                        {hasFwd && (
+                            <button onClick={() => onChange({ forward: '' })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0, marginTop: 2 }}>
+                                ↺ reset to send everything
+                            </button>
+                        )}
+                    </div>
+                );
+            })()}
         </div>
+        </FieldInsertContext.Provider>
     );
 }
 
@@ -954,8 +1040,6 @@ function formatNodeOutput(out) {
 // run, and seeded from the most recent run on load. Lets you inspect exactly
 // what a connector/gate/trigger returned, plus the reference to pipe it forward.
 function NodeResult({ lastRun, nodeId, isTrigger }) {
-    const [copied, setCopied] = useState(false);
-    const ref = `{{nodes.${nodeId}}}`;
     const status = lastRun && lastRun.status;
     const hasOutput = lastRun && lastRun.output != null;
     // Any node whose output carries an `html` string (Render HTML) gets a live,
@@ -991,15 +1075,6 @@ function NodeResult({ lastRun, nodeId, isTrigger }) {
                     <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>Completed with no output.</div>
                 )}
             </div>
-            {!isTrigger && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderTop: '1px solid var(--rule-2)', background: 'var(--bg)' }}>
-                    <span style={{ fontSize: 10, color: 'var(--ink-3)', flexShrink: 0 }}>Pipe forward:</span>
-                    <code style={{ fontSize: 10, color: 'var(--ink-2)', background: 'var(--surface)', padding: '1px 4px', borderRadius: 4, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${ref}  (or {{last}} for the previous node)`}>{ref}</code>
-                    <button onClick={() => { navigator.clipboard?.writeText(ref); setCopied(true); setTimeout(() => setCopied(false), 1200); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: copied ? 'var(--ok, #22c55e)' : 'var(--ink-3)', display: 'flex', flexShrink: 0 }} title="Copy reference">
-                        {copied ? <Check size={12} /> : <Copy size={12} />}
-                    </button>
-                </div>
-            )}
         </div>
     );
 }

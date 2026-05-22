@@ -29,7 +29,7 @@
 const BUILTIN_NODE_TYPES = [
     // --- Triggers (entry points; emit the run input as their output) ---
     { key: 'trigger.manual',   type: 'trigger.manual',   category: 'trigger', label: 'Manual / Run now', description: 'Starts the workflow when run manually.', outputs: ['out'] },
-    { key: 'trigger.schedule', type: 'trigger.schedule', category: 'trigger', label: 'Schedule',         description: 'Starts on a cron expression or fixed interval.', outputs: ['out'], fields: ['cron', 'intervalMs'] },
+    { key: 'trigger.schedule', type: 'trigger.schedule', category: 'trigger', label: 'Schedule',         description: 'Starts on a fixed interval (every N seconds/minutes/hours/days) or a cron expression.', outputs: ['out'], defaults: { intervalMs: 300000 }, fields: ['cron', 'intervalMs'] },
     { key: 'trigger.webhook',  type: 'trigger.webhook',  category: 'trigger', label: 'Inbound Webhook',  description: 'Starts when its (token-gated) webhook URL is POSTed to. The request body becomes the run input.', outputs: ['out'] },
     { key: 'trigger.event',    type: 'trigger.event',    category: 'trigger', label: 'On Event',         description: 'Starts on a system event (e.g. model.loaded). The event payload becomes the run input.', outputs: ['out'], fields: ['event'] },
     { key: 'trigger.telegram', type: 'trigger.telegram', category: 'trigger', label: 'Telegram Message', description: 'Starts when the bot receives a message (optionally matching a keyword). Polls getUpdates; the message becomes the run input ({{input.text}}, {{input.chat.id}}).', outputs: ['out'], fields: ['botToken', 'chatId', 'keyword', 'match'] },

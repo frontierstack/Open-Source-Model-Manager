@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import {
     Zap, Clock, Webhook, Bell, Cpu, Wrench, Search, Globe, Database,
@@ -72,6 +72,25 @@ function categoryClass(kind) {
     return '';
 }
 
+// Live countdown to the next epoch-aligned interval fire (matches the server's
+// scheduler formula), shown on the schedule node so the next run is visible.
+function fmtCountdown(ms) {
+    let s = Math.max(0, Math.round(ms / 1000));
+    const d = Math.floor(s / 86400); s %= 86400;
+    const h = Math.floor(s / 3600); s %= 3600;
+    const m = Math.floor(s / 60); s %= 60;
+    if (d) return `${d}d ${h}h ${m}m`;
+    if (h) return `${h}h ${m}m ${s}s`;
+    if (m) return `${m}m ${s}s`;
+    return `${s}s`;
+}
+function ScheduleCountdown({ intervalMs }) {
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+    const next = (Math.floor(now / intervalMs) + 1) * intervalMs;
+    return <>next run in {fmtCountdown(next - now)}</>;
+}
+
 function subtitleFor(kind, data) {
     if (kind === 'tool') return data.tool || 'tool';
     if (kind === 'model') return data.model || 'current model';
@@ -118,7 +137,9 @@ export default function AutomationNode({ data, selected }) {
                     <span className="auto-node__status"><span className="auto-node__spinner" /></span>
                 )}
             </div>
-            {sub && <div className="auto-node__sub">{sub}</div>}
+            {kind === 'trigger.schedule' && data.intervalMs && !data.cron
+                ? <div className="auto-node__sub"><ScheduleCountdown intervalMs={Number(data.intervalMs)} /></div>
+                : sub && <div className="auto-node__sub">{sub}</div>}
 
             {/* source handles (right), labeled when there's more than one */}
             {sources.map((s, i) => {

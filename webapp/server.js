@@ -8338,7 +8338,8 @@ async function fireAutomationEvent(eventName, payload = {}) {
 }
 
 // Per-trigger scheduler state (in-memory; recomputed from "now" on restart).
-const automationScheduleState = new Map(); // `${wfId}:${nodeId}` -> { nextRunAt?, lastFiredMinute? }
+const automationScheduleState = new Map(); // `${wfId}:${nodeId}` -> { lastFiredPeriod?, lastFiredMinute? }
+const AUTOMATION_MIN_INTERVAL_MS = 5000; // floor for interval schedules (matches the tick)
 
 // Coarse scheduler tick (called every 60s). Fires due trigger.schedule nodes.
 // cron → fire once per matching minute; intervalMs → fire every N ms (min 60s).
@@ -8366,10 +8367,15 @@ async function automationSchedulerTick() {
                         }
                     }
                 } else if (d.intervalMs) {
-                    const interval = Math.max(60000, Number(d.intervalMs) || 0);
-                    const st = automationScheduleState.get(key) || { nextRunAt: nowMs + interval };
-                    if (!st.nextRunAt) st.nextRunAt = nowMs + interval;
-                    if (nowMs >= st.nextRunAt) { due = true; st.nextRunAt = nowMs + interval; }
+                    // Epoch-aligned interval so the editor's countdown (same formula,
+                    // client-side) always agrees with when this actually fires. Fires
+                    // when the period index advances; first sight seeds the current
+                    // period so it doesn't fire immediately on enable.
+                    const interval = Math.max(AUTOMATION_MIN_INTERVAL_MS, Number(d.intervalMs) || 0);
+                    const period = Math.floor(nowMs / interval);
+                    const st = automationScheduleState.get(key) || { lastFiredPeriod: period };
+                    if (st.lastFiredPeriod == null) st.lastFiredPeriod = period;
+                    if (period > st.lastFiredPeriod) { due = true; st.lastFiredPeriod = period; }
                     automationScheduleState.set(key, st);
                 }
                 if (due) {
@@ -21090,10 +21096,10 @@ server.listen(PORT, async () => {
         }
     }, SANDBOX_SWEEP_INTERVAL_MS).unref();
 
-    // Automation scheduler — one coarse 60s tick fires due trigger.schedule
-    // nodes (cron + interval). Single timer for all workflows; .unref()'d so it
-    // never keeps the process alive.
-    const AUTOMATION_TICK_MS = 60 * 1000;
+    // Automation scheduler — a 5s tick fires due trigger.schedule nodes (cron
+    // fires once per matching minute; intervals are epoch-aligned and honored to
+    // ~5s). Single timer for all workflows; .unref()'d so it never holds the process.
+    const AUTOMATION_TICK_MS = 5 * 1000;
     setInterval(automationSchedulerTick, AUTOMATION_TICK_MS).unref();
 
     // Telegram trigger poller — getUpdates per bot every ~15s (no public webhook
