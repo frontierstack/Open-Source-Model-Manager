@@ -7,7 +7,7 @@ import '@xyflow/react/dist/style.css';
 import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
-    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight,
+    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -81,6 +81,9 @@ function FlowEditor({ showSnackbar, models }) {
     const [webhookUrl, setWebhookUrl] = useState('');
     const [copied, setCopied] = useState(false);
     const [collapsedCats, setCollapsedCats] = useState({}); // palette category collapse state
+    const [showHistory, setShowHistory] = useState(false);
+    const [runs, setRuns] = useState([]);
+    const [runDetail, setRunDetail] = useState(null);
     const runAbortRef = useRef(null);
     const addCountRef = useRef(0);
 
@@ -339,7 +342,32 @@ function FlowEditor({ showSnackbar, models }) {
         setRunning(false);
     }, [runId]);
 
-    const onNodeClick = useCallback((_e, node) => setSelectedNodeId(node.id), []);
+    const loadRuns = useCallback(async () => {
+        if (!selected) return;
+        try {
+            const res = await fetch(`/api/automations/${selected.id}/runs?limit=50`, { credentials: 'include' });
+            setRuns(res.ok ? await res.json() : []);
+        } catch (_) { setRuns([]); }
+    }, [selected]);
+
+    const openHistory = useCallback(() => {
+        setSelectedNodeId(null);
+        setRunDetail(null);
+        setShowHistory(true);
+        loadRuns();
+    }, [loadRuns]);
+
+    const openRunDetail = useCallback(async (runId) => {
+        try {
+            const res = await fetch(`/api/automations/runs/${runId}`, { credentials: 'include' });
+            setRunDetail(res.ok ? await res.json() : null);
+        } catch (_) { setRunDetail(null); }
+    }, []);
+
+    // Refresh the history list when a run finishes while the panel is open.
+    useEffect(() => { if (showHistory && !running) loadRuns(); }, [running, showHistory]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const onNodeClick = useCallback((_e, node) => { setSelectedNodeId(node.id); setShowHistory(false); }, []);
     const onPaneClick = useCallback(() => setSelectedNodeId(null), []);
 
     const selectedNode = nodes.find(n => n.id === selectedNodeId) || null;
@@ -376,6 +404,9 @@ function FlowEditor({ showSnackbar, models }) {
                             </button>
                             <button onClick={() => toggleFlag('archived')} style={{ ...railBtn, width: 'auto', padding: '6px 9px' }} title={selected.archived ? 'Unarchive' : 'Archive'}>
                                 {selected.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+                            </button>
+                            <button onClick={() => (showHistory ? setShowHistory(false) : openHistory())} style={{ ...railBtn, width: 'auto', padding: '6px 9px', color: showHistory ? 'var(--accent)' : 'var(--ink-2)', borderColor: showHistory ? 'var(--accent)' : 'var(--rule-2)' }} title="Run history">
+                                <HistoryIcon size={14} /> <span>History</span>
                             </button>
                             <button onClick={save} disabled={!dirty} style={{ ...railBtn, width: 'auto', padding: '6px 11px', color: dirty ? 'var(--accent)' : 'var(--ink-3)', borderColor: dirty ? 'var(--accent)' : 'var(--rule-2)' }}>
                                 <Save size={14} /> <span>Save{dirty ? '*' : ''}</span>
@@ -506,7 +537,7 @@ function FlowEditor({ showSnackbar, models }) {
                 </div>
 
                 {/* Config panel */}
-                {selectedNode && (
+                {selectedNode && !showHistory && (
                     <NodeConfig
                         key={selectedNode.id}
                         node={selectedNode}
@@ -517,6 +548,16 @@ function FlowEditor({ showSnackbar, models }) {
                         onGenWebhook={genWebhook}
                         copied={copied}
                         onCopyWebhook={() => { navigator.clipboard?.writeText(webhookUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                    />
+                )}
+
+                {/* Run history panel */}
+                {showHistory && (
+                    <RunHistoryPanel
+                        runs={runs}
+                        runDetail={runDetail}
+                        onSelect={openRunDetail}
+                        onClose={() => { setShowHistory(false); setRunDetail(null); }}
                     />
                 )}
             </div>
@@ -652,6 +693,65 @@ function JsonField({ value, onChange, placeholder }) {
             />
             {err && <div style={{ fontSize: 10, color: 'var(--danger, #ef4444)', marginTop: -6, marginBottom: 8 }}>Invalid JSON</div>}
         </>
+    );
+}
+
+// ---- run history panel ----
+function fmtRunTime(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    catch { return iso; }
+}
+function runStatusColor(s) {
+    return s === 'completed' ? 'var(--ok, #22c55e)'
+        : s === 'failed' ? 'var(--danger, #ef4444)'
+        : s === 'running' ? 'var(--accent)'
+        : 'var(--ink-4, #64748b)';
+}
+
+function RunHistoryPanel({ runs, runDetail, onSelect, onClose }) {
+    return (
+        <div style={{ width: 290, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 12.5 }}>Run history</span>
+                <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Close"><CloseIcon size={15} /></button>
+            </div>
+            {runs.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>No runs yet — hit Run to create one.</div>}
+            {runs.map(r => (
+                <div key={r.id} onClick={() => onSelect(r.id)}
+                    style={{ padding: '7px 8px', borderRadius: 7, cursor: 'pointer', marginBottom: 3, border: '1px solid var(--rule-2)', background: runDetail && runDetail.id === r.id ? 'var(--accent-soft)' : 'transparent' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: runStatusColor(r.status) }} />
+                        <span style={{ fontSize: 12, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{r.status}</span>
+                        <span style={{ marginLeft: 'auto', fontSize: 10.5, color: 'var(--ink-3)' }}>{r.trigger}</span>
+                    </div>
+                    <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>
+                        {fmtRunTime(r.startedAt)}{r.durationMs != null ? ` · ${(r.durationMs / 1000).toFixed(1)}s` : ''}
+                    </div>
+                </div>
+            ))}
+            {runDetail && (
+                <div style={{ marginTop: 12, borderTop: '1px solid var(--rule)', paddingTop: 10 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 6 }}>Node timeline</div>
+                    {(runDetail.nodes || []).map((n, i) => (
+                        <div key={i} style={{ marginBottom: 6, fontSize: 11 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: runStatusColor(n.status) }} />
+                                <span style={{ color: 'var(--ink-2)' }}>{n.label || n.type}</span>
+                                <span style={{ marginLeft: 'auto', color: 'var(--ink-3)', fontSize: 10 }}>{n.type}</span>
+                            </div>
+                            {n.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 10, marginLeft: 12 }}>{n.error}</div>}
+                            {n.output != null && (
+                                <pre style={{ margin: '2px 0 0 12px', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 80, overflow: 'auto' }}>
+                                    {typeof n.output === 'string' ? n.output.slice(0, 300) : JSON.stringify(n.output).slice(0, 300)}
+                                </pre>
+                            )}
+                        </div>
+                    ))}
+                    {runDetail.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginTop: 6 }}>{runDetail.error}</div>}
+                </div>
+            )}
+        </div>
     );
 }
 
