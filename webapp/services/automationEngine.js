@@ -52,6 +52,8 @@ const BUILTIN_NODE_TYPES = [
     { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from markdown/HTML content.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
     { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
     { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Run Python',       description: 'Runs a Python snippet in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
+    { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value'] },
+    { key: 'db_query',    type: 'db_query',   category: 'connector', label: 'Database: Query',   description: 'Reads rows back from the database (newest first) so you can feed the collected data into a model / Telegram / file. Defaults: table "records", limit 100, order "id DESC". Provide a raw SQL SELECT for advanced queries. Output is the array of stored records.', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'limit', 'order', 'sql'] },
     { key: 'tool',        type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
     { key: 'delay',       type: 'delay',      category: 'connector', label: 'Delay / Wait',     description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
     { key: 'set',         type: 'set',        category: 'connector', label: 'Set Variable',     description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
@@ -355,6 +357,36 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             let parsed;
             try { parsed = JSON.parse(msg.content); } catch { parsed = { raw: msg.content }; }
             return parsed;
+        }
+
+        case 'db_store': {
+            // Append incoming data to a persistent per-workflow SQLite collection.
+            const value = (data.value === undefined || data.value === '') ? scope.last : data.value;
+            const r = await dispatchTool(deps, ctx, node, 'workspace_db', {
+                action: 'store',
+                db: data.db || 'automation.db',
+                table: data.table || 'records',
+                value,
+            });
+            if (r && r.success === false) throw new Error(`Database store failed — ${r.error || 'unknown error'}`);
+            return r; // { stored, total, table, db }
+        }
+
+        case 'db_query': {
+            // Read rows back (newest first) so they can flow to a model/Telegram/etc.
+            const args = { action: 'query', db: data.db || 'automation.db', table: data.table || 'records' };
+            if (data.sql && String(data.sql).trim()) {
+                args.sql = String(data.sql);
+                if (Array.isArray(data.params)) args.params = data.params;
+            } else {
+                args.limit = (data.limit != null && data.limit !== '') ? Number(data.limit) : 100;
+                args.order = data.order || 'id DESC';
+            }
+            const r = await dispatchTool(deps, ctx, node, 'workspace_db', args);
+            if (r && r.success === false) throw new Error(`Database query failed — ${r.error || 'unknown error'}`);
+            // Output the array of records directly so downstream nodes (model fan-in,
+            // {{nodes.id}} / {{nodes.id.*.field}}) get clean data.
+            return (r && Array.isArray(r.rows)) ? r.rows : (r || []);
         }
 
         case 'parse_json': {

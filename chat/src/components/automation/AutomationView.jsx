@@ -53,7 +53,7 @@ const PALETTE_CATEGORY_OVERRIDE = {
     model: 'tools', web_search: 'tools', fetch_url: 'tools', render_html: 'tools',
     parse_json: 'tools', export_file: 'tools', http_request: 'tools', crawl: 'tools',
     sqlite: 'tools', render_chart: 'tools', create_pdf: 'tools', create_file: 'tools',
-    run_python: 'tools', tool: 'tools',
+    run_python: 'tools', db_store: 'tools', db_query: 'tools', tool: 'tools',
     delay: 'gate', set: 'gate',
     'trigger.telegram': 'connector', 'trigger.slack': 'connector',
 };
@@ -1087,6 +1087,29 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             {kind === 'parse_json' && (<>
                 <Field label="Pull out a field (optional)"><TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder="e.g. results.*.url" /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Use this when the previous step returns JSON (or JSON text). Enter a path to keep just that part — e.g. <code>results.*.url</code> for every url, or <code>results.0.title</code> for the first. Leave blank to pass the whole thing through.</p>
+            </>)}
+
+            {kind === 'db_store' && (<>
+                <Field label="Table"><TemplInput value={d.table || ''} onChange={(v) => onChange({ table: v })} placeholder="records" /></Field>
+                <Field label="Data to store"><TemplTextarea style={{ minHeight: 48, resize: 'vertical' }} value={d.value || ''} onChange={(v) => onChange({ value: v })} placeholder="Leave blank to store the previous node's output ({{last}})" /></Field>
+                <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Appends to a SQLite table in this automation's workspace (auto-created). A list is stored as one row per item, so data accumulates across runs.</p>
+            </>)}
+
+            {kind === 'db_query' && (<>
+                <Field label="Table"><TemplInput value={d.table || ''} onChange={(v) => onChange({ table: v })} placeholder="records" /></Field>
+                <Field label="How many"><input type="number" style={fieldInput} value={d.limit ?? ''} onChange={(e) => onChange({ limit: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="100" /></Field>
+                <Field label="Order">
+                    <select style={fieldInput} value={d.order || 'id DESC'} onChange={(e) => onChange({ order: e.target.value })}>
+                        <option value="id DESC">Newest first</option>
+                        <option value="id ASC">Oldest first</option>
+                        <option value="ts DESC">By time, newest first</option>
+                        <option value="ts ASC">By time, oldest first</option>
+                    </select>
+                </Field>
+                <Field label="Advanced: raw SQL (optional)"><TemplTextarea style={{ minHeight: 44, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.sql || ''} onChange={(v) => onChange({ sql: v })} placeholder="SELECT data FROM records WHERE …" /></Field>
+                <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Returns the stored records (most recent first) to feed a model, Telegram, or file. Raw SQL overrides the simple options.</p>
             </>)}
 
             {kind === 'render_html' && (
