@@ -15,7 +15,7 @@ export function handlesFor(kind, data = {}) {
     if (kind === 'gate.if') return { targets: ['in'], sources: ['true', 'false'] };
     if (kind === 'gate.switch') {
         const cases = Array.isArray(data.cases) ? data.cases : [];
-        const handles = cases.map(c => c.handle || String(c.equals)).filter(Boolean);
+        const handles = cases.map(c => c.handle || String(c.value ?? c.equals ?? '')).filter(Boolean);
         return { targets: ['in'], sources: [...handles, 'default'] };
     }
     return { targets: ['in'], sources: ['out'] };

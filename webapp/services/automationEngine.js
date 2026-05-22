@@ -51,6 +51,7 @@ const BUILTIN_NODE_TYPES = [
     { key: 'render_chart',type: 'tool',       category: 'connector', label: 'Render Chart',     description: 'Renders a chart spec for display/download.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'render_chart' }, fields: ['args'] },
     { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from markdown/HTML content.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
     { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
+    { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Run Python',       description: 'Runs a Python snippet in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
     { key: 'tool',        type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
     { key: 'delay',       type: 'delay',      category: 'connector', label: 'Delay / Wait',     description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
     { key: 'set',         type: 'set',        category: 'connector', label: 'Set Variable',     description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
@@ -67,6 +68,21 @@ const BUILTIN_NODE_TYPES = [
 ];
 
 const MAX_DELAY_MS = 5 * 60 * 1000; // a delay node can wait at most 5 minutes
+const MAX_PARALLEL_NODES = 8;       // max nodes run concurrently within one wave
+
+// Run async work over `items` with a fixed concurrency cap, preserving order.
+async function runWithConcurrency(items, limit, fn) {
+    const results = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < items.length) {
+            const i = next++;
+            results[i] = await fn(items[i], i);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+    return results;
+}
 
 // ---------------------------------------------------------------------------
 // Scope + templating helpers
@@ -149,6 +165,44 @@ function truthy(v) {
     return s !== '' && s !== 'false' && s !== '0' && s !== 'null' && s !== 'undefined' && s !== 'no';
 }
 
+// Operator aliases → canonical form, so friendly UI labels ("equals", "regex")
+// and raw JSON ("==", "matches") both work.
+function normalizeOp(op) {
+    const o = String(op == null ? '==' : op).trim();
+    const aliases = {
+        equals: '==', eq: '==', is: '==', not_equals: '!=', neq: '!=', ne: '!=', isnt: '!=',
+        greater: '>', gt: '>', less: '<', lt: '<', gte: '>=', at_least: '>=', lte: '<=', at_most: '<=',
+        regex: 'matches', regexp: 'matches', notContains: 'not_contains',
+        starts_with: 'startsWith', ends_with: 'endsWith', is_empty: 'empty', is_not_empty: 'not_empty',
+    };
+    return aliases[o] || o;
+}
+
+// Compare two already-resolved values by operator (no eval). Shared by gate.if,
+// gate.filter (through evalCondition) and gate.switch cases. Text operators
+// (contains / starts / ends / regex) are case-insensitive for friendly matching;
+// `==` / `!=` stay exact.
+function compareOp(left, right, op) {
+    const ls = toComparable(left), rs = toComparable(right);
+    const L = String(ls).toLowerCase(), R = String(rs).toLowerCase();
+    switch (normalizeOp(op)) {
+        case '==':                       return String(ls) === String(rs);
+        case '!=':                       return String(ls) !== String(rs);
+        case '>':                        { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a > b; }
+        case '<':                        { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a < b; }
+        case '>=':                       { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a >= b; }
+        case '<=':                       { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a <= b; }
+        case 'contains':                 return L.includes(R);
+        case 'not_contains':             return !L.includes(R);
+        case 'startsWith':               return L.startsWith(R);
+        case 'endsWith':                 return L.endsWith(R);
+        case 'matches':                  { try { return new RegExp(String(rs), 'i').test(String(ls)); } catch { return false; } }
+        case 'empty':                    return !truthy(left);
+        case 'not_empty': case 'truthy': return truthy(left);
+        default:                         return false;
+    }
+}
+
 // Evaluate a gate condition WITHOUT eval(). Accepts:
 //   - a string  → interpolated, then truthiness-tested
 //   - an object { left, op, right } → interpolated operands compared by op
@@ -160,24 +214,7 @@ function evalCondition(condition, scope) {
     if (typeof condition === 'object') {
         const left = interpolate(condition.left, scope);
         const right = interpolate(condition.right, scope);
-        const op = String(condition.op || '==').trim();
-        const ls = toComparable(left), rs = toComparable(right);
-        switch (op) {
-            case '==': case 'eq':           return String(ls) === String(rs);
-            case '!=': case 'ne':           return String(ls) !== String(rs);
-            case '>':  case 'gt':           { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a > b; }
-            case '<':  case 'lt':           { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a < b; }
-            case '>=': case 'gte':          { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a >= b; }
-            case '<=': case 'lte':          { const a = asNumber(ls), b = asNumber(rs); return a !== null && b !== null && a <= b; }
-            case 'contains':                return String(ls).includes(String(rs));
-            case 'not_contains':            return !String(ls).includes(String(rs));
-            case 'startsWith':              return String(ls).startsWith(String(rs));
-            case 'endsWith':                return String(ls).endsWith(String(rs));
-            case 'matches':                 { try { return new RegExp(String(rs)).test(String(ls)); } catch { return false; } }
-            case 'empty':                   return !truthy(left);
-            case 'not_empty': case 'truthy':return truthy(left);
-            default:                        return false;
-        }
+        return compareOp(left, right, condition.op);
     }
     return truthy(condition);
 }
@@ -426,13 +463,17 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
         }
 
         case 'gate.switch': {
-            // data.value is compared (as string) against each case's `equals`.
-            // cases: [{ equals, handle }]. First match wins, else 'default'.
-            const value = String(toComparable(data.value));
-            const cases = Array.isArray(data.cases) ? data.cases : [];
-            const hit = cases.find(c => String(toComparable(c.equals)) === value);
-            const handle = hit ? (hit.handle || String(hit.equals)) : 'default';
-            return { value: data.value, matched: !!hit, _handle: handle };
+            // Compare `value` against each case by the case's own operator
+            // (default: equals). cases: [{ op?, value|equals, handle? }]. First
+            // match wins, else route to 'default'. Operands are interpolated so
+            // a case can reference {{...}} too.
+            const raw = node.data || {};
+            const value = interpolate(raw.value, scope);
+            const cases = Array.isArray(raw.cases) ? raw.cases : [];
+            const caseVal = (c) => (c.value !== undefined && c.value !== '') ? c.value : c.equals;
+            const hit = cases.find(c => c && compareOp(value, interpolate(caseVal(c), scope), c.op || c.match || '=='));
+            const handle = hit ? (hit.handle || String(interpolate(caseVal(hit), scope))) : 'default';
+            return { value, matched: !!hit, _handle: handle };
         }
 
         case 'gate.filter': {
@@ -590,82 +631,102 @@ async function runWorkflow(workflow, opts = {}) {
                 }
             }
 
-            // 2. Find a runnable node: a valid entry, OR all incoming resolved
-            //    with at least one active.
-            const runnable = nodes.find(n => {
+            // 2. Find ALL runnable nodes: valid entries, OR every incoming edge
+            //    resolved with at least one active. Independent nodes at the same
+            //    depth form a "wave" and run concurrently — e.g. two fetch_url
+            //    nodes feeding one model node both fire in parallel.
+            const runnables = nodes.filter(n => {
                 if (nodeState.get(n.id) !== 'pending') return false;
                 const inc = incoming.get(n.id);
                 if (inc.length === 0) return isEntry(n);
                 return inc.every(isResolved) && inc.some(isActive);
             });
 
-            if (!runnable) {
+            if (runnables.length === 0) {
                 if (changed) continue; // pruning may have unblocked something
                 break;                 // nothing left to do
             }
 
-            // 3. Run it.
-            const node = runnable;
-            nodeState.set(node.id, 'running');
-            const startedAt = new Date().toISOString();
-            const entry = { nodeId: node.id, type: node.type, label: (node.data && node.data.label) || node.type, status: 'running', startedAt, finishedAt: null };
-            timeline.push(entry);
-            onEvent({ type: 'node_start', nodeId: node.id, nodeType: node.type });
-
-            // Outputs of the active incoming branches (used by merge; available
-            // to any handler that wants its direct predecessors).
-            const activeInputs = incoming.get(node.id)
-                .filter(isActive)
-                .map(e => scope.nodes[e.source])
-                .filter(v => v !== undefined);
-
-            let output;
-            try {
-                output = await runNode(node, scope, deps, ctx, activeInputs);
-            } catch (err) {
-                entry.status = 'failed';
-                entry.finishedAt = new Date().toISOString();
-                entry.error = err.message || String(err);
-                onEvent({ type: 'node_finish', nodeId: node.id, status: 'failed', error: entry.error });
-                throw new Error(`Node "${entry.label}" (${node.type}) failed: ${entry.error}`);
+            // 3. Launch the whole wave concurrently (capped). Each node
+            //    interpolates its data against the pre-wave scope synchronously
+            //    when launched, so siblings never race on scope; outputs are
+            //    committed only after the wave settles. Handlers never reject
+            //    here — errors are captured and surfaced in the commit phase.
+            for (const node of runnables) {
+                nodeState.set(node.id, 'running');
+                onEvent({ type: 'node_start', nodeId: node.id, nodeType: node.type });
             }
-
-            nodeState.set(node.id, 'done');
-            scope.nodes[node.id] = output;
-            scope.last = output;
-            // Per-node output mapping: an optional `forward` template shapes what
-            // flows downstream (drag data tags into the node's Output box). Blank
-            // → forward the whole raw output. Evaluated with this node's own
-            // output already available as {{last}} / {{nodes.<id>}}. Skipped when
-            // the output carries a gate `_handle` so branch routing is preserved.
-            const fwdTmpl = node.data ? node.data.forward : undefined;
-            const hasFwd = typeof fwdTmpl === 'string' ? fwdTmpl.trim() !== '' : (fwdTmpl !== undefined && fwdTmpl !== null);
-            if (hasFwd && !(output && typeof output === 'object' && output._handle)) {
+            const waveResults = await runWithConcurrency(runnables, MAX_PARALLEL_NODES, async (node) => {
+                const startedAt = new Date().toISOString();
+                const entry = { nodeId: node.id, type: node.type, label: (node.data && node.data.label) || node.type, status: 'running', startedAt, finishedAt: null };
+                // Outputs of the active incoming branches (used by merge and by
+                // model fan-in; available to any handler that wants them).
+                const activeInputs = incoming.get(node.id)
+                    .filter(isActive)
+                    .map(e => scope.nodes[e.source])
+                    .filter(v => v !== undefined);
                 try {
-                    const mapped = interpolate(fwdTmpl, scope);
-                    output = mapped;
-                    scope.nodes[node.id] = mapped;
-                    scope.last = mapped;
-                } catch (_) { /* keep raw output if the mapping template errors */ }
-            }
-            result = output;
-            entry.status = 'completed';
-            entry.finishedAt = new Date().toISOString();
-            entry.output = summarizeOutput(output);
-            onEvent({ type: 'node_finish', nodeId: node.id, status: 'completed', output: entry.output });
-
-            // 4. Activate/prune outgoing edges. Any node whose output carries a
-            //    `_handle` (gate.if / gate.switch / gate.filter) routes only the
-            //    edges leaving that handle; edges with no sourceHandle stay active.
-            const chosenHandle = (output && typeof output._handle === 'string') ? output._handle : null;
-            for (const e of outgoing.get(node.id)) {
-                let active = true;
-                if (chosenHandle != null && e.sourceHandle != null) {
-                    active = (e.sourceHandle === chosenHandle);
+                    const output = await runNode(node, scope, deps, ctx, activeInputs);
+                    return { node, entry, output, error: null };
+                } catch (err) {
+                    return { node, entry, output: undefined, error: err };
                 }
-                edgeState.set(edgeKey(e), active ? 'active' : 'pruned');
-                if (active) onEvent({ type: 'edge_active', edgeId: e.id, source: e.source, target: e.target });
+            });
+
+            // 4. Commit wave results in deterministic order: update scope, apply
+            //    the per-node `forward` mapping, emit node_finish, route edges. A
+            //    failed node fails the whole run (after its siblings settle).
+            let waveError = null;
+            for (const r of waveResults) {
+                const { node, entry } = r;
+                if (r.error) {
+                    entry.status = 'failed';
+                    entry.finishedAt = new Date().toISOString();
+                    entry.error = r.error.message || String(r.error);
+                    timeline.push(entry);
+                    onEvent({ type: 'node_finish', nodeId: node.id, status: 'failed', error: entry.error });
+                    if (!waveError) waveError = new Error(`Node "${entry.label}" (${node.type}) failed: ${entry.error}`);
+                    continue;
+                }
+                let output = r.output;
+                nodeState.set(node.id, 'done');
+                scope.nodes[node.id] = output;
+                scope.last = output;
+                // Per-node output mapping: an optional `forward` template shapes
+                // what flows downstream (drag data tags into the node's Output
+                // box). Blank → forward the whole raw output. Skipped when the
+                // output carries a gate `_handle` so branch routing is preserved.
+                const fwdTmpl = node.data ? node.data.forward : undefined;
+                const hasFwd = typeof fwdTmpl === 'string' ? fwdTmpl.trim() !== '' : (fwdTmpl !== undefined && fwdTmpl !== null);
+                if (hasFwd && !(output && typeof output === 'object' && output._handle)) {
+                    try {
+                        const mapped = interpolate(fwdTmpl, scope);
+                        output = mapped;
+                        scope.nodes[node.id] = mapped;
+                        scope.last = mapped;
+                    } catch (_) { /* keep raw output if the mapping template errors */ }
+                }
+                result = output;
+                entry.status = 'completed';
+                entry.finishedAt = new Date().toISOString();
+                entry.output = summarizeOutput(output);
+                timeline.push(entry);
+                onEvent({ type: 'node_finish', nodeId: node.id, status: 'completed', output: entry.output });
+
+                // Activate/prune outgoing edges. Any node whose output carries a
+                // `_handle` (gate.if / gate.switch / gate.filter) routes only the
+                // edges leaving that handle; edges with no sourceHandle stay active.
+                const chosenHandle = (output && typeof output._handle === 'string') ? output._handle : null;
+                for (const e of outgoing.get(node.id)) {
+                    let active = true;
+                    if (chosenHandle != null && e.sourceHandle != null) {
+                        active = (e.sourceHandle === chosenHandle);
+                    }
+                    edgeState.set(edgeKey(e), active ? 'active' : 'pruned');
+                    if (active) onEvent({ type: 'edge_active', edgeId: e.id, source: e.source, target: e.target });
+                }
             }
+            if (waveError) throw waveError;
         }
 
         onEvent({ type: 'run_finish', status: 'completed' });

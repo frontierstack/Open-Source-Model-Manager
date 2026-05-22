@@ -53,7 +53,7 @@ const PALETTE_CATEGORY_OVERRIDE = {
     model: 'tools', web_search: 'tools', fetch_url: 'tools', render_html: 'tools',
     parse_json: 'tools', export_file: 'tools', http_request: 'tools', crawl: 'tools',
     sqlite: 'tools', render_chart: 'tools', create_pdf: 'tools', create_file: 'tools',
-    tool: 'tools',
+    run_python: 'tools', tool: 'tools',
     delay: 'gate', set: 'gate',
     'trigger.telegram': 'connector', 'trigger.slack': 'connector',
 };
@@ -72,7 +72,23 @@ const PALETTE_APP = {
 };
 // Node keys hidden from the chat palette (display-only; engine still supports them).
 const PALETTE_HIDDEN = new Set(['output']);
-const COND_OPS = ['==', '!=', '>', '<', '>=', '<=', 'contains', 'not_contains', 'startsWith', 'endsWith', 'matches', 'empty', 'not_empty'];
+const COND_OP_OPTIONS = [
+    { value: '==', label: 'equals' },
+    { value: '!=', label: 'does not equal' },
+    { value: 'contains', label: 'contains' },
+    { value: 'not_contains', label: 'does not contain' },
+    { value: 'startsWith', label: 'starts with' },
+    { value: 'endsWith', label: 'ends with' },
+    { value: 'matches', label: 'matches regex' },
+    { value: '>', label: 'greater than (>)' },
+    { value: '<', label: 'less than (<)' },
+    { value: '>=', label: 'at least (≥)' },
+    { value: '<=', label: 'at most (≤)' },
+    { value: 'empty', label: 'is empty' },
+    { value: 'not_empty', label: 'is not empty' },
+];
+// Case operators for the Switch gate (no empty/not_empty — a case needs a value).
+const SWITCH_OP_OPTIONS = COND_OP_OPTIONS.filter(o => o.value !== 'empty' && o.value !== 'not_empty');
 
 // ---- server <-> React Flow conversion ----
 function serverToRF(wf, labelFor) {
@@ -1141,23 +1157,44 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             </>)}
 
             {(kind === 'gate.if' || kind === 'gate.filter') && (<>
-                <Field label="Left (supports {{...}})"><TemplInput value={cond.left || ''} onChange={(v) => setCond({ left: v })} /></Field>
+                <Field label="Value to check"><TemplInput value={cond.left || ''} onChange={(v) => setCond({ left: v })} placeholder="{{last}} — or text/a value" /></Field>
                 <Field label="Operator">
                     <select style={fieldInput} value={cond.op || '=='} onChange={(e) => setCond({ op: e.target.value })}>
-                        {COND_OPS.map(o => <option key={o} value={o}>{o}</option>)}
+                        {COND_OP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                 </Field>
-                <Field label="Right"><TemplInput value={cond.right || ''} onChange={(v) => setCond({ right: v })} /></Field>
+                {(cond.op !== 'empty' && cond.op !== 'not_empty') && (
+                    <Field label="Compare to"><TemplInput value={cond.right || ''} onChange={(v) => setCond({ right: v })} placeholder="value to compare against" /></Field>
+                )}
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>
                     {kind === 'gate.if' ? 'Wire the "true" / "false" handles to branches.' : 'Continues down "out" only when true.'}
                 </p>
             </>)}
 
-            {kind === 'gate.switch' && (<>
-                <Field label="Value (supports {{...}})"><TemplInput value={d.value || ''} onChange={(v) => onChange({ value: v })} /></Field>
-                <Field label="Cases (JSON)"><JsonField value={d.cases} onChange={(v) => onChange({ cases: v })} placeholder='[{"equals":"a","handle":"a"}]' /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Unmatched routes to the "default" handle.</p>
-            </>)}
+            {kind === 'gate.switch' && (() => {
+                const cases = Array.isArray(d.cases) ? d.cases : [];
+                const setCase = (i, patch) => onChange({ cases: cases.map((c, idx) => idx === i ? { op: c.op || '==', value: (c.value ?? c.equals ?? ''), handle: c.handle || '', ...patch } : c) });
+                const addCase = () => onChange({ cases: [...cases, { op: '==', value: '', handle: '' }] });
+                const removeCase = (i) => onChange({ cases: cases.filter((_, idx) => idx !== i) });
+                return (<>
+                    <Field label="Value to check"><TemplInput value={d.value || ''} onChange={(v) => onChange({ value: v })} placeholder="{{last}} — value to route on" /></Field>
+                    <label style={fieldLabel}>Cases</label>
+                    {cases.map((c, i) => (
+                        <div key={i} style={{ border: '1px solid var(--rule-2)', borderRadius: 8, padding: 8, marginBottom: 8, background: 'var(--bg)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                                <select style={{ ...fieldInput, marginBottom: 0, flex: 1 }} value={c.op || '=='} onChange={(e) => setCase(i, { op: e.target.value })}>
+                                    {SWITCH_OP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                </select>
+                                <button onClick={() => removeCase(i)} title="Remove case" style={{ flexShrink: 0, width: 28, height: 28, padding: 0, border: '1px solid var(--rule-2)', borderRadius: 6, background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', fontSize: 15, lineHeight: 1 }}>×</button>
+                            </div>
+                            <TemplInput value={(c.value ?? c.equals ?? '')} onChange={(v) => setCase(i, { value: v })} placeholder="value to match" style={{ marginBottom: 6 }} />
+                            <TemplInput value={c.handle || ''} onChange={(v) => setCase(i, { handle: v })} placeholder="route label (defaults to the value)" style={{ marginBottom: 0 }} />
+                        </div>
+                    ))}
+                    <button onClick={addCase} style={{ ...railBtn, justifyContent: 'center', marginBottom: 8 }}>+ Add case</button>
+                    <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Each case routes to its own handle on the node; anything unmatched takes the "default" handle.</p>
+                </>);
+            })()}
 
             {kind === 'trigger.schedule' && <ScheduleConfig d={d} onChange={onChange} />}
 
