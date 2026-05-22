@@ -71,14 +71,27 @@ const MAX_DELAY_MS = 5 * 60 * 1000; // a delay node can wait at most 5 minutes
 // ---------------------------------------------------------------------------
 
 // Resolve a dotted path ("nodes.fetch.text", "results.0.title") against scope.
-function resolvePath(scope, pathStr) {
-    const parts = String(pathStr).trim().split('.').filter(Boolean);
-    let cur = scope;
-    for (const p of parts) {
+// Supports a `*` (or `[]`) wildcard segment that maps the rest of the path over
+// every element of an array (or every value of an object), so "results.*.url"
+// returns ALL urls, not just the first. Nested wildcards flatten one level.
+function resolveParts(cur, parts) {
+    for (let i = 0; i < parts.length; i++) {
         if (cur == null) return undefined;
+        const p = parts[i];
+        if (p === '*' || p === '[]') {
+            const items = Array.isArray(cur) ? cur : (typeof cur === 'object' ? Object.values(cur) : [cur]);
+            const rest = parts.slice(i + 1);
+            if (rest.length === 0) return items;
+            const mapped = items.map(item => resolveParts(item, rest)).filter(v => v !== undefined);
+            // flatten one level when the remainder itself produced arrays (nested *)
+            return mapped.some(Array.isArray) ? [].concat(...mapped) : mapped;
+        }
         cur = cur[p];
     }
     return cur;
+}
+function resolvePath(scope, pathStr) {
+    return resolveParts(scope, String(pathStr).trim().split('.').filter(Boolean));
 }
 
 // Interpolate {{ path }} references in a template.
@@ -96,6 +109,11 @@ function interpolate(template, scope) {
         return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, path) => {
             const val = resolvePath(scope, path);
             if (val === undefined || val === null) return '';
+            if (Array.isArray(val)) {
+                // arrays of scalars (e.g. all urls) → readable newline list;
+                // arrays of objects → JSON so structure is preserved.
+                return val.every(v => v === null || typeof v !== 'object') ? val.join('\n') : JSON.stringify(val, null, 2);
+            }
             return typeof val === 'object' ? JSON.stringify(val) : String(val);
         });
     }

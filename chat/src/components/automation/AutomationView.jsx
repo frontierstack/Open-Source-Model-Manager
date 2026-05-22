@@ -134,11 +134,13 @@ function TemplTextarea({ value = '', onChange, style, ...rest }) {
         style={{ ...fieldInput, ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />;
 }
 
-// Flatten a node's output into dotted paths (arrays collapse to index 0).
+// Flatten a node's output into dotted paths. Arrays use a `*` wildcard so a tag
+// pulls the field from EVERY element ({{...results.*.url}} = all urls), not just
+// the first; the engine's resolver maps `*` over the array.
 function flattenForTags(obj, prefix = '', out = [], depth = 0) {
     if (out.length >= 50 || depth > 4) return out;
     if (Array.isArray(obj)) {
-        if (obj.length) flattenForTags(obj[0], `${prefix}.0`, out, depth + 1);
+        if (obj.length) flattenForTags(obj[0], `${prefix}.*`, out, depth + 1);
         return out;
     }
     if (obj && typeof obj === 'object') {
@@ -756,6 +758,35 @@ function FlowEditor({ showSnackbar, models }) {
     );
 }
 
+// Client-side mirror of the engine's templating (incl. the `*` wildcard) so the
+// Output box can show a live preview of exactly what will be forwarded.
+function previewResolveParts(cur, parts) {
+    for (let i = 0; i < parts.length; i++) {
+        if (cur == null) return undefined;
+        const p = parts[i];
+        if (p === '*' || p === '[]') {
+            const items = Array.isArray(cur) ? cur : (typeof cur === 'object' ? Object.values(cur) : [cur]);
+            const rest = parts.slice(i + 1);
+            if (rest.length === 0) return items;
+            const mapped = items.map(it => previewResolveParts(it, rest)).filter(v => v !== undefined);
+            return mapped.some(Array.isArray) ? [].concat(...mapped) : mapped;
+        }
+        cur = cur[p];
+    }
+    return cur;
+}
+function previewInterpolate(tmpl, scope) {
+    if (typeof tmpl !== 'string') return '';
+    const fmt = (v) => {
+        if (v === undefined || v === null) return '';
+        if (Array.isArray(v)) return v.every(x => x === null || typeof x !== 'object') ? v.join('\n') : JSON.stringify(v, null, 2);
+        return typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
+    };
+    const exact = tmpl.match(/^\s*\{\{\s*([^}]+?)\s*\}\}\s*$/);
+    if (exact) return fmt(previewResolveParts(scope, exact[1].trim().split('.').filter(Boolean)));
+    return tmpl.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, p) => fmt(previewResolveParts(scope, p.trim().split('.').filter(Boolean))));
+}
+
 // ---- schedule builder (unit picker + live countdown) ----
 const SCHEDULE_UNITS = [['seconds', 1000], ['minutes', 60000], ['hours', 3600000], ['days', 86400000]];
 function fmtCountdown(ms) {
@@ -885,8 +916,8 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             </>)}
 
             {kind === 'parse_json' && (<>
-                <Field label="Extract path (optional)"><TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder="e.g. results.0.title" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Parses the previous node's JSON. Add a dotted path to pull one field, or leave blank to pass the whole object.</p>
+                <Field label="Pull out a field (optional)"><TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder="e.g. results.*.url" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Use this when the previous step returns JSON (or JSON text). Enter a path to keep just that part — e.g. <code>results.*.url</code> for every url, or <code>results.0.title</code> for the first. Leave blank to pass the whole thing through.</p>
             </>)}
 
             {kind === 'render_html' && (
@@ -983,19 +1014,34 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             </>)}
 
             {!isTrigger && kind !== 'output' && kind !== 'merge' && !String(kind).startsWith('gate.') && (() => {
-                const hasFwd = !!(d.forward && String(d.forward).trim());
+                const fwd = d.forward || '';
+                const hasFwd = !!fwd.trim();
+                let preview = null;
+                if (hasFwd) {
+                    const scope = { nodes: {}, last: lastRun && lastRun.output, input: {} };
+                    for (const id of Object.keys(allOutputs)) scope.nodes[id] = allOutputs[id] && allOutputs[id].output;
+                    try { preview = previewInterpolate(fwd, scope); } catch (_) { preview = null; }
+                }
+                const haveData = Object.keys(allOutputs).length > 0;
                 return (
                     <div style={{ marginTop: 14, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
-                        <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>Forwards to next node</div>
-                        <div style={{ fontSize: 11, color: hasFwd ? 'var(--accent)' : 'var(--ink-2)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
-                            <span style={{ fontWeight: 700 }}>→</span>
-                            <span>{hasFwd ? 'only the data below' : 'the entire output'}</span>
+                        <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>Output → next node</div>
+                        <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 6 }}>
+                            Type any text and insert data tags anywhere — it's sent in order, exactly as written. Leave blank to send the whole output.
                         </div>
-                        <TemplTextarea style={{ minHeight: 44, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.forward || ''} onChange={(v) => onChange({ forward: v })} placeholder="Leave blank to send everything. Click a tag above to send only that field." />
-                        {hasFwd && (
-                            <button onClick={() => onChange({ forward: '' })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0, marginTop: 2 }}>
-                                ↺ reset to send everything
-                            </button>
+                        <TemplTextarea style={{ minHeight: 56, fontFamily: 'inherit', fontSize: 12, resize: 'vertical' }} value={fwd} onChange={(v) => onChange({ forward: v })} placeholder={'e.g.  Top results:\n{{nodes.id.results.*.url}}'} />
+                        {hasFwd ? (
+                            <div style={{ marginTop: 5 }}>
+                                <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 3 }}>
+                                    Sends to next node{haveData ? '' : ' (run once to fill in tag values)'}:
+                                </div>
+                                <pre style={{ margin: 0, fontSize: 11, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 150, overflow: 'auto', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 7 }}>{preview === '' ? '(empty)' : preview}</pre>
+                                <button onClick={() => onChange({ forward: '' })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0, marginTop: 4 }}>
+                                    ↺ reset to send everything
+                                </button>
+                            </div>
+                        ) : (
+                            <div style={{ fontSize: 10.5, color: 'var(--ink-2)', marginTop: 5 }}>→ Sending the entire output</div>
                         )}
                     </div>
                 );
