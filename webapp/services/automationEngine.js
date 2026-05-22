@@ -878,6 +878,7 @@ function buildBuilderSystemPrompt() {
         '- Wire every step with edges (source→target). Data flows trigger → … → final step.',
         '- Reference a previous step inside any text/arg with {{nodes.<id>.<field>}} or {{last}} (previous output). Exact {{nodes.<id>}} is that node\'s whole output.',
         '- Branch from gates with sourceHandle on the OUTGOING edge: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case.',
+        '- DEDUPE / "only new or unique items on future runs" / "track changes" / "notify only when something new": ALWAYS use a db_store node with a "key" (the unique field — id or url; add "keyNormalize": true and "keyStrip" for messy text/titles). It stores only unseen records and returns them in `.new`. Then add a gate.if on `{{nodes.<store>.new}}` with op "not_empty" and continue on the "true" handle. NEVER rely on the model to remember past items — persistence is what makes it unique across runs.',
         '',
         'Per-node data (set only what is needed):',
         '- model: { "prompt": "...", "systemPrompt": "..."? }  (the answer string is the output)',

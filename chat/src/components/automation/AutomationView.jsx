@@ -467,25 +467,32 @@ function FlowEditor({ showSnackbar, models }) {
     const [buildOpen, setBuildOpen] = useState(false);
     const [buildPrompt, setBuildPrompt] = useState('');
     const [building, setBuilding] = useState(false);
+    const [buildTest, setBuildTest] = useState(false);
+    const [buildLog, setBuildLog] = useState(null);
     const buildAutomation = useCallback(async () => {
         const p = buildPrompt.trim();
         if (!p || building) return;
         setBuilding(true);
+        setBuildLog(null);
         try {
             const res = await fetch('/api/automations/build', {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt: p }),
+                body: JSON.stringify({ prompt: p, test: buildTest }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to build automation');
             await loadAutomations();
             selectAutomation(data.id);
-            setBuildPrompt(''); setBuildOpen(false);
+            setBuildPrompt('');
+            const log = Array.isArray(data.buildLog) ? data.buildLog : null;
+            setBuildLog(log);
+            // Keep the box open to show the build log; otherwise close it.
+            if (!log) setBuildOpen(false);
             notify('Built with LLM — review and tweak the steps before running', 'success');
         } catch (err) { notify(err.message, 'error'); }
         finally { setBuilding(false); }
-    }, [buildPrompt, building, loadAutomations, selectAutomation]);
+    }, [buildPrompt, building, buildTest, loadAutomations, selectAutomation]);
 
     // Edit with LLM — describe a change to the OPEN automation; preview the diff, then apply.
     const [editOpen, setEditOpen] = useState(false);
@@ -761,19 +768,23 @@ function FlowEditor({ showSnackbar, models }) {
         } catch (_) { setRuns([]); }
     }, [selected]);
 
+    const clearRuns = useCallback(async () => {
+        if (!selected) return;
+        if (!window.confirm('Clear all run history for this automation?')) return;
+        try {
+            const res = await fetch(`/api/automations/${selected.id}/runs`, { method: 'DELETE', credentials: 'include' });
+            if (!res.ok) throw new Error('Failed to clear run history');
+            setRunDetail(null);
+            await loadRuns();
+        } catch (err) { notify(err.message, 'error'); }
+    }, [selected, loadRuns]);
+
     const openHistory = useCallback(() => {
         setSelectedNodeId(null);
         setRunDetail(null);
         setShowHistory(true);
         loadRuns();
     }, [loadRuns]);
-
-    const openRunDetail = useCallback(async (runId) => {
-        try {
-            const res = await fetch(`/api/automations/runs/${runId}`, { credentials: 'include' });
-            setRunDetail(res.ok ? await res.json() : null);
-        } catch (_) { setRunDetail(null); }
-    }, []);
 
     // Refresh the history list when a run finishes while the panel is open.
     useEffect(() => { if (showHistory && !running) loadRuns(); }, [running, showHistory]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -843,7 +854,7 @@ function FlowEditor({ showSnackbar, models }) {
                         <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', color: 'var(--accent)', borderColor: 'var(--accent)' }}>
                             <Plus size={14} /> <span>New automation</span>
                         </button>
-                        <button onClick={() => setBuildOpen(o => !o)} style={{ ...railBtn, justifyContent: 'center', marginTop: 6 }}>
+                        <button onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} style={{ ...railBtn, justifyContent: 'center', marginTop: 6 }}>
                             <Sparkles size={14} /> <span>Build with LLM</span>
                         </button>
                         {buildOpen && (
@@ -857,13 +868,21 @@ function FlowEditor({ showSnackbar, models }) {
                                     disabled={building}
                                     style={{ ...fieldInput, resize: 'vertical', minHeight: 64, lineHeight: 1.4 }}
                                 />
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-3)', margin: '6px 0', cursor: 'pointer' }}>
+                                    <input type="checkbox" checked={buildTest} onChange={e => setBuildTest(e.target.checked)} disabled={building} /> Test &amp; improve (run it and let the model fix issues — slower)
+                                </label>
                                 <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                                     <button onClick={buildAutomation} disabled={building || !buildPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)', opacity: (building || !buildPrompt.trim()) ? 0.55 : 1, cursor: (building || !buildPrompt.trim()) ? 'default' : 'pointer' }}>
                                         {building ? 'Building…' : 'Build'}
                                     </button>
-                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); }} disabled={building} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
+                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
                                 </div>
-                                {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>The model is assembling your workflow…</div>}
+                                {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{buildTest ? 'Building, testing & improving…' : 'The model is assembling your workflow…'}</div>}
+                                {buildLog && (
+                                    <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
+                                        {buildLog.map((l, i) => <div key={i} style={{ marginBottom: 2 }}>• {l}</div>)}
+                                    </div>
+                                )}
                             </div>
                         )}
                         {selected && (
@@ -1084,10 +1103,9 @@ function FlowEditor({ showSnackbar, models }) {
                 {showHistory && (
                     <RunHistoryPanel
                         runs={runs}
-                        runDetail={runDetail}
                         width={panelWidth}
                         onResizeStart={onPanelResizeStart}
-                        onSelect={openRunDetail}
+                        onClearHistory={clearRuns}
                         onClose={() => { setShowHistory(false); setRunDetail(null); }}
                     />
                 )}
@@ -1324,7 +1342,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                     )}
                     <TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder={parseFields.length ? 'or type a field path' : 'e.g. results.*.url — run once to list fields'} />
                 </Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Parses the previous step's JSON and keeps just the field you pick — e.g. <code>title</code>, or <code>results.*.url</code> for every url. Leave blank to pass the whole thing through. <em>Run once to list the available fields.</em></p>
+                <p style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: -2 }}>Picks one field out of the previous step's JSON. Blank = pass it all through.</p>
             </>)}
 
             {kind === 'db_store' && (<>
@@ -1652,7 +1670,20 @@ function runStatusColor(s) {
         : 'var(--ink-4, #64748b)';
 }
 
-function RunHistoryPanel({ runs, runDetail, width = 300, onResizeStart, onSelect, onClose }) {
+function RunHistoryPanel({ runs, width = 300, onResizeStart, onClearHistory, onClose }) {
+    const [openRunId, setOpenRunId] = useState(null);
+    const [detail, setDetail] = useState(null);
+
+    const toggleRun = useCallback(async (runId) => {
+        if (openRunId === runId) { setOpenRunId(null); setDetail(null); return; }
+        setOpenRunId(runId);
+        setDetail(null);
+        try {
+            const res = await fetch(`/api/automations/runs/${runId}`, { credentials: 'include' });
+            setDetail(res.ok ? await res.json() : null);
+        } catch (_) { setDetail(null); }
+    }, [openRunId]);
+
     return (
         <div style={{ position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
             {onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
@@ -1660,41 +1691,61 @@ function RunHistoryPanel({ runs, runDetail, width = 300, onResizeStart, onSelect
                 <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 14 }}>Run history</span>
                 <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Close"><CloseIcon size={15} /></button>
             </div>
-            {runs.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>No runs yet — hit Run to create one.</div>}
-            {runs.map(r => (
-                <div key={r.id} onClick={() => onSelect(r.id)}
-                    style={{ padding: '7px 8px', borderRadius: 7, cursor: 'pointer', marginBottom: 3, border: '1px solid var(--rule-2)', background: runDetail && runDetail.id === r.id ? 'var(--accent-soft)' : 'transparent' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: runStatusColor(r.status) }} />
-                        <span style={{ fontSize: 12, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{r.status}</span>
-                        <span style={{ marginLeft: 'auto', fontSize: 10.5, color: 'var(--ink-3)' }}>{r.trigger}</span>
-                    </div>
-                    <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>
-                        {fmtRunTime(r.startedAt)}{r.durationMs != null ? ` · ${(r.durationMs / 1000).toFixed(1)}s` : ''}
-                    </div>
-                </div>
-            ))}
-            {runDetail && (
-                <div style={{ marginTop: 12, borderTop: '1px solid var(--rule)', paddingTop: 10 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 6 }}>Node timeline</div>
-                    {(runDetail.nodes || []).map((n, i) => (
-                        <div key={i} style={{ marginBottom: 6, fontSize: 11 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: runStatusColor(n.status) }} />
-                                <span style={{ color: 'var(--ink-2)' }}>{n.label || n.type}</span>
-                                <span style={{ marginLeft: 'auto', color: 'var(--ink-3)', fontSize: 10 }}>{n.type}</span>
-                            </div>
-                            {n.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 10, marginLeft: 12 }}>{n.error}</div>}
-                            {n.output != null && (
-                                <pre style={{ margin: '2px 0 0 12px', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 80, overflow: 'auto' }}>
-                                    {typeof n.output === 'string' ? n.output.slice(0, 300) : JSON.stringify(n.output).slice(0, 300)}
-                                </pre>
-                            )}
-                        </div>
-                    ))}
-                    {runDetail.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginTop: 6 }}>{runDetail.error}</div>}
-                </div>
+            {runs.length > 0 && onClearHistory && (
+                <button onClick={onClearHistory} style={{ ...railBtn, justifyContent: 'center', marginBottom: 10, color: 'var(--danger, #ef4444)', borderColor: 'var(--rule-2)' }}>
+                    Clear history
+                </button>
             )}
+            {runs.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>No runs yet — hit Run to create one.</div>}
+            {runs.map(r => {
+                const isOpen = openRunId === r.id;
+                const rec = isOpen ? detail : null;
+                return (
+                    <div key={r.id} style={{ marginBottom: 3 }}>
+                        <div onClick={() => toggleRun(r.id)}
+                            style={{ padding: '7px 8px', borderRadius: 7, cursor: 'pointer', border: '1px solid var(--rule-2)', background: isOpen ? 'var(--accent-soft)' : 'transparent' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: runStatusColor(r.status) }} />
+                                <span style={{ fontSize: 12, color: 'var(--ink-2)', textTransform: 'capitalize' }}>{r.status}</span>
+                                <span style={{ marginLeft: 'auto', fontSize: 10.5, color: 'var(--ink-3)' }}>{r.trigger}</span>
+                            </div>
+                            <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>
+                                {fmtRunTime(r.startedAt)}{r.durationMs != null ? ` · ${(r.durationMs / 1000).toFixed(1)}s` : ''}
+                            </div>
+                        </div>
+                        {isOpen && (
+                            <div style={{ margin: '4px 0 6px 0', borderLeft: '2px solid var(--rule)', paddingLeft: 8 }}>
+                                {!rec && <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>Loading…</div>}
+                                {rec && (
+                                    <>
+                                        <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 6 }}>
+                                            <span style={{ color: runStatusColor(rec.status), textTransform: 'capitalize' }}>{rec.status}</span>
+                                            {rec.durationMs != null ? ` · ${(rec.durationMs / 1000).toFixed(1)}s` : ''}
+                                        </div>
+                                        {rec.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 10.5, marginBottom: 6 }}>{rec.error}</div>}
+                                        {(rec.nodes || []).map((n, i) => (
+                                            <div key={i} style={{ marginBottom: 6, fontSize: 11 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                    <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: runStatusColor(n.status) }} />
+                                                    <span style={{ color: 'var(--ink-2)' }}>{n.nodeId || n.type}</span>
+                                                    <span style={{ color: 'var(--ink-3)', fontSize: 10 }}>({n.type})</span>
+                                                    <span style={{ marginLeft: 'auto', color: 'var(--ink-3)', fontSize: 10, textTransform: 'capitalize' }}>{n.status}</span>
+                                                </div>
+                                                {n.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 10, marginLeft: 12 }}>{n.error}</div>}
+                                                {n.output != null && (
+                                                    <pre style={{ margin: '2px 0 0 12px', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 80, overflow: 'auto' }}>
+                                                        {typeof n.output === 'string' ? n.output.slice(0, 300) : JSON.stringify(n.output).slice(0, 300)}
+                                                    </pre>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                );
+            })}
         </div>
     );
 }

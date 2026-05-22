@@ -7902,8 +7902,56 @@ app.post('/api/automations', requireAuth, async (req, res) => {
     }
 });
 
+// Run a freshly-built workflow once and, if it failed with a fixable (non-config)
+// error, ask the model to repair it (one pass). Mutates wf + appends to buildLog.
+async function testAndImproveWorkflow(wf, prompt, model, req, buildLog) {
+    const summarize = (outcome, rec) => {
+        const L = [`status=${outcome.status}`];
+        if (outcome.error) L.push(`error: ${outcome.error}`);
+        if (rec && Array.isArray(rec.nodes)) for (const n of rec.nodes) {
+            const o = n.output;
+            const os = o == null ? '' : (typeof o === 'string' ? o : JSON.stringify(o));
+            L.push(`- ${n.nodeId} (${n.type}): ${n.status}${n.error ? ' ERROR: ' + n.error : ''}${os ? ' → ' + String(os).slice(0, 180) : ''}`);
+        }
+        return L.join('\n');
+    };
+    const runOnce = async () => {
+        try {
+            const { runId, outcome } = await executeWorkflowRun(wf, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: {}, onEvent: () => {} });
+            let rec = null; try { rec = await workflowRunStore.getRun(req.userId, runId); } catch (_) {}
+            return { outcome, rec };
+        } catch (e) { return { outcome: { status: 'failed', error: e.message }, rec: null }; }
+    };
+    const isConfigError = (s) => /token|credential|chat id|webhook url|bot token|api key|not in the channel|channels:history|requires a /i.test(String(s || ''));
+    const { outcome, rec } = await runOnce();
+    buildLog.push(`Test run: ${outcome.status}${outcome.error ? ` — ${outcome.error}` : ''}`);
+    if (outcome.status === 'failed' && !isConfigError(outcome.error)) {
+        const messages = [
+            { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
+            { role: 'user', content: `This workflow was just run and FAILED. Fix the cause (wrong field paths, bad wiring, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nRun results:\n${summarize(outcome, rec)}\n\nCurrent workflow:\n${JSON.stringify({ name: wf.name, nodes: wf.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wf.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
+        ];
+        try {
+            const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });
+            let raw = String(text || '').trim();
+            const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
+            const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
+            const revised = automationEngine.materializeWorkflowEdit(JSON.parse(raw), wf);
+            wf.nodes = revised.nodes; wf.edges = revised.edges; wf.updatedAt = new Date().toISOString();
+            const all = await loadWorkflows();
+            const idx = all.findIndex(w => w.id === wf.id);
+            if (idx !== -1) { all[idx] = wf; await saveWorkflows(all); }
+            buildLog.push('Refined the workflow to fix the error.');
+            const r2 = await runOnce();
+            buildLog.push(`Test run after refine: ${r2.outcome.status}${r2.outcome.error ? ` — ${r2.outcome.error}` : ''}`);
+        } catch (e) { buildLog.push(`Auto-fix skipped: ${e.message}`); }
+    } else if (outcome.status === 'failed') {
+        buildLog.push('That failure is just missing configuration (e.g. a token) — fill it in and it will run.');
+    }
+}
+
 // Build an automation from a natural-language prompt: the model emits a workflow
 // spec, which is validated + auto-laid-out + saved. Returns the created workflow.
+// With { test: true } it also runs it once and auto-fixes a fixable failure.
 app.post('/api/automations/build', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });
@@ -7948,7 +7996,12 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
         };
         workflows.push(wf);
         await saveWorkflows(workflows);
-        res.status(201).json(wf);
+        const buildLog = [`Built ${wf.nodes.length} node(s): ${wf.nodes.map(n => (n.data && n.data.label) || n.type).join(' → ')}`];
+        if (req.body && req.body.test) {
+            try { await testAndImproveWorkflow(wf, prompt, model, req, buildLog); }
+            catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
+        }
+        res.status(201).json({ ...wf, buildLog });
     } catch (error) {
         console.error('Error building automation:', error);
         res.status(500).json({ error: `Failed to build automation: ${error.message}` });
@@ -8244,6 +8297,26 @@ app.get('/api/automations/:id/runs', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error listing automation runs:', error);
         res.status(500).json({ error: 'Failed to list runs' });
+    }
+});
+
+// Clear all run history for a workflow.
+app.delete('/api/automations/:id/runs', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const wf = workflows.find(w => w.id === req.params.id);
+        if (!wf) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(wf, req.userId) && !callerIsAdmin(req)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        await workflowRunStore.deleteRunsForWorkflow(req.userId, req.params.id);
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('Error clearing run history:', error);
+        res.status(500).json({ error: 'Failed to clear history' });
     }
 });
 
