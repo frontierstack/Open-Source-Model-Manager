@@ -45,6 +45,7 @@ const BUILTIN_NODE_TYPES = [
     { key: 'slack',       type: 'slack',      category: 'connector', label: 'Slack Message',    description: 'Posts a message to a Slack incoming-webhook URL.', inputs: ['in'], outputs: ['out'], fields: ['webhookUrl', 'text'] },
     { key: 'telegram',    type: 'telegram',   category: 'connector', label: 'Telegram Message', description: 'Sends a message via a Telegram bot (Bot API token + chat id).', inputs: ['in'], outputs: ['out'], fields: ['botToken', 'chatId', 'text'] },
     { key: 'telegram_get',type: 'telegram_get',category: 'connector', label: 'Get Telegram Messages', description: 'Fetches the bot\'s recent messages on demand (getUpdates). Do NOT use on a bot that also has a Telegram trigger — getUpdates conflicts.', inputs: ['in'], outputs: ['out'], fields: ['botToken', 'limit'] },
+    { key: 'send_file',   type: 'send_file',  category: 'connector', label: 'Send File',        description: 'Sends a file produced by a previous step (PDF, image, CSV…) to Telegram, Slack, or any HTTP endpoint. Auto-uses the upstream node\'s generated file. Set "to": telegram (botToken+chatId), slack (botToken xoxb- + channel), or http (url).', inputs: ['in'], outputs: ['out'], fields: ['to', 'botToken', 'chatId', 'channel', 'url', 'caption'] },
     { key: 'http_request',type: 'tool',       category: 'connector', label: 'HTTP Request',     description: 'Calls an HTTP endpoint (SSRF-guarded — private IPs blocked).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'http_request' }, fields: ['args'] },
     { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
     { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
@@ -495,6 +496,27 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             const messages = result.map(u => u.message).filter(Boolean).slice(-limit);
             const latest = messages.length ? messages[messages.length - 1] : null;
             return { count: messages.length, messages, latest, text: latest ? (latest.text || latest.caption || '') : '' };
+        }
+
+        case 'send_file': {
+            if (!deps.executeToolCall) throw new Error('Send File needs the tool dispatcher.');
+            const to = String(data.to || 'telegram').trim();
+            // Auto-detect the file the previous step produced (its _artifacts).
+            let filePath = String(data.path || '').trim();
+            if (!filePath) {
+                const last = scope.last;
+                const arts = (last && typeof last === 'object' && Array.isArray(last._artifacts)) ? last._artifacts : [];
+                if (arts.length && arts[0] && arts[0].name) filePath = 'artifacts/' + arts[0].name;
+            }
+            // `destination` (not `to`) — `to` is a sandbox PATH_ARG_NAME and would
+            // be rewritten to /workspace/telegram.
+            const args = { destination: to, path: filePath, caption: (data.caption !== undefined && data.caption !== '') ? String(data.caption) : '' };
+            if (to === 'telegram') { args.botToken = data.botToken; args.chatId = data.chatId; }
+            else if (to === 'slack') { args.botToken = data.botToken; args.channel = data.channel; }
+            else if (to === 'http') { args.url = data.url; }
+            const r = await dispatchTool(deps, ctx, node, 'send_file', args);
+            if (r && r.success === false) throw new Error(`Send File failed — ${r.error || 'unknown error'}`);
+            return r;
         }
 
         case 'delay': {
@@ -1030,7 +1052,18 @@ function diffWorkflows(base, proposed) {
     const lbl = (n) => (n && n.data && n.data.label) || (n && n.type) || '?';
     const addedNodes = [...pN].filter(([id]) => !bN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
     const removedNodes = [...bN].filter(([id]) => !pN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
-    const changedNodes = [...pN].filter(([id, n]) => bN.has(id) && JSON.stringify([bN.get(id).type, bN.get(id).data]) !== JSON.stringify([n.type, n.data])).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
+    // For a changed node, list which data fields actually differ (skip 'label').
+    const changedFields = (a, b) => {
+        const keys = new Set([...Object.keys((a && a.data) || {}), ...Object.keys((b && b.data) || {})]);
+        const out = [];
+        for (const k of keys) {
+            if (k === 'label') continue;
+            if (JSON.stringify((a.data || {})[k]) !== JSON.stringify((b.data || {})[k])) out.push(k);
+        }
+        if ((a.type || '') !== (b.type || '')) out.unshift('type');
+        return out;
+    };
+    const changedNodes = [...pN].filter(([id, n]) => bN.has(id) && JSON.stringify([bN.get(id).type, bN.get(id).data]) !== JSON.stringify([n.type, n.data])).map(([id, n]) => ({ id, label: lbl(n), type: n.type, fields: changedFields(bN.get(id), n) }));
     const ek = (e) => `${e.source}->${e.target}${e.sourceHandle ? '[' + e.sourceHandle + ']' : ''}`;
     const bE = new Set(((base && base.edges) || []).map(ek)), pE = new Set(((proposed && proposed.edges) || []).map(ek));
     return {

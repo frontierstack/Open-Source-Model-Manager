@@ -1724,5 +1724,29 @@
     "sandbox": true,
     "workspace": true,
     "network": "none"
+  },
+  {
+    "name": "send_file",
+    "description": "Send a workspace file (PDF, image, CSV, anything produced upstream) to Telegram (sendDocument), Slack (files.upload), or any HTTP endpoint (multipart). Auto-uses the newest file in /workspace/artifacts/ when no path is given.",
+    "type": "function",
+    "parameters": {
+      "destination": "string",
+      "path": "string",
+      "botToken": "string",
+      "chatId": "string",
+      "channel": "string",
+      "url": "string",
+      "field": "string",
+      "caption": "string"
+    },
+    "systemPrompt": "Sends a file from the workspace to an external destination. `destination` is 'telegram' (needs botToken + chatId), 'slack' (needs a bot token xoxb- + channel id; the incoming-webhook URL can't upload files), or 'http' (POST multipart to `url`, optional `field` name). `path` is the workspace file (defaults to the newest file in /workspace/artifacts/, i.e. whatever the previous step generated). `caption` is an optional message sent with the file.",
+    "code": "def execute(params):\n    \"\"\"Send a workspace file to Telegram (sendDocument), Slack (files.upload) or any HTTP endpoint (multipart).\"\"\"\n    import os, requests\n\n    to = (params.get('destination') or params.get('to') or 'telegram').strip().lower()\n    caption = params.get('caption')\n\n    # Locate the file: explicit path, else the newest file in /workspace/artifacts/.\n    path = (params.get('path') or '').strip()\n    if not path:\n        d = '/workspace/artifacts'\n        if os.path.isdir(d):\n            cands = [os.path.join(d, f) for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)) and not f.startswith('.')]\n            if cands:\n                path = max(cands, key=os.path.getmtime)\n    if not path:\n        return {'success': False, 'error': 'no file to send — set a path or produce a file upstream (e.g. create_pdf)'}\n    if not os.path.isabs(path):\n        path = os.path.join('/workspace', path)\n    if not os.path.isfile(path):\n        return {'success': False, 'error': f'no such file: {path}'}\n    fname = os.path.basename(path)\n\n    try:\n        if to == 'telegram':\n            token = (params.get('botToken') or '').strip()\n            chat = (params.get('chatId') or '').strip()\n            if not token or not chat:\n                return {'success': False, 'error': 'telegram needs botToken and chatId'}\n            data = {'chat_id': chat}\n            if caption:\n                data['caption'] = str(caption)[:1024]\n            with open(path, 'rb') as fh:\n                r = requests.post(f'https://api.telegram.org/bot{token}/sendDocument', data=data, files={'document': (fname, fh)}, timeout=120)\n            ok = r.ok and r.json().get('ok')\n            return {'success': bool(ok), 'channel': 'telegram', 'file': fname} if ok else {'success': False, 'error': f'telegram sendDocument failed ({r.status_code}): {r.text[:200]}'}\n\n        if to == 'slack':\n            token = (params.get('botToken') or params.get('token') or '').strip()\n            chan = (params.get('channel') or '').strip()\n            if not token or not chan:\n                return {'success': False, 'error': 'slack needs a bot token (xoxb-) and channel id'}\n            data = {'channels': chan}\n            if caption:\n                data['initial_comment'] = str(caption)\n            with open(path, 'rb') as fh:\n                r = requests.post('https://slack.com/api/files.upload', headers={'Authorization': 'Bearer ' + token}, data=data, files={'file': (fname, fh)}, timeout=120)\n            ok = r.ok and r.json().get('ok')\n            return {'success': bool(ok), 'channel': 'slack', 'file': fname} if ok else {'success': False, 'error': f'slack files.upload failed: {r.text[:200]}'}\n\n        if to == 'http':\n            url = (params.get('url') or '').strip()\n            if not url:\n                return {'success': False, 'error': 'http needs a url'}\n            field = params.get('field') or 'file'\n            with open(path, 'rb') as fh:\n                r = requests.post(url, files={field: (fname, fh)}, data=({'caption': str(caption)} if caption else {}), timeout=120)\n            ok = 200 <= r.status_code < 300\n            return {'success': ok, 'channel': 'http', 'file': fname, 'status': r.status_code} if ok else {'success': False, 'error': f'http upload failed ({r.status_code}): {r.text[:200]}'}\n\n        return {'success': False, 'error': f'unknown destination: {to} (use telegram, slack, or http)'}\n    except Exception as e:\n        return {'success': False, 'error': str(e)}\n",
+    "enabled": true,
+    "sandbox": true,
+    "workspace": true,
+    "network": "allowlist",
+    "allowlist": [
+      "*"
+    ]
   }
 ]

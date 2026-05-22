@@ -7920,7 +7920,9 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
     };
     const runOnce = async () => {
         try {
-            const { runId, outcome } = await executeWorkflowRun(wfObj, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: {}, onEvent: () => {} });
+            // Mirror test-run events to the user's SSE stream so the editor
+            // animates the run on the board when the workflow is open (Edit case).
+            const { runId, outcome } = await executeWorkflowRun(wfObj, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: {}, onEvent: (evt) => { try { mirrorAutomationEvent(req.userId, evt); } catch (_) {} } });
             let rec = null; try { rec = await workflowRunStore.getRun(req.userId, runId); } catch (_) {}
             return { outcome, rec };
         } catch (e) { return { outcome: { status: 'failed', error: e.message }, rec: null }; }
@@ -17911,6 +17913,8 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'diff_files', 'grep_code', 'outline_file', 'replace_lines',
     // make a workspace file downloadable — copies into /workspace/artifacts/
     'make_downloadable',
+    // send a workspace file to telegram/slack/http (reads /workspace/artifacts)
+    'send_file',
     // download_file lives in NETWORK_SANDBOX_DEFAULTS too — it's listed here
     // so the migration also flips workspace=true. Without the workspace mount,
     // the file lands in the per-call tmpfs `/tmp` and evaporates the moment
@@ -17952,6 +17956,7 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
 // match any legacy entry is preserved (operator intent wins).
 const NETWORK_SANDBOX_DEFAULTS = {
     download_file:   { allowlist: ['*'], note: 'arbitrary URL download; tighten if policy allows' },
+    send_file:       { allowlist: ['*'], note: 'uploads a workspace file to telegram/slack/user URL' },
     fetch_url:       { allowlist: ['*'], note: 'user-supplied URLs' },
     http_request:    { allowlist: ['*'], note: 'user-supplied URLs' },
     web_search:      { allowlist: ['duckduckgo.com', 'html.duckduckgo.com', 'www.bing.com'] },

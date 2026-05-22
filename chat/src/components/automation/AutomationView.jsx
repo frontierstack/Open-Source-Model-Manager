@@ -897,7 +897,7 @@ function FlowEditor({ showSnackbar, models }) {
                                     <button onClick={buildAutomation} disabled={building || !buildPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)', opacity: (building || !buildPrompt.trim()) ? 0.55 : 1, cursor: (building || !buildPrompt.trim()) ? 'default' : 'pointer' }}>
                                         {building ? 'Building…' : 'Build'}
                                     </button>
-                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
+                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building} style={{ ...railBtn, justifyContent: 'center', width: 'auto', flex: '0 0 auto', padding: '7px 14px', fontSize: 12 }}>Cancel</button>
                                 </div>
                                 {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{buildTest ? 'Building, testing & improving…' : 'The model is assembling your workflow…'}</div>}
                                 {buildLog && (
@@ -931,15 +931,15 @@ function FlowEditor({ showSnackbar, models }) {
                                         <button onClick={previewEdit} disabled={editing || !editPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, opacity: (editing || !editPrompt.trim()) ? 0.55 : 1, cursor: (editing || !editPrompt.trim()) ? 'default' : 'pointer' }}>
                                             {editing ? (editTest ? 'Testing…' : 'Thinking…') : 'Preview changes'}
                                         </button>
-                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
+                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing} style={{ ...railBtn, justifyContent: 'center', width: 'auto', flex: '0 0 auto', padding: '7px 14px', fontSize: 12 }}>Cancel</button>
                                     </div>
                                     {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{editTest ? 'Revising, testing & improving…' : 'The model is revising your workflow…'}</div>}
                                 </>) : (<>
                                     <div style={{ fontSize: 11, border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
                                         <div style={{ fontWeight: 600, color: 'var(--ink-2)', marginBottom: 4 }}>Proposed changes</div>
-                                        {editResult.diff.addedNodes.map(n => <div key={'a' + n.id} style={{ color: '#22c55e' }}>+ {n.label}</div>)}
-                                        {editResult.diff.changedNodes.map(n => <div key={'c' + n.id} style={{ color: 'var(--accent)' }}>~ {n.label}</div>)}
-                                        {editResult.diff.removedNodes.map(n => <div key={'r' + n.id} style={{ color: '#ef4444' }}>− {n.label}</div>)}
+                                        {editResult.diff.addedNodes.map(n => <div key={'a' + n.id} style={{ color: '#22c55e' }}>+ added <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>)}
+                                        {editResult.diff.changedNodes.map(n => <div key={'c' + n.id} style={{ color: 'var(--accent)' }}>~ changed <b>{n.label}</b>{n.fields && n.fields.length ? <span style={{ color: 'var(--ink-3)' }}>{` — ${n.fields.join(', ')}`}</span> : ''}</div>)}
+                                        {editResult.diff.removedNodes.map(n => <div key={'r' + n.id} style={{ color: '#ef4444' }}>− removed <b>{n.label}</b></div>)}
                                         {(editResult.diff.addedEdges > 0 || editResult.diff.removedEdges > 0) && <div style={{ color: 'var(--ink-3)', marginTop: 3 }}>edges: +{editResult.diff.addedEdges} / −{editResult.diff.removedEdges}</div>}
                                         {(editResult.diff.addedNodes.length + editResult.diff.changedNodes.length + editResult.diff.removedNodes.length) === 0 && <div style={{ color: 'var(--ink-3)' }}>No node changes detected.</div>}
                                     </div>
@@ -950,7 +950,7 @@ function FlowEditor({ showSnackbar, models }) {
                                     )}
                                     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                                         <button onClick={applyEdit} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)' }}>{editing ? 'Applying…' : 'Apply'}</button>
-                                        <button onClick={() => setEditResult(null)} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Discard</button>
+                                        <button onClick={() => setEditResult(null)} disabled={editing} style={{ ...railBtn, justifyContent: 'center', width: 'auto', flex: '0 0 auto', padding: '7px 14px', fontSize: 12 }}>Discard</button>
                                     </div>
                                 </>)}
                             </div>
@@ -1447,6 +1447,29 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
                 <Field label="Limit"><input type="number" style={fieldInput} value={d.limit ?? ''} onChange={(e) => onChange({ limit: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="10" /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Fetches recent messages: <code>{'{{nodes.id.messages}}'}</code>, <code>{'{{nodes.id.latest.text}}'}</code>, <code>{'{{nodes.id.text}}'}</code> (latest). Don't use on a bot that also has a Telegram trigger — getUpdates conflicts.</p>
+            </>)}
+
+            {kind === 'send_file' && (<>
+                <Field label="Send to">
+                    <select style={fieldInput} value={d.to || 'telegram'} onChange={(e) => onChange({ to: e.target.value })}>
+                        <option value="telegram">Telegram</option>
+                        <option value="slack">Slack</option>
+                        <option value="http">HTTP upload</option>
+                    </select>
+                </Field>
+                {(d.to || 'telegram') === 'telegram' && (<>
+                    <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
+                    <Field label="Chat ID"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="e.g. 8938559204" /></Field>
+                </>)}
+                {d.to === 'slack' && (<>
+                    <Field label="Slack bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
+                    <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="C0123456789" /></Field>
+                </>)}
+                {d.to === 'http' && (
+                    <Field label="Upload URL"><TemplInput value={d.url || ''} onChange={(v) => onChange({ url: v })} placeholder="https://example.com/upload" /></Field>
+                )}
+                <Field label="Caption / message (optional)"><TemplInput value={d.caption || ''} onChange={(v) => onChange({ caption: v })} placeholder="optional note sent with the file" /></Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Sends the file the previous step produced (e.g. <b>Create PDF</b>) — just wire it in. Slack needs a bot token (<code>xoxb-</code>) + channel; the incoming-webhook URL can't upload files.</p>
             </>)}
 
             {kind === 'delay' && (
