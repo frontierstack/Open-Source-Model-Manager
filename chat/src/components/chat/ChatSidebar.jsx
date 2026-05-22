@@ -14,6 +14,7 @@ import {
     FolderOpen,
     FolderPlus,
     FolderInput,
+    Workflow,
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
 import { useChatStore } from '../../stores/useChatStore';
@@ -70,6 +71,7 @@ export default function ChatSidebar({
     const renameFolder = useChatStore(s => s.renameFolder);
     const deleteFolder = useChatStore(s => s.deleteFolder);
     const setConversationFolder = useChatStore(s => s.setConversationFolder);
+    const setView = useChatStore(s => s.setView);
 
     // Close menus on outside click
     useEffect(() => {
@@ -961,6 +963,27 @@ export default function ChatSidebar({
                 >
                     <Plus style={{ width: 14, height: 14 }} strokeWidth={2} />
                     <span>New chat</span>
+                </button>
+            </div>
+
+            {/* Automation — opens the full-screen workflow editor */}
+            <div style={newChatRow}>
+                <button
+                    onClick={() => { setView('automation'); if (onMobileClose) onMobileClose(); }}
+                    style={newChatBtn}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'var(--accent-soft)';
+                        e.currentTarget.style.borderColor = 'var(--accent)';
+                        e.currentTarget.style.color = 'var(--accent)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.borderColor = 'var(--rule-2)';
+                        e.currentTarget.style.color = 'var(--ink-2)';
+                    }}
+                >
+                    <Workflow style={{ width: 14, height: 14 }} strokeWidth={2} />
+                    <span>Automation</span>
                 </button>
             </div>
 

@@ -97,6 +97,9 @@ export const useChatStore = create(
         // the user to re-click a sidebar item. Falls back to null if no
         // prior selection exists.
         activeConversationId: loadFromStorage(STORAGE_KEYS.ACTIVE_CONVERSATION, null),
+        // Top-level view switch: 'chat' (default) or 'automation' (the
+        // full-screen workflow editor). Not persisted — always start in chat.
+        view: 'chat',
         messages: [],
 
         // Streaming
@@ -242,6 +245,9 @@ export const useChatStore = create(
                 isStreaming: false
             }));
         },
+
+        // Switch the top-level view ('chat' | 'automation').
+        setView: (view) => set({ view }),
 
         // Create a new conversation and set it as active
         createNewConversation: (conversation) => {

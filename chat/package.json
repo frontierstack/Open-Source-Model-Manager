@@ -4,6 +4,7 @@
   "description": "Standalone AI chat interface",
   "main": "server.js",
   "dependencies": {
+    "@xyflow/react": "^12.10.2",
     "express": "^4.18.2",
     "express-session": "^1.17.3",
     "http-proxy-middleware": "^2.0.6",

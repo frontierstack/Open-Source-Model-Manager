@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MessageSquare, Eye, EyeOff, Loader2 } from 'lucide-react';
 import ChatContainer from './components/chat/ChatContainer';
+import AutomationView from './components/automation/AutomationView';
 import { useChatStore } from './stores/useChatStore';
 import { ToastProvider, useShowSnackbar } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
@@ -327,6 +328,7 @@ function AppContent() {
 
     // Get theme and settings from zustand store
     const theme = useChatStore((state) => state.theme);
+    const view = useChatStore((state) => state.view);
     const settings = useChatStore((state) => state.settings);
     const setStoreUser = useChatStore((state) => state.setUser);
     const setStoreSystemPrompts = useChatStore((state) => state.setSystemPrompts);
@@ -538,17 +540,21 @@ function AppContent() {
         );
     }
 
-    // Main chat interface
+    // Main interface — chat, or the full-screen automation editor.
     return (
         <div className="h-screen flex flex-col overflow-hidden" style={{ backgroundColor: 'var(--bg-primary)' }}>
-            <ChatContainer
-                models={models}
-                systemPrompts={systemPrompts}
-                showSnackbar={showSnackbar}
-                user={user}
-                onLogout={handleLogout}
-                onRefreshModels={loadModels}
-            />
+            {view === 'automation' ? (
+                <AutomationView showSnackbar={showSnackbar} models={models} />
+            ) : (
+                <ChatContainer
+                    models={models}
+                    systemPrompts={systemPrompts}
+                    showSnackbar={showSnackbar}
+                    user={user}
+                    onLogout={handleLogout}
+                    onRefreshModels={loadModels}
+                />
+            )}
         </div>
     );
 }
