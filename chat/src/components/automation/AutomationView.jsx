@@ -8,7 +8,7 @@ import '@xyflow/react/dist/style.css';
 import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
-    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles,
+    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles, Download,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -138,12 +138,12 @@ function Field({ label, children }) {
 }
 
 // Drag-to-resize bar on the left edge of the right-hand panels.
-function ResizeHandle({ onResizeStart }) {
+function ResizeHandle({ onResizeStart, side = 'left' }) {
     return (
         <div
             onMouseDown={onResizeStart}
             title="Drag to resize"
-            style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 6 }}
+            style={{ position: 'absolute', ...(side === 'right' ? { right: 0 } : { left: -3 }), top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 6 }}
             onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
         />
@@ -357,6 +357,26 @@ function FlowEditor({ showSnackbar, models }) {
     const addCountRef = useRef(0);
 
     useEffect(() => { try { localStorage.setItem('automationPanelWidth', String(panelWidth)); } catch (_) {} }, [panelWidth]);
+    const [leftWidth, setLeftWidth] = useState(() => {
+        const v = Number(localStorage.getItem('automationLeftWidth'));
+        return v >= 190 && v <= 520 ? v : 230;
+    });
+    useEffect(() => { try { localStorage.setItem('automationLeftWidth', String(leftWidth)); } catch (_) {} }, [leftWidth]);
+    // Drag the right edge of the left rail (automations + palette) to widen it.
+    const onLeftResizeStart = useCallback((e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = leftWidth;
+        const onMove = (ev) => setLeftWidth(Math.min(520, Math.max(190, startW + (ev.clientX - startX))));
+        const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            document.body.style.userSelect = '';
+        };
+        document.body.style.userSelect = 'none';
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    }, [leftWidth]);
     // Drag the left edge of the config / history panel to widen it (pull leftward).
     const onPanelResizeStart = useCallback((e) => {
         e.preventDefault();
@@ -498,7 +518,8 @@ function FlowEditor({ showSnackbar, models }) {
     const [editOpen, setEditOpen] = useState(false);
     const [editPrompt, setEditPrompt] = useState('');
     const [editing, setEditing] = useState(false);
-    const [editResult, setEditResult] = useState(null); // { proposed, diff }
+    const [editResult, setEditResult] = useState(null); // { proposed, diff, buildLog? }
+    const [editTest, setEditTest] = useState(false);
     useEffect(() => { setEditOpen(false); setEditResult(null); setEditPrompt(''); }, [selected && selected.id]);
     const previewEdit = useCallback(async () => {
         const p = editPrompt.trim();
@@ -508,14 +529,14 @@ function FlowEditor({ showSnackbar, models }) {
             const res = await fetch(`/api/automations/${selected.id}/edit`, {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt: p }),
+                body: JSON.stringify({ prompt: p, test: editTest }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to edit automation');
             setEditResult(data);
         } catch (err) { notify(err.message, 'error'); }
         finally { setEditing(false); }
-    }, [editPrompt, editing, selected]);
+    }, [editPrompt, editing, editTest, selected]);
     const applyEdit = useCallback(async () => {
         if (!editResult || !selected) return;
         setEditing(true);
@@ -849,7 +870,8 @@ function FlowEditor({ showSnackbar, models }) {
 
             <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
                 {/* Left rail: automations + palette */}
-                <div style={{ width: 230, borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+                <div style={{ width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+                    <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />
                     <div style={{ padding: 10, borderBottom: '1px solid var(--rule)' }}>
                         <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', color: 'var(--accent)', borderColor: 'var(--accent)' }}>
                             <Plus size={14} /> <span>New automation</span>
@@ -902,13 +924,16 @@ function FlowEditor({ showSnackbar, models }) {
                                         disabled={editing}
                                         style={{ ...fieldInput, resize: 'vertical', minHeight: 60, lineHeight: 1.4 }}
                                     />
-                                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-3)', margin: '6px 0', cursor: 'pointer' }}>
+                                        <input type="checkbox" checked={editTest} onChange={(e) => setEditTest(e.target.checked)} disabled={editing} /> Test &amp; improve (run it and let the model fix issues — slower)
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={previewEdit} disabled={editing || !editPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, opacity: (editing || !editPrompt.trim()) ? 0.55 : 1, cursor: (editing || !editPrompt.trim()) ? 'default' : 'pointer' }}>
-                                            {editing ? 'Thinking…' : 'Preview changes'}
+                                            {editing ? (editTest ? 'Testing…' : 'Thinking…') : 'Preview changes'}
                                         </button>
-                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); }} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
+                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
                                     </div>
-                                    {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>The model is revising your workflow…</div>}
+                                    {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{editTest ? 'Revising, testing & improving…' : 'The model is revising your workflow…'}</div>}
                                 </>) : (<>
                                     <div style={{ fontSize: 11, border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
                                         <div style={{ fontWeight: 600, color: 'var(--ink-2)', marginBottom: 4 }}>Proposed changes</div>
@@ -918,6 +943,11 @@ function FlowEditor({ showSnackbar, models }) {
                                         {(editResult.diff.addedEdges > 0 || editResult.diff.removedEdges > 0) && <div style={{ color: 'var(--ink-3)', marginTop: 3 }}>edges: +{editResult.diff.addedEdges} / −{editResult.diff.removedEdges}</div>}
                                         {(editResult.diff.addedNodes.length + editResult.diff.changedNodes.length + editResult.diff.removedNodes.length) === 0 && <div style={{ color: 'var(--ink-3)' }}>No node changes detected.</div>}
                                     </div>
+                                    {Array.isArray(editResult.buildLog) && editResult.buildLog.length > 0 && (
+                                        <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
+                                            {editResult.buildLog.map((l, i) => <div key={i} style={{ marginBottom: 2 }}>• {l}</div>)}
+                                        </div>
+                                    )}
                                     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                                         <button onClick={applyEdit} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)' }}>{editing ? 'Applying…' : 'Apply'}</button>
                                         <button onClick={() => setEditResult(null)} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Discard</button>
@@ -1624,6 +1654,10 @@ function NodeResult({ lastRun, nodeId, isTrigger }) {
     // sandboxed preview (sandbox="" → no script execution; images/CSS still render).
     const htmlPreview = (lastRun && lastRun.output && typeof lastRun.output === 'object' && typeof lastRun.output.html === 'string')
         ? lastRun.output.html : null;
+    // Generated files (create_pdf / create_file / export_file / render_chart / etc.)
+    // come back as `_artifacts` with a ready download URL.
+    const artifacts = (lastRun && lastRun.output && typeof lastRun.output === 'object' && Array.isArray(lastRun.output._artifacts))
+        ? lastRun.output._artifacts.filter(a => a && a.url) : [];
     return (
         <div style={{ marginBottom: 12, border: '1px solid var(--rule-2)', borderRadius: 8, overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', background: 'var(--bg)', borderBottom: '1px solid var(--rule-2)' }}>
@@ -1635,6 +1669,17 @@ function NodeResult({ lastRun, nodeId, isTrigger }) {
                 {!lastRun && <div style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>No run yet — hit Run to capture this node's output.</div>}
                 {status === 'running' && <div style={{ fontSize: 10.5, color: 'var(--accent)' }}>Running…</div>}
                 {lastRun && lastRun.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginBottom: hasOutput ? 6 : 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{lastRun.error}</div>}
+                {artifacts.length > 0 && (
+                    <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 4 }}>Generated file{artifacts.length > 1 ? 's' : ''}</div>
+                        {artifacts.map((a, i) => (
+                            <a key={i} href={a.url} download={a.name} target="_blank" rel="noopener noreferrer"
+                               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent)', borderRadius: 6, padding: '4px 9px', margin: '0 6px 6px 0', background: 'var(--accent-soft)' }}>
+                                <Download size={12} /> {a.name}{a.size ? <span style={{ color: 'var(--ink-3)', fontSize: 9.5 }}>{` · ${a.size < 1024 ? a.size + ' B' : Math.round(a.size / 1024) + ' KB'}`}</span> : null}
+                            </a>
+                        ))}
+                    </div>
+                )}
                 {htmlPreview != null && (
                     <div style={{ marginBottom: 8 }}>
                         <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 4 }}>Preview</div>

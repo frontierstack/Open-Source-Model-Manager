@@ -7902,9 +7902,12 @@ app.post('/api/automations', requireAuth, async (req, res) => {
     }
 });
 
-// Run a freshly-built workflow once and, if it failed with a fixable (non-config)
-// error, ask the model to repair it (one pass). Mutates wf + appends to buildLog.
-async function testAndImproveWorkflow(wf, prompt, model, req, buildLog) {
+// Run `wfObj` once and, if it failed with a fixable (non-config) error, ask the
+// model to repair it (one pass) — mutating wfObj.nodes/edges + appending to
+// buildLog. Does NOT persist (caller decides). `base` is the workflow the model
+// edits against (id/position preservation); for Build it's wfObj itself, for the
+// Edit preview it's the original (so the proposed revision is what's run/fixed).
+async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
     const summarize = (outcome, rec) => {
         const L = [`status=${outcome.status}`];
         if (outcome.error) L.push(`error: ${outcome.error}`);
@@ -7917,7 +7920,7 @@ async function testAndImproveWorkflow(wf, prompt, model, req, buildLog) {
     };
     const runOnce = async () => {
         try {
-            const { runId, outcome } = await executeWorkflowRun(wf, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: {}, onEvent: () => {} });
+            const { runId, outcome } = await executeWorkflowRun(wfObj, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: {}, onEvent: () => {} });
             let rec = null; try { rec = await workflowRunStore.getRun(req.userId, runId); } catch (_) {}
             return { outcome, rec };
         } catch (e) { return { outcome: { status: 'failed', error: e.message }, rec: null }; }
@@ -7928,18 +7931,15 @@ async function testAndImproveWorkflow(wf, prompt, model, req, buildLog) {
     if (outcome.status === 'failed' && !isConfigError(outcome.error)) {
         const messages = [
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `This workflow was just run and FAILED. Fix the cause (wrong field paths, bad wiring, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nRun results:\n${summarize(outcome, rec)}\n\nCurrent workflow:\n${JSON.stringify({ name: wf.name, nodes: wf.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wf.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
+            { role: 'user', content: `This workflow was just run and FAILED. Fix the cause (wrong field paths, bad wiring, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nRun results:\n${summarize(outcome, rec)}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
         ];
         try {
             const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });
             let raw = String(text || '').trim();
             const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
             const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
-            const revised = automationEngine.materializeWorkflowEdit(JSON.parse(raw), wf);
-            wf.nodes = revised.nodes; wf.edges = revised.edges; wf.updatedAt = new Date().toISOString();
-            const all = await loadWorkflows();
-            const idx = all.findIndex(w => w.id === wf.id);
-            if (idx !== -1) { all[idx] = wf; await saveWorkflows(all); }
+            const revised = automationEngine.materializeWorkflowEdit(JSON.parse(raw), base);
+            wfObj.nodes = revised.nodes; wfObj.edges = revised.edges;
             buildLog.push('Refined the workflow to fix the error.');
             const r2 = await runOnce();
             buildLog.push(`Test run after refine: ${r2.outcome.status}${r2.outcome.error ? ` — ${r2.outcome.error}` : ''}`);
@@ -7998,8 +7998,11 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
         await saveWorkflows(workflows);
         const buildLog = [`Built ${wf.nodes.length} node(s): ${wf.nodes.map(n => (n.data && n.data.label) || n.type).join(' → ')}`];
         if (req.body && req.body.test) {
-            try { await testAndImproveWorkflow(wf, prompt, model, req, buildLog); }
-            catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
+            try {
+                await runAndRepairWorkflow(wf, wf, model, req, buildLog);
+                wf.updatedAt = new Date().toISOString();
+                await saveWorkflows(workflows); // persist any auto-fix
+            } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
         }
         res.status(201).json({ ...wf, buildLog });
     } catch (error) {
@@ -8048,8 +8051,20 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
         let proposed;
         try { proposed = automationEngine.materializeWorkflowEdit(spec, wf); }
         catch (e) { return res.status(422).json({ error: `Could not apply the change: ${e.message}` }); }
+        let buildLog;
+        if (req.body && req.body.test) {
+            buildLog = [`Proposed ${proposed.nodes.length} node(s)`];
+            try {
+                // Run the PROPOSED revision (not saved) and auto-fix a fixable failure,
+                // so the diff the user confirms is the tested-and-improved version.
+                const probe = { ...wf, nodes: proposed.nodes, edges: proposed.edges };
+                await runAndRepairWorkflow(probe, wf, model, req, buildLog);
+                proposed.nodes = probe.nodes;
+                proposed.edges = probe.edges;
+            } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
+        }
         const diff = automationEngine.diffWorkflows(wf, proposed);
-        res.json({ proposed, diff });
+        res.json({ proposed, diff, ...(buildLog ? { buildLog } : {}) });
     } catch (error) {
         console.error('Error editing automation:', error);
         res.status(500).json({ error: `Failed to edit automation: ${error.message}` });
