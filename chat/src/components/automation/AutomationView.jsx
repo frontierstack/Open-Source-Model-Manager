@@ -487,6 +487,46 @@ function FlowEditor({ showSnackbar, models }) {
         finally { setBuilding(false); }
     }, [buildPrompt, building, loadAutomations, selectAutomation]);
 
+    // Edit with LLM — describe a change to the OPEN automation; preview the diff, then apply.
+    const [editOpen, setEditOpen] = useState(false);
+    const [editPrompt, setEditPrompt] = useState('');
+    const [editing, setEditing] = useState(false);
+    const [editResult, setEditResult] = useState(null); // { proposed, diff }
+    useEffect(() => { setEditOpen(false); setEditResult(null); setEditPrompt(''); }, [selected && selected.id]);
+    const previewEdit = useCallback(async () => {
+        const p = editPrompt.trim();
+        if (!p || editing || !selected) return;
+        setEditing(true);
+        try {
+            const res = await fetch(`/api/automations/${selected.id}/edit`, {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: p }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to edit automation');
+            setEditResult(data);
+        } catch (err) { notify(err.message, 'error'); }
+        finally { setEditing(false); }
+    }, [editPrompt, editing, selected]);
+    const applyEdit = useCallback(async () => {
+        if (!editResult || !selected) return;
+        setEditing(true);
+        try {
+            const res = await fetch(`/api/automations/${selected.id}`, {
+                method: 'PUT', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: editResult.proposed.name, nodes: editResult.proposed.nodes, edges: editResult.proposed.edges }),
+            });
+            if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Failed to apply changes'); }
+            await loadAutomations();
+            selectAutomation(selected.id);
+            setEditResult(null); setEditPrompt(''); setEditOpen(false);
+            notify('Changes applied', 'success');
+        } catch (err) { notify(err.message, 'error'); }
+        finally { setEditing(false); }
+    }, [editResult, selected, loadAutomations, selectAutomation]);
+
     // ---- graph edits ----
     const onConnect = useCallback((params) => {
         setEdges(eds => addEdge({ ...params, id: uid('e') }, eds));
@@ -824,6 +864,46 @@ function FlowEditor({ showSnackbar, models }) {
                                     <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); }} disabled={building} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
                                 </div>
                                 {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>The model is assembling your workflow…</div>}
+                            </div>
+                        )}
+                        {selected && (
+                            <button onClick={() => { setEditOpen(o => !o); setEditResult(null); }} style={{ ...railBtn, justifyContent: 'center', marginTop: 6 }}>
+                                <Sparkles size={14} /> <span>Edit with LLM</span>
+                            </button>
+                        )}
+                        {selected && editOpen && (
+                            <div style={{ marginTop: 6 }}>
+                                {!editResult ? (<>
+                                    <textarea
+                                        value={editPrompt}
+                                        onChange={(e) => setEditPrompt(e.target.value)}
+                                        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) previewEdit(); }}
+                                        placeholder={`Describe a change to “${name || 'this automation'}”… e.g. add a Slack alert on the false branch`}
+                                        rows={3}
+                                        disabled={editing}
+                                        style={{ ...fieldInput, resize: 'vertical', minHeight: 60, lineHeight: 1.4 }}
+                                    />
+                                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                                        <button onClick={previewEdit} disabled={editing || !editPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, opacity: (editing || !editPrompt.trim()) ? 0.55 : 1, cursor: (editing || !editPrompt.trim()) ? 'default' : 'pointer' }}>
+                                            {editing ? 'Thinking…' : 'Preview changes'}
+                                        </button>
+                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); }} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Cancel</button>
+                                    </div>
+                                    {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>The model is revising your workflow…</div>}
+                                </>) : (<>
+                                    <div style={{ fontSize: 11, border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
+                                        <div style={{ fontWeight: 600, color: 'var(--ink-2)', marginBottom: 4 }}>Proposed changes</div>
+                                        {editResult.diff.addedNodes.map(n => <div key={'a' + n.id} style={{ color: '#22c55e' }}>+ {n.label}</div>)}
+                                        {editResult.diff.changedNodes.map(n => <div key={'c' + n.id} style={{ color: 'var(--accent)' }}>~ {n.label}</div>)}
+                                        {editResult.diff.removedNodes.map(n => <div key={'r' + n.id} style={{ color: '#ef4444' }}>− {n.label}</div>)}
+                                        {(editResult.diff.addedEdges > 0 || editResult.diff.removedEdges > 0) && <div style={{ color: 'var(--ink-3)', marginTop: 3 }}>edges: +{editResult.diff.addedEdges} / −{editResult.diff.removedEdges}</div>}
+                                        {(editResult.diff.addedNodes.length + editResult.diff.changedNodes.length + editResult.diff.removedNodes.length) === 0 && <div style={{ color: 'var(--ink-3)' }}>No node changes detected.</div>}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                                        <button onClick={applyEdit} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)' }}>{editing ? 'Applying…' : 'Apply'}</button>
+                                        <button onClick={() => setEditResult(null)} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: '0 0 auto', padding: '0 12px' }}>Discard</button>
+                                    </div>
+                                </>)}
                             </div>
                         )}
                     </div>

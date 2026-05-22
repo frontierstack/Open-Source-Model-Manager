@@ -7955,6 +7955,54 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
     }
 });
 
+// Propose an LLM edit to an existing automation. Returns { proposed, diff } —
+// does NOT save; the client shows the diff and applies via PUT on confirm.
+app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const { prompt, model } = req.body || {};
+    if (!prompt || !String(prompt).trim()) {
+        return res.status(400).json({ error: 'A prompt describing the change is required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const wf = workflows.find(w => w.id === req.params.id);
+        if (!wf) return res.status(404).json({ error: 'Automation not found' });
+        if (!checkOwnership(wf, req.userId) && !callerIsAdmin(req)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        const current = {
+            name: wf.name,
+            nodes: (wf.nodes || []).map(n => ({ id: n.id, type: n.type, data: n.data || {} })),
+            edges: (wf.edges || []).map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })),
+        };
+        const messages = [
+            { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
+            { role: 'user', content: `Here is the current automation as JSON:\n${JSON.stringify(current)}\n\nApply this change: "${String(prompt).trim()}"\n\nReturn the FULL revised automation as one JSON object (same shape). KEEP each existing node's "id" for nodes you keep; invent new ids only for nodes you add; preserve nodes the change does not touch. Respond with ONLY the JSON.` },
+        ];
+        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });
+        let raw = String(text || '').trim();
+        const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fence) raw = fence[1].trim();
+        const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}');
+        if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
+        let spec = null;
+        try { spec = JSON.parse(raw); } catch (_) { spec = null; }
+        if (!spec || typeof spec !== 'object') {
+            return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your change.' });
+        }
+        let proposed;
+        try { proposed = automationEngine.materializeWorkflowEdit(spec, wf); }
+        catch (e) { return res.status(422).json({ error: `Could not apply the change: ${e.message}` }); }
+        const diff = automationEngine.diffWorkflows(wf, proposed);
+        res.json({ proposed, diff });
+    } catch (error) {
+        console.error('Error editing automation:', error);
+        res.status(500).json({ error: `Failed to edit automation: ${error.message}` });
+    }
+});
+
 app.put('/api/automations/:id', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });

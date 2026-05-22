@@ -967,6 +967,68 @@ function materializeWorkflow(spec) {
     return { name, nodes, edges };
 }
 
+// Edit variant: resolve a model-revised spec against the EXISTING workflow —
+// preserve kept nodes' ids + positions, only position genuinely-new nodes, so an
+// edit doesn't renumber/relayout the whole graph (keeps the diff meaningful).
+function materializeWorkflowEdit(spec, base) {
+    const byKey = new Map(), byType = new Map();
+    for (const b of BUILTIN_NODE_TYPES) { byKey.set(b.key, b); byType.set(b.type, b); }
+    const baseNodes = new Map(((base && base.nodes) || []).map(n => [String(n.id), n]));
+    const nodes = [], usedIds = new Set();
+    for (const n of (Array.isArray(spec && spec.nodes) ? spec.nodes : [])) {
+        const k = String((n && (n.type || n.kind)) || '').trim();
+        const b = byKey.get(k) || byType.get(k);
+        if (!b) continue;
+        let id = (n && n.id != null && String(n.id).trim()) ? String(n.id).trim() : '';
+        if (!id || usedIds.has(id)) id = `n${nodes.length + 1}_${Math.random().toString(36).slice(2, 6)}`;
+        usedIds.add(id);
+        const baseN = baseNodes.get(id);
+        const data = { ...(b.defaults || {}), ...(n && n.data && typeof n.data === 'object' ? n.data : {}) };
+        if (!data.label) data.label = (baseN && baseN.data && baseN.data.label) || b.label;
+        const position = (baseN && baseN.position) || (n && n.position && typeof n.position === 'object' ? n.position : null);
+        nodes.push({ id, type: b.type, position, data });
+    }
+    if (!nodes.length) throw new Error('the model produced no recognizable nodes');
+    const ids = new Set(nodes.map(n => n.id));
+    const edges = []; let e = 0;
+    for (const ed of (Array.isArray(spec && spec.edges) ? spec.edges : [])) {
+        if (!ed) continue;
+        const s = String(ed.source), t = String(ed.target);
+        if (!ids.has(s) || !ids.has(t) || s === t) continue;
+        const edge = { id: `e${++e}`, source: s, target: t };
+        if (ed.sourceHandle) edge.sourceHandle = String(ed.sourceHandle);
+        edges.push(edge);
+    }
+    // place any node missing a position (new nodes) near a positioned neighbour
+    let maxX = 0; for (const n of nodes) if (n.position && typeof n.position.x === 'number') maxX = Math.max(maxX, n.position.x);
+    let stray = 0;
+    for (const n of nodes) {
+        if (n.position) continue;
+        const inc = edges.find(x => x.target === n.id);
+        const src = inc && nodes.find(x => x.id === inc.source && x.position);
+        n.position = src ? { x: (src.position.x || 0) + 250, y: (src.position.y || 0) + 90 } : { x: maxX + 250, y: 100 + 90 * (stray++) };
+    }
+    const name = (spec && typeof spec.name === 'string' && spec.name.trim()) ? spec.name.trim().slice(0, 80) : ((base && base.name) || 'Automation');
+    return { name, nodes, edges };
+}
+
+// Human-readable diff between two workflows (for the "show changes" preview).
+function diffWorkflows(base, proposed) {
+    const bN = new Map(((base && base.nodes) || []).map(n => [String(n.id), n]));
+    const pN = new Map(((proposed && proposed.nodes) || []).map(n => [String(n.id), n]));
+    const lbl = (n) => (n && n.data && n.data.label) || (n && n.type) || '?';
+    const addedNodes = [...pN].filter(([id]) => !bN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
+    const removedNodes = [...bN].filter(([id]) => !pN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
+    const changedNodes = [...pN].filter(([id, n]) => bN.has(id) && JSON.stringify([bN.get(id).type, bN.get(id).data]) !== JSON.stringify([n.type, n.data])).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
+    const ek = (e) => `${e.source}->${e.target}${e.sourceHandle ? '[' + e.sourceHandle + ']' : ''}`;
+    const bE = new Set(((base && base.edges) || []).map(ek)), pE = new Set(((proposed && proposed.edges) || []).map(ek));
+    return {
+        addedNodes, removedNodes, changedNodes,
+        addedEdges: [...pE].filter(k => !bE.has(k)).length,
+        removedEdges: [...bE].filter(k => !pE.has(k)).length,
+    };
+}
+
 module.exports = {
     runWorkflow,
     evalCondition,
@@ -975,4 +1037,6 @@ module.exports = {
     BUILTIN_NODE_TYPES,
     buildBuilderSystemPrompt,
     materializeWorkflow,
+    materializeWorkflowEdit,
+    diffWorkflows,
 };
