@@ -43,8 +43,35 @@ function DeletableEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition,
 const edgeTypes = { default: DeletableEdge };
 
 const uid = (p = 'n') => `${p}_${Math.random().toString(36).slice(2, 10)}`;
-const CATEGORY_ORDER = ['trigger', 'connector', 'gate', 'output'];
-const CATEGORY_LABEL = { trigger: 'Triggers', connector: 'Connectors', gate: 'Logic Gates', output: 'Output' };
+const CATEGORY_ORDER = ['trigger', 'tools', 'connector', 'gate', 'output'];
+const CATEGORY_LABEL = { trigger: 'Triggers', tools: 'Tools', connector: 'Connectors', gate: 'Logic Gates', output: 'Output' };
+// Chat-side palette grouping overrides (display only; engine + webapp categories unchanged).
+// Loop moves under Triggers; data/work nodes form the new Tools group; Connectors keeps only
+// external messaging integrations (Slack/Telegram); flow utilities (Delay/Set) join Logic Gates.
+const PALETTE_CATEGORY_OVERRIDE = {
+    map: 'trigger',
+    model: 'tools', web_search: 'tools', fetch_url: 'tools', render_html: 'tools',
+    parse_json: 'tools', export_file: 'tools', http_request: 'tools', crawl: 'tools',
+    sqlite: 'tools', render_chart: 'tools', create_pdf: 'tools', create_file: 'tools',
+    tool: 'tools',
+    delay: 'gate', set: 'gate',
+    'trigger.telegram': 'connector', 'trigger.slack': 'connector',
+};
+const PALETTE_LABEL_OVERRIDE = {
+    map: 'Loop',
+    'trigger.telegram': 'Telegram · On new message',
+    telegram: 'Telegram · Send message',
+    telegram_get: 'Telegram · Get recent messages',
+    'trigger.slack': 'Slack · On new message',
+    slack: 'Slack · Send message',
+};
+// Within Connectors, group nodes by external app (sub-selectors).
+const PALETTE_APP = {
+    'trigger.telegram': 'Telegram', telegram: 'Telegram', telegram_get: 'Telegram',
+    'trigger.slack': 'Slack', slack: 'Slack',
+};
+// Node keys hidden from the chat palette (display-only; engine still supports them).
+const PALETTE_HIDDEN = new Set(['output']);
 const COND_OPS = ['==', '!=', '>', '<', '>=', '<=', 'contains', 'not_contains', 'startsWith', 'endsWith', 'matches', 'empty', 'not_empty'];
 
 // ---- server <-> React Flow conversion ----
@@ -250,7 +277,12 @@ function FlowEditor({ showSnackbar, models }) {
     const [runResult, setRunResult] = useState(null);
     const [webhookUrl, setWebhookUrl] = useState('');
     const [copied, setCopied] = useState(false);
-    const [collapsedCats, setCollapsedCats] = useState({}); // palette category collapse state
+    // palette category collapse state — all categories start collapsed by default
+    const [collapsedCats, setCollapsedCats] = useState(() => Object.fromEntries(CATEGORY_ORDER.map(c => [c, true])));
+    // Connector app sub-groups default EXPANDED.
+    const [collapsedApps, setCollapsedApps] = useState({});
+    // Live palette search box.
+    const [paletteQuery, setPaletteQuery] = useState('');
     const [showHistory, setShowHistory] = useState(false);
     const [runs, setRuns] = useState([]);
     const [runDetail, setRunDetail] = useState(null);
@@ -305,9 +337,12 @@ function FlowEditor({ showSnackbar, models }) {
             const builtins = bRes.ok ? await bRes.json() : [];
             const custom = cRes.ok ? await cRes.json() : [];
             const pal = [
-                ...(builtins || []).map(b => ({ key: b.key || b.type, kind: b.type, label: b.label, category: b.category, defaults: b.defaults || {}, custom: false })),
-                ...(custom || []).filter(c => c.enabled !== false).map(c => ({ key: c.id, kind: c.baseType || 'tool', label: c.name, category: c.category, defaults: c.defaults || {}, custom: true })),
-            ];
+                ...(builtins || []).map(b => {
+                    const key = b.key || b.type;
+                    return { key, kind: b.type, label: PALETTE_LABEL_OVERRIDE[key] || b.label, category: PALETTE_CATEGORY_OVERRIDE[key] || b.category, defaults: b.defaults || {}, custom: false, description: b.description || '', app: PALETTE_APP[key] || null };
+                }),
+                ...(custom || []).filter(c => c.enabled !== false).map(c => ({ key: c.id, kind: c.baseType || 'tool', label: c.name, category: c.category, defaults: c.defaults || {}, custom: true, description: c.description || '', app: null })),
+            ].filter(p => !PALETTE_HIDDEN.has(p.key) && !PALETTE_HIDDEN.has(p.kind));
             setPalette(pal);
             await loadAutomations();
         })();
@@ -710,38 +745,82 @@ function FlowEditor({ showSnackbar, models }) {
                     <div style={{ borderTop: '1px solid var(--rule)', padding: '8px 8px 4px', fontSize: 11, fontWeight: 600, color: 'var(--ink-3)' }}>
                         NODE PALETTE {selected ? '' : '(select an automation)'}
                     </div>
+                    <div style={{ padding: '0 8px 6px' }}>
+                        <input
+                            type="text"
+                            value={paletteQuery}
+                            onChange={(e) => setPaletteQuery(e.target.value)}
+                            placeholder="Search nodes…"
+                            style={{ ...fieldInput, padding: '5px 8px', fontSize: 12 }}
+                        />
+                    </div>
                     <div style={{ overflowY: 'auto', flex: 1, padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
-                        {CATEGORY_ORDER.map(cat => {
-                            const items = groupedPalette[cat];
-                            if (!items || items.length === 0) return null;
-                            const collapsed = !!collapsedCats[cat];
-                            return (
-                                <div key={cat} style={{ marginBottom: 6 }}>
-                                    <button
-                                        onClick={() => setCollapsedCats(c => ({ ...c, [cat]: !c[cat] }))}
-                                        style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', padding: '6px 2px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}
-                                    >
-                                        {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                                        <span>{CATEGORY_LABEL[cat] || cat}</span>
-                                        <span style={{ marginLeft: 'auto', color: 'var(--ink-4, var(--ink-3))' }}>{items.length}</span>
-                                    </button>
-                                    {!collapsed && items.map(item => (
-                                        <button key={item.key}
-                                            draggable
-                                            onDragStart={(e) => onPaletteDragStart(e, item)}
-                                            onClick={() => addFromPalette(item)}
-                                            style={{ ...railBtn, padding: '6px 8px', marginBottom: 3, fontSize: 12, cursor: 'grab' }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-2)'; }}
-                                            title={item.custom ? 'Custom building block — drag onto the canvas or click to add' : 'Built-in — drag onto the canvas or click to add'}
-                                        >
-                                            <Plus size={12} /> <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>
-                                            {item.custom && <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent)' }}>★</span>}
-                                        </button>
-                                    ))}
-                                </div>
+                        {(() => {
+                            const q = paletteQuery.trim().toLowerCase();
+                            const searching = q.length > 0;
+                            const matches = (item) => !searching || (`${item.label} ${item.description || ''}`).toLowerCase().includes(q);
+                            const renderItemBtn = (item, displayLabel) => (
+                                <button key={item.key}
+                                    draggable
+                                    onDragStart={(e) => onPaletteDragStart(e, item)}
+                                    onClick={() => addFromPalette(item)}
+                                    style={{ ...railBtn, padding: '6px 8px', marginBottom: 3, fontSize: 12, cursor: 'grab' }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; e.currentTarget.style.color = 'var(--accent)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-2)'; }}
+                                    title={item.description || item.label}
+                                >
+                                    <Plus size={12} /> <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{displayLabel}</span>
+                                    {item.custom && <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent)' }}>★</span>}
+                                </button>
                             );
-                        })}
+                            return CATEGORY_ORDER.map(cat => {
+                                const allItems = groupedPalette[cat];
+                                if (!allItems || allItems.length === 0) return null;
+                                const items = allItems.filter(matches);
+                                if (items.length === 0) return null; // hide categories with no matches
+                                const collapsed = !searching && !!collapsedCats[cat];
+                                return (
+                                    <div key={cat} style={{ marginBottom: 6 }}>
+                                        <button
+                                            onClick={() => setCollapsedCats(c => ({ ...c, [cat]: !c[cat] }))}
+                                            style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', padding: '6px 2px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}
+                                        >
+                                            {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                                            <span>{CATEGORY_LABEL[cat] || cat}</span>
+                                            <span style={{ marginLeft: 'auto', color: 'var(--ink-4, var(--ink-3))' }}>{items.length}</span>
+                                        </button>
+                                        {!collapsed && (cat === 'connector' ? (() => {
+                                            // Connectors: group by external app into collapsible sub-sections.
+                                            const flat = items.filter(it => !it.app);
+                                            const byApp = {};
+                                            for (const it of items) { if (it.app) (byApp[it.app] || (byApp[it.app] = [])).push(it); }
+                                            const apps = Object.keys(byApp).sort((a, b) => a.localeCompare(b));
+                                            return (<>
+                                                {flat.map(item => renderItemBtn(item, item.label))}
+                                                {apps.map(app => {
+                                                    const appItems = byApp[app];
+                                                    const appCollapsed = !searching && !!collapsedApps[app];
+                                                    const prefix = `${app} · `;
+                                                    return (
+                                                        <div key={app} style={{ marginLeft: 6 }}>
+                                                            <button
+                                                                onClick={() => setCollapsedApps(c => ({ ...c, [app]: !c[app] }))}
+                                                                style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', padding: '4px 2px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 9.5, fontWeight: 600 }}
+                                                            >
+                                                                {appCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+                                                                <span>{app}</span>
+                                                                <span style={{ marginLeft: 'auto', color: 'var(--ink-4, var(--ink-3))' }}>{appItems.length}</span>
+                                                            </button>
+                                                            {!appCollapsed && appItems.map(item => renderItemBtn(item, item.label.startsWith(prefix) ? item.label.slice(prefix.length) : item.label))}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </>);
+                                        })() : items.map(item => renderItemBtn(item, item.label)))}
+                                    </div>
+                                );
+                            });
+                        })()}
                     </div>
                 </div>
 
@@ -1096,6 +1175,18 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                     </select>
                 </Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Polls every ~15s via getUpdates — save and keep the automation enabled. The message is the run input: use <code>{'{{input.text}}'}</code>, <code>{'{{input.chat.id}}'}</code>, <code>{'{{input.from.username}}'}</code>. Use one automation per bot token (multiple pollers on the same bot conflict).</p>
+            </>)}
+
+            {kind === 'trigger.slack' && (<>
+                <Field label="Bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
+                <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="e.g. C0123456789" /></Field>
+                <Field label="Keyword filter (optional)"><TemplInput value={d.keyword || ''} onChange={(v) => onChange({ keyword: v })} placeholder="fire only when the text matches" /></Field>
+                <Field label="Match">
+                    <select style={fieldInput} value={d.match || 'contains'} onChange={(e) => onChange({ match: e.target.value })}>
+                        {['contains', 'equals', 'startsWith', 'regex'].map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                </Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>The bot must be in the channel and have the <code>channels:history</code> scope. The message is the run input: use <code>{'{{input.text}}'}</code>, <code>{'{{input.user}}'}</code>, <code>{'{{input.channel}}'}</code>.</p>
             </>)}
 
             {kind === 'trigger.webhook' && (<>

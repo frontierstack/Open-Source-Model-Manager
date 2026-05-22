@@ -8534,6 +8534,93 @@ async function automationTelegramTick() {
     }
 }
 
+// ---- Slack trigger polling ----------------------------------------------------
+// `trigger.slack` nodes fire when a new message appears in a Slack channel.
+// Like Telegram, there's no public webhook on a localhost/self-signed host, so
+// we poll conversations.history per (bot token, channel). Per-key cursor is the
+// newest seen `ts`; on first sight we fast-forward past the backlog so old
+// messages don't replay on boot. Bot must be in the channel with channels:history.
+const automationSlackState = new Map(); // `${token}::${channel}` -> { oldest, initialized }
+let automationSlackTickRunning = false;
+
+async function automationSlackTick() {
+    if (automationSlackTickRunning) return; // never overlap (conversations.history is serial per channel)
+    automationSlackTickRunning = true;
+    try {
+        const workflows = await loadWorkflows();
+        // Group live trigger.slack nodes by `${token}::${channel}`.
+        const byKey = new Map(); // key -> { token, channel, subs: [{ wf, node }] }
+        for (const wf of workflows) {
+            if (!wf.enabled || wf.archived) continue;
+            for (const node of (wf.nodes || [])) {
+                if (node.type !== 'trigger.slack') continue;
+                const token = String((node.data && node.data.botToken) || '').trim();
+                const channel = String((node.data && node.data.channel) || '').trim();
+                if (!token || !channel) continue;
+                const key = `${token}::${channel}`;
+                if (!byKey.has(key)) byKey.set(key, { token, channel, subs: [] });
+                byKey.get(key).subs.push({ wf, node });
+            }
+        }
+        // Drop cursor state for (token, channel) pairs no longer in use.
+        for (const k of automationSlackState.keys()) if (!byKey.has(k)) automationSlackState.delete(k);
+
+        for (const [key, { token, channel, subs }] of byKey.entries()) {
+            const st = automationSlackState.get(key) || { oldest: '0', initialized: false };
+            try {
+                const resp = await axios.get('https://slack.com/api/conversations.history', {
+                    headers: { Authorization: `Bearer ${token}` },
+                    params: { channel, limit: 50, ...(st.oldest && st.oldest !== '0' ? { oldest: st.oldest } : {}) },
+                    timeout: 10000,
+                });
+                if (!resp.data || !resp.data.ok) {
+                    // invalid_auth, not_in_channel, missing_scope, channel_not_found, etc.
+                    console.error(`[automation] slack poll failed for a channel: ${(resp.data && resp.data.error) || 'unknown_error'}`);
+                    automationSlackState.set(key, st);
+                    continue;
+                }
+                const messages = Array.isArray(resp.data.messages) ? resp.data.messages : [];
+                const newestTs = messages.length ? messages[0].ts : null; // Slack returns newest-first
+
+                if (!st.initialized) {
+                    // First poll for this key: skip backlog, only act on future messages.
+                    st.initialized = true;
+                    st.oldest = newestTs || (Date.now() / 1000).toFixed(6);
+                    automationSlackState.set(key, st);
+                    continue;
+                }
+
+                // Process oldest-first so runs fire in chronological order.
+                for (const message of messages.slice().reverse()) {
+                    // Skip bot/system messages to avoid echo loops.
+                    if (message.bot_id || message.subtype === 'bot_message') continue;
+                    for (const { wf, node } of subs) {
+                        const d = node.data || {};
+                        if (!telegramTextMatches(message.text || '', d.keyword, d.match)) continue;
+                        executeWorkflowRun(wf, {
+                            userId: wf.userId || null,
+                            trigger: 'slack',
+                            input: message,
+                            onEvent: (evt) => { mirrorAutomationEvent(wf.userId, evt); },
+                        }).catch(e => console.error('[automation] slack run failed:', e.message));
+                    }
+                }
+
+                st.oldest = newestTs || st.oldest;
+                automationSlackState.set(key, st);
+            } catch (e) {
+                const code = e.response && e.response.status;
+                console.error(`[automation] slack poll failed${code ? ` (HTTP ${code})` : ''}: ${e.message}`);
+                automationSlackState.set(key, st);
+            }
+        }
+    } catch (e) {
+        console.error('[automation] slack tick failed:', e.message);
+    } finally {
+        automationSlackTickRunning = false;
+    }
+}
+
 // ============================================================================
 // AGENT-SKILL INTEGRATION ENDPOINTS
 // ============================================================================
@@ -21148,6 +21235,12 @@ server.listen(PORT, async () => {
     // on a localhost/self-signed host). .unref()'d so it never holds the process.
     const AUTOMATION_TELEGRAM_TICK_MS = 15 * 1000;
     setInterval(automationTelegramTick, AUTOMATION_TELEGRAM_TICK_MS).unref();
+
+    // Slack trigger poller — conversations.history per (bot token, channel) every
+    // ~15s (no public webhook on a localhost/self-signed host). .unref()'d so it
+    // never holds the process.
+    const AUTOMATION_SLACK_TICK_MS = 15 * 1000;
+    setInterval(automationSlackTick, AUTOMATION_SLACK_TICK_MS).unref();
 
     console.log('Initialization complete');
 });
