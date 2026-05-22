@@ -32,6 +32,7 @@ const BUILTIN_NODE_TYPES = [
     { key: 'trigger.schedule', type: 'trigger.schedule', category: 'trigger', label: 'Schedule',         description: 'Starts on a cron expression or fixed interval.', outputs: ['out'], fields: ['cron', 'intervalMs'] },
     { key: 'trigger.webhook',  type: 'trigger.webhook',  category: 'trigger', label: 'Inbound Webhook',  description: 'Starts when its (token-gated) webhook URL is POSTed to. The request body becomes the run input.', outputs: ['out'] },
     { key: 'trigger.event',    type: 'trigger.event',    category: 'trigger', label: 'On Event',         description: 'Starts on a system event (e.g. model.loaded). The event payload becomes the run input.', outputs: ['out'], fields: ['event'] },
+    { key: 'trigger.telegram', type: 'trigger.telegram', category: 'trigger', label: 'Telegram Message', description: 'Starts when the bot receives a message (optionally matching a keyword). Polls getUpdates; the message becomes the run input ({{input.text}}, {{input.chat.id}}).', outputs: ['out'], fields: ['botToken', 'chatId', 'keyword', 'match'] },
 
     // --- Connectors (do work) ---
     { key: 'model',       type: 'model',      category: 'connector', label: 'Model / LLM call', description: 'Runs a prompt through a loaded model.', inputs: ['in'], outputs: ['out'], fields: ['prompt', 'systemPrompt', 'model', 'temperature', 'maxTokens'] },
@@ -514,6 +515,21 @@ async function runWorkflow(workflow, opts = {}) {
             nodeState.set(node.id, 'done');
             scope.nodes[node.id] = output;
             scope.last = output;
+            // Per-node output mapping: an optional `forward` template shapes what
+            // flows downstream (drag data tags into the node's Output box). Blank
+            // → forward the whole raw output. Evaluated with this node's own
+            // output already available as {{last}} / {{nodes.<id>}}. Skipped when
+            // the output carries a gate `_handle` so branch routing is preserved.
+            const fwdTmpl = node.data ? node.data.forward : undefined;
+            const hasFwd = typeof fwdTmpl === 'string' ? fwdTmpl.trim() !== '' : (fwdTmpl !== undefined && fwdTmpl !== null);
+            if (hasFwd && !(output && typeof output === 'object' && output._handle)) {
+                try {
+                    const mapped = interpolate(fwdTmpl, scope);
+                    output = mapped;
+                    scope.nodes[node.id] = mapped;
+                    scope.last = mapped;
+                } catch (_) { /* keep raw output if the mapping template errors */ }
+            }
             result = output;
             entry.status = 'completed';
             entry.finishedAt = new Date().toISOString();

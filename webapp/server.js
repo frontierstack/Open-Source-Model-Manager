@@ -8389,6 +8389,103 @@ async function automationSchedulerTick() {
     }
 }
 
+// ---- Telegram trigger polling -------------------------------------------------
+// `trigger.telegram` nodes fire when their bot receives a message. Since this
+// server is typically localhost/self-signed (no public webhook), we poll
+// getUpdates per bot token. Per-token offset is in-memory; on first sight of a
+// token we fast-forward past the backlog so old messages don't replay on boot.
+const automationTelegramState = new Map(); // botToken -> { offset, initialized }
+let automationTelegramTickRunning = false;
+
+function telegramTextMatches(text, keyword, mode) {
+    if (!keyword) return true;
+    const t = String(text || '');
+    const k = String(keyword);
+    switch (mode || 'contains') {
+        case 'equals':     return t.trim().toLowerCase() === k.trim().toLowerCase();
+        case 'startsWith': return t.trim().toLowerCase().startsWith(k.trim().toLowerCase());
+        case 'regex':      { try { return new RegExp(k, 'i').test(t); } catch { return false; } }
+        case 'contains':
+        default:           return t.toLowerCase().includes(k.toLowerCase());
+    }
+}
+
+function telegramChatMatches(chat, filter) {
+    if (!filter) return true;
+    const f = String(filter).trim().toLowerCase();
+    if (!chat) return false;
+    if (String(chat.id) === f) return true;
+    if (chat.username && `@${String(chat.username).toLowerCase()}` === f) return true;
+    return false;
+}
+
+async function automationTelegramTick() {
+    if (automationTelegramTickRunning) return; // never overlap (getUpdates is serial per bot)
+    automationTelegramTickRunning = true;
+    try {
+        const workflows = await loadWorkflows();
+        // Group live trigger.telegram nodes by bot token.
+        const byToken = new Map(); // token -> [{ wf, node }]
+        for (const wf of workflows) {
+            if (!wf.enabled || wf.archived) continue;
+            for (const node of (wf.nodes || [])) {
+                if (node.type !== 'trigger.telegram') continue;
+                const token = String((node.data && node.data.botToken) || '').trim();
+                if (!token) continue;
+                if (!byToken.has(token)) byToken.set(token, []);
+                byToken.get(token).push({ wf, node });
+            }
+        }
+        // Drop offset state for tokens no longer in use.
+        for (const t of automationTelegramState.keys()) if (!byToken.has(t)) automationTelegramState.delete(t);
+
+        for (const [token, subs] of byToken.entries()) {
+            const st = automationTelegramState.get(token) || { offset: 0, initialized: false };
+            try {
+                const params = { timeout: 0, allowed_updates: ['message'] };
+                if (st.offset) params.offset = st.offset;
+                const resp = await axios.get(`https://api.telegram.org/bot${token}/getUpdates`, { params, timeout: 10000 });
+                const updates = (resp.data && resp.data.ok && Array.isArray(resp.data.result)) ? resp.data.result : [];
+                if (updates.length) st.offset = updates[updates.length - 1].update_id + 1;
+
+                if (!st.initialized) {
+                    // First poll for this token: skip backlog, only act on future messages.
+                    st.initialized = true;
+                    automationTelegramState.set(token, st);
+                    continue;
+                }
+                automationTelegramState.set(token, st);
+
+                for (const upd of updates) {
+                    const message = upd.message;
+                    if (!message) continue;
+                    const text = message.text || message.caption || '';
+                    for (const { wf, node } of subs) {
+                        const d = node.data || {};
+                        if (!telegramChatMatches(message.chat, d.chatId)) continue;
+                        if (!telegramTextMatches(text, d.keyword, d.match)) continue;
+                        executeWorkflowRun(wf, {
+                            userId: wf.userId || null,
+                            trigger: 'telegram',
+                            input: message,
+                            onEvent: (evt) => { try { broadcast({ type: 'automation_event', ...evt }, wf.userId); } catch (_) {} },
+                        }).catch(e => console.error('[automation] telegram run failed:', e.message));
+                    }
+                }
+            } catch (e) {
+                const code = e.response && e.response.status;
+                // 409 = another getUpdates consumer for this bot; 401/404 = bad token.
+                console.error(`[automation] telegram poll failed for a bot${code ? ` (HTTP ${code})` : ''}:`, e.message);
+                automationTelegramState.set(token, st);
+            }
+        }
+    } catch (e) {
+        console.error('[automation] telegram tick failed:', e.message);
+    } finally {
+        automationTelegramTickRunning = false;
+    }
+}
+
 // ============================================================================
 // AGENT-SKILL INTEGRATION ENDPOINTS
 // ============================================================================
@@ -20998,6 +21095,11 @@ server.listen(PORT, async () => {
     // never keeps the process alive.
     const AUTOMATION_TICK_MS = 60 * 1000;
     setInterval(automationSchedulerTick, AUTOMATION_TICK_MS).unref();
+
+    // Telegram trigger poller — getUpdates per bot every ~15s (no public webhook
+    // on a localhost/self-signed host). .unref()'d so it never holds the process.
+    const AUTOMATION_TELEGRAM_TICK_MS = 15 * 1000;
+    setInterval(automationTelegramTick, AUTOMATION_TELEGRAM_TICK_MS).unref();
 
     console.log('Initialization complete');
 });

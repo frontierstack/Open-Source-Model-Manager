@@ -169,19 +169,25 @@ function DataTag({ refStr, label, sample }) {
 function DataTagPalette({ outputs = {}, nodes = [], currentNodeId }) {
     const [open, setOpen] = useState(false);
     const sources = nodes
-        .filter(n => n.id !== currentNodeId && outputs[n.id] && outputs[n.id].output != null)
-        .map(n => ({ id: n.id, label: (n.data && n.data.label) || (n.data && n.data.kind) || n.id, out: outputs[n.id].output }));
+        .filter(n => outputs[n.id] && outputs[n.id].output != null)
+        .map(n => ({
+            id: n.id,
+            label: ((n.data && n.data.label) || (n.data && n.data.kind) || n.id) + (n.id === currentNodeId ? ' (this node)' : ''),
+            isSelf: n.id === currentNodeId,
+            out: outputs[n.id].output,
+        }))
+        .sort((a, b) => (a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1)); // this node first
     if (!sources.length) return null;
     return (
         <div style={{ marginBottom: 12, border: '1px solid var(--rule-2)', borderRadius: 8, overflow: 'hidden' }}>
             <button onClick={() => setOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 8px', background: 'var(--bg)', border: 'none', borderBottom: open ? '1px solid var(--rule-2)' : 'none', cursor: 'pointer', color: 'var(--ink-2)' }}>
                 {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                <span style={{ fontSize: 11, fontWeight: 600 }}>Insert data from other nodes</span>
+                <span style={{ fontSize: 11, fontWeight: 600 }}>Data tags</span>
                 <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-3)' }}>{sources.length}</span>
             </button>
             {open && (
                 <div style={{ padding: 8 }}>
-                    <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 6 }}>Drag a tag into a field below, or click to copy.</div>
+                    <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 6 }}>Drag a tag into any field (or the Output box), or click to copy.</div>
                     {sources.map(s => (
                         <div key={s.id} style={{ marginBottom: 8 }}>
                             <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-3)', marginBottom: 4 }}>{s.label}</div>
@@ -870,6 +876,18 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 <Field label="Event name"><input style={fieldInput} value={d.event || ''} onChange={(e) => onChange({ event: e.target.value })} placeholder="model.loaded" /></Field>
             )}
 
+            {kind === 'trigger.telegram' && (<>
+                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
+                <Field label="Chat ID filter (optional)"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="only this chat id / @channel" /></Field>
+                <Field label="Keyword (optional)"><TemplInput value={d.keyword || ''} onChange={(v) => onChange({ keyword: v })} placeholder="fire only when the text matches" /></Field>
+                <Field label="Match">
+                    <select style={fieldInput} value={d.match || 'contains'} onChange={(e) => onChange({ match: e.target.value })}>
+                        {['contains', 'equals', 'startsWith', 'regex'].map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                </Field>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Polls every ~15s via getUpdates — save and keep the automation enabled. The message is the run input: use <code>{'{{input.text}}'}</code>, <code>{'{{input.chat.id}}'}</code>, <code>{'{{input.from.username}}'}</code>. Use one automation per bot token (multiple pollers on the same bot conflict).</p>
+            </>)}
+
             {kind === 'trigger.webhook' && (<>
                 <button onClick={onGenWebhook} style={{ ...railBtn, justifyContent: 'center', marginBottom: 8 }}>Generate webhook URL</button>
                 {webhookUrl && (
@@ -882,6 +900,15 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 )}
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 8 }}>POST to this URL to trigger the workflow; the request body becomes the run input. Save the automation and keep it enabled.</p>
             </>)}
+
+            {!isTrigger && kind !== 'output' && kind !== 'merge' && !String(kind).startsWith('gate.') && (
+                <div style={{ marginTop: 14, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
+                    <Field label="Output → next node (optional)">
+                        <TemplTextarea style={{ minHeight: 44, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.forward || ''} onChange={(v) => onChange({ forward: v })} placeholder="Blank = forward everything. Drag data tags here to forward only those." />
+                    </Field>
+                    <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Shapes what this node passes downstream. Drag a single tag for raw data (e.g. an array), or mix tags + text. Leave blank to send the whole output.</p>
+                </div>
+            )}
         </div>
     );
 }

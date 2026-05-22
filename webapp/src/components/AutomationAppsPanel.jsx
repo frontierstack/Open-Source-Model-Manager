@@ -59,6 +59,9 @@ const FIELD_HELP = {
     text:         'Message text to send. Leave blank to send the previous node\'s output.',
     botToken:     'Telegram bot token from @BotFather.',
     chatId:       'Telegram chat id (a number, or @channelname).',
+    keyword:      'For the Telegram trigger: only fire when the message text matches (blank = any message).',
+    match:        'How to match the keyword: contains (default), equals, startsWith, or regex.',
+    forward:      'Optional output mapping — what this node passes to the next node. Blank forwards the whole output; drag data tags to forward only specific fields.',
 };
 
 // Build a starter "Default values" object for a built-in: its own presets plus a
