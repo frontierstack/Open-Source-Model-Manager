@@ -243,40 +243,74 @@ function DataTag({ refStr, label, sample }) {
     );
 }
 
-// Lightweight tag list drawn from captured node outputs. Click a field, then a
-// tag, to insert {{nodes.id.path}}. Scoped to the node(s) wired DIRECTLY into
-// this one — that's the data actually flowing in — so earlier/unrelated steps
-// don't clutter the list. Appears only after a run.
+// Representative output shape per node kind, so data tags are discoverable
+// BEFORE a run. Captured run output replaces this once available.
+function staticOutputShape(kind, data = {}) {
+    switch (kind) {
+        case 'db_store':    return { new: [{}], stored: 0, skipped: 0, total: 0, table: '', db: '' };
+        case 'db_query':    return [{}];
+        case 'fetch_url':   return { url: '', title: '', content: '', source: '', success: true };
+        case 'web_search':  return { results: [{ title: '', url: '', snippet: '' }] };
+        case 'merge':       return { items: [], count: 0 };
+        case 'map':         return { count: 0, results: [{}] };
+        case 'render_html': return { html: '', contentType: 'text/html' };
+        case 'set':         return data && data.name ? { [data.name]: '' } : { value: '' };
+        case 'tool':        return (data && data.tool === 'http_request') ? { success: true, status: 200, data: '', headers: {} } : null;
+        default:            return null; // model = string, gate/trigger = whole-output only
+    }
+}
+
+// All upstream node ids (transitive predecessors), ordered closest-first — that's
+// every node whose output is actually available to reference here.
+function upstreamIdsOrdered(edges, currentId) {
+    const preds = new Map();
+    for (const e of edges) { if (!preds.has(e.target)) preds.set(e.target, []); preds.get(e.target).push(e.source); }
+    const order = [], seen = new Set();
+    let frontier = [...(preds.get(currentId) || [])];
+    while (frontier.length) {
+        const next = [];
+        for (const n of frontier) {
+            if (seen.has(n)) continue;
+            seen.add(n); order.push(n);
+            for (const p of (preds.get(n) || [])) if (!seen.has(p)) next.push(p);
+        }
+        frontier = next;
+    }
+    return order;
+}
+
+// Clickable {{nodes.id.path}} tags for every UPSTREAM node (the data available
+// here). Shows expected fields before a run; real fields once captured.
 function DataTagPalette({ outputs = {}, nodes = [], edges = [], currentNodeId }) {
-    const prevIds = new Set(edges.filter(e => e.target === currentNodeId).map(e => e.source));
     const byId = new Map(nodes.map(n => [n.id, n]));
-    const sources = [...prevIds]
+    const sources = upstreamIdsOrdered(edges, currentNodeId)
         .map(id => byId.get(id))
-        .filter(n => n && outputs[n.id] && outputs[n.id].output != null)
-        .map(n => ({
-            id: n.id,
-            label: (n.data && n.data.label) || (n.data && n.data.kind) || n.id,
-            out: outputs[n.id].output,
-        }));
+        .filter(Boolean)
+        .map(n => {
+            const captured = (outputs[n.id] && outputs[n.id].output != null) ? outputs[n.id].output : undefined;
+            return {
+                id: n.id,
+                label: (n.data && n.data.label) || (n.data && n.data.kind) || n.id,
+                predicted: captured === undefined,
+                out: captured !== undefined ? captured : staticOutputShape(n.data && n.data.kind, n.data || {}),
+            };
+        });
     if (!sources.length) {
-        const hasPrev = prevIds.size > 0;
         return (
             <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-                {hasPrev
-                    ? <>Tip: <strong>Run</strong> the automation once — then the previous step's data tags (<code>{'{{nodes.…}}'}</code>) show up here to insert into any field.</>
-                    : <>Connect a node into this one to pull its data here as clickable <code>{'{{nodes.…}}'}</code> tags (after a run).</>}
+                Connect a node into this one to pull its data here as clickable <code>{'{{nodes.…}}'}</code> tags.
             </div>
         );
     }
     return (
         <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 5 }}>Click a tag to add it to the <strong>Output</strong> box below (or click another field first to insert there):</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 5 }}>Click a field, then a tag to insert it. <em>Run once</em> to refine fields from real data.</div>
             {sources.map(s => (
                 <div key={s.id} style={{ marginBottom: 6 }}>
-                    <div style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3 }}>{s.label}</div>
+                    <div style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3 }}>{s.label}{s.predicted ? ' · expected' : ''}</div>
                     <div style={{ display: 'flex', flexWrap: 'wrap' }}>
                         <DataTag refStr={`{{nodes.${s.id}}}`} label="whole output" />
-                        {flattenForTags(s.out).map(t => (
+                        {s.out != null && typeof s.out === 'object' && flattenForTags(s.out).map(t => (
                             <DataTag key={t.path} refStr={`{{nodes.${s.id}.${t.path}}}`} label={t.path} sample={t.leaf ? t.sample : ''} />
                         ))}
                     </div>
