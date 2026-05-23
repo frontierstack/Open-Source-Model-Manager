@@ -65,6 +65,11 @@ function iconForTool(tool) {
     }
 }
 
+// Icon component for a node kind (used by the card and the config-panel header).
+export function iconFor(kind, data = {}) {
+    return kind === 'tool' ? iconForTool(data.tool) : pickIcon(kind);
+}
+
 function categoryClass(kind) {
     if (!kind) return '';
     if (kind.startsWith('trigger.')) return 'auto-node--trigger';
@@ -149,6 +154,19 @@ export default function AutomationNode({ data, selected }) {
             {kind === 'trigger.schedule' && data.intervalMs && !data.cron
                 ? <div className="auto-node__sub"><ScheduleCountdown intervalMs={Number(data.intervalMs)} /></div>
                 : sub && <div className="auto-node__sub">{sub}</div>}
+
+            {/* Cards stay minimal: the only after-run detail shown on the canvas
+                is a chip for a generated file (everything else lives in the side
+                panel's "Last result"). */}
+            {data.artifactName && (
+                <div className="auto-node__out">
+                    <span className="auto-node__file" title={data.artifactName}>
+                        <FileText size={11} strokeWidth={2} />
+                        <span className="auto-node__file-name">{data.artifactName}</span>
+                        {data.delivered && <span className="auto-node__sent">→ sent</span>}
+                    </span>
+                </div>
+            )}
 
             {/* source handles (right), labeled when there's more than one */}
             {sources.map((s, i) => {

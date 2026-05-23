@@ -8,11 +8,11 @@ import '@xyflow/react/dist/style.css';
 import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
-    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles, Download,
+    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles, Download, Braces,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
-import AutomationNode from './AutomationNode';
+import AutomationNode, { iconFor } from './AutomationNode';
 
 const nodeTypes = { automation: AutomationNode };
 
@@ -119,24 +119,9 @@ function rfToServer(rfNodes, rfEdges) {
 }
 
 // inline style helpers (theme tokens)
-const railBtn = {
-    display: 'flex', alignItems: 'center', gap: 6, width: '100%',
-    padding: '7px 9px', border: '1px solid var(--rule-2)', borderRadius: 8,
-    color: 'var(--ink-2)', fontSize: 12.5, fontWeight: 500, background: 'transparent',
-    cursor: 'pointer',
-};
-// Paired action-row buttons (Build/Preview/Apply + Cancel/Discard). Both share
-// railBtn's height & type so a row reads as one balanced unit: a wide accent
-// primary CTA next to a compact, muted secondary. (Fixes the old mismatch where
-// Cancel was a small auto-width chip beside a full-width primary.)
-const railBtnPrimary = {
-    ...railBtn, justifyContent: 'center', flex: 1,
-    color: 'var(--accent)', borderColor: 'var(--accent)', fontWeight: 600,
-};
-const railBtnGhost = {
-    ...railBtn, justifyContent: 'center', flex: '0 0 auto', width: 'auto',
-    padding: '7px 16px', color: 'var(--ink-3)', borderColor: 'var(--rule-2)',
-};
+// Action buttons across the editor use the `.auto-btn` CSS class family
+// (automation.css) for one consistent size/shape — see auto-btn / --accent /
+// --primary / --ghost / --danger / --ok / --icon / --sm / --block / --grow.
 const fieldLabel = { fontSize: 12.5, color: 'var(--ink-3, var(--ink-2))', marginBottom: 4, display: 'block', fontWeight: 500 };
 const fieldInput = {
     width: '100%', padding: '7px 9px', borderRadius: 6, border: '1px solid var(--rule-2)',
@@ -168,7 +153,104 @@ function ResizeHandle({ onResizeStart, side = 'left' }) {
 // dragging is kept as a secondary path. The active field is tracked by ref so
 // repeated inserts read the live DOM value/caret.
 const REF_MIME = 'application/automation-ref';
-const FieldInsertContext = React.createContext(null);
+// Available upstream data tags for the open node, consumed by each field's
+// inline "{ }" picker. [{ id, label, predicted, tags:[{ref,label,sample}] }]
+const DataTagsContext = React.createContext([]);
+
+// Modern on/off switch — replaces raw <input type=checkbox> across the editor.
+function Toggle({ checked, onChange, disabled, children }) {
+    return (
+        <label className={`auto-switch${disabled ? ' is-disabled' : ''}`} style={{ margin: '2px 0 10px' }}>
+            <input type="checkbox" checked={!!checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+            <span className="auto-switch__track"><span className="auto-switch__thumb" /></span>
+            {children && <span>{children}</span>}
+        </label>
+    );
+}
+
+// Build the upstream data-tag groups for a node (transitive predecessors,
+// closest-first). Shows expected fields before a run; real fields once captured.
+function buildTagGroups(outputs = {}, nodes = [], edges = [], currentNodeId) {
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    return upstreamIdsOrdered(edges, currentNodeId)
+        .map(id => byId.get(id))
+        .filter(Boolean)
+        .map(n => {
+            const captured = (outputs[n.id] && outputs[n.id].output != null) ? outputs[n.id].output : undefined;
+            const out = captured !== undefined ? captured : staticOutputShape(n.data && n.data.kind, n.data || {});
+            const tags = [{ ref: `{{nodes.${n.id}}}`, label: 'whole output', sample: '' }];
+            if (out != null && typeof out === 'object') {
+                for (const t of flattenForTags(out)) tags.push({ ref: `{{nodes.${n.id}.${t.path}}}`, label: t.path, sample: t.leaf ? t.sample : '' });
+            }
+            return { id: n.id, label: (n.data && n.data.label) || (n.data && n.data.kind) || n.id, predicted: captured === undefined, tags };
+        });
+}
+
+// The "{ }" button docked in a field's top-right + its data-tag popover. The
+// popover is fixed-positioned (computed from the button rect) so it's never
+// clipped by the panel's scroll container. Clicking a tag inserts at the caret.
+function FieldTagButton({ insertRef }) {
+    const groups = React.useContext(DataTagsContext);
+    const btnRef = useRef(null);
+    const [open, setOpen] = useState(false);
+    const [pos, setPos] = useState(null);
+    useEffect(() => {
+        if (!open) return undefined;
+        const close = () => setOpen(false);
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+    }, [open]);
+    if (!groups || !groups.length) return null;
+    const toggle = () => {
+        if (open) { setOpen(false); return; }
+        const r = btnRef.current && btnRef.current.getBoundingClientRect();
+        if (r) {
+            const MENU_H = 320;
+            const top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - MENU_H - 8));
+            setPos({ top, left: Math.max(8, r.right - 248) });
+        }
+        setOpen(true);
+    };
+    return (
+        <>
+            <button ref={btnRef} type="button" className={`auto-tagbtn${open ? ' is-open' : ''}`}
+                title="Insert data from a previous step" onMouseDown={(e) => e.preventDefault()} onClick={toggle}>
+                <Braces size={12} />
+            </button>
+            {open && pos && (
+                <>
+                    <div className="auto-tagmenu-backdrop" onMouseDown={() => setOpen(false)} />
+                    <div className="auto-tagmenu" style={{ top: pos.top, left: pos.left }}>
+                        {groups.map(g => (
+                            <div key={g.id} className="auto-tagmenu__group">
+                                <div className="auto-tagmenu__head">{g.label}{g.predicted ? ' · expected' : ''}</div>
+                                {g.tags.map(t => (
+                                    <button key={t.ref} type="button" className="auto-tagmenu__item" title={t.ref}
+                                        onMouseDown={(e) => e.preventDefault()} onClick={() => { insertRef(t.ref); setOpen(false); }}>
+                                        <span className="auto-tagmenu__label">{t.label}</span>
+                                        {t.sample ? <span className="auto-tagmenu__sample">{t.sample}</span> : null}
+                                    </button>
+                                ))}
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
+        </>
+    );
+}
+
+// Insert a {{...}} ref at the field's caret (or append when unfocused).
+function insertAtCaret(el, onChangeRef, refStr) {
+    if (!el) return;
+    const v = el.value || '';
+    const focused = document.activeElement === el;
+    const s = (focused && el.selectionStart != null) ? el.selectionStart : v.length;
+    const e = (focused && el.selectionEnd != null) ? el.selectionEnd : v.length;
+    onChangeRef.current(`${v.slice(0, s)}${refStr}${v.slice(e)}`);
+    requestAnimationFrame(() => { try { el.focus(); const p = s + refStr.length; el.setSelectionRange(p, p); } catch (_) {} });
+}
 
 function makeDropHandlers(elRef, onChangeRef) {
     return {
@@ -188,21 +270,28 @@ function makeDropHandlers(elRef, onChangeRef) {
 function TemplInput({ value = '', onChange, style, ...rest }) {
     const elRef = useRef(null);
     const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
-    const ctx = React.useContext(FieldInsertContext);
-    return <input ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
-        onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
-        style={{ ...fieldInput, ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />;
+    const groups = React.useContext(DataTagsContext);
+    const hasTags = groups && groups.length > 0;
+    return (
+        <div className="auto-field">
+            <input ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
+                style={{ ...fieldInput, ...(hasTags ? { paddingRight: 34 } : null), ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />
+            <FieldTagButton insertRef={(r) => insertAtCaret(elRef.current, onChangeRef, r)} />
+        </div>
+    );
 }
 function TemplTextarea({ value = '', onChange, style, registerAsDefault, ...rest }) {
     const elRef = useRef(null);
     const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
-    const ctx = React.useContext(FieldInsertContext);
-    // The Output box registers itself as the default insert target so clicking a
-    // data tag drops it here even before the field is explicitly focused.
-    useEffect(() => { if (registerAsDefault && ctx && elRef.current) ctx.setActive({ el: elRef.current, onChangeRef }); }, [registerAsDefault]); // eslint-disable-line react-hooks/exhaustive-deps
-    return <textarea ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
-        onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
-        style={{ ...fieldInput, ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />;
+    const groups = React.useContext(DataTagsContext);
+    const hasTags = groups && groups.length > 0;
+    return (
+        <div className="auto-field">
+            <textarea ref={elRef} value={value} onChange={(e) => onChange(e.target.value)}
+                style={{ ...fieldInput, ...(hasTags ? { paddingRight: 34 } : null), ...style }} {...makeDropHandlers(elRef, onChangeRef)} {...rest} />
+            <FieldTagButton insertRef={(r) => insertAtCaret(elRef.current, onChangeRef, r)} />
+        </div>
+    );
 }
 
 // Flatten a node's output into dotted paths. Arrays use a `*` wildcard so a tag
@@ -228,36 +317,10 @@ function flattenForTags(obj, prefix = '', out = [], depth = 0) {
     return out;
 }
 
-function DataTag({ refStr, label, sample }) {
-    const ctx = React.useContext(FieldInsertContext);
-    const [flash, setFlash] = useState(false);
-    const pick = () => {
-        const inserted = ctx && ctx.insert(refStr);
-        if (!inserted) navigator.clipboard?.writeText(refStr); // no field focused → copy
-        setFlash(true); setTimeout(() => setFlash(false), 450);
-    };
-    return (
-        <span
-            draggable
-            onDragStart={(e) => { e.dataTransfer.setData(REF_MIME, refStr); e.dataTransfer.setData('text/plain', refStr); e.dataTransfer.effectAllowed = 'copy'; }}
-            onMouseDown={(e) => e.preventDefault()}  // keep the focused field focused
-            onClick={pick}
-            title={`${refStr}${sample ? `  ·  e.g. ${sample}` : ''}`}
-            style={{
-                display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 10.5, fontFamily: 'monospace',
-                background: flash ? 'var(--accent)' : 'var(--bg)', color: flash ? 'var(--accent-ink, #fff)' : 'var(--ink-2)',
-                border: `1px solid ${flash ? 'var(--accent)' : 'var(--rule-2)'}`, borderRadius: 5, padding: '2px 6px', margin: '0 4px 4px 0', maxWidth: '100%',
-            }}
-        >
-            <span style={{ opacity: 0.55 }}>+</span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
-        </span>
-    );
-}
-
 // Representative output shape per node kind, so data tags are discoverable
 // BEFORE a run. Captured run output replaces this once available.
 function staticOutputShape(kind, data = {}) {
+    const FILE = { _artifacts: [{ name: 'file.pdf', url: '', size: 0 }] };
     switch (kind) {
         case 'db_store':    return { new: [{}], stored: 0, skipped: 0, total: 0, table: '', db: '' };
         case 'db_query':    return [{}];
@@ -266,8 +329,18 @@ function staticOutputShape(kind, data = {}) {
         case 'merge':       return { items: [], count: 0 };
         case 'map':         return { count: 0, results: [{}] };
         case 'render_html': return { html: '', contentType: 'text/html' };
+        case 'export_file': return FILE;
+        case 'telegram':
+        case 'slack':       return { sent: true, mode: 'document', file: '' };
+        case 'send_file':   return { success: true, destination: '', file: '' };
+        case 'telegram_get':return { count: 0, messages: [{}], latest: {}, text: '' };
         case 'set':         return data && data.name ? { [data.name]: '' } : { value: '' };
-        case 'tool':        return (data && data.tool === 'http_request') ? { success: true, status: 200, data: '', headers: {} } : null;
+        case 'tool': {
+            const t = data && data.tool;
+            if (t === 'http_request') return { success: true, status: 200, data: '', headers: {} };
+            if (t === 'create_pdf' || t === 'html_to_pdf' || t === 'create_file' || t === 'render_chart') return FILE;
+            return null;
+        }
         default:            return null; // model = string, gate/trigger = whole-output only
     }
 }
@@ -291,46 +364,6 @@ function upstreamIdsOrdered(edges, currentId) {
     return order;
 }
 
-// Clickable {{nodes.id.path}} tags for every UPSTREAM node (the data available
-// here). Shows expected fields before a run; real fields once captured.
-function DataTagPalette({ outputs = {}, nodes = [], edges = [], currentNodeId }) {
-    const byId = new Map(nodes.map(n => [n.id, n]));
-    const sources = upstreamIdsOrdered(edges, currentNodeId)
-        .map(id => byId.get(id))
-        .filter(Boolean)
-        .map(n => {
-            const captured = (outputs[n.id] && outputs[n.id].output != null) ? outputs[n.id].output : undefined;
-            return {
-                id: n.id,
-                label: (n.data && n.data.label) || (n.data && n.data.kind) || n.id,
-                predicted: captured === undefined,
-                out: captured !== undefined ? captured : staticOutputShape(n.data && n.data.kind, n.data || {}),
-            };
-        });
-    if (!sources.length) {
-        return (
-            <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-                Connect a node into this one to pull its data here as clickable <code>{'{{nodes.…}}'}</code> tags.
-            </div>
-        );
-    }
-    return (
-        <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 5 }}>Click a field, then a tag to insert it. <em>Run once</em> to refine fields from real data.</div>
-            {sources.map(s => (
-                <div key={s.id} style={{ marginBottom: 6 }}>
-                    <div style={{ fontSize: 9.5, fontWeight: 600, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3 }}>{s.label}{s.predicted ? ' · expected' : ''}</div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-                        <DataTag refStr={`{{nodes.${s.id}}}`} label="whole output" />
-                        {s.out != null && typeof s.out === 'object' && flattenForTags(s.out).map(t => (
-                            <DataTag key={t.path} refStr={`{{nodes.${s.id}.${t.path}}}`} label={t.path} sample={t.leaf ? t.sample : ''} />
-                        ))}
-                    </div>
-                </div>
-            ))}
-        </div>
-    );
-}
 
 // Kahn-level topological order over RF nodes/edges: trigger/source nodes first,
 // then BFS by depth, ties broken left→right (x, then y). Returns node ids grouped
@@ -890,6 +923,28 @@ function FlowEditor({ showSnackbar, models }) {
         setNodeOutputs({});
     }, [setNodes, setEdges, cancelAnim]);
 
+    // Mirror a generated file produced by each node onto its card as a minimal
+    // chip (the only after-run detail kept on the canvas — full text output lives
+    // in the side panel). Covers live runs AND the seeded last run. Functional
+    // update + equality check keeps it from looping on its own writes.
+    useEffect(() => {
+        setNodes(ns => {
+            let changed = false;
+            const next = ns.map(n => {
+                const o = nodeOutputs[n.id];
+                let artifactName = '', delivered = false;
+                if (o && o.status !== 'running' && o.output != null && !o.error) {
+                    artifactName = artifactNameOf(o.output);
+                    delivered = !!(o.output && typeof o.output === 'object' && o.output._delivered);
+                }
+                if (n.data.artifactName === artifactName && n.data.delivered === delivered) return n;
+                changed = true;
+                return { ...n, data: { ...n.data, artifactName, delivered } };
+            });
+            return changed ? next : ns;
+        });
+    }, [nodeOutputs, setNodes]);
+
     const handleRunEvent = useCallback((evt) => {
         switch (evt.type) {
             case 'run_created': setRunId(evt.runId); break;
@@ -1047,7 +1102,7 @@ function FlowEditor({ showSnackbar, models }) {
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg)' }}>
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid var(--rule)', flexShrink: 0 }}>
-                <button onClick={() => setView('chat')} style={{ ...railBtn, width: 'auto', padding: '6px 10px' }} title="Back to chat">
+                <button className="auto-btn" onClick={() => setView('chat')} title="Back to chat">
                     <ArrowLeft size={15} /> <span>Chat</span>
                 </button>
                 <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 13 }}>Automations</span>
@@ -1059,25 +1114,25 @@ function FlowEditor({ showSnackbar, models }) {
                             style={{ ...fieldInput, width: 240, marginBottom: 0 }}
                         />
                         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
-                            <button onClick={() => toggleFlag('enabled')} style={{ ...railBtn, width: 'auto', padding: '6px 9px', color: selected.enabled !== false ? 'var(--ok, #22c55e)' : 'var(--ink-3)' }} title={selected.enabled !== false ? 'Enabled (triggers active)' : 'Disabled'}>
+                            <button className={`auto-btn${selected.enabled !== false ? ' auto-btn--ok' : ''}`} onClick={() => toggleFlag('enabled')} title={selected.enabled !== false ? 'Enabled (triggers active)' : 'Disabled'}>
                                 {selected.enabled !== false ? <Power size={14} /> : <PowerOff size={14} />}
                                 <span>{selected.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                             </button>
-                            <button onClick={() => toggleFlag('archived')} style={{ ...railBtn, width: 'auto', padding: '6px 9px' }} title={selected.archived ? 'Unarchive' : 'Archive'}>
+                            <button className="auto-btn auto-btn--icon" onClick={() => toggleFlag('archived')} title={selected.archived ? 'Unarchive' : 'Archive'}>
                                 {selected.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
                             </button>
-                            <button onClick={() => (showHistory ? setShowHistory(false) : openHistory())} style={{ ...railBtn, width: 'auto', padding: '6px 9px', color: showHistory ? 'var(--accent)' : 'var(--ink-2)', borderColor: showHistory ? 'var(--accent)' : 'var(--rule-2)' }} title="Run history">
+                            <button className={`auto-btn${showHistory ? ' is-active' : ''}`} onClick={() => (showHistory ? setShowHistory(false) : openHistory())} title="Run history">
                                 <HistoryIcon size={14} /> <span>History</span>
                             </button>
-                            <button onClick={save} disabled={!dirty} style={{ ...railBtn, width: 'auto', padding: '6px 11px', color: dirty ? 'var(--accent)' : 'var(--ink-3)', borderColor: dirty ? 'var(--accent)' : 'var(--rule-2)' }}>
+                            <button className={`auto-btn${dirty ? ' is-active' : ''}`} onClick={save} disabled={!dirty}>
                                 <Save size={14} /> <span>Save{dirty ? '*' : ''}</span>
                             </button>
                             {running ? (
-                                <button onClick={stop} style={{ ...railBtn, width: 'auto', padding: '6px 11px', color: 'var(--danger, #ef4444)', borderColor: 'var(--danger, #ef4444)' }}>
+                                <button className="auto-btn auto-btn--danger" onClick={stop}>
                                     <Square size={13} /> <span>Stop</span>
                                 </button>
                             ) : (
-                                <button onClick={run} style={{ ...railBtn, width: 'auto', padding: '6px 11px', color: 'var(--accent-ink, #fff)', background: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                                <button className="auto-btn auto-btn--accent" onClick={run}>
                                     <Play size={13} /> <span>Run</span>
                                 </button>
                             )}
@@ -1091,15 +1146,15 @@ function FlowEditor({ showSnackbar, models }) {
                 <div className="auto-rail" style={{ width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
                     <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />
                     <div style={{ padding: '12px 12px 11px', borderBottom: '1px solid var(--rule)' }}>
-                        <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', fontWeight: 600, padding: '9px 9px', color: 'var(--accent-ink, #fff)', background: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                        <button className="auto-btn auto-btn--accent auto-btn--block" onClick={newAutomation}>
                             <Plus size={15} /> <span>New automation</span>
                         </button>
                         <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                            <button onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: buildOpen ? 'var(--accent)' : 'var(--ink-2)', borderColor: buildOpen ? 'var(--accent)' : 'var(--rule-2)' }} title="Describe an automation and let the model assemble it">
+                            <button className={`auto-btn auto-btn--grow${buildOpen ? ' is-active' : ''}`} onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} title="Describe an automation and let the model assemble it">
                                 <Sparkles size={14} /> <span>Build</span>
                             </button>
                             {selected && (
-                                <button onClick={() => { setEditOpen(o => !o); setEditResult(null); }} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: editOpen ? 'var(--accent)' : 'var(--ink-2)', borderColor: editOpen ? 'var(--accent)' : 'var(--rule-2)' }} title="Describe a change to the open automation">
+                                <button className={`auto-btn auto-btn--grow${editOpen ? ' is-active' : ''}`} onClick={() => { setEditOpen(o => !o); setEditResult(null); }} title="Describe a change to the open automation">
                                     <Sparkles size={14} /> <span>Edit</span>
                                 </button>
                             )}
@@ -1115,14 +1170,12 @@ function FlowEditor({ showSnackbar, models }) {
                                     disabled={building}
                                     style={{ ...fieldInput, resize: 'vertical', minHeight: 64, lineHeight: 1.4 }}
                                 />
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-3)', margin: '6px 0', cursor: 'pointer' }}>
-                                    <input type="checkbox" checked={buildTest} onChange={e => setBuildTest(e.target.checked)} disabled={building} /> Test &amp; improve (run it and let the model fix issues — slower)
-                                </label>
-                                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                                    <button onClick={buildAutomation} disabled={building || !buildPrompt.trim()} style={{ ...railBtnPrimary, opacity: (building || !buildPrompt.trim()) ? 0.55 : 1, cursor: (building || !buildPrompt.trim()) ? 'default' : 'pointer' }}>
+                                <Toggle checked={buildTest} onChange={setBuildTest} disabled={building}>Test &amp; improve <span style={{ opacity: 0.7 }}>— run it &amp; let the model fix issues (slower)</span></Toggle>
+                                <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                                    <button className="auto-btn auto-btn--primary auto-btn--grow" onClick={buildAutomation} disabled={building || !buildPrompt.trim()}>
                                         {building ? 'Building…' : 'Build'}
                                     </button>
-                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building} style={railBtnGhost}>Cancel</button>
+                                    <button className="auto-btn auto-btn--ghost" onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building}>Cancel</button>
                                 </div>
                                 {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{buildTest ? 'Building, testing & improving…' : 'The model is assembling your workflow…'}</div>}
                                 {buildLog && (
@@ -1144,14 +1197,12 @@ function FlowEditor({ showSnackbar, models }) {
                                         disabled={editing}
                                         style={{ ...fieldInput, resize: 'vertical', minHeight: 60, lineHeight: 1.4 }}
                                     />
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-3)', margin: '6px 0', cursor: 'pointer' }}>
-                                        <input type="checkbox" checked={editTest} onChange={(e) => setEditTest(e.target.checked)} disabled={editing} /> Test &amp; improve (run it and let the model fix issues — slower)
-                                    </label>
-                                    <div style={{ display: 'flex', gap: 6 }}>
-                                        <button onClick={previewEdit} disabled={editing || !editPrompt.trim()} style={{ ...railBtnPrimary, opacity: (editing || !editPrompt.trim()) ? 0.55 : 1, cursor: (editing || !editPrompt.trim()) ? 'default' : 'pointer' }}>
+                                    <Toggle checked={editTest} onChange={setEditTest} disabled={editing}>Test &amp; improve <span style={{ opacity: 0.7 }}>— run it &amp; let the model fix issues (slower)</span></Toggle>
+                                    <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                                        <button className="auto-btn auto-btn--primary auto-btn--grow" onClick={previewEdit} disabled={editing || !editPrompt.trim()}>
                                             {editing ? (editTest ? 'Testing…' : 'Thinking…') : 'Preview changes'}
                                         </button>
-                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing} style={railBtnGhost}>Cancel</button>
+                                        <button className="auto-btn auto-btn--ghost" onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing}>Cancel</button>
                                     </div>
                                     {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{editTest ? 'Revising, testing & improving…' : 'The model is revising your workflow…'}</div>}
                                 </>) : (<>
@@ -1169,8 +1220,8 @@ function FlowEditor({ showSnackbar, models }) {
                                         </div>
                                     )}
                                     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                                        <button onClick={applyEdit} disabled={editing} style={railBtnPrimary}>{editing ? 'Applying…' : 'Apply'}</button>
-                                        <button onClick={() => setEditResult(null)} disabled={editing} style={railBtnGhost}>Discard</button>
+                                        <button className="auto-btn auto-btn--primary auto-btn--grow" onClick={applyEdit} disabled={editing}>{editing ? 'Applying…' : 'Apply'}</button>
+                                        <button className="auto-btn auto-btn--ghost" onClick={() => setEditResult(null)} disabled={editing}>Discard</button>
                                     </div>
                                 </>)}
                             </div>
@@ -1352,6 +1403,7 @@ function FlowEditor({ showSnackbar, models }) {
                     <NodeConfig
                         key={selectedNode.id}
                         node={selectedNode}
+                        typeLabel={labelFor(selectedNode.data.kind)}
                         runningModels={runningModels}
                         lastRun={nodeOutputs[selectedNode.id]}
                         allOutputs={nodeOutputs}
@@ -1511,7 +1563,7 @@ function fieldPathOptions(value, prefix = '', out = [], depth = 0) {
     return out;
 }
 
-function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
+function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
     const kind = node.data.kind;
     const d = node.data;
     // Fields available from the node feeding into this one (for the dedup-key
@@ -1529,38 +1581,27 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
     const setCond = (patch) => onChange({ condition: { ...cond, ...patch } });
     const isTrigger = typeof kind === 'string' && kind.startsWith('trigger.');
 
-    // Track the focused templatable field so clicking a data tag inserts into it.
-    const activeFieldRef = useRef(null);
-    const fieldInsert = useMemo(() => ({
-        setActive: (f) => { activeFieldRef.current = f; },
-        insert: (refStr) => {
-            const f = activeFieldRef.current;
-            if (!f || !f.el) return false;
-            const el = f.el;
-            const v = el.value || '';
-            // Insert at the caret only when the field is actually focused; otherwise
-            // append at the end (the field is the default target, e.g. the Output box).
-            const focused = document.activeElement === el;
-            const s = (focused && el.selectionStart != null) ? el.selectionStart : v.length;
-            const e = (focused && el.selectionEnd != null) ? el.selectionEnd : v.length;
-            f.onChangeRef.current(`${v.slice(0, s)}${refStr}${v.slice(e)}`);
-            requestAnimationFrame(() => { try { el.focus(); const p = s + refStr.length; el.setSelectionRange(p, p); } catch (_) {} });
-            return true;
-        },
-    }), []);
+    // Upstream data tags available to this node's fields (provided to every
+    // templatable field's inline "{ }" picker — no more always-open wall).
+    const tagGroups = useMemo(() => buildTagGroups(allOutputs, nodeList, edgeList, node.id), [allOutputs, nodeList, edgeList, node.id]);
+    const HeadIcon = iconFor(kind, d);
+    const [refCopied, setRefCopied] = useState(false);
+    const copyRef = () => { try { navigator.clipboard?.writeText(`{{nodes.${node.id}}}`); setRefCopied(true); setTimeout(() => setRefCopied(false), 1200); } catch (_) {} };
 
     return (
-        <FieldInsertContext.Provider value={fieldInsert}>
+        <DataTagsContext.Provider value={tagGroups}>
         <div style={{ position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
             {onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 14 }}>{kind}</span>
-                <button onClick={onDelete} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger, #ef4444)', display: 'flex' }} title="Delete node"><Trash2 size={16} /></button>
+            <div className="auto-panel__head">
+                <span className="auto-panel__icon"><HeadIcon size={16} strokeWidth={2} /></span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="auto-panel__title" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.label || typeLabel || kind}</div>
+                    <div className="auto-panel__sub">{typeLabel || kind}</div>
+                </div>
+                <button className="auto-btn auto-btn--icon auto-btn--sm auto-btn--danger" onClick={onDelete} title="Delete node" style={{ flexShrink: 0 }}><Trash2 size={14} /></button>
             </div>
 
             <NodeResult lastRun={lastRun} nodeId={node.id} isTrigger={isTrigger} />
-
-            {!isTrigger && <DataTagPalette outputs={allOutputs} nodes={nodeList} edges={edgeList} currentNodeId={node.id} />}
 
             <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} /></Field>
 
@@ -1593,6 +1634,29 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                     <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -4 }}>{isPdf
                         ? 'Leave "content" blank (or omit it) to use the previous step’s output automatically — just connect the line. Or set it with {{last}} / {{nodes.id}} to override.'
                         : 'This tool reads its data from these Arguments — click a data tag to drop it into a value. (The incoming line isn’t passed in automatically.)'}</p>
+                    {isPdf && (
+                        <div style={{ marginTop: 12, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
+                            <Field label="When it's done">
+                                <select style={fieldInput} value={d.delivery || 'download'} onChange={(e) => onChange({ delivery: e.target.value })}>
+                                    <option value="download">Make it downloadable (default)</option>
+                                    <option value="telegram">Send to Telegram</option>
+                                    <option value="slack">Send to Slack</option>
+                                </select>
+                            </Field>
+                            {d.delivery === 'telegram' && (<>
+                                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
+                                <Field label="Chat ID"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="e.g. 8938559204 or @channel" /></Field>
+                            </>)}
+                            {d.delivery === 'slack' && (<>
+                                <Field label="Slack bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
+                                <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="C0123456789" /></Field>
+                            </>)}
+                            {(d.delivery === 'telegram' || d.delivery === 'slack') && (<>
+                                <Field label="Caption / message (optional)"><TemplInput value={d.caption || ''} onChange={(v) => onChange({ caption: v })} placeholder="optional note sent with the file" /></Field>
+                                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Builds the PDF and sends it in one step — no separate Send node needed, and it stays downloadable from the result.</p>
+                            </>)}
+                        </div>
+                    )}
                 </>);
             })()}
 
@@ -1635,10 +1699,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 </Field>
                 {d.key ? (<>
                     <Field label="Ignore words in key (optional)"><TemplInput value={d.keyStrip || ''} onChange={(v) => onChange({ keyStrip: v })} placeholder="e.g. NEW (comma-separated)" /></Field>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--ink-3)', margin: '0 0 10px', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={!!d.keyNormalize} onChange={(e) => onChange({ keyNormalize: e.target.checked })} />
-                        Normalize key (ignore case &amp; punctuation)
-                    </label>
+                    <Toggle checked={!!d.keyNormalize} onChange={(v) => onChange({ keyNormalize: v })}>Normalize key (ignore case &amp; punctuation)</Toggle>
                 </>) : null}
                 <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
                 <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Appends to a SQLite table in this automation's workspace (auto-created); a list is stored as one row per item. Set a <b>key field</b> to deduplicate across runs — only new items are stored, and they're returned as <code>{'{{nodes.<id>.new}}'}</code> (the change feed); <code>{'{{nodes.<id>.stored}}'}</code> is how many were new.</p>
@@ -1676,16 +1737,25 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             </>)}
 
             {kind === 'slack' && (<>
-                <Field label="Webhook URL"><TemplInput value={d.webhookUrl || ''} onChange={(v) => onChange({ webhookUrl: v })} placeholder="https://hooks.slack.com/services/…" /></Field>
-                <Field label="Message"><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Create an Incoming Webhook in your Slack app settings and paste its URL here.</p>
+                <Field label="Webhook URL (for text)"><TemplInput value={d.webhookUrl || ''} onChange={(v) => onChange({ webhookUrl: v })} placeholder="https://hooks.slack.com/services/…" /></Field>
+                <Field label={d.attachFile === false ? 'Message' : 'Message / file caption'}><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
+                <Toggle checked={d.attachFile !== false} onChange={(v) => onChange({ attachFile: v })}>Upload upstream file as an attachment (when one is produced)</Toggle>
+                {d.attachFile !== false && (<>
+                    <div style={{ borderTop: '1px solid var(--rule-2)', paddingTop: 10, marginBottom: 2 }}>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 6 }}>To upload files (e.g. a PDF), Slack needs a bot token + channel — an incoming-webhook URL can only post text:</div>
+                    </div>
+                    <Field label="Slack bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
+                    <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="C0123456789" /></Field>
+                </>)}
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Text-only goes to the Incoming Webhook URL. A generated file (Create PDF → Slack) is uploaded via the bot token + channel.</p>
             </>)}
 
             {kind === 'telegram' && (<>
                 <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
                 <Field label="Chat ID"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="e.g. 123456789 or @channelname" /></Field>
-                <Field label="Message"><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Create a bot with @BotFather for the token; get the chat id from @userinfobot or the bot's getUpdates.</p>
+                <Field label={d.attachFile === false ? 'Message' : 'Message / file caption'}><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
+                <Toggle checked={d.attachFile !== false} onChange={(v) => onChange({ attachFile: v })}>Send upstream file as a document (when one is produced)</Toggle>
+                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Wire <b>Create PDF → Telegram</b> and the PDF is sent as a document automatically (the message above becomes its caption). Uncheck to always send plain text. Token from @BotFather; chat id from @userinfobot.</p>
             </>)}
 
             {kind === 'telegram_get' && (<>
@@ -1785,7 +1855,7 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                             <TemplInput value={c.handle || ''} onChange={(v) => setCase(i, { handle: v })} placeholder="route label (defaults to the value)" style={{ marginBottom: 0 }} />
                         </div>
                     ))}
-                    <button onClick={addCase} style={{ ...railBtn, justifyContent: 'center', marginBottom: 8 }}>+ Add case</button>
+                    <button className="auto-btn auto-btn--block auto-btn--sm" onClick={addCase} style={{ marginBottom: 8 }}>+ Add case</button>
                     <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Each case routes to its own handle on the node; anything unmatched takes the "default" handle.</p>
                 </>);
             })()}
@@ -1821,11 +1891,11 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
             </>)}
 
             {kind === 'trigger.webhook' && (<>
-                <button onClick={onGenWebhook} style={{ ...railBtn, justifyContent: 'center', marginBottom: 8 }}>Generate webhook URL</button>
+                <button className="auto-btn auto-btn--block auto-btn--sm" onClick={onGenWebhook} style={{ marginBottom: 8 }}>Generate webhook URL</button>
                 {webhookUrl && (
                     <div style={{ fontSize: 10.5, color: 'var(--ink-2)', wordBreak: 'break-all', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 8 }}>
                         {webhookUrl}
-                        <button onClick={onCopyWebhook} style={{ ...railBtn, width: 'auto', padding: '4px 8px', marginTop: 6 }}>
+                        <button className="auto-btn auto-btn--sm" onClick={onCopyWebhook} style={{ marginTop: 6 }}>
                             {copied ? <Check size={12} /> : <Copy size={12} />} <span>{copied ? 'Copied' : 'Copy'}</span>
                         </button>
                     </div>
@@ -1866,19 +1936,29 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                     </div>
                 );
             })()}
+
+            {!isTrigger && (
+                <div className="auto-panel__ref" title="Reference this node's output in a later node">
+                    <span>Use later:</span>
+                    <code>{`{{nodes.${node.id}}}`}</code>
+                    <button className="auto-panel__refbtn" onClick={copyRef}>
+                        {refCopied ? <Check size={12} /> : <Copy size={12} />} {refCopied ? 'Copied' : 'Copy'}
+                    </button>
+                </div>
+            )}
         </div>
-        </FieldInsertContext.Provider>
+        </DataTagsContext.Provider>
     );
 }
 
-// JSON editor field with inline validity feedback.
+// JSON editor field with inline validity feedback + the inline data-tag picker
+// (drops {{...}} into a value, e.g. {"url": "{{nodes.id.results.0.url}}"}).
 function JsonField({ value, onChange, placeholder }) {
     const [text, setText] = useState(() => value == null ? '' : JSON.stringify(value, null, 2));
     const [err, setErr] = useState(false);
     const elRef = useRef(null);
-    const ctx = React.useContext(FieldInsertContext);
-    // Apply new text + reparse. Wrapped in a ref so click-to-insert data tags can
-    // drop {{...}} into the JSON args (e.g. {"url": "{{nodes.id.results.0.url}}"}).
+    const groups = React.useContext(DataTagsContext);
+    const hasTags = groups && groups.length > 0;
     const applyText = (t) => {
         setText(t);
         if (!t.trim()) { setErr(false); onChange(undefined); return; }
@@ -1887,18 +1967,18 @@ function JsonField({ value, onChange, placeholder }) {
     };
     const onChangeRef = useRef(applyText); onChangeRef.current = applyText;
     return (
-        <>
+        <div className="auto-field">
             <textarea
                 ref={elRef}
-                style={{ ...fieldInput, minHeight: 70, fontFamily: 'monospace', fontSize: 12.5, resize: 'vertical', borderColor: err ? 'var(--danger, #ef4444)' : 'var(--rule-2)' }}
+                style={{ ...fieldInput, minHeight: 70, fontFamily: 'monospace', fontSize: 12.5, resize: 'vertical', ...(hasTags ? { paddingRight: 34 } : null), borderColor: err ? 'var(--danger, #ef4444)' : 'var(--rule-2)' }}
                 value={text}
                 placeholder={placeholder || '{}'}
-                onFocus={() => { if (ctx) ctx.setActive({ el: elRef.current, onChangeRef }); }}
                 onChange={(e) => applyText(e.target.value)}
                 {...makeDropHandlers(elRef, onChangeRef)}
             />
+            <FieldTagButton insertRef={(r) => insertAtCaret(elRef.current, onChangeRef, r)} />
             {err && <div style={{ fontSize: 10, color: 'var(--danger, #ef4444)', marginTop: -6, marginBottom: 8 }}>Invalid JSON</div>}
-        </>
+        </div>
     );
 }
 
@@ -1910,6 +1990,12 @@ function formatNodeOutput(out) {
     if (typeof out === 'object' && out._truncated && typeof out.preview === 'string') return out.preview;
     if (Array.isArray(out) && out.every(x => x === null || typeof x !== 'object')) return out.filter(x => x != null).join('\n');
     try { return JSON.stringify(out, null, 2); } catch { return String(out); }
+}
+
+// First generated-file name in a node's output (for the card's file chip).
+function artifactNameOf(out) {
+    if (out && typeof out === 'object' && Array.isArray(out._artifacts) && out._artifacts[0] && out._artifacts[0].name) return out._artifacts[0].name;
+    return '';
 }
 
 // Append `?download=1` so the server sends `Content-Disposition: attachment`.
@@ -2044,7 +2130,7 @@ function RunHistoryPanel({ runs, width = 300, onResizeStart, onClearHistory, onC
                 <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Close"><CloseIcon size={15} /></button>
             </div>
             {runs.length > 0 && onClearHistory && (
-                <button onClick={onClearHistory} style={{ ...railBtn, justifyContent: 'center', marginBottom: 10, color: 'var(--danger, #ef4444)', borderColor: 'var(--rule-2)' }}>
+                <button className="auto-btn auto-btn--block auto-btn--danger auto-btn--sm" onClick={onClearHistory} style={{ marginBottom: 10 }}>
                     Clear history
                 </button>
             )}
