@@ -1584,11 +1584,17 @@ function NodeConfig({ node, runningModels = [], lastRun, allOutputs = {}, nodeLi
                 </Field>
             </>)}
 
-            {kind === 'tool' && (<>
-                <Field label="Tool / skill name"><TemplInput value={d.tool || ''} onChange={(v) => onChange({ tool: v })} placeholder="e.g. query_sqlite" /></Field>
-                <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} placeholder={'{ "url": "{{nodes.id.results.0.url}}" }'} /></Field>
-                <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -4 }}>This tool reads its data from these Arguments — click a data tag to drop it into a value. (The incoming line isn't passed in automatically.)</p>
-            </>)}
+            {kind === 'tool' && (() => {
+                const isPdf = d.tool === 'create_pdf' || d.tool === 'html_to_pdf';
+                const fileKey = d.tool === 'html_to_pdf' ? 'outputName' : 'filename';
+                return (<>
+                    <Field label="Tool / skill name"><TemplInput value={d.tool || ''} onChange={(v) => onChange({ tool: v })} placeholder="e.g. query_sqlite" /></Field>
+                    <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} placeholder={isPdf ? `{ "content": "{{last}}", "${fileKey}": "report.pdf" }` : '{ "url": "{{nodes.id.results.0.url}}" }'} /></Field>
+                    <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -4 }}>{isPdf
+                        ? 'Leave "content" blank (or omit it) to use the previous step’s output automatically — just connect the line. Or set it with {{last}} / {{nodes.id}} to override.'
+                        : 'This tool reads its data from these Arguments — click a data tag to drop it into a value. (The incoming line isn’t passed in automatically.)'}</p>
+                </>);
+            })()}
 
             {kind === 'web_search' && (<>
                 <Field label="Query"><TemplInput value={d.query || ''} onChange={(v) => onChange({ query: v })} /></Field>

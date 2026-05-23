@@ -50,8 +50,8 @@ const BUILTIN_NODE_TYPES = [
     { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
     { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
     { key: 'render_chart',type: 'tool',       category: 'connector', label: 'Render Chart',     description: 'Renders a chart spec for display/download.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'render_chart' }, fields: ['args'] },
-    { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from MARKDOWN content (headings, tables, bullets, code, links). For styled HTML (CSS layouts/fonts) use the "HTML to PDF" node instead.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
-    { key: 'html_to_pdf', type: 'tool',       category: 'connector', label: 'HTML to PDF',      description: 'Renders styled HTML (CSS layouts, web fonts, tables) to a PDF via WeasyPrint. Use this for HTML; use Create PDF for markdown. Args: { "content": "<html>…</html>", "outputName": "report.pdf" } (or "htmlPath": a /workspace HTML file).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'html_to_pdf' }, fields: ['args'] },
+    { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from MARKDOWN content (headings, tables, bullets, code, links). For styled HTML (CSS layouts/fonts) use the "HTML to PDF" node instead. Leave args.content blank to use the previous step\'s output.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
+    { key: 'html_to_pdf', type: 'tool',       category: 'connector', label: 'HTML to PDF',      description: 'Renders styled HTML (CSS layouts, web fonts, tables) to a PDF via WeasyPrint. Use this for HTML; use Create PDF for markdown. Args: { "content": "<html>…</html>", "outputName": "report.pdf" } (or "htmlPath": a /workspace HTML file). Leave args.content blank to use the previous step\'s output.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'html_to_pdf' }, fields: ['args'] },
     { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
     { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Run Python',       description: 'Runs a Python snippet in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
     { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Set a Unique key field (e.g. "url" or "id") to deduplicate — only unseen records are stored and the new ones are returned in `.new` (use this to track changes between runs). The key can be a comma-separated fallback list (first non-empty wins, e.g. "link,post_title") so a stable id is used when present. For a stable identity (so re-listed/edited records don\'t re-appear as new) add Ignore-words (e.g. "NEW") and/or turn on Normalize. Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value', 'key', 'keyStrip', 'keyNormalize'] },
@@ -375,6 +375,19 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 const RESERVED = new Set(['args', 'tool', 'label', 'kind', 'status', 'forward', 'description', 'model', 'temperature', 'maxTokens']);
                 for (const k of Object.keys(data)) {
                     if (!RESERVED.has(k) && !(k in args)) args[k] = data[k];
+                }
+                // Auto-flow for the PDF connectors: if `content` is left blank (and
+                // no workspace file is referenced), default it to the incoming node
+                // output(s) so a connected "<node> → Create PDF / HTML to PDF" just
+                // works without manual templating — mirroring the Model node's
+                // auto-attach. Explicit content (or contentFile/htmlPath) opts out.
+                if (toolName === 'create_pdf' || toolName === 'html_to_pdf') {
+                    const hasContent = args.content != null && String(args.content).trim() !== '';
+                    const hasFileRef = (args.contentFile != null && String(args.contentFile).trim() !== '')
+                        || (args.htmlPath != null && String(args.htmlPath).trim() !== '');
+                    if (!hasContent && !hasFileRef && Array.isArray(inputs) && inputs.length) {
+                        args.content = inputs.map(v => stringifyValue(v)).join('\n\n');
+                    }
                 }
             }
             const msg = await deps.executeToolCall(
@@ -1059,7 +1072,7 @@ function buildBuilderSystemPrompt() {
         '- fetch_url: { "url": "..." }   web_search: { "query": "...", "limit": 5 }',
         '- http_request: { "args": { "url": "...", "method": "GET" } }   run_python: { "args": { "code": "print(1)" } }',
         '- create_pdf / create_file / html_to_pdf / any tool node: ALWAYS nest the tool parameters under "args" — e.g. { "tool": "create_pdf", "args": { "content": "{{nodes.<id>}}", "filename": "report.pdf" } }. NEVER put content/filename/etc. at the node top level (siblings of "tool"); they will be ignored.',
-        '- PDF OUTPUT — pick the right node: create_pdf renders MARKDOWN (headings/tables/bullets/code/links) — feed it a markdown string. For styled HTML (CSS layout, fonts, columns) use html_to_pdf: { "tool": "html_to_pdf", "args": { "content": "{{nodes.<id>}}", "outputName": "report.pdf" } }. NEVER convert markdown→HTML just to feed create_pdf, and NEVER feed raw HTML to create_pdf (it treats it as a code block).',
+        '- PDF OUTPUT — pick the right node: create_pdf renders MARKDOWN (headings/tables/bullets/code/links) — feed it a markdown string. For styled HTML (CSS layout, fonts, columns) use html_to_pdf: { "tool": "html_to_pdf", "args": { "content": "{{nodes.<id>}}", "outputName": "report.pdf" } }. NEVER convert markdown→HTML just to feed create_pdf, and NEVER feed raw HTML to create_pdf (it treats it as a code block). For both, args.content may be OMITTED to default to the previous node\'s output (just wire the edge).',
         '- parse_json: { "source": "{{nodes.<id>.data}}", "path": "results.*.url"? }',
         '- db_store: { "table": "items", "key": "id"?, "keyNormalize": true?, "value": "{{nodes.<id>}}"? } → outputs { new, stored, total }',
         '- db_query: { "table": "items", "limit": 100?, "order": "id DESC"?, "sql": "SELECT ..."? } → outputs the rows array',
