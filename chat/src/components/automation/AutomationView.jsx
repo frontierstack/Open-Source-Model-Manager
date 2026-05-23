@@ -52,7 +52,7 @@ const PALETTE_CATEGORY_OVERRIDE = {
     map: 'trigger',
     model: 'tools', web_search: 'tools', fetch_url: 'tools', render_html: 'tools',
     parse_json: 'tools', export_file: 'tools', http_request: 'tools', crawl: 'tools',
-    sqlite: 'tools', render_chart: 'tools', create_pdf: 'tools', create_file: 'tools',
+    sqlite: 'tools', render_chart: 'tools', create_pdf: 'tools', html_to_pdf: 'tools', create_file: 'tools',
     run_python: 'tools', db_store: 'tools', db_query: 'tools', tool: 'tools',
     delay: 'gate', set: 'gate',
     'trigger.telegram': 'connector', 'trigger.slack': 'connector',
