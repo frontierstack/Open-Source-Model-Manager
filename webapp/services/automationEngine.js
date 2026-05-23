@@ -1009,12 +1009,23 @@ async function runWorkflow(workflow, opts = {}) {
     }
 }
 
-// Keep persisted/streamed node outputs from ballooning — cap large blobs.
+// Keep persisted/streamed node outputs from ballooning — cap large blobs. The
+// in-memory scope passed downstream keeps the FULL output; this only shapes what
+// is stored in the run record / streamed to the UI. Small UI-relevant metadata
+// (the artifact list that drives the download chip, the delivery/send tags) is
+// PRESERVED through truncation so a large output — e.g. a Create PDF node that
+// also carries the rendered content — still shows its download chip.
 function summarizeOutput(output) {
     try {
         const s = JSON.stringify(output);
         if (s.length <= 4000) return output;
-        return { _truncated: true, preview: s.slice(0, 4000) + '…' };
+        const out = { _truncated: true, preview: s.slice(0, 4000) + '…' };
+        if (output && typeof output === 'object' && !Array.isArray(output)) {
+            if (Array.isArray(output._artifacts)) out._artifacts = output._artifacts;
+            if (output._delivered) out._delivered = output._delivered;
+            if (output._sendMode) out._sendMode = output._sendMode;
+        }
+        return out;
     } catch {
         return { _unserializable: true };
     }
