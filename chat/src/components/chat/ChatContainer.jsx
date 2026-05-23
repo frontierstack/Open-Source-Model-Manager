@@ -618,6 +618,21 @@ export default function ChatContainer({
 
     // Check for active background streaming on a conversation
     const checkActiveStreaming = async (conversationId) => {
+        // GUARD: never start a background poll while the FOREGROUND stream for
+        // this same conversation is still live. This fires on a fresh send —
+        // setActiveConversation(newId) triggers the load effect, which calls
+        // loadConversationMessages → checkActiveStreaming while the foreground
+        // fetch is mid-flight. Without this guard the poll races the live
+        // stream: when it later sees streaming:false it commits its OWN
+        // toolCall-less assistant bubble and clearStreaming()s — which both
+        // (a) duplicates the response and (b) wipes the foreground's
+        // streamingToolCalls so the real committed message loses its tool
+        // chips + artifact download cards. The foreground stream owns the
+        // response end-to-end; the background poll is only for reconnect
+        // (refresh / switch-away), where abortControllerRef is already null.
+        if (streamingConversationRef.current === conversationId && abortControllerRef.current) {
+            return;
+        }
         try {
             const response = await fetch(`/api/conversations/${conversationId}/streaming`, { credentials: 'include' });
             if (response.ok) {

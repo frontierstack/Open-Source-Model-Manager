@@ -936,6 +936,9 @@ function buildChatRuntimePrelude() {
     });
     const text = [
         `Today is ${today}.`,
+        `Answer directly from your own knowledge whenever you confidently know the answer and a tool would only be slower — do not call a tool for general knowledge, explanations, reasoning, math you can do, or writing/editing code you can produce yourself. A direct answer is preferred when it is correct and faster.`,
+        `Reach for a tool only when it genuinely adds something a direct answer cannot: current/external/time-sensitive facts (web_search, fetch_url), data you must look up or compute precisely, reading a provided file, or producing a downloadable file. When unsure whether your knowledge is current or correct, prefer a tool over guessing.`,
+        `If the user EXPLICITLY asks you to search, fetch a specific URL, run code, or create/save a file, honor that request with the matching tool even if you believe you already know the answer — an explicit instruction overrides the answer-first preference.`,
         `When the user asks for current, external, or time-sensitive information, call web_search or fetch_url BEFORE answering.`,
         `When tools are appropriate, emit a real tool_call. Do NOT narrate "I will call X" — the runtime captures actual tool_calls only.`,
         `Tool results are truncated when very large; if a tool returns a "[TRUNCATED ...]" marker, request a narrower scope rather than guessing.`,
