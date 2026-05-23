@@ -8878,8 +8878,19 @@ async function automationSchedulerTick() {
                     const anchor = Number(d.anchorMs);
                     const base = Number.isFinite(anchor) ? anchor : 0;
                     const period = Math.floor((nowMs - base) / interval);
-                    const st = automationScheduleState.get(key) || { lastFiredPeriod: period };
-                    if (st.lastFiredPeriod == null) st.lastFiredPeriod = period;
+                    // Re-seed whenever the schedule definition changes (interval or
+                    // anchor edited). The period numbering is relative to interval+base,
+                    // so a lastFiredPeriod carried over from the previous definition is
+                    // meaningless against the new one — and because editing the unit
+                    // resets anchorMs to now (period restarts at 0) while the stale
+                    // value is usually far larger, `period > lastFiredPeriod` would
+                    // never hold and the schedule would silently STOP firing. Treat an
+                    // edited schedule like a fresh one: seed to the current period so it
+                    // next fires one full interval later, matching the editor countdown.
+                    let st = automationScheduleState.get(key);
+                    if (!st || st.interval !== interval || st.base !== base) {
+                        st = { interval, base, lastFiredPeriod: period };
+                    }
                     if (period > st.lastFiredPeriod) { due = true; st.lastFiredPeriod = period; }
                     automationScheduleState.set(key, st);
                 }
