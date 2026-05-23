@@ -7905,7 +7905,10 @@ app.post('/api/automations', requireAuth, async (req, res) => {
 // Max model-driven repair passes per Test-&-improve invocation. A run that
 // "completes" with zero real data still counts as needing repair (see
 // automationEngine.assessRunHealth), so this loops run→assess→repair, not once.
-const MAX_REPAIR_PASSES = 3;
+// Raised to 5 so the model gets several reasoning attempts at a genuinely broken
+// workflow (each pass re-runs against fresh per-node outputs, so it can chase a
+// fix across the whole chain rather than giving up after one try).
+const MAX_REPAIR_PASSES = 5;
 
 // Run `wfObj`, assess whether it actually produced data, and — while it didn't and
 // the failure isn't pure missing-config — ask the model to repair it, looping up
@@ -7917,13 +7920,20 @@ const MAX_REPAIR_PASSES = 3;
 async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
     // Compact per-node summary fed back to the model so it fixes against the
     // ACTUAL outputs (wrong paths, error payloads, empty results).
-    const summarize = (outcome, rec) => {
-        const L = [`status=${outcome.status}`];
-        if (outcome.error) L.push(`error: ${outcome.error}`);
+    // Per-node summary fed back to the model. Healthy nodes get a short preview;
+    // FLAGGED nodes (the ones assessRunHealth marked bad) get a longer slice so
+    // the model can see the actual traceback / error payload / wrong shape and
+    // reason about the root cause — not just the symptom at the final node.
+    const summarize = (outcome, rec, badIds) => {
+        const bad = badIds instanceof Set ? badIds : new Set();
+        const L = [`run status=${outcome.status}`];
+        if (outcome.error) L.push(`run error: ${outcome.error}`);
         if (rec && Array.isArray(rec.nodes)) for (const n of rec.nodes) {
             const o = n.output;
             const os = o == null ? '' : (typeof o === 'string' ? o : JSON.stringify(o));
-            L.push(`- ${n.nodeId} (${n.type}): ${n.status}${n.error ? ' ERROR: ' + n.error : ''}${os ? ' → ' + String(os).slice(0, 180) : ''}`);
+            const cap = bad.has(n.nodeId) ? 600 : 180;
+            const flag = bad.has(n.nodeId) ? ' ⚠ PROBLEM' : '';
+            L.push(`- ${n.nodeId} (${n.type}): ${n.status}${flag}${n.error ? ' ERROR: ' + n.error : ''}${os ? ' → ' + String(os).slice(0, cap) : ''}`);
         }
         return L.join('\n');
     };
@@ -7943,13 +7953,18 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
     // Targeted, data-driven guidance appended to every repair request — these are
     // the exact traps the cybersecurity-newspaper workflow fell into.
     const REPAIR_GUIDANCE = [
-        'GUIDANCE — apply only what the run results above show is broken:',
+        'GUIDANCE — diagnose the WHOLE chain, then fix the EARLIEST broken node (a failure upstream poisons everything after it). Apply only what the run results above show is broken:',
+        '- If a run_python / run_node node shows a non-zero returncode or a stderr traceback like "NameError: name \'nodes\' is not defined": the script tried to read workflow data as a variable. run_python/run_node have NO `nodes`/`last`/`input` variables — those names do not exist in the sandbox. The CORRECT fix is almost always to REMOVE the run_python node and replace that step with the right native node: for a JSON API/feed use http_request → parse_json; for an HTML page use fetch_url → a model node to extract. Only keep run_python for a pure local transform, and then pass upstream data by INTERPOLATING it as a literal string (e.g. code begins `data = json.loads(r\'\'\'{{nodes.n2.content}}\'\'\')`), never by naming a node.',
+        '- If the source is a website you are scraping for structured records: check whether it has a JSON API or feed (paths like /api/recent, /api/<thing>, .json, /feed, /rss). If so, http_request that endpoint and parse_json its .data — that is far more reliable than parsing HTML. http_request output is { success, status, data }; parse_json "source" must be "{{nodes.<httpId>.data}}".',
+        '- If an http_request node shows status >= 400: the URL/method is wrong — correct it (or switch to the site\'s real JSON endpoint).',
+        '- If a db_store node\'s `.new` contains error objects (e.g. a stored {returncode:1,...}): the node feeding its "value" is broken — fix THAT upstream node; also make sure "key" is a real unique field of the records (e.g. "link" or an id), not a field that doesn\'t exist on the actual data shape shown above.',
         '- If web_search nodes returned an {error} about rate-limiting / DuckDuckGo / Brave / Scrapling: site-specific web_search queries are unreliable. Replace them with fetch_url or crawl_pages directly on the source site\'s homepage or RSS/Atom feed (e.g. https://thehackernews.com/, https://www.darkreading.com/, https://cybersecuritynews.com/, or that site\'s feed URL).',
         '- If a parse_json node returned [] or extracted nothing: its "path" does not match the real upstream shape shown above. A merge outputs {items:[...],count}; web_search outputs {results:[...]}. To get all urls from MERGED searches use path "items.*.results.*.url" (NOT "*.url").',
         '- If a map node returned results full of {error:"…needs a tool/skill name"}: a map\'s "action" must be "tool" or "model". For a tool action set "action":"tool", set "tool" to a valid name (e.g. "fetch_url" or "crawl_pages"), and put per-item args in "args" using {{item}} for the current item. Do NOT put the tool name in "action".',
         '- If a map node failed EVERY item with "Invalid URL" (or ran once treating a whole string as a single item): its "items" resolved to a STRING, not a list. A model node\'s output is a STRING, so you CANNOT feed a model node straight into a map. Fix it one of two ways: (a) replace that model node with a "set" node whose "value" is a real JSON array of the actual URLs (e.g. {"name":"urls","value":["https://a.com/feed/","https://b.com/rss.xml"]}); OR (b) add a "parse_json" node after the model to parse its JSON-array string into a real array. Then point the map\'s "items" at that node with an EXACT template (items:"{{nodes.<id>}}" or "{{nodes.<id>.<field>}}", no surrounding text) so the raw array is passed.',
         '- For "latest news from a site", fetch_url works on the site HOMEPAGE and on its RSS/Atom FEED and returns real recent content. Prefer feed URLs, e.g. https://www.bleepingcomputer.com/feed/ , https://www.darkreading.com/rss.xml , https://krebsonsecurity.com/feed/ , https://thehackernews.com/ (homepage). Avoid feedburner.com mirrors (often refused).',
         '- If the final model node wrote an "error retrieving / no content" style message: that means it had no real source data — fix the upstream fetch/extract nodes so real content reaches it.',
+        '- If a telegram/slack node failed with HTTP 400 / "message is too long": the text exceeds the platform limit. Keep the model node\'s output concise (ask it to summarize, not dump every record), and/or only forward the new items, so the message stays well under a few thousand characters.',
     ].join('\n');
 
     // Snapshot the best version seen so a worse final pass doesn't win.
@@ -7980,6 +7995,9 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
         remember(assess);
 
         const issuesLine = automationEngine.summarizeIssues(assess.issues);
+        // Node ids the assessment flagged — these get expanded output in the
+        // repair prompt so the model sees the actual error, not just a preview.
+        const badIds = new Set((assess.issues || []).map(i => i.nodeId).filter(Boolean));
         buildLog.push(`Pass ${pass}: ${assess.ok ? 'data is flowing' : 'issues — ' + issuesLine}`);
 
         // Stop early when healthy, or when the only thing wrong is missing config.
@@ -7993,7 +8011,7 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
         // Ask the model to repair against the ACTUAL failing outputs + guidance.
         const messages = [
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `This workflow was just run and produced bad/empty results. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nDetected problems:\n${issuesLine}\n\nRun results (per node):\n${summarize(outcome, rec)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
+            { role: 'user', content: `This workflow was just run and produced bad/empty results. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nDetected problems:\n${issuesLine}\n\nRun results (per node, ⚠ marks the flagged ones):\n${summarize(outcome, rec, badIds)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
         ];
         try {
             const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });

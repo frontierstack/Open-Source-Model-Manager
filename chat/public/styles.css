@@ -2194,6 +2194,9 @@ body.font-size-large .markdown-content,
 .underline{
   text-decoration-line: underline;
 }
+.line-through{
+  text-decoration-line: line-through;
+}
 .placeholder-dark-500::-moz-placeholder{
   --tw-placeholder-opacity: 1;
   color: rgb(113 113 122 / var(--tw-placeholder-opacity, 1));

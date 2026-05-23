@@ -301,6 +301,29 @@ function httpFailureMessage(response) {
     return null;
 }
 
+// Split `text` into chunks no longer than `max` chars, preferring to break on
+// paragraph, then line, then word boundaries so messages stay readable. Caps the
+// result at `maxParts` chunks (the last one is hard-truncated with an ellipsis)
+// so a pathological input can't fan out into hundreds of sends. Used to keep
+// Telegram messages under its 4096-char hard limit.
+function chunkText(text, max = 4000, maxParts = 20) {
+    const s = String(text == null ? '' : text);
+    if (s.length <= max) return [s];
+    const chunks = [];
+    let rest = s;
+    while (rest.length > max && chunks.length < maxParts - 1) {
+        let cut = rest.lastIndexOf('\n\n', max);
+        if (cut < max * 0.5) cut = rest.lastIndexOf('\n', max);
+        if (cut < max * 0.5) cut = rest.lastIndexOf(' ', max);
+        if (cut < max * 0.5) cut = max; // no good boundary — hard cut
+        chunks.push(rest.slice(0, cut).trimEnd());
+        rest = rest.slice(cut).trimStart();
+    }
+    if (rest.length > max) rest = rest.slice(0, max - 1).trimEnd() + '…';
+    if (rest) chunks.push(rest);
+    return chunks;
+}
+
 // Detect a generated file (a sandboxed skill's `_artifacts` entry) among the
 // given candidate values. Handles a node's whole output ({ _artifacts:[…] }) and
 // a forwarded artifacts array ([{ name, url, … }]) so "Create PDF → Telegram"
@@ -480,8 +503,21 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             let src = (data.source === undefined || data.source === '') ? scope.last : data.source;
             let obj = src;
             if (typeof src === 'string') { try { obj = JSON.parse(src); } catch { obj = src; } }
-            if (data.path) {
-                const val = resolvePath(obj, data.path);
+            // Tolerate JSONPath-style paths (a common model instinct): strip a
+            // leading "$"/"$." root and convert ['key']/[0] bracket notation to
+            // our dotted form, so "$.posts", "$['posts']" and "$.items[0].url"
+            // all resolve like "posts" / "items.0.url". "$" alone → whole object.
+            let path = String(data.path == null ? '' : data.path).trim();
+            if (path) {
+                path = path
+                    .replace(/^\$/, '')                       // drop JSONPath root
+                    .replace(/\[\s*'([^']*)'\s*\]/g, '.$1')   // ['key'] → .key
+                    .replace(/\[\s*"([^"]*)"\s*\]/g, '.$1')   // ["key"] → .key
+                    .replace(/\[\s*(\d+)\s*\]/g, '.$1')       // [0]     → .0
+                    .replace(/^\.+/, '');                     // drop leading dots
+            }
+            if (path) {
+                const val = resolvePath(obj, path);
                 return (val !== null && typeof val === 'object') ? val : { value: val };
             }
             return (obj !== null && typeof obj === 'object') ? obj : { value: obj };
@@ -553,20 +589,30 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 return { sent: true, mode: 'document', file: tgArt.name, response: r };
             }
             const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
-            const response = await dispatchTool(deps, ctx, node, 'http_request', {
-                url: `https://api.telegram.org/bot${token}/sendMessage`,
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: chatId, text }),
-            });
-            const tgFail = httpFailureMessage(response);
-            if (tgFail) {
-                // 403 = valid token but the bot can't message this chat.
-                const hint = /403|forbidden/i.test(tgFail)
-                    ? ' (the chat must message the bot first, or check the chat id / that the bot is a channel admin)'
-                    : '';
-                throw new Error(`Telegram send failed — ${tgFail}${hint}`);
+            // Telegram rejects a sendMessage body over 4096 chars with HTTP 400
+            // ("message is too long"). Split into <=4096-char chunks (preferring
+            // paragraph/line/word boundaries) and send sequentially so a long
+            // model summary or a first-run flood of items goes through instead of
+            // failing the whole node. chunkText caps the number of parts so a
+            // pathological input can't fan out into hundreds of messages.
+            const chunks = chunkText(text, 4000, 20);
+            let response;
+            for (let ci = 0; ci < chunks.length; ci++) {
+                response = await dispatchTool(deps, ctx, node, 'http_request', {
+                    url: `https://api.telegram.org/bot${token}/sendMessage`,
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: chatId, text: chunks[ci] }),
+                });
+                const tgFail = httpFailureMessage(response);
+                if (tgFail) {
+                    // 403 = valid token but the bot can't message this chat.
+                    const hint = /403|forbidden/i.test(tgFail)
+                        ? ' (the chat must message the bot first, or check the chat id / that the bot is a channel admin)'
+                        : '';
+                    throw new Error(`Telegram send failed — ${tgFail}${hint}`);
+                }
             }
-            return { sent: true, response };
+            return { sent: true, parts: chunks.length, response };
         }
 
         case 'telegram_get': {
@@ -924,7 +970,12 @@ function summarizeOutput(output) {
 
 // Phrases a model emits when it had no real source data to work from. Kept as a
 // named constant so it's easy to extend. Case-insensitive.
-const MODEL_NO_DATA_RE = /error retrieving|no content|unable to (retrieve|fetch|access)|couldn't (fetch|retrieve|access)|could not (fetch|retrieve|access)|no (data|articles|results) ((was|were) )?(found|available|retrieved)/i;
+const MODEL_NO_DATA_RE = /error retrieving|no content|unable to (retrieve|fetch|access)|couldn't (fetch|retrieve|access)|could not (fetch|retrieve|access)|no (data|articles|results|items|records|posts|entries|new \w+) ((was|were|to) )?(found|available|retrieved|list|report|show|display)|(is|are|contains?) (an? )?empty( json)? (array|object|list)|(contains?|provided|received|got|there (is|are|was|were)) no (data|items|records|entries|results|content|new )/i;
+
+// Tell-tale signs of an unhandled exception in a script node's stderr/stdout
+// (run_python / run_node). Used to flag a tool node that "succeeded" (the
+// dispatcher ran) but whose code actually crashed.
+const TRACEBACK_RE = /Traceback \(most recent call last\)|\b(?:Name|Type|Key|Value|Index|Attribute|Syntax|Indentation|Import|ModuleNotFound|Runtime|ZeroDivision|FileNotFound|Connection|Timeout)Error\b|ReferenceError|Uncaught \w*Error|Exception:/;
 
 // Node types that are SUPPOSED to produce data — an empty result from one of
 // these is a problem worth flagging; an empty `set`/`delay`/`output` is fine.
@@ -951,6 +1002,12 @@ function emptyDataReason(o) {
         if ('value' in o && (o.value == null || (Array.isArray(o.value) && o.value.length === 0))) {
             return 'extracted no value (path matched nothing)';
         }
+        // An object with no own keys at all ({}). parse_json returns this when the
+        // dotted "path" matched nothing on the parsed source — the classic
+        // wrong-path bug (e.g. path "$.posts" against a top-level array). Without
+        // this it slips through as "not empty" and the failure only surfaces as a
+        // garbage downstream message.
+        if (Object.keys(o).length === 0) return 'is an empty object (path matched nothing?)';
     }
     return null;
 }
@@ -990,6 +1047,48 @@ function assessRunHealth(runRecord) {
         if (out && typeof out === 'object' && !Array.isArray(out) && typeof out.error === 'string' && out.error) {
             push('high', `output carries an error: ${String(out.error).slice(0, 200)}`);
             return;
+        }
+
+        // 2b. A tool/script node whose dispatcher succeeded (status='completed',
+        //     success:true) but whose PAYLOAD signals failure: a non-zero exit
+        //     code, a Python/Node traceback in stderr, an HTTP error status, or
+        //     an explicit success/ok=false. Without this the broken node slips
+        //     through — run_python returns {success:true, returncode:1,
+        //     stderr:"Traceback…"} — and the failure only surfaces vaguely at the
+        //     downstream model. Flagging it HERE points the repair model at the
+        //     real root cause node.
+        if (out && typeof out === 'object' && !Array.isArray(out)) {
+            const trim = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+            const rc = (typeof out.returncode === 'number') ? out.returncode
+                : (typeof out.exitCode === 'number') ? out.exitCode
+                    : (typeof out.code === 'number') ? out.code : null;
+            const stderr = typeof out.stderr === 'string' ? out.stderr : '';
+            const tracebacky = TRACEBACK_RE.test(stderr);
+            if (rc != null && rc !== 0) {
+                push('high', `script exited with code ${rc}${stderr ? ': ' + trim(stderr) : ''}`);
+                return;
+            }
+            if (tracebacky) {
+                push('high', `script raised an error: ${trim(stderr)}`);
+                return;
+            }
+            const httpStatus = typeof out.status === 'number' ? out.status : null;
+            if (httpStatus != null && httpStatus >= 400) {
+                push('high', `request failed with HTTP ${httpStatus}`);
+                return;
+            }
+            if (out.success === false || out.ok === false) {
+                const m = out.message || out.error_message || out.detail || '';
+                push('high', `node reported failure${m ? ': ' + trim(m) : ''}`);
+                return;
+            }
+            // A large output is stored as { _truncated:true, preview:"<json>" };
+            // the returncode/traceback then hides inside the preview string.
+            if (out._truncated && typeof out.preview === 'string'
+                && (/"return_?code"\s*:\s*[1-9]/.test(out.preview) || TRACEBACK_RE.test(out.preview))) {
+                push('high', `script error: ${trim(out.preview)}`);
+                return;
+            }
         }
 
         // 3. A map node whose EVERY item failed (each slot is an {error} object).
@@ -1129,6 +1228,9 @@ function buildBuilderSystemPrompt() {
         '- LATEST NEWS / ARTICLES FROM A SITE: do NOT use a site-specific web_search (e.g. query "site:thehackernews.com latest") — DuckDuckGo rate-limits those and they usually return nothing. Instead use fetch_url or crawl_pages on the site\'s HOMEPAGE or its RSS/Atom FEED (e.g. https://thehackernews.com/, https://www.darkreading.com/, https://feeds.feedburner.com/TheHackersNews). web_search is only for open-ended "find pages about X" queries.',
         '- CHAINING search/extract → parse_json: the parse_json "path" MUST match the REAL upstream shape. A merge node outputs {items:[...],count}; web_search outputs {results:[...]}. To pull every url from MERGED searches use path "items.*.results.*.url" (NOT "*.url"); from a single web_search use "results.*.url".',
         '- A map (Loop) node\'s "action" is "tool" or "model" — NOT a tool name. For a tool action set "action":"tool" AND "tool":"<valid tool name e.g. fetch_url|crawl_pages>" AND put per-item args in "args" using {{item}} for the current list item. Never put the tool name in "action".',
+        '- STRUCTURED DATA FROM A SITE (a JSON API / feed): if the source exposes a JSON endpoint (e.g. .../api/recent, .../api.json, an RSS/Atom feed), ALWAYS use http_request to that endpoint then parse_json — NEVER scrape the HTML page with run_python. parse_json\'s "source" must be the http_request output\'s data, i.e. "{{nodes.<httpId>.data}}"; leave "path" empty to keep the whole parsed array/object, or set it to the field you want (e.g. "results.*.link"). Then db_store the parsed array for dedupe.',
+        '- run_python / run_node DO NOT have access to workflow data as variables. There is NO `nodes`, `last`, `input` or any node id available as a Python/JS name — referencing them throws "NameError: name \'nodes\' is not defined". To use an upstream value inside the code you MUST interpolate it as a literal via templating, e.g. code: "import json\\ndata = json.loads(r\'\'\'{{nodes.n2.content}}\'\'\')\\n…". But prefer NOT using run_python for fetching/parsing at all — use http_request + parse_json (JSON) or fetch_url + a model node (HTML). Reserve run_python for pure local transforms on already-interpolated data.',
+        '- fetch_url returns { url, title, content, success } — the page text is in "content" (NOT "data"). http_request returns { success, status, data } — the response body is in "data" (a string for JSON APIs; feed it to parse_json).',
         '',
         'Per-node data (set only what is needed):',
         '- model: { "prompt": "...", "systemPrompt": "..."? }  (the answer string is the output)',
@@ -1337,22 +1439,52 @@ function materializeWorkflowEdit(spec, base) {
 }
 
 // Human-readable diff between two workflows (for the "show changes" preview).
+// Render a single field value as a short, human-readable string for a diff
+// (collapses whitespace, JSON-encodes objects, truncates). null/undefined → ∅.
+function briefDiffValue(v, max = 140) {
+    if (v == null) return '∅';
+    let s = (typeof v === 'string') ? v : (() => { try { return JSON.stringify(v); } catch (_) { return String(v); } })();
+    s = s.replace(/\s+/g, ' ').trim();
+    if (!s) return '∅';
+    return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
 function diffWorkflows(base, proposed) {
     const bN = new Map(((base && base.nodes) || []).map(n => [String(n.id), n]));
     const pN = new Map(((proposed && proposed.nodes) || []).map(n => [String(n.id), n]));
     const lbl = (n) => (n && n.data && n.data.label) || (n && n.type) || '?';
-    const addedNodes = [...pN].filter(([id]) => !bN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
-    const removedNodes = [...bN].filter(([id]) => !pN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type }));
-    // For a changed node, list which data fields actually differ (skip 'label').
+    // A compact "field: value" summary of a node's config (skips label/cosmetic
+    // keys) so an added/removed node shows WHAT it does, not just its type.
+    const COSMETIC = new Set(['label', 'artifactName', 'delivered']);
+    const configSummary = (n) => {
+        const d = (n && n.data) || {};
+        const parts = [];
+        for (const k of Object.keys(d)) {
+            if (COSMETIC.has(k)) continue;
+            parts.push(`${k}: ${briefDiffValue(d[k], 80)}`);
+        }
+        return parts;
+    };
+    const addedNodes = [...pN].filter(([id]) => !bN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type, config: configSummary(n) }));
+    const removedNodes = [...bN].filter(([id]) => !pN.has(id)).map(([id, n]) => ({ id, label: lbl(n), type: n.type, config: configSummary(n) }));
+    // For a changed node, list which data fields actually differ (skip 'label')
+    // along with their before→after values so the diff card is specific.
     const changedFields = (a, b) => {
         const keys = new Set([...Object.keys((a && a.data) || {}), ...Object.keys((b && b.data) || {})]);
-        const out = [];
+        const fields = [], changes = [];
         for (const k of keys) {
-            if (k === 'label') continue;
-            if (JSON.stringify((a.data || {})[k]) !== JSON.stringify((b.data || {})[k])) out.push(k);
+            if (k === 'label' || k === 'artifactName' || k === 'delivered') continue;
+            const av = (a.data || {})[k], bv = (b.data || {})[k];
+            if (JSON.stringify(av) !== JSON.stringify(bv)) {
+                fields.push(k);
+                changes.push({ field: k, before: briefDiffValue(av), after: briefDiffValue(bv) });
+            }
         }
-        if ((a.type || '') !== (b.type || '')) out.unshift('type');
-        return out;
+        if ((a.type || '') !== (b.type || '')) {
+            fields.unshift('type');
+            changes.unshift({ field: 'type', before: a.type || '∅', after: b.type || '∅' });
+        }
+        return { fields, changes };
     };
     // A node is "changed" only when its type or an actual data field differs —
     // NOT when the same data merely has its keys in a different order (the merge
@@ -1361,8 +1493,8 @@ function diffWorkflows(base, proposed) {
     const changedNodes = [];
     for (const [id, n] of pN) {
         if (!bN.has(id)) continue;
-        const fields = changedFields(bN.get(id), n);
-        if (fields.length) changedNodes.push({ id, label: lbl(n), type: n.type, fields });
+        const { fields, changes } = changedFields(bN.get(id), n);
+        if (fields.length) changedNodes.push({ id, label: lbl(n), type: n.type, fields, changes });
     }
     const ek = (e) => `${e.source}->${e.target}${e.sourceHandle ? '[' + e.sourceHandle + ']' : ''}`;
     const bE = new Set(((base && base.edges) || []).map(ek)), pE = new Set(((proposed && proposed.edges) || []).map(ek));

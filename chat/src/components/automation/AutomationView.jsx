@@ -587,6 +587,26 @@ function FlowEditor({ showSnackbar, models }) {
         } catch (err) { notify(err.message, 'error'); }
     }, [loadAutomations, selectAutomation]);
 
+    // Close the open automation and return to the list view (clears the canvas
+    // and any open Build/Edit boxes). Gives a clear way back to the automations
+    // list from inside the editor.
+    const backToList = useCallback(() => {
+        if (animFnsRef.current.cancelAnim) animFnsRef.current.cancelAnim();
+        setSelected(null);
+        setName('');
+        setNodes([]);
+        setEdges([]);
+        setSelectedNodeId(null);
+        setDirty(false);
+        setRunResult(null);
+        setWebhookUrl('');
+        setNodeOutputs({});
+        setShowHistory(false);
+        setEditOpen(false);
+        setEditResult(null);
+        setEditPrompt('');
+    }, [setNodes, setEdges]);
+
     // Build with LLM — describe an automation in plain language, the model assembles it.
     const [buildOpen, setBuildOpen] = useState(false);
     const [buildPrompt, setBuildPrompt] = useState('');
@@ -1105,7 +1125,13 @@ function FlowEditor({ showSnackbar, models }) {
                 <button className="auto-btn" onClick={() => setView('chat')} title="Back to chat">
                     <ArrowLeft size={15} /> <span>Chat</span>
                 </button>
-                <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 13 }}>Automations</span>
+                {selected ? (
+                    <button className="auto-btn" onClick={backToList} title="Back to automations list">
+                        <ArrowLeft size={14} /> <span>Automations</span>
+                    </button>
+                ) : (
+                    <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 13 }}>Automations</span>
+                )}
                 {selected && (
                     <>
                         <input
@@ -1145,7 +1171,7 @@ function FlowEditor({ showSnackbar, models }) {
                 {/* Left rail: automations + palette */}
                 <div className="auto-rail" style={{ width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
                     <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />
-                    <div style={{ padding: '12px 12px 11px', borderBottom: '1px solid var(--rule)' }}>
+                    <div style={{ padding: '12px 12px 11px', borderBottom: '1px solid var(--rule)', maxHeight: '52vh', overflowY: 'auto', flexShrink: 0 }}>
                         <button className="auto-btn auto-btn--accent auto-btn--block" onClick={newAutomation}>
                             <Plus size={15} /> <span>New automation</span>
                         </button>
@@ -1179,7 +1205,7 @@ function FlowEditor({ showSnackbar, models }) {
                                 </div>
                                 {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{buildTest ? 'Building, testing & improving…' : 'The model is assembling your workflow…'}</div>}
                                 {buildLog && (
-                                    <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
+                                    <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)', maxHeight: 180, overflowY: 'auto' }}>
                                         {buildLog.map((l, i) => <div key={i} style={{ marginBottom: 2 }}>• {l}</div>)}
                                     </div>
                                 )}
@@ -1206,16 +1232,35 @@ function FlowEditor({ showSnackbar, models }) {
                                     </div>
                                     {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{editTest ? 'Revising, testing & improving…' : 'The model is revising your workflow…'}</div>}
                                 </>) : (<>
-                                    <div style={{ fontSize: 11, border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
+                                    <div style={{ fontSize: 11, border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)', maxHeight: 260, overflowY: 'auto' }}>
                                         <div style={{ fontWeight: 600, color: 'var(--ink-2)', marginBottom: 4 }}>Proposed changes</div>
-                                        {editResult.diff.addedNodes.map(n => <div key={'a' + n.id} style={{ color: '#22c55e' }}>+ added <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>)}
-                                        {editResult.diff.changedNodes.map(n => <div key={'c' + n.id} style={{ color: 'var(--accent)' }}>~ changed <b>{n.label}</b>{n.fields && n.fields.length ? <span style={{ color: 'var(--ink-3)' }}>{` — ${n.fields.join(', ')}`}</span> : ''}</div>)}
-                                        {editResult.diff.removedNodes.map(n => <div key={'r' + n.id} style={{ color: '#ef4444' }}>− removed <b>{n.label}</b></div>)}
+                                        {editResult.diff.addedNodes.map(n => (
+                                            <div key={'a' + n.id} style={{ marginBottom: 3 }}>
+                                                <div style={{ color: '#22c55e' }}>+ added <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>
+                                                {Array.isArray(n.config) && n.config.map((c, i) => (
+                                                    <div key={i} style={{ color: 'var(--ink-3)', paddingLeft: 12, fontFamily: 'var(--mono, monospace)', fontSize: 10 }}>{c}</div>
+                                                ))}
+                                            </div>
+                                        ))}
+                                        {editResult.diff.changedNodes.map(n => (
+                                            <div key={'c' + n.id} style={{ marginBottom: 3 }}>
+                                                <div style={{ color: 'var(--accent)' }}>~ changed <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>
+                                                {Array.isArray(n.changes) && n.changes.length ? n.changes.map((c, i) => (
+                                                    <div key={i} style={{ paddingLeft: 12, fontSize: 10, lineHeight: 1.45 }}>
+                                                        <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>{c.field}</span>{': '}
+                                                        <span style={{ color: '#ef4444', textDecoration: 'line-through', opacity: 0.8 }}>{c.before}</span>
+                                                        <span style={{ color: 'var(--ink-3)' }}> → </span>
+                                                        <span style={{ color: '#22c55e' }}>{c.after}</span>
+                                                    </div>
+                                                )) : (n.fields && n.fields.length ? <div style={{ color: 'var(--ink-3)', paddingLeft: 12, fontSize: 10 }}>{n.fields.join(', ')}</div> : null)}
+                                            </div>
+                                        ))}
+                                        {editResult.diff.removedNodes.map(n => <div key={'r' + n.id} style={{ color: '#ef4444' }}>− removed <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>)}
                                         {(editResult.diff.addedEdges > 0 || editResult.diff.removedEdges > 0) && <div style={{ color: 'var(--ink-3)', marginTop: 3 }}>edges: +{editResult.diff.addedEdges} / −{editResult.diff.removedEdges}</div>}
                                         {(editResult.diff.addedNodes.length + editResult.diff.changedNodes.length + editResult.diff.removedNodes.length) === 0 && <div style={{ color: 'var(--ink-3)' }}>No node changes detected.</div>}
                                     </div>
                                     {Array.isArray(editResult.buildLog) && editResult.buildLog.length > 0 && (
-                                        <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)' }}>
+                                        <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)', maxHeight: 180, overflowY: 'auto' }}>
                                             {editResult.buildLog.map((l, i) => <div key={i} style={{ marginBottom: 2 }}>• {l}</div>)}
                                         </div>
                                     )}
