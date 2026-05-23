@@ -429,6 +429,17 @@ export default function ChatContainer({
     // and commitStreamingMessage then show the full text immediately.
     const SMOOTH_REVEAL_FRACTION = 0.2;
     const SMOOTH_REVEAL_MIN = 2;
+    // Hard ceiling on how far the on-screen text may trail the parsed buffer.
+    // The smoothing only needs to absorb MTP's 3-6 token bursts (~30 chars);
+    // a backlog much larger than that means the pump stalled rather than fell
+    // a little behind — almost always a backgrounded tab (rAF throttled to ~0)
+    // or the gap between a tool result and the model resuming. On the next live
+    // frame we jump to within this window instead of easing in at 20%/frame, so
+    // refocusing the tab catches up instantly rather than crawling for seconds,
+    // and the steady-state lag stays near the documented ~0.1s of the latest
+    // token. Normal streaming keeps backlog well under this, so the snap only
+    // fires after a genuine stall — the burst-smoothing is otherwise unchanged.
+    const SMOOTH_REVEAL_MAX_LAG = 220;
     const ensureSmoothPump = (conversationId) => {
         if (throttleTimerRef.current != null) return; // already ticking
         const step = () => {
@@ -439,7 +450,11 @@ export default function ChatContainer({
             if (shown > target.length) shown = target.length; // buffer was swapped/shrank
             const backlog = target.length - shown;
             if (backlog > 0) {
-                shown = Math.min(target.length, shown + Math.max(SMOOTH_REVEAL_MIN, Math.ceil(backlog * SMOOTH_REVEAL_FRACTION)));
+                let reveal = Math.max(SMOOTH_REVEAL_MIN, Math.ceil(backlog * SMOOTH_REVEAL_FRACTION));
+                // Stall recovery: if we fell way behind, snap to within the
+                // max-lag window this frame (the remaining tail still smooths).
+                if (backlog > SMOOTH_REVEAL_MAX_LAG) reveal = backlog - SMOOTH_REVEAL_MAX_LAG;
+                shown = Math.min(target.length, shown + reveal);
                 displayedContentLenRef.current = shown;
                 setStreamingContent(target.slice(0, shown));
             }
@@ -1930,12 +1945,28 @@ export default function ChatContainer({
                 ensureSmoothPump(conversationId); // keep it ticking to drain
                 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
                 await new Promise((resolve) => {
+                    // If the tab is hidden, rAF is throttled to ~0 so the pump
+                    // can't drain — don't block the commit waiting on it. This
+                    // was the "frozen mid-word until I switch back to the tab"
+                    // bug: the stream finished in the background but the commit
+                    // sat behind this rAF loop until the tab regained focus.
+                    // The code right after this await sets the full buffer and
+                    // commits, so resolving early loses nothing visible.
+                    if (typeof document !== 'undefined' && document.hidden) { resolve(); return; }
                     const t0 = now();
+                    let settled = false;
+                    const finish = () => { if (settled) return; settled = true; resolve(); };
+                    // Wall-clock cap via setTimeout (not rAF) so a tab that gets
+                    // backgrounded mid-drain still commits promptly instead of
+                    // hanging until refocus.
+                    const capId = setTimeout(finish, 650);
                     const check = () => {
                         const target = pendingContentRef.current || '';
                         const drained = displayedContentLenRef.current >= target.length;
-                        if (drained || now() - t0 > 600 || throttleTimerRef.current == null) {
-                            resolve();
+                        const hidden = typeof document !== 'undefined' && document.hidden;
+                        if (drained || hidden || now() - t0 > 600 || throttleTimerRef.current == null) {
+                            clearTimeout(capId);
+                            finish();
                         } else {
                             requestAnimationFrame(check);
                         }
