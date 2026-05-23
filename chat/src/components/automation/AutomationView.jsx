@@ -1680,27 +1680,7 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
                         ? 'Leave "content" blank (or omit it) to use the previous step’s output automatically — just connect the line. Or set it with {{last}} / {{nodes.id}} to override.'
                         : 'This tool reads its data from these Arguments — click a data tag to drop it into a value. (The incoming line isn’t passed in automatically.)'}</p>
                     {isPdf && (
-                        <div style={{ marginTop: 12, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
-                            <Field label="When it's done">
-                                <select style={fieldInput} value={d.delivery || 'download'} onChange={(e) => onChange({ delivery: e.target.value })}>
-                                    <option value="download">Make it downloadable (default)</option>
-                                    <option value="telegram">Send to Telegram</option>
-                                    <option value="slack">Send to Slack</option>
-                                </select>
-                            </Field>
-                            {d.delivery === 'telegram' && (<>
-                                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
-                                <Field label="Chat ID"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="e.g. 8938559204 or @channel" /></Field>
-                            </>)}
-                            {d.delivery === 'slack' && (<>
-                                <Field label="Slack bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
-                                <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="C0123456789" /></Field>
-                            </>)}
-                            {(d.delivery === 'telegram' || d.delivery === 'slack') && (<>
-                                <Field label="Caption / message (optional)"><TemplInput value={d.caption || ''} onChange={(v) => onChange({ caption: v })} placeholder="optional note sent with the file" /></Field>
-                                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Builds the PDF and sends it in one step — no separate Send node needed, and it stays downloadable from the result.</p>
-                            </>)}
-                        </div>
+                        <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>The file stays downloadable from the result. To send it, connect a <b>Telegram</b> or <b>Slack</b> node after this — it sends the generated file automatically.</p>
                     )}
                 </>);
             })()}
