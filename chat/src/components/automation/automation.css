@@ -447,3 +447,91 @@
 }
 .automation-flow .react-flow__connectionline .react-flow__connection-path,
 .automation-flow .react-flow__connection-path { stroke: var(--accent); stroke-width: 2.5; }
+
+/* ============================================================ *
+ * Chip-based node settings ("everything is a chip" panel).
+ * Chips shape a node: value / choice / toggle / number chips carry
+ * its config; data chips (upstream outputs) drop into value chips.
+ * ============================================================ */
+.cf-board { display: flex; flex-direction: column; gap: 12px; }
+.cf-sec { display: flex; flex-direction: column; gap: 7px; }
+.cf-sec__label { font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+.cf-sec__label::after { content: ''; flex: 1; height: 1px; background: var(--rule-2, var(--rule)); }
+
+/* A single config chip (value/choice/toggle/number). */
+.cf-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--rule-2, var(--rule)); border-radius: 11px; background: var(--bg); padding: 6px 8px 6px 10px; position: relative; }
+.cf-chip--multi { flex-direction: column; align-items: stretch; gap: 5px; }
+.cf-chip__label { font-size: 9.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; flex-shrink: 0; }
+.cf-chip--multi .cf-chip__label { margin-bottom: 1px; }
+.cf-chip__rm { margin-left: auto; flex-shrink: 0; width: 18px; height: 18px; border: none; background: transparent; color: var(--ink-3); cursor: pointer; border-radius: 5px; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.cf-chip__rm:hover { background: var(--danger, #ef4444); color: #fff; }
+.cf-chip--multi .cf-chip__rm { position: absolute; top: 5px; right: 5px; margin: 0; }
+
+/* The editable value area of a value chip: text inputs + data sub-chips, wraps. */
+.cf-val { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.cf-chip--multi .cf-val { width: 100%; }
+.cf-val.is-drop { outline: 2px dashed var(--accent); outline-offset: 2px; border-radius: 6px; }
+.cf-text { border: none; background: transparent; color: var(--ink); font: inherit; font-size: 13px; padding: 1px 2px; outline: none; min-width: 8px; }
+.cf-text--multi { width: 100%; resize: vertical; min-height: 46px; line-height: 1.45; }
+.cf-text::placeholder { color: var(--ink-3); opacity: .8; }
+
+/* A data reference rendered inside a value chip (e.g. Model ▸ answer). */
+.cf-sub { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-soft); color: var(--accent); border-radius: 7px; padding: 1px 3px 1px 7px; font-size: 11px; font-weight: 600; max-width: 100%; }
+.cf-sub__t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.cf-sub__x { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; opacity: .7; padding: 0 1px; }
+.cf-sub__x:hover { opacity: 1; }
+
+/* Choice chip — shows the selected option, click opens a popover. */
+.cf-choiceval { display: inline-flex; align-items: center; gap: 5px; border: none; background: var(--accent-soft); color: var(--accent); border-radius: 7px; padding: 3px 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.cf-num { width: 84px; border: 1px solid var(--rule-2, var(--rule)); background: var(--surface); color: var(--ink); border-radius: 7px; padding: 4px 6px; font: inherit; font-size: 12.5px; outline: none; }
+
+/* Toggle chip. */
+.cf-chip--toggle { cursor: pointer; user-select: none; }
+.cf-chip--toggle .cf-chip__state { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--ink-3); border: 1px solid var(--rule-2, var(--rule)); border-radius: 999px; padding: 1px 9px; }
+.cf-chip--toggle.is-on { border-color: var(--accent); }
+.cf-chip--toggle.is-on .cf-chip__state { color: #fff; background: var(--accent); border-color: var(--accent); }
+
+/* "Add" tray — chips a node can wear but doesn't yet (drag onto node / click). */
+.cf-tray { display: flex; flex-wrap: wrap; gap: 6px; }
+.cf-add { display: inline-flex; align-items: center; gap: 4px; border: 1px dashed var(--rule); border-radius: 999px; background: transparent; color: var(--ink-2); padding: 4px 10px; font-size: 11.5px; font-weight: 600; cursor: grab; }
+.cf-add:hover { border-color: var(--accent); color: var(--accent); border-style: solid; }
+.cf-add__plus { font-size: 13px; line-height: 1; opacity: .7; }
+
+/* Data palette — every upstream step's outputs as draggable chips. */
+.cf-data { display: flex; flex-direction: column; gap: 8px; }
+.cf-data__group { display: flex; flex-direction: column; gap: 4px; }
+.cf-data__head { font-size: 10px; font-weight: 700; color: var(--ink-2); }
+.cf-data__head small { color: var(--ink-3); font-weight: 500; }
+.cf-data__chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.cf-datachip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--accent-soft); background: var(--accent-soft); color: var(--accent); border-radius: 7px; padding: 3px 8px; font-size: 11px; font-weight: 600; cursor: grab; max-width: 100%; }
+.cf-datachip:hover { border-color: var(--accent); }
+.cf-datachip__s { color: var(--ink-3); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px; }
+.cf-hint { font-size: 10.5px; color: var(--ink-3); line-height: 1.45; }
+
+/* A node on the canvas accepting a dropped data chip. */
+.auto-node.is-chip-target { outline: 2px dashed var(--accent); outline-offset: 3px; }
+
+/* Repeatable rows (switch cases). */
+.cf-rows { display: flex; flex-direction: column; gap: 8px; }
+.cf-row { border: 1px solid var(--rule-2, var(--rule)); border-radius: 10px; padding: 8px; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+.cf-row__head { display: flex; align-items: center; gap: 6px; }
+
+/* Choice popover (reuses the tag-menu look). */
+.cf-pop { position: fixed; z-index: 60; min-width: 180px; max-height: 300px; overflow: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,.28); padding: 5px; }
+.cf-pop__item { display: flex; width: 100%; text-align: left; align-items: center; gap: 6px; border: none; background: transparent; color: var(--ink); border-radius: 7px; padding: 6px 8px; font-size: 12.5px; cursor: pointer; }
+.cf-pop__item:hover { background: var(--accent-soft); color: var(--accent); }
+.cf-pop__item.is-sel { color: var(--accent); font-weight: 700; }
+.cf-add.is-on { border-style: solid; border-color: var(--accent); background: var(--accent); color: #fff; }
+.cf-add--custom { border-color: var(--accent); color: var(--accent); }
+.cf-add--new { border-style: solid; border-color: var(--accent-soft); color: var(--accent); }
+
+/* Chip builder modal. */
+.cf-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 80; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.cf-modal { width: 760px; max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.4); overflow: hidden; }
+.cf-modal__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--rule); font-size: 14px; color: var(--ink); }
+.cf-modal__body { display: flex; min-height: 0; flex: 1; }
+.cf-modal__list { width: 260px; flex-shrink: 0; border-right: 1px solid var(--rule); padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.cf-modal__form { flex: 1; min-width: 0; padding: 14px; overflow-y: auto; display: flex; flex-direction: column; }
+.cf-blabel { font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--ink-3); margin: 12px 0 5px; }
+.cf-binput { width: 100%; box-sizing: border-box; border: 1px solid var(--rule-2, var(--rule)); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px; outline: none; }
+.cf-binput:focus { border-color: var(--accent); }

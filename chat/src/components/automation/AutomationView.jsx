@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
-import AutomationNode, { iconFor } from './AutomationNode';
+import AutomationNode, { iconFor, NodeDropContext } from './AutomationNode';
 
 const nodeTypes = { automation: AutomationNode };
 
@@ -89,6 +89,18 @@ const COND_OP_OPTIONS = [
 ];
 // Case operators for the Switch gate (no empty/not_empty — a case needs a value).
 const SWITCH_OP_OPTIONS = COND_OP_OPTIONS.filter(o => o.value !== 'empty' && o.value !== 'not_empty');
+
+// The "main input" each node kind fills when a data chip is dropped onto it on
+// the canvas (see handleDropChip). Dotted paths target nested data (args/condition).
+const PRIMARY_SLOT = {
+    model: 'prompt', telegram: 'text', slack: 'text', fetch_url: 'url', web_search: 'query',
+    db_store: 'value', render_html: 'html', export_file: 'content', set: 'value', map: 'items',
+    parse_json: 'source', 'gate.if': 'condition.left', 'gate.filter': 'condition.left', 'gate.switch': 'value',
+};
+const TOOL_PRIMARY_SLOT = {
+    create_pdf: 'args.content', html_to_pdf: 'args.content', http_request: 'args.url',
+    query_sqlite: 'args.query', create_file: 'args.content', run_python: 'args.code', run_node: 'args.code', render_chart: 'args.chartSpec',
+};
 
 // ---- server <-> React Flow conversion ----
 function serverToRF(wf, labelFor) {
@@ -437,6 +449,12 @@ function FlowEditor({ showSnackbar, models }) {
     const [runs, setRuns] = useState([]);
     const [runDetail, setRunDetail] = useState(null);
     const [nodeOutputs, setNodeOutputs] = useState({}); // nodeId -> { status, output, error }
+    const [customChips, setCustomChips] = useState([]); // user/LLM-authored settings chips
+    const [chipBuilderOpen, setChipBuilderOpen] = useState(false);
+    const loadChips = useCallback(async () => {
+        try { const r = await fetch('/api/chips', { credentials: 'include' }); const d = r.ok ? await r.json() : []; setCustomChips(Array.isArray(d) ? d : []); }
+        catch (_) { setCustomChips([]); }
+    }, []);
     const [panelWidth, setPanelWidth] = useState(() => {
         const v = Number(localStorage.getItem('automationPanelWidth'));
         return v >= 280 && v <= 760 ? v : 320;
@@ -518,9 +536,9 @@ function FlowEditor({ showSnackbar, models }) {
                 ...(custom || []).filter(c => c.enabled !== false).map(c => ({ key: c.id, kind: c.baseType || 'tool', label: c.name, category: c.category, defaults: c.defaults || {}, custom: true, description: c.description || '', app: null })),
             ].filter(p => !PALETTE_HIDDEN.has(p.key) && !PALETTE_HIDDEN.has(p.kind));
             setPalette(pal);
-            await loadAutomations();
+            await Promise.all([loadAutomations(), loadChips()]);
         })();
-    }, [loadAutomations]);
+    }, [loadAutomations, loadChips]);
 
     // Seed per-node results from the most recent run so clicking a node shows
     // its last output even after a page reload (best-effort; silent on failure).
@@ -745,6 +763,27 @@ function FlowEditor({ showSnackbar, models }) {
         setNodes(ns => ns.map(n => n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
         setDirty(true);
     }, [setNodes]);
+
+    // A data chip dropped onto a node on the canvas: drop the ref into the node's
+    // primary slot (append if it already has content) and auto-wire an edge from
+    // the source node so the data actually reaches it.
+    const handleDropChip = useCallback((nodeId, ref) => {
+        setNodes(ns => ns.map(n => {
+            if (n.id !== nodeId) return n;
+            const kind = n.data.kind;
+            const slot = kind === 'tool' ? (TOOL_PRIMARY_SLOT[n.data.tool] || null) : PRIMARY_SLOT[kind];
+            if (!slot) return n;
+            const cur = getAt(n.data, slot);
+            const val = (cur == null || cur === '') ? ref : `${cur} ${ref}`;
+            return { ...n, data: { ...n.data, ...patchFor(n.data, slot, val) } };
+        }));
+        const m = /\{\{\s*nodes\.([^.}\s]+)/.exec(ref);
+        const src = m && m[1];
+        if (src && src !== nodeId) {
+            setEdges(es => es.some(e => e.source === src && e.target === nodeId) ? es : addEdge({ source: src, target: nodeId, id: uid('e') }, es));
+        }
+        setDirty(true);
+    }, [setNodes, setEdges]);
 
     const deleteSelectedNode = useCallback(() => {
         if (!selectedNodeId) return;
@@ -1398,6 +1437,7 @@ function FlowEditor({ showSnackbar, models }) {
                             Select an automation on the left, or create a new one to start building a workflow.
                         </div>
                     ) : (
+                        <NodeDropContext.Provider value={handleDropChip}>
                         <EdgeActionsContext.Provider value={edgeActions}>
                         <ReactFlow
                             className="automation-flow"
@@ -1421,6 +1461,7 @@ function FlowEditor({ showSnackbar, models }) {
                             <MiniMap pannable zoomable style={{ width: 130, height: 90 }} />
                         </ReactFlow>
                         </EdgeActionsContext.Provider>
+                        </NodeDropContext.Provider>
                     )}
                     {assembling && (
                         <div className="auto-assembling-badge" style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 7, background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 999, padding: '5px 13px', fontSize: 12, fontWeight: 600, color: 'var(--accent)', boxShadow: '0 2px 10px rgba(0,0,0,0.18)', zIndex: 5 }}>
@@ -1462,6 +1503,8 @@ function FlowEditor({ showSnackbar, models }) {
                         onGenWebhook={genWebhook}
                         copied={copied}
                         onCopyWebhook={() => { navigator.clipboard?.writeText(webhookUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                        customChips={customChips}
+                        onOpenChipBuilder={() => setChipBuilderOpen(true)}
                     />
                 )}
 
@@ -1476,6 +1519,7 @@ function FlowEditor({ showSnackbar, models }) {
                     />
                 )}
             </div>
+            {chipBuilderOpen && <ChipBuilder onClose={() => setChipBuilderOpen(false)} customChips={customChips} onSaved={loadChips} notify={notify} />}
         </div>
     );
 }
@@ -1608,7 +1652,585 @@ function fieldPathOptions(value, prefix = '', out = [], depth = 0) {
     return out;
 }
 
-function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook }) {
+// ============================================================
+// Chip-based node settings. Everything in the panel is a chip:
+//  - value / multiline chips hold text and accept dropped DATA chips ({{…}})
+//  - choice chips replace dropdowns; toggle/number chips replace those inputs
+//  - "special" chips render bespoke editors (tool args, switch cases, schedule…)
+// Chips are described by definitions and compile to the SAME node.data the
+// engine already consumes, so nothing server-side changes. A node "wears" the
+// chips that apply to it; optional ones live in the Add tray.
+// ============================================================
+const CHIP_REF_DRAG = REF_MIME;            // data chip drag payload = a {{…}} ref
+const CHIP_ADD_DRAG = 'application/automation-chip'; // tray chip drag payload = field
+
+// Dotted-path read/patch helpers (so a chip can target args.url, condition.left…).
+function getAt(obj, path) { if (!path) return undefined; const ks = String(path).split('.'); let c = obj; for (const k of ks) { if (c == null) return undefined; c = c[k]; } return c; }
+function setAt(obj, path, val) {
+    const ks = String(path).split('.'); const root = (obj && typeof obj === 'object') ? { ...obj } : {};
+    let c = root;
+    for (let i = 0; i < ks.length - 1; i++) { const k = ks[i]; c[k] = (c[k] && typeof c[k] === 'object') ? { ...c[k] } : {}; c = c[k]; }
+    const last = ks[ks.length - 1];
+    if (val === undefined) delete c[last]; else c[last] = val;
+    return root;
+}
+function patchFor(d, path, val) {
+    const ks = String(path).split('.');
+    if (ks.length === 1) return { [ks[0]]: val };
+    const top = ks[0];
+    return { [top]: setAt((d && d[top] && typeof d[top] === 'object') ? d[top] : {}, ks.slice(1).join('.'), val) };
+}
+function effVal(d, field, defaults) { const v = getAt(d, field); return v === undefined ? (defaults && defaults[field]) : v; }
+function evalWhen(when, d, defaults) {
+    if (!when) return true;
+    const v = effVal(d, when.field, defaults);
+    switch (when.op) {
+        case 'truthy': return !!v && v !== '';
+        case 'falsy': return !v || v === '';
+        case 'eq': return v === when.value;
+        case 'neq': return v !== when.value;
+        case 'in': return Array.isArray(when.value) && when.value.includes(v);
+        case 'notIn': return Array.isArray(when.value) && !when.value.includes(v);
+        default: return true;
+    }
+}
+
+// Friendly label for a {{…}} data reference inside a value chip.
+function chipRefLabel(ref, nodeList) {
+    const m = /^\{\{\s*([^}]+?)\s*\}\}$/.exec(String(ref)); const inner = m ? m[1] : String(ref);
+    if (inner === 'last') return 'previous ▸ all';
+    if (inner === 'item') return 'each item';
+    if (inner === 'index') return 'item #';
+    let g = /^nodes\.([^.]+)(?:\.(.+))?$/.exec(inner);
+    if (g) { const n = (nodeList || []).find(x => x.id === g[1]); const lbl = (n && n.data && (n.data.label || n.data.kind)) || g[1]; return `${lbl} ▸ ${g[2] || 'all'}`; }
+    g = /^input(?:\.(.+))?$/.exec(inner); if (g) return `trigger ▸ ${g[1] || 'input'}`;
+    g = /^vars\.(.+)$/.exec(inner); if (g) return `var ▸ ${g[1]}`;
+    return inner;
+}
+
+// --- value-chip tokenizer: a value string ⇄ [text | ref] parts -------------
+let __cfseq = 0; const __cid = () => `p${++__cfseq}`;
+function cfTokenize(value) {
+    const s = value == null ? '' : String(value);
+    const parts = []; const re = /\{\{\s*[^}]+?\s*\}\}/g; let last = 0, m;
+    while ((m = re.exec(s))) {
+        if (m.index > last) parts.push({ id: __cid(), t: 'x', v: s.slice(last, m.index) });
+        parts.push({ id: __cid(), t: 'r', v: m[0] });
+        last = m.index + m[0].length;
+    }
+    if (last < s.length || !parts.length) parts.push({ id: __cid(), t: 'x', v: s.slice(last) });
+    return parts;
+}
+function cfCompile(parts) { return parts.map(p => p.v).join(''); }
+function cfMerge(parts) {
+    const out = [];
+    for (const p of parts) { const prev = out[out.length - 1]; if (p.t === 'x' && prev && prev.t === 'x') prev.v += p.v; else out.push({ ...p }); }
+    if (!out.length || out[out.length - 1].t === 'r') out.push({ id: __cid(), t: 'x', v: '' });
+    if (out[0].t === 'r') out.unshift({ id: __cid(), t: 'x', v: '' });
+    return out;
+}
+function cfGrow(el) { if (!el) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 240) + 'px'; }
+
+// A value chip: editable text interleaved with data sub-chips. Accepts dropped
+// data refs; registers itself as the "active field" so a clicked data chip lands
+// here. Internal part state keeps stable keys → no focus loss while typing.
+function ValueChip({ chip, value, onChange, onRemove, nodeList, registerActive, suggestions }) {
+    const multi = chip.type === 'multiline';
+    const acceptsData = chip.acceptsData !== false;
+    const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
+    const [parts, setParts] = useState(() => cfTokenize(value));
+    const lastRef = useRef(value == null ? '' : String(value));
+    useEffect(() => { const sv = value == null ? '' : String(value); if (sv !== lastRef.current) { setParts(cfTokenize(sv)); lastRef.current = sv; } }, [value]);
+    const [drop, setDrop] = useState(false);
+    const apiRef = useRef({ insert: () => {} });
+    if (!acceptsData) {
+        return (
+            <div className={`cf-chip cf-chip--value${multi ? ' cf-chip--multi' : ''}`}>
+                <span className="cf-chip__label">{chip.label}</span>
+                {multi
+                    ? <textarea className="cf-text cf-text--multi" value={value || ''} placeholder={chip.placeholder || ''} onChange={(e) => onChange(e.target.value)} />
+                    : <input className="cf-text" style={{ flex: 1 }} value={value || ''} placeholder={chip.placeholder || ''} onChange={(e) => onChange(e.target.value)} />}
+                {onRemove && <button className="cf-chip__rm" title="Remove" onClick={onRemove}>×</button>}
+            </div>
+        );
+    }
+    const push = (next) => { const merged = cfMerge(next); setParts(merged); const c = cfCompile(merged); lastRef.current = c; onChangeRef.current(c); };
+    const editText = (id, v) => { const next = parts.map(p => p.id === id ? { ...p, v } : p); setParts(next); const c = cfCompile(next); lastRef.current = c; onChangeRef.current(c); };
+    const rmRef = (id) => push(parts.filter(p => p.id !== id));
+    const insert = (ref) => push([...parts, { id: __cid(), t: 'r', v: ref }, { id: __cid(), t: 'x', v: '' }]);
+    apiRef.current.insert = insert;
+    const onDrop = (e) => { setDrop(false); const ref = e.dataTransfer.getData(CHIP_REF_DRAG); if (ref) { e.preventDefault(); insert(ref); } };
+    const onDragOver = (e) => { if (Array.from(e.dataTransfer.types || []).includes(CHIP_REF_DRAG)) { e.preventDefault(); setDrop(true); } };
+    return (
+        <div className={`cf-chip cf-chip--value${multi ? ' cf-chip--multi' : ''}`}>
+            <span className="cf-chip__label">{chip.label}</span>
+            <div className={`cf-val${drop ? ' is-drop' : ''}`} onDrop={onDrop} onDragOver={onDragOver} onDragLeave={() => setDrop(false)}>
+                {parts.map(p => p.t === 'r'
+                    ? <span key={p.id} className="cf-sub" title={p.v}><span className="cf-sub__t">{chipRefLabel(p.v, nodeList)}</span><button className="cf-sub__x" onMouseDown={(e) => e.preventDefault()} onClick={() => rmRef(p.id)}>×</button></span>
+                    : (multi
+                        ? <textarea key={p.id} className="cf-text cf-text--multi" rows={1} value={p.v} placeholder={parts.length === 1 ? (chip.placeholder || '') : ''} ref={cfGrow} onFocus={() => registerActive && registerActive(apiRef.current)} onChange={(e) => { editText(p.id, e.target.value); cfGrow(e.target); }} />
+                        : <input key={p.id} className="cf-text" size={Math.max((p.v || '').length || 1, parts.length === 1 ? Math.min(42, (chip.placeholder || '').length) : 1)} value={p.v} placeholder={parts.length === 1 ? (chip.placeholder || '') : ''} onFocus={() => registerActive && registerActive(apiRef.current)} onChange={(e) => editText(p.id, e.target.value)} />)
+                )}
+            </div>
+            {Array.isArray(suggestions) && suggestions.length > 0 && (
+                <div className="cf-tray" style={{ width: '100%', marginTop: 4 }}>
+                    {suggestions.slice(0, 12).map(s => <button key={s} className="cf-add" onClick={() => onChange(s)} title={`Use ${s}`}><span className="cf-add__plus">+</span>{s}</button>)}
+                </div>
+            )}
+            {onRemove && <button className="cf-chip__rm" title="Remove" onClick={onRemove}>×</button>}
+        </div>
+    );
+}
+
+// Choice chip — replaces a dropdown. Selected option shown; click for a popover.
+function ChoiceChip({ chip, value, options, onChange, onRemove }) {
+    const [open, setOpen] = useState(false); const [pos, setPos] = useState(null); const btnRef = useRef(null);
+    useEffect(() => { if (!open) return undefined; const c = () => setOpen(false); window.addEventListener('scroll', c, true); window.addEventListener('resize', c); return () => { window.removeEventListener('scroll', c, true); window.removeEventListener('resize', c); }; }, [open]);
+    const opts = options || [];
+    const cur = opts.find(o => o.value === (value ?? chip.default)) || opts[0] || { value: '', label: '—' };
+    const toggle = () => { if (open) { setOpen(false); return; } const r = btnRef.current && btnRef.current.getBoundingClientRect(); if (r) { const H = Math.min(300, opts.length * 34 + 12); setPos({ top: Math.max(8, Math.min(r.bottom + 4, window.innerHeight - H - 8)), left: Math.max(8, Math.min(r.left, window.innerWidth - 210)) }); } setOpen(true); };
+    return (
+        <div className="cf-chip cf-chip--choice">
+            {chip.label ? <span className="cf-chip__label">{chip.label}</span> : null}
+            <button ref={btnRef} type="button" className="cf-choiceval" onClick={toggle}>{cur.label} ▾</button>
+            {onRemove && <button className="cf-chip__rm" title="Remove" onClick={onRemove}>×</button>}
+            {open && pos && (<>
+                <div className="auto-tagmenu-backdrop" onMouseDown={() => setOpen(false)} />
+                <div className="cf-pop" style={{ top: pos.top, left: pos.left }}>
+                    {opts.map(o => <button key={String(o.value)} type="button" className={`cf-pop__item${o.value === cur.value ? ' is-sel' : ''}`} onClick={() => { onChange(o.value); setOpen(false); }}>{o.label}</button>)}
+                </div>
+            </>)}
+        </div>
+    );
+}
+function ToggleChip({ chip, value, onChange }) {
+    const on = !!value;
+    return (<div className={`cf-chip cf-chip--toggle${on ? ' is-on' : ''}`} role="button" onClick={() => onChange(!on)}><span className="cf-chip__label">{chip.label}</span><span className="cf-chip__state">{on ? 'On' : 'Off'}</span></div>);
+}
+function NumberChip({ chip, value, onChange, onRemove }) {
+    return (<div className="cf-chip cf-chip--num"><span className="cf-chip__label">{chip.label}</span><input type="number" className="cf-num" value={value ?? ''} placeholder={chip.placeholder || ''} min={chip.min} max={chip.max} onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))} />{onRemove && <button className="cf-chip__rm" title="Remove" onClick={onRemove}>×</button>}</div>);
+}
+
+// Per-tool parameter chips (replaces the raw JSON args box).
+const TOOL_PARAMS = {
+    create_pdf: [{ key: 'content', label: 'Content', multiline: true }, { key: 'filename', label: 'Filename' }],
+    html_to_pdf: [{ key: 'content', label: 'HTML', multiline: true }, { key: 'outputName', label: 'Filename' }],
+    http_request: [{ key: 'url', label: 'URL' }, { key: 'method', label: 'Method', options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] }, { key: 'body', label: 'Body', multiline: true }],
+    query_sqlite: [{ key: 'query', label: 'SQL', multiline: true }, { key: 'db', label: 'Database file' }],
+    create_file: [{ key: 'path', label: 'Path' }, { key: 'content', label: 'Content', multiline: true }],
+    run_python: [{ key: 'code', label: 'Python code', multiline: true }],
+    run_node: [{ key: 'code', label: 'JavaScript code', multiline: true }],
+    render_chart: [{ key: 'chartSpec', label: 'Chart spec', multiline: true }],
+};
+function ToolArgsChips({ d, onChange, nodeList, registerActive }) {
+    const args = (d.args && typeof d.args === 'object') ? d.args : {};
+    const known = TOOL_PARAMS[d.tool] || [];
+    const knownKeys = new Set(known.map(p => p.key));
+    const [customKeys, setCustomKeys] = useState([]);
+    const [adding, setAdding] = useState(false);
+    const [newKey, setNewKey] = useState('');
+    useEffect(() => { setCustomKeys([]); setAdding(false); setNewKey(''); }, [d.tool]);
+    const setArg = (k, v) => { const next = { ...args }; if (v === undefined || v === '') delete next[k]; else next[k] = v; onChange({ args: Object.keys(next).length ? next : undefined }); };
+    const extra = Array.from(new Set([...Object.keys(args).filter(k => !knownKeys.has(k)), ...customKeys]));
+    return (
+        <div className="cf-sec">
+            <div className="cf-sec__label">Parameters</div>
+            {known.map(p => p.options
+                ? <ChoiceChip key={p.key} chip={{ label: p.label }} value={args[p.key]} options={p.options.map(o => ({ value: o, label: o }))} onChange={(v) => setArg(p.key, v)} />
+                : <ValueChip key={p.key} chip={{ label: p.label, type: p.multiline ? 'multiline' : 'value', acceptsData: true }} value={args[p.key]} onChange={(v) => setArg(p.key, v)} nodeList={nodeList} registerActive={registerActive} />)}
+            {extra.map(k => <ValueChip key={k} chip={{ label: k, type: 'value', acceptsData: true }} value={args[k]} onChange={(v) => setArg(k, v)} nodeList={nodeList} registerActive={registerActive} onRemove={() => { setArg(k, undefined); setCustomKeys(cs => cs.filter(x => x !== k)); }} />)}
+            {adding ? (
+                <div className="cf-row__head">
+                    <input className="cf-num" style={{ width: 140 }} autoFocus placeholder="parameter name" value={newKey} onChange={(e) => setNewKey(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newKey.trim()) { setCustomKeys(cs => [...cs, newKey.trim()]); setNewKey(''); setAdding(false); } }} />
+                    <button className="cf-add" onClick={() => { if (newKey.trim()) setCustomKeys(cs => [...cs, newKey.trim()]); setNewKey(''); setAdding(false); }}>Add</button>
+                </div>
+            ) : <div className="cf-tray"><button className="cf-add" onClick={() => setAdding(true)}><span className="cf-add__plus">+</span> parameter</button></div>}
+        </div>
+    );
+}
+function SwitchCases({ d, onChange, nodeList, registerActive }) {
+    const cases = Array.isArray(d.cases) ? d.cases : [];
+    const setCase = (i, patch) => onChange({ cases: cases.map((c, idx) => idx === i ? { op: c.op || '==', value: (c.value ?? c.equals ?? ''), handle: c.handle || '', ...patch } : c) });
+    return (
+        <div className="cf-sec">
+            <div className="cf-sec__label">Cases</div>
+            <div className="cf-rows">
+                {cases.map((c, i) => (
+                    <div className="cf-row" key={i}>
+                        <div className="cf-row__head">
+                            <ChoiceChip chip={{ label: 'When' }} value={c.op || '=='} options={SWITCH_OP_OPTIONS} onChange={(v) => setCase(i, { op: v })} />
+                            <button className="cf-chip__rm" title="Remove case" style={{ marginLeft: 'auto' }} onClick={() => onChange({ cases: cases.filter((_, idx) => idx !== i) })}>×</button>
+                        </div>
+                        <ValueChip chip={{ label: 'Value', type: 'value', acceptsData: true }} value={(c.value ?? c.equals ?? '')} onChange={(v) => setCase(i, { value: v })} nodeList={nodeList} registerActive={registerActive} />
+                        <ValueChip chip={{ label: 'Route label', type: 'value', acceptsData: false }} value={c.handle || ''} onChange={(v) => setCase(i, { handle: v })} />
+                    </div>
+                ))}
+            </div>
+            <div className="cf-tray"><button className="cf-add" onClick={() => onChange({ cases: [...cases, { op: '==', value: '', handle: '' }] })}><span className="cf-add__plus">+</span> case</button></div>
+        </div>
+    );
+}
+function ScheduleChips({ d, onChange }) {
+    const ms = Number(d.intervalMs) || 0;
+    let unit = 'minutes', amount = 5;
+    if (ms > 0) { const u = [...SCHEDULE_UNITS].reverse().find(([, m]) => ms % m === 0) || SCHEDULE_UNITS[0]; unit = u[0]; amount = Math.round(ms / u[1]); }
+    const [cronMode, setCronMode] = useState(!!d.cron);
+    const apply = (amt, un) => { const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1]; onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), cron: '' }); };
+    if (cronMode) {
+        return (<div className="cf-sec">
+            <ValueChip chip={{ label: 'Cron (min hour dom mon dow)', type: 'value', acceptsData: false, placeholder: '0 9 * * 1-5' }} value={d.cron || ''} onChange={(v) => onChange({ cron: v })} />
+            <button className="cf-add" onClick={() => { setCronMode(false); onChange({ cron: '' }); }}>← simple interval</button>
+        </div>);
+    }
+    return (<div className="cf-sec">
+        <div className="cf-chip cf-chip--num"><span className="cf-chip__label">Run every</span><input type="number" min="1" className="cf-num" value={amount} onChange={(e) => apply(e.target.value, unit)} /></div>
+        <ChoiceChip chip={{ label: 'Unit' }} value={unit} options={SCHEDULE_UNITS.map(([n]) => ({ value: n, label: n }))} onChange={(v) => apply(amount, v)} />
+        <CountdownLine intervalMs={ms} />
+        <button className="cf-add" onClick={() => setCronMode(true)}>Advanced: cron →</button>
+    </div>);
+}
+function WebhookChip({ ctx }) {
+    return (<div className="cf-sec">
+        <button className="cf-add" onClick={ctx.onGenWebhook}><span className="cf-add__plus">+</span> Generate webhook URL</button>
+        {ctx.webhookUrl && <div className="cf-hint" style={{ wordBreak: 'break-all', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 8 }}>{ctx.webhookUrl} <button className="cf-add" style={{ marginTop: 6 }} onClick={ctx.onCopyWebhook}>{ctx.copied ? 'Copied' : 'Copy'}</button></div>}
+        <div className="cf-hint">POST to this URL to trigger the workflow; the request body becomes the run input.</div>
+    </div>);
+}
+
+// Built-in chip definitions per node kind. `field` is a (dotted) node.data path.
+// type: value | multiline | choice | toggle | number | special.
+// required → pre-shown; otherwise the chip sits in the Add tray. `when` hides a
+// chip until a condition holds. acceptsData:false = no data chips (a literal).
+const SEND_MODE_OPTS = [{ value: 'pdf', label: 'The PDF only' }, { value: 'both', label: 'The data + the PDF' }, { value: 'data', label: 'The data only (no file)' }];
+const MATCH_OPTS = ['contains', 'equals', 'startsWith', 'regex'].map(m => ({ value: m, label: m }));
+const CHIP_DEFS_BY_KIND = {
+    model: [
+        { field: 'prompt', label: 'Prompt', type: 'multiline', required: true, placeholder: 'Leave blank to receive the previous step’s output, or drop in data chips' },
+        { field: 'systemPrompt', label: 'System prompt', type: 'multiline' },
+        { field: 'model', label: 'Model', type: 'choice', optionsFrom: 'models' },
+    ],
+    tool: [
+        { field: 'tool', label: 'Tool / skill name', type: 'value', acceptsData: false, required: true, placeholder: 'e.g. query_sqlite' },
+        { field: '__args', label: 'Parameters', type: 'special', special: 'toolArgs', required: true },
+        { field: 'sendMode', label: 'When sent to Telegram/Slack', type: 'choice', options: SEND_MODE_OPTS, default: 'pdf', when: { field: 'tool', op: 'in', value: ['create_pdf', 'html_to_pdf'] } },
+    ],
+    web_search: [
+        { field: 'query', label: 'Query', type: 'value', required: true },
+        { field: 'limit', label: 'Limit', type: 'number', placeholder: '5' },
+    ],
+    fetch_url: [
+        { field: 'url', label: 'URL', type: 'value', required: true, placeholder: 'https://…' },
+        { field: 'maxLength', label: 'Max length', type: 'number' },
+    ],
+    parse_json: [
+        { field: 'path', label: 'Keep only this field', type: 'value', acceptsData: false, suggestFrom: 'parseFields', placeholder: 'e.g. results.*.url — blank keeps all' },
+    ],
+    db_store: [
+        { field: 'table', label: 'Table', type: 'value', acceptsData: false, required: true, placeholder: 'records' },
+        { field: 'value', label: 'Data to store', type: 'multiline', placeholder: 'Blank stores the previous step’s output' },
+        { field: 'key', label: 'Unique key field (track changes)', type: 'value', acceptsData: false, suggestFrom: 'incomingFields', placeholder: 'e.g. link,post_title' },
+        { field: 'keyStrip', label: 'Ignore words in key', type: 'value', acceptsData: false, when: { field: 'key', op: 'truthy' } },
+        { field: 'keyNormalize', label: 'Normalize key (ignore case & punctuation)', type: 'toggle', when: { field: 'key', op: 'truthy' } },
+        { field: 'db', label: 'Database file', type: 'value', acceptsData: false, placeholder: 'automation.db' },
+    ],
+    db_query: [
+        { field: 'table', label: 'Table', type: 'value', acceptsData: false, required: true, placeholder: 'records' },
+        { field: 'order', label: 'Order', type: 'choice', required: true, default: 'id DESC', options: [{ value: 'id DESC', label: 'Newest first' }, { value: 'id ASC', label: 'Oldest first' }, { value: 'ts DESC', label: 'By time, newest first' }, { value: 'ts ASC', label: 'By time, oldest first' }] },
+        { field: 'limit', label: 'How many', type: 'number', placeholder: '100' },
+        { field: 'sql', label: 'Advanced: raw SQL', type: 'multiline', acceptsData: false, placeholder: 'SELECT data FROM records WHERE …' },
+        { field: 'db', label: 'Database file', type: 'value', acceptsData: false, placeholder: 'automation.db' },
+    ],
+    render_html: [{ field: 'html', label: 'HTML', type: 'multiline', required: true, placeholder: '<h1>Report</h1> — blank wraps the previous output' }],
+    export_file: [
+        { field: 'format', label: 'Format', type: 'choice', required: true, default: 'txt', options: ['txt', 'csv', 'json', 'md', 'html', 'pdf'].map(f => ({ value: f, label: f.toUpperCase() })) },
+        { field: 'filename', label: 'Filename', type: 'value', acceptsData: false, required: true, placeholder: 'report' },
+        { field: 'content', label: 'Content', type: 'multiline', placeholder: 'Blank uses the previous step’s output' },
+    ],
+    slack: [
+        { field: 'text', label: 'Message / caption', type: 'multiline', required: true, placeholder: 'Blank sends the previous step’s output' },
+        { field: 'attachFile', label: 'Upload upstream file', type: 'toggle', default: true },
+        { field: 'botToken', label: 'Slack bot token (xoxb-…)', type: 'value', acceptsData: false, required: true, when: { field: 'attachFile', op: 'neq', value: false } },
+        { field: 'channel', label: 'Channel ID', type: 'value', acceptsData: false, required: true, when: { field: 'attachFile', op: 'neq', value: false } },
+        { field: 'webhookUrl', label: 'Webhook URL (text only)', type: 'value', acceptsData: false, placeholder: 'https://hooks.slack.com/…' },
+    ],
+    telegram: [
+        { field: 'botToken', label: 'Bot token', type: 'value', acceptsData: false, required: true, placeholder: '123456:ABC-DEF…' },
+        { field: 'chatId', label: 'Chat ID', type: 'value', required: true, placeholder: 'e.g. 123456789 or @channel' },
+        { field: 'text', label: 'Message / caption', type: 'multiline', required: true, placeholder: 'Blank sends the previous step’s output' },
+        { field: 'attachFile', label: 'Send upstream file as a document', type: 'toggle', default: true },
+    ],
+    telegram_get: [
+        { field: 'botToken', label: 'Bot token', type: 'value', acceptsData: false, required: true, placeholder: '123456:ABC-DEF…' },
+        { field: 'limit', label: 'Limit', type: 'number', placeholder: '10' },
+    ],
+    send_file: [
+        { field: 'to', label: 'Send to', type: 'choice', required: true, default: 'telegram', options: [{ value: 'telegram', label: 'Telegram' }, { value: 'slack', label: 'Slack' }, { value: 'http', label: 'HTTP upload' }] },
+        { field: 'botToken', label: 'Bot token', type: 'value', acceptsData: false, required: true, when: { field: 'to', op: 'in', value: ['telegram', 'slack'] } },
+        { field: 'chatId', label: 'Chat ID', type: 'value', required: true, when: { field: 'to', op: 'eq', value: 'telegram' } },
+        { field: 'channel', label: 'Channel ID', type: 'value', acceptsData: false, required: true, when: { field: 'to', op: 'eq', value: 'slack' } },
+        { field: 'url', label: 'Upload URL', type: 'value', required: true, when: { field: 'to', op: 'eq', value: 'http' } },
+        { field: 'caption', label: 'Caption / message', type: 'value' },
+    ],
+    delay: [{ field: 'ms', label: 'Delay (ms)', type: 'number', required: true }],
+    set: [
+        { field: 'name', label: 'Variable name', type: 'value', acceptsData: false, required: true },
+        { field: 'value', label: 'Value', type: 'value', required: true, placeholder: 'text or drop a data chip' },
+    ],
+    map: [
+        { field: 'items', label: 'Items to loop over', type: 'value', required: true, placeholder: 'drop a list chip, e.g. results' },
+        { field: 'action', label: 'For each item', type: 'choice', required: true, default: 'tool', options: [{ value: 'tool', label: 'Run a tool / skill' }, { value: 'model', label: 'Run the model' }] },
+        { field: 'tool', label: 'Tool / skill name', type: 'value', acceptsData: false, required: true, placeholder: 'e.g. fetch_url', when: { field: 'action', op: 'neq', value: 'model' } },
+        { field: '__args', label: 'Parameters', type: 'special', special: 'toolArgs', when: { field: 'action', op: 'neq', value: 'model' } },
+        { field: 'prompt', label: 'Prompt', type: 'multiline', required: true, placeholder: 'Summarize this: drop the item chip', when: { field: 'action', op: 'eq', value: 'model' } },
+        { field: 'model', label: 'Model', type: 'choice', optionsFrom: 'models', when: { field: 'action', op: 'eq', value: 'model' } },
+        { field: 'maxConcurrency', label: 'Max parallel', type: 'number', placeholder: '3' },
+    ],
+    'gate.if': [
+        { field: 'condition.left', label: 'Value to check', type: 'value', required: true, placeholder: 'previous output' },
+        { field: 'condition.op', label: 'Operator', type: 'choice', required: true, default: '==', options: COND_OP_OPTIONS },
+        { field: 'condition.right', label: 'Compare to', type: 'value', required: true, when: { field: 'condition.op', op: 'notIn', value: ['empty', 'not_empty'] } },
+    ],
+    'gate.filter': [
+        { field: 'condition.left', label: 'Value to check', type: 'value', required: true, placeholder: 'previous output' },
+        { field: 'condition.op', label: 'Operator', type: 'choice', required: true, default: '==', options: COND_OP_OPTIONS },
+        { field: 'condition.right', label: 'Compare to', type: 'value', required: true, when: { field: 'condition.op', op: 'notIn', value: ['empty', 'not_empty'] } },
+    ],
+    'gate.switch': [
+        { field: 'value', label: 'Value to check', type: 'value', required: true, placeholder: 'previous output' },
+        { field: 'cases', label: 'Cases', type: 'special', special: 'switchCases', required: true },
+    ],
+    'trigger.schedule': [{ field: '__schedule', label: 'Schedule', type: 'special', special: 'schedule', required: true }],
+    'trigger.event': [{ field: 'event', label: 'Event name', type: 'value', acceptsData: false, required: true, placeholder: 'model.loaded' }],
+    'trigger.telegram': [
+        { field: 'botToken', label: 'Bot token', type: 'value', acceptsData: false, required: true, placeholder: '123456:ABC-DEF…' },
+        { field: 'chatId', label: 'Chat ID filter', type: 'value', acceptsData: false, placeholder: 'only this chat / @channel' },
+        { field: 'keyword', label: 'Keyword filter', type: 'value', acceptsData: false },
+        { field: 'match', label: 'Match', type: 'choice', default: 'contains', options: MATCH_OPTS, when: { field: 'keyword', op: 'truthy' } },
+    ],
+    'trigger.slack': [
+        { field: 'botToken', label: 'Bot token (xoxb-…)', type: 'value', acceptsData: false, required: true, placeholder: 'xoxb-…' },
+        { field: 'channel', label: 'Channel ID', type: 'value', acceptsData: false, required: true, placeholder: 'C0123456789' },
+        { field: 'keyword', label: 'Keyword filter', type: 'value', acceptsData: false },
+        { field: 'match', label: 'Match', type: 'choice', default: 'contains', options: MATCH_OPTS, when: { field: 'keyword', op: 'truthy' } },
+    ],
+    'trigger.webhook': [{ field: '__webhook', label: 'Webhook', type: 'special', special: 'webhook', required: true }],
+};
+
+function chipApplies(chip, kind) {
+    const a = chip && chip.appliesTo;
+    if (!a || a === '*' || (Array.isArray(a) && a.includes('*'))) return true;
+    return Array.isArray(a) ? a.includes(kind) : a === kind;
+}
+function chipsForKind(kind, ctx) {
+    const out = [{ field: 'label', label: 'Label', type: 'value', acceptsData: false, required: true }];
+    for (const c of (CHIP_DEFS_BY_KIND[kind] || [])) out.push({ ...c });
+    const noFwd = (typeof kind === 'string' && (kind.startsWith('trigger.') || kind.startsWith('gate.'))) || kind === 'output' || kind === 'merge';
+    if (!noFwd) out.push({ field: 'forward', label: 'Output → next step', type: 'multiline', hint: 'Shape what flows on. Blank = send the whole output.' });
+    for (const c of ((ctx && ctx.customChips) || [])) if (chipApplies(c, kind)) out.push({ ...c, _custom: true });
+    return out;
+}
+function resolveOptions(s, ctx) {
+    if (s.optionsFrom === 'models') { const ms = (ctx && ctx.runningModels) || []; return [{ value: '', label: ms[0] ? `Current model (${ms[0].name})` : 'Current model' }, ...ms.map(m => ({ value: m.name, label: m.name + (m.backend ? ` · ${m.backend}` : '') }))]; }
+    return (s.options || []).map(o => (typeof o === 'string' ? { value: o, label: o } : o));
+}
+function resolveSuggestions(s, ctx) {
+    if (s.suggestFrom === 'parseFields') return (ctx && ctx.parseFields) || [];
+    if (s.suggestFrom === 'incomingFields') return (ctx && ctx.incomingFields) || [];
+    return null;
+}
+function renderSpecial(s, d, onChange, ctx, registerActive) {
+    if (s.special === 'toolArgs') return <ToolArgsChips d={d} onChange={onChange} nodeList={ctx.nodeList} registerActive={registerActive} />;
+    if (s.special === 'switchCases') return <SwitchCases d={d} onChange={onChange} nodeList={ctx.nodeList} registerActive={registerActive} />;
+    if (s.special === 'schedule') return <ScheduleChips d={d} onChange={onChange} />;
+    if (s.special === 'webhook') return <WebhookChip ctx={ctx} />;
+    return null;
+}
+
+// The chip board: applied chips + an Add tray + the data-chip palette.
+function ChipBoard({ node, ctx, onChange }) {
+    const d = node.data || {}; const kind = d.kind;
+    const tagGroups = React.useContext(DataTagsContext);
+    const activeRef = useRef(null);
+    const registerActive = useCallback((api) => { activeRef.current = api; }, []);
+    const [added, setAdded] = useState(() => new Set());
+    useEffect(() => { setAdded(new Set()); }, [node.id]);
+    const specs = chipsForKind(kind, ctx);
+    const defaults = {}; for (const s of specs) if (s.default !== undefined) defaults[s.field] = s.default;
+    const set = (s, val) => onChange(patchFor(d, s.field, val));
+    const visible = (s) => evalWhen(s.when, d, defaults);
+    const hasVal = (s) => { const v = getAt(d, s.field); return v !== undefined && v !== '' && !(Array.isArray(v) && !v.length); };
+    const isApplied = (s) => visible(s) && (s.required || s.type === 'toggle' || s.type === 'special' || hasVal(s) || added.has(s.field));
+    const appliedList = specs.filter(isApplied);
+    const trayList = specs.filter(s => visible(s) && !isApplied(s));
+    const addChip = (s) => { if (s.type === 'choice') { const o = resolveOptions(s, ctx); set(s, s.default !== undefined ? s.default : (o[0] && o[0].value)); } setAdded(p => { const n = new Set(p); n.add(s.field); return n; }); };
+    const removeChip = (s) => { setAdded(p => { const n = new Set(p); n.delete(s.field); return n; }); set(s, undefined); };
+    const renderChip = (s) => {
+        const rm = (!s.required && s.type !== 'special' && s.type !== 'toggle') ? () => removeChip(s) : undefined;
+        if (s.type === 'special') return <React.Fragment key={s.field}>{renderSpecial(s, d, onChange, ctx, registerActive)}</React.Fragment>;
+        if (s.type === 'choice') return <ChoiceChip key={s.field} chip={s} value={getAt(d, s.field)} options={resolveOptions(s, ctx)} onChange={(v) => set(s, v)} onRemove={rm} />;
+        if (s.type === 'toggle') return <ToggleChip key={s.field} chip={s} value={getAt(d, s.field) ?? s.default} onChange={(v) => set(s, v)} />;
+        if (s.type === 'number') return <NumberChip key={s.field} chip={s} value={getAt(d, s.field)} onChange={(v) => set(s, v)} onRemove={rm} />;
+        return <ValueChip key={s.field} chip={s} value={getAt(d, s.field)} onChange={(v) => set(s, v)} nodeList={ctx.nodeList} registerActive={registerActive} suggestions={resolveSuggestions(s, ctx)} onRemove={rm} />;
+    };
+    const dataGroups = [];
+    if (kind === 'map') dataGroups.push({ id: '__item', label: 'Each item', predicted: false, tags: [{ ref: '{{item}}', label: 'item', sample: '' }, { ref: '{{item.url}}', label: 'item.url', sample: '' }, { ref: '{{index}}', label: 'index', sample: '' }] });
+    for (const g of (tagGroups || [])) dataGroups.push(g);
+    return (
+        <div className="cf-board">
+            <div className="cf-sec" style={{ gap: 8 }}>{appliedList.map(renderChip)}</div>
+            <div className="cf-sec">
+                <div className="cf-sec__label">Add</div>
+                <div className="cf-tray">
+                    {trayList.map(s => (
+                        <button key={s.field} className={`cf-add${s._custom ? ' cf-add--custom' : ''}`} draggable onDragStart={(e) => { e.dataTransfer.setData(CHIP_ADD_DRAG, s.field); }} onClick={() => addChip(s)} title={s.hint || `Add ${s.label}`}><span className="cf-add__plus">+</span>{s.label}{s._custom ? ' ✦' : ''}</button>
+                    ))}
+                    {ctx.onOpenChipBuilder && <button className="cf-add cf-add--new" onClick={ctx.onOpenChipBuilder} title="Create a new chip"><span className="cf-add__plus">✦</span> New chip…</button>}
+                </div>
+            </div>
+            {dataGroups.length > 0 && (
+                <div className="cf-sec">
+                    <div className="cf-sec__label">Data from earlier steps</div>
+                    <div className="cf-hint">Drag a chip into a value, or click to drop it into the field you last edited.</div>
+                    <div className="cf-data">
+                        {dataGroups.map(g => (
+                            <div className="cf-data__group" key={g.id}>
+                                <div className="cf-data__head">{g.label}{g.predicted ? <small> · expected</small> : null}</div>
+                                <div className="cf-data__chips">
+                                    {g.tags.map(t => (
+                                        <span key={t.ref} className="cf-datachip" draggable title={t.ref}
+                                            onDragStart={(e) => { e.dataTransfer.setData(CHIP_REF_DRAG, t.ref); e.dataTransfer.effectAllowed = 'copy'; }}
+                                            onClick={() => { if (activeRef.current) activeRef.current.insert(t.ref); }}>
+                                            {t.label}{t.sample ? <span className="cf-datachip__s">{t.sample}</span> : null}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// Node kinds a custom chip can target (label for the builder's picker).
+const NODE_KIND_OPTIONS = [
+    ['*', 'Any node'], ['model', 'Model'], ['tool', 'Tool / skill'], ['web_search', 'Web search'], ['fetch_url', 'Fetch URL'],
+    ['parse_json', 'Parse JSON'], ['db_store', 'DB: Store'], ['db_query', 'DB: Query'], ['render_html', 'Render HTML'], ['export_file', 'Export file'],
+    ['slack', 'Slack'], ['telegram', 'Telegram'], ['telegram_get', 'Telegram: Get'], ['send_file', 'Send file'], ['delay', 'Delay'], ['set', 'Set variable'], ['map', 'Loop / Map'],
+    ['gate.if', 'If / Else'], ['gate.filter', 'Filter'], ['gate.switch', 'Switch'], ['merge', 'Merge'], ['output', 'Output'],
+    ['trigger.manual', 'Trigger: Manual'], ['trigger.schedule', 'Trigger: Schedule'], ['trigger.webhook', 'Trigger: Webhook'], ['trigger.event', 'Trigger: Event'], ['trigger.telegram', 'Trigger: Telegram'], ['trigger.slack', 'Trigger: Slack'],
+];
+// Real fields a node kind already exposes — shown as guided suggestions so the
+// builder writes a correct mapping instead of the user guessing field names.
+function knownFieldsForKind(kind) {
+    if (!kind || kind === '*') return [];
+    const fields = (CHIP_DEFS_BY_KIND[kind] || []).filter(d => d.type !== 'special').map(d => d.field);
+    if (kind === 'tool') for (const t of Object.keys(TOOL_PARAMS)) for (const p of TOOL_PARAMS[t]) fields.push('args.' + p.key);
+    return Array.from(new Set(fields));
+}
+
+// The chip builder modal: manage custom chips, hand-build one (guided, no raw
+// JSON), or describe one for the model to draft.
+function ChipBuilder({ onClose, customChips, onSaved, notify }) {
+    const EMPTY = { label: '', appliesTo: ['*'], field: '', type: 'value', options: [], acceptsData: true, placeholder: '', default: '' };
+    const [form, setForm] = useState(EMPTY);
+    const [editingId, setEditingId] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const [prompt, setPrompt] = useState('');
+    const [building, setBuilding] = useState(false);
+    const upd = (patch) => setForm(f => ({ ...f, ...patch }));
+    const reset = () => { setForm(EMPTY); setEditingId(null); };
+    const buildLLM = async () => {
+        const p = prompt.trim(); if (!p || building) return; setBuilding(true);
+        try {
+            const r = await fetch('/api/chips/build', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p }) });
+            const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed to build');
+            setForm({ label: d.label || '', appliesTo: Array.isArray(d.appliesTo) ? d.appliesTo : ['*'], field: d.field || '', type: d.type || 'value', options: Array.isArray(d.options) ? d.options : [], acceptsData: d.acceptsData !== false, placeholder: d.placeholder || '', default: d.default ?? '', when: d.when });
+            setPrompt(''); notify('Chip drafted — review and save', 'success');
+        } catch (e) { notify(e.message, 'error'); } finally { setBuilding(false); }
+    };
+    const save = async () => {
+        if (!form.label.trim() || !form.field.trim()) { notify('Give the chip a label and a field', 'error'); return; }
+        setSaving(true);
+        const body = { label: form.label.trim(), appliesTo: (form.appliesTo && form.appliesTo.length) ? form.appliesTo : ['*'], field: form.field.trim(), type: form.type, acceptsData: form.acceptsData, placeholder: form.placeholder || undefined, default: form.default === '' ? undefined : form.default, options: form.type === 'choice' ? form.options : undefined, when: form.when };
+        try {
+            const url = editingId ? `/api/chips/${editingId}` : '/api/chips';
+            const r = await fetch(url, { method: editingId ? 'PUT' : 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed to save');
+            await onSaved(); reset(); notify('Chip saved', 'success');
+        } catch (e) { notify(e.message, 'error'); } finally { setSaving(false); }
+    };
+    const edit = (c) => { setEditingId(c.id); setForm({ label: c.label || '', appliesTo: c.appliesTo || ['*'], field: c.field || '', type: c.type || 'value', options: c.options || [], acceptsData: c.acceptsData !== false, placeholder: c.placeholder || '', default: c.default ?? '', when: c.when }); };
+    const remove = async (id) => { try { const r = await fetch(`/api/chips/${id}`, { method: 'DELETE', credentials: 'include' }); if (!r.ok) throw new Error('Failed to delete'); await onSaved(); if (editingId === id) reset(); notify('Chip deleted', 'success'); } catch (e) { notify(e.message, 'error'); } };
+    const toggleKind = (k) => setForm(f => { if (k === '*') return { ...f, appliesTo: ['*'] }; let a = (f.appliesTo || []).filter(x => x !== '*'); a = a.includes(k) ? a.filter(x => x !== k) : [...a, k]; return { ...f, appliesTo: a.length ? a : ['*'] }; });
+    const oneKind = (form.appliesTo || []).length === 1 ? form.appliesTo[0] : null;
+    const fieldSugg = oneKind ? knownFieldsForKind(oneKind) : [];
+    return (
+        <div className="cf-modal-backdrop" onMouseDown={onClose}>
+            <div className="cf-modal" onMouseDown={(e) => e.stopPropagation()}>
+                <div className="cf-modal__head"><b>Chip builder</b><button className="cf-chip__rm" onClick={onClose}>×</button></div>
+                <div className="cf-modal__body">
+                    <div className="cf-modal__list">
+                        <div className="cf-sec__label">Your chips</div>
+                        {(customChips || []).length === 0 && <div className="cf-hint">None yet. Build one on the right →</div>}
+                        {(customChips || []).map(c => (
+                            <div key={c.id} className="cf-row" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontWeight: 600, fontSize: 12.5, color: 'var(--ink)' }}>{c.label} <span style={{ color: 'var(--accent)' }}>✦</span></div>
+                                    <div className="cf-hint" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(c.appliesTo || []).join(', ')} · {c.field} · {c.type}</div>
+                                </div>
+                                <button className="cf-add" onClick={() => edit(c)}>Edit</button>
+                                <button className="cf-chip__rm" onClick={() => remove(c.id)}>×</button>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="cf-modal__form">
+                        <div className="cf-sec__label">Describe a chip — the model drafts it</div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                            <input className="cf-binput" placeholder="e.g. a Bcc field for the email node" value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') buildLLM(); }} />
+                            <button className="auto-btn auto-btn--accent" style={{ flexShrink: 0 }} onClick={buildLLM} disabled={building || !prompt.trim()}>{building ? '…' : 'Draft'}</button>
+                        </div>
+                        <label className="cf-blabel">Label</label>
+                        <input className="cf-binput" value={form.label} onChange={(e) => upd({ label: e.target.value })} placeholder="Chat ID" />
+                        <label className="cf-blabel">Works on</label>
+                        <div className="cf-tray">{NODE_KIND_OPTIONS.map(([k, lbl]) => <button key={k} className={`cf-add${(form.appliesTo || []).includes(k) ? ' is-on' : ''}`} onClick={() => toggleKind(k)}>{lbl}</button>)}</div>
+                        <label className="cf-blabel">Controls field</label>
+                        <input className="cf-binput" value={form.field} onChange={(e) => upd({ field: e.target.value })} placeholder="e.g. chatId or args.url" />
+                        {fieldSugg.length > 0 && <div className="cf-tray" style={{ marginTop: 5 }}>{fieldSugg.map(f => <button key={f} className="cf-add" onClick={() => upd({ field: f })}>{f}</button>)}</div>}
+                        <label className="cf-blabel">Type</label>
+                        <div className="cf-tray">{['value', 'multiline', 'choice', 'toggle', 'number'].map(t => <button key={t} className={`cf-add${form.type === t ? ' is-on' : ''}`} onClick={() => upd({ type: t })}>{t}</button>)}</div>
+                        {(form.type === 'value' || form.type === 'multiline') && (
+                            <label className="cf-blabel" style={{ display: 'flex', gap: 8, alignItems: 'center', textTransform: 'none', fontWeight: 500, fontSize: 12 }}>
+                                <input type="checkbox" checked={form.acceptsData} onChange={(e) => upd({ acceptsData: e.target.checked })} /> Can hold data chips from earlier steps
+                            </label>
+                        )}
+                        {form.type === 'choice' && (
+                            <div>
+                                <label className="cf-blabel">Options</label>
+                                {(form.options || []).map((o, i) => (
+                                    <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+                                        <input className="cf-binput" placeholder="value" value={o.value} onChange={(e) => upd({ options: form.options.map((x, j) => j === i ? { ...x, value: e.target.value } : x) })} />
+                                        <input className="cf-binput" placeholder="label" value={o.label} onChange={(e) => upd({ options: form.options.map((x, j) => j === i ? { ...x, label: e.target.value } : x) })} />
+                                        <button className="cf-chip__rm" onClick={() => upd({ options: form.options.filter((_, j) => j !== i) })}>×</button>
+                                    </div>
+                                ))}
+                                <button className="cf-add" onClick={() => upd({ options: [...(form.options || []), { value: '', label: '' }] })}>+ option</button>
+                            </div>
+                        )}
+                        {form.type !== 'toggle' && form.type !== 'choice' && (<><label className="cf-blabel">Placeholder</label><input className="cf-binput" value={form.placeholder} onChange={(e) => upd({ placeholder: e.target.value })} /></>)}
+                        <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+                            <button className="auto-btn auto-btn--primary auto-btn--grow" onClick={save} disabled={saving}>{saving ? 'Saving…' : (editingId ? 'Save changes' : 'Create chip')}</button>
+                            {editingId && <button className="auto-btn auto-btn--ghost" onClick={reset}>New</button>}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook, customChips = [], onOpenChipBuilder }) {
     const kind = node.data.kind;
     const d = node.data;
     // Fields available from the node feeding into this one (for the dedup-key
@@ -1632,6 +2254,8 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
     const HeadIcon = iconFor(kind, d);
     const [refCopied, setRefCopied] = useState(false);
     const copyRef = () => { try { navigator.clipboard?.writeText(`{{nodes.${node.id}}}`); setRefCopied(true); setTimeout(() => setRefCopied(false), 1200); } catch (_) {} };
+    // Everything the chip board needs to render this node's chips + data palette.
+    const chipCtx = { runningModels, nodeList, edgeList, parseFields, incomingFields, customChips, webhookUrl, onGenWebhook, copied, onCopyWebhook, onOpenChipBuilder };
 
     return (
         <DataTagsContext.Provider value={tagGroups}>
@@ -1648,328 +2272,8 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
 
             <NodeResult lastRun={lastRun} nodeId={node.id} isTrigger={isTrigger} />
 
-            <Field label="Label"><input style={fieldInput} value={d.label || ''} onChange={(e) => onChange({ label: e.target.value })} /></Field>
+            <ChipBoard node={node} ctx={chipCtx} onChange={onChange} />
 
-            {kind === 'model' && (<>
-                <Field label="Prompt"><TemplTextarea style={{ minHeight: 80, fontFamily: 'inherit', resize: 'vertical' }} value={d.prompt || ''} onChange={(v) => onChange({ prompt: v })} placeholder="Leave blank to receive the previous node's output, or use {{last}} / {{nodes.id.field}}" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -6, marginBottom: 8 }}>The connected node's output is passed in automatically unless you reference data with {'{{…}}'}.</p>
-                <Field label="System prompt"><TemplTextarea style={{ minHeight: 48, resize: 'vertical' }} value={d.systemPrompt || ''} onChange={(v) => onChange({ systemPrompt: v })} /></Field>
-                <Field label="Model">
-                    <select style={fieldInput} value={d.model || ''} onChange={(e) => onChange({ model: e.target.value || undefined })}>
-                        <option value="">Current model{runningModels[0] ? ` (${runningModels[0].name})` : ''}</option>
-                        {runningModels.map(m => (
-                            <option key={m.name} value={m.name}>{m.name}{m.backend ? ` · ${m.backend}` : ''}</option>
-                        ))}
-                        {d.model && !runningModels.some(m => m.name === d.model) && (
-                            <option value={d.model}>{d.model} (not currently loaded)</option>
-                        )}
-                    </select>
-                    {runningModels.length === 0 && (
-                        <div style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: -6, marginBottom: 8 }}>No models loaded right now — load one to run this node.</div>
-                    )}
-                </Field>
-            </>)}
-
-            {kind === 'tool' && (() => {
-                const isPdf = d.tool === 'create_pdf' || d.tool === 'html_to_pdf';
-                const fileKey = d.tool === 'html_to_pdf' ? 'outputName' : 'filename';
-                return (<>
-                    <Field label="Tool / skill name"><TemplInput value={d.tool || ''} onChange={(v) => onChange({ tool: v })} placeholder="e.g. query_sqlite" /></Field>
-                    <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} placeholder={isPdf ? `{ "content": "{{last}}", "${fileKey}": "report.pdf" }` : '{ "url": "{{nodes.id.results.0.url}}" }'} /></Field>
-                    <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -4 }}>{isPdf
-                        ? 'Leave "content" blank (or omit it) to use the previous step’s output automatically — just connect the line. Or set it with {{last}} / {{nodes.id}} to override.'
-                        : 'This tool reads its data from these Arguments — click a data tag to drop it into a value. (The incoming line isn’t passed in automatically.)'}</p>
-                    {isPdf && (
-                        <div style={{ marginTop: 12, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
-                            <Field label="If a Telegram / Slack node follows, send">
-                                <select style={fieldInput} value={d.sendMode || 'pdf'} onChange={(e) => onChange({ sendMode: e.target.value })}>
-                                    <option value="pdf">The PDF only</option>
-                                    <option value="both">The data + the PDF</option>
-                                    <option value="data">The data only (no file)</option>
-                                </select>
-                            </Field>
-                            <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>The PDF always stays downloadable from the result. Connect a <b>Telegram</b> or <b>Slack</b> node after this to send it — this controls what that node sends.</p>
-                        </div>
-                    )}
-                </>);
-            })()}
-
-            {kind === 'web_search' && (<>
-                <Field label="Query"><TemplInput value={d.query || ''} onChange={(v) => onChange({ query: v })} /></Field>
-                <Field label="Limit"><input type="number" style={fieldInput} value={d.limit ?? ''} onChange={(e) => onChange({ limit: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
-            </>)}
-
-            {kind === 'fetch_url' && (<>
-                <Field label="URL"><TemplInput value={d.url || ''} onChange={(v) => onChange({ url: v })} /></Field>
-                <Field label="Max length"><input type="number" style={fieldInput} value={d.maxLength ?? ''} onChange={(e) => onChange({ maxLength: e.target.value === '' ? undefined : Number(e.target.value) })} /></Field>
-            </>)}
-
-            {kind === 'parse_json' && (<>
-                <Field label="Keep only this field (optional)">
-                    {parseFields.length > 0 && (
-                        <select style={{ ...fieldInput, marginBottom: 6 }} value={parseFields.includes(d.path) ? d.path : (d.path ? '__custom__' : '')} onChange={(e) => { if (e.target.value !== '__custom__') onChange({ path: e.target.value }); }}>
-                            <option value="">— keep the whole result —</option>
-                            {parseFields.map(f => <option key={f} value={f}>{f}</option>)}
-                            <option value="__custom__">Custom… (type below)</option>
-                        </select>
-                    )}
-                    <TemplInput value={d.path || ''} onChange={(v) => onChange({ path: v })} placeholder={parseFields.length ? 'or type a field path' : 'e.g. results.*.url — run once to list fields'} />
-                </Field>
-                <p style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: -2 }}>Picks one field out of the previous step's JSON. Blank = pass it all through.</p>
-            </>)}
-
-            {kind === 'db_store' && (<>
-                <Field label="Table"><TemplInput value={d.table || ''} onChange={(v) => onChange({ table: v })} placeholder="records" /></Field>
-                <Field label="Data to store"><TemplTextarea style={{ minHeight: 48, resize: 'vertical' }} value={d.value || ''} onChange={(v) => onChange({ value: v })} placeholder="Leave blank to store the previous node's output ({{last}})" /></Field>
-                <Field label="Unique key field — track changes (optional)">
-                    {incomingFields.length > 0 && (
-                        <select style={{ ...fieldInput, marginBottom: 6 }} value={incomingFields.includes(d.key) ? d.key : (d.key ? '__custom__' : '')} onChange={(e) => { if (e.target.value !== '__custom__') onChange({ key: e.target.value }); }}>
-                            <option value="">— no key (store everything) —</option>
-                            {incomingFields.map(f => <option key={f} value={f}>{f}</option>)}
-                            <option value="__custom__">Custom… (type below)</option>
-                        </select>
-                    )}
-                    <TemplInput value={d.key || ''} onChange={(v) => onChange({ key: v })} placeholder={incomingFields.length ? 'or type field(s), e.g. link,post_title' : 'e.g. link,post_title — run once to list fields'} />
-                </Field>
-                {d.key ? (<>
-                    <Field label="Ignore words in key (optional)"><TemplInput value={d.keyStrip || ''} onChange={(v) => onChange({ keyStrip: v })} placeholder="e.g. NEW (comma-separated)" /></Field>
-                    <Toggle checked={!!d.keyNormalize} onChange={(v) => onChange({ keyNormalize: v })}>Normalize key (ignore case &amp; punctuation)</Toggle>
-                </>) : null}
-                <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Appends to a SQLite table in this automation's workspace (auto-created); a list is stored as one row per item. Set a <b>key field</b> to deduplicate across runs — only new items are stored, and they're returned as <code>{'{{nodes.<id>.new}}'}</code> (the change feed); <code>{'{{nodes.<id>.stored}}'}</code> is how many were new.</p>
-            </>)}
-
-            {kind === 'db_query' && (<>
-                <Field label="Table"><TemplInput value={d.table || ''} onChange={(v) => onChange({ table: v })} placeholder="records" /></Field>
-                <Field label="How many"><input type="number" style={fieldInput} value={d.limit ?? ''} onChange={(e) => onChange({ limit: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="100" /></Field>
-                <Field label="Order">
-                    <select style={fieldInput} value={d.order || 'id DESC'} onChange={(e) => onChange({ order: e.target.value })}>
-                        <option value="id DESC">Newest first</option>
-                        <option value="id ASC">Oldest first</option>
-                        <option value="ts DESC">By time, newest first</option>
-                        <option value="ts ASC">By time, oldest first</option>
-                    </select>
-                </Field>
-                <Field label="Advanced: raw SQL (optional)"><TemplTextarea style={{ minHeight: 44, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.sql || ''} onChange={(v) => onChange({ sql: v })} placeholder="SELECT data FROM records WHERE …" /></Field>
-                <Field label="Database file"><TemplInput value={d.db || ''} onChange={(v) => onChange({ db: v })} placeholder="automation.db" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Returns the stored records (most recent first) to feed a model, Telegram, or file. Raw SQL overrides the simple options.</p>
-            </>)}
-
-            {kind === 'render_html' && (
-                <Field label="HTML"><TemplTextarea style={{ minHeight: 120, fontFamily: 'monospace', fontSize: 11.5, resize: 'vertical' }} value={d.html || ''} onChange={(v) => onChange({ html: v })} placeholder="<h1>Report</h1>{{last}} — leave blank to wrap the previous node's output" /></Field>
-            )}
-
-            {kind === 'export_file' && (<>
-                <Field label="Format">
-                    <select style={fieldInput} value={d.format || 'txt'} onChange={(e) => onChange({ format: e.target.value })}>
-                        {['txt', 'csv', 'json', 'md', 'html', 'pdf'].map(f => <option key={f} value={f}>{f.toUpperCase()}</option>)}
-                    </select>
-                </Field>
-                <Field label="Filename"><TemplInput value={d.filename || ''} onChange={(v) => onChange({ filename: v })} placeholder="report (extension added automatically)" /></Field>
-                <Field label="Content"><TemplTextarea style={{ minHeight: 80, resize: 'vertical' }} value={d.content || ''} onChange={(v) => onChange({ content: v })} placeholder="Leave blank to use the previous node's output" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>The file is written to the run workspace and surfaced as a download.</p>
-            </>)}
-
-            {kind === 'slack' && (<>
-                <Field label="Webhook URL (for text)"><TemplInput value={d.webhookUrl || ''} onChange={(v) => onChange({ webhookUrl: v })} placeholder="https://hooks.slack.com/services/…" /></Field>
-                <Field label={d.attachFile === false ? 'Message' : 'Message / file caption'}><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
-                <Toggle checked={d.attachFile !== false} onChange={(v) => onChange({ attachFile: v })}>Upload upstream file as an attachment (when one is produced)</Toggle>
-                {d.attachFile !== false && (<>
-                    <div style={{ borderTop: '1px solid var(--rule-2)', paddingTop: 10, marginBottom: 2 }}>
-                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 6 }}>To upload files (e.g. a PDF), Slack needs a bot token + channel — an incoming-webhook URL can only post text:</div>
-                    </div>
-                    <Field label="Slack bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
-                    <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="C0123456789" /></Field>
-                </>)}
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Text-only goes to the Incoming Webhook URL. A generated file (Create PDF → Slack) is uploaded via the bot token + channel.</p>
-            </>)}
-
-            {kind === 'telegram' && (<>
-                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
-                <Field label="Chat ID"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="e.g. 123456789 or @channelname" /></Field>
-                <Field label={d.attachFile === false ? 'Message' : 'Message / file caption'}><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.text || ''} onChange={(v) => onChange({ text: v })} placeholder="Leave blank to send the previous node's output" /></Field>
-                <Toggle checked={d.attachFile !== false} onChange={(v) => onChange({ attachFile: v })}>Send upstream file as a document (when one is produced)</Toggle>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Wire <b>Create PDF → Telegram</b> and the PDF is sent as a document automatically (the message above becomes its caption). Uncheck to always send plain text. Token from @BotFather; chat id from @userinfobot.</p>
-            </>)}
-
-            {kind === 'telegram_get' && (<>
-                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
-                <Field label="Limit"><input type="number" style={fieldInput} value={d.limit ?? ''} onChange={(e) => onChange({ limit: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="10" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Fetches recent messages: <code>{'{{nodes.id.messages}}'}</code>, <code>{'{{nodes.id.latest.text}}'}</code>, <code>{'{{nodes.id.text}}'}</code> (latest). Don't use on a bot that also has a Telegram trigger — getUpdates conflicts.</p>
-            </>)}
-
-            {kind === 'send_file' && (<>
-                <Field label="Send to">
-                    <select style={fieldInput} value={d.to || 'telegram'} onChange={(e) => onChange({ to: e.target.value })}>
-                        <option value="telegram">Telegram</option>
-                        <option value="slack">Slack</option>
-                        <option value="http">HTTP upload</option>
-                    </select>
-                </Field>
-                {(d.to || 'telegram') === 'telegram' && (<>
-                    <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
-                    <Field label="Chat ID"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="e.g. 8938559204" /></Field>
-                </>)}
-                {d.to === 'slack' && (<>
-                    <Field label="Slack bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
-                    <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="C0123456789" /></Field>
-                </>)}
-                {d.to === 'http' && (
-                    <Field label="Upload URL"><TemplInput value={d.url || ''} onChange={(v) => onChange({ url: v })} placeholder="https://example.com/upload" /></Field>
-                )}
-                <Field label="Caption / message (optional)"><TemplInput value={d.caption || ''} onChange={(v) => onChange({ caption: v })} placeholder="optional note sent with the file" /></Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Sends the file the previous step produced (e.g. <b>Create PDF</b>) — just wire it in. Slack needs a bot token (<code>xoxb-</code>) + channel; the incoming-webhook URL can't upload files.</p>
-            </>)}
-
-            {kind === 'delay' && (
-                <Field label="Delay (ms)"><input type="number" style={fieldInput} value={d.ms ?? ''} onChange={(e) => onChange({ ms: Number(e.target.value) })} /></Field>
-            )}
-
-            {kind === 'set' && (<>
-                <Field label="Variable name"><input style={fieldInput} value={d.name || ''} onChange={(e) => onChange({ name: e.target.value })} /></Field>
-                <Field label="Value"><TemplInput value={d.value ?? ''} onChange={(v) => onChange({ value: v })} placeholder="Supports {{...}}" /></Field>
-            </>)}
-
-            {kind === 'map' && (<>
-                <Field label="Items to loop over"><TemplInput value={d.items || ''} onChange={(v) => onChange({ items: v })} placeholder="{{nodes.id.results.*.url}} or {{last}}" /></Field>
-                <Field label="For each item">
-                    <select style={fieldInput} value={d.action || 'tool'} onChange={(e) => onChange({ action: e.target.value })}>
-                        <option value="tool">Run a tool / skill</option>
-                        <option value="model">Run the model</option>
-                    </select>
-                </Field>
-                {(d.action || 'tool') === 'tool' ? (<>
-                    <Field label="Tool / skill name"><TemplInput value={d.tool || ''} onChange={(v) => onChange({ tool: v })} placeholder="e.g. fetch_url" /></Field>
-                    <Field label="Arguments (JSON)"><JsonField value={d.args} onChange={(v) => onChange({ args: v })} placeholder={'{ "url": "{{item}}" }'} /></Field>
-                </>) : (<>
-                    <Field label="Prompt"><TemplTextarea style={{ minHeight: 64, resize: 'vertical' }} value={d.prompt || ''} onChange={(v) => onChange({ prompt: v })} placeholder="Summarize this: {{item}}" /></Field>
-                    <Field label="Model">
-                        <select style={fieldInput} value={d.model || ''} onChange={(e) => onChange({ model: e.target.value || undefined })}>
-                            <option value="">Current model{runningModels[0] ? ` (${runningModels[0].name})` : ''}</option>
-                            {runningModels.map(m => <option key={m.name} value={m.name}>{m.name}{m.backend ? ` · ${m.backend}` : ''}</option>)}
-                        </select>
-                    </Field>
-                </>)}
-                <Field label="Max parallel"><input type="number" style={fieldInput} value={d.maxConcurrency ?? ''} onChange={(e) => onChange({ maxConcurrency: e.target.value === '' ? undefined : Number(e.target.value) })} placeholder="3" /></Field>
-                <p style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: -4 }}>Runs once per item (max 50). Use <code>{'{{item}}'}</code> for the current item (or <code>{'{{item.url}}'}</code> if items are objects) and <code>{'{{index}}'}</code>. Returns a list of results — reference it as <code>{'{{nodes.id.results}}'}</code>.</p>
-            </>)}
-
-            {(kind === 'gate.if' || kind === 'gate.filter') && (<>
-                <Field label="Value to check"><TemplInput value={cond.left || ''} onChange={(v) => setCond({ left: v })} placeholder="{{last}} — or text/a value" /></Field>
-                <Field label="Operator">
-                    <select style={fieldInput} value={cond.op || '=='} onChange={(e) => setCond({ op: e.target.value })}>
-                        {COND_OP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </select>
-                </Field>
-                {(cond.op !== 'empty' && cond.op !== 'not_empty') && (
-                    <Field label="Compare to"><TemplInput value={cond.right || ''} onChange={(v) => setCond({ right: v })} placeholder="value to compare against" /></Field>
-                )}
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>
-                    Leave <b>Value to check</b> blank to test the previous node's output. {kind === 'gate.if' ? 'Wire the "true" / "false" handles to branches.' : 'Continues down "out" only when true.'}
-                </p>
-            </>)}
-
-            {kind === 'gate.switch' && (() => {
-                const cases = Array.isArray(d.cases) ? d.cases : [];
-                const setCase = (i, patch) => onChange({ cases: cases.map((c, idx) => idx === i ? { op: c.op || '==', value: (c.value ?? c.equals ?? ''), handle: c.handle || '', ...patch } : c) });
-                const addCase = () => onChange({ cases: [...cases, { op: '==', value: '', handle: '' }] });
-                const removeCase = (i) => onChange({ cases: cases.filter((_, idx) => idx !== i) });
-                return (<>
-                    <Field label="Value to check"><TemplInput value={d.value || ''} onChange={(v) => onChange({ value: v })} placeholder="{{last}} — value to route on" /></Field>
-                    <label style={fieldLabel}>Cases</label>
-                    {cases.map((c, i) => (
-                        <div key={i} style={{ border: '1px solid var(--rule-2)', borderRadius: 8, padding: 8, marginBottom: 8, background: 'var(--bg)' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                                <select style={{ ...fieldInput, marginBottom: 0, flex: 1 }} value={c.op || '=='} onChange={(e) => setCase(i, { op: e.target.value })}>
-                                    {SWITCH_OP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                                </select>
-                                <button onClick={() => removeCase(i)} title="Remove case" style={{ flexShrink: 0, width: 28, height: 28, padding: 0, border: '1px solid var(--rule-2)', borderRadius: 6, background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', fontSize: 15, lineHeight: 1 }}>×</button>
-                            </div>
-                            <TemplInput value={(c.value ?? c.equals ?? '')} onChange={(v) => setCase(i, { value: v })} placeholder="value to match" style={{ marginBottom: 6 }} />
-                            <TemplInput value={c.handle || ''} onChange={(v) => setCase(i, { handle: v })} placeholder="route label (defaults to the value)" style={{ marginBottom: 0 }} />
-                        </div>
-                    ))}
-                    <button className="auto-btn auto-btn--block auto-btn--sm" onClick={addCase} style={{ marginBottom: 8 }}>+ Add case</button>
-                    <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Each case routes to its own handle on the node; anything unmatched takes the "default" handle.</p>
-                </>);
-            })()}
-
-            {kind === 'trigger.schedule' && <ScheduleConfig d={d} onChange={onChange} />}
-
-            {kind === 'trigger.event' && (
-                <Field label="Event name"><input style={fieldInput} value={d.event || ''} onChange={(e) => onChange({ event: e.target.value })} placeholder="model.loaded" /></Field>
-            )}
-
-            {kind === 'trigger.telegram' && (<>
-                <Field label="Bot token"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="123456:ABC-DEF…" /></Field>
-                <Field label="Chat ID filter (optional)"><TemplInput value={d.chatId || ''} onChange={(v) => onChange({ chatId: v })} placeholder="only this chat id / @channel" /></Field>
-                <Field label="Keyword (optional)"><TemplInput value={d.keyword || ''} onChange={(v) => onChange({ keyword: v })} placeholder="fire only when the text matches" /></Field>
-                <Field label="Match">
-                    <select style={fieldInput} value={d.match || 'contains'} onChange={(e) => onChange({ match: e.target.value })}>
-                        {['contains', 'equals', 'startsWith', 'regex'].map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                </Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>Polls every ~15s via getUpdates — save and keep the automation enabled. The message is the run input: use <code>{'{{input.text}}'}</code>, <code>{'{{input.chat.id}}'}</code>, <code>{'{{input.from.username}}'}</code>. Use one automation per bot token (multiple pollers on the same bot conflict).</p>
-            </>)}
-
-            {kind === 'trigger.slack' && (<>
-                <Field label="Bot token (xoxb-…)"><TemplInput value={d.botToken || ''} onChange={(v) => onChange({ botToken: v })} placeholder="xoxb-…" /></Field>
-                <Field label="Channel ID"><TemplInput value={d.channel || ''} onChange={(v) => onChange({ channel: v })} placeholder="e.g. C0123456789" /></Field>
-                <Field label="Keyword filter (optional)"><TemplInput value={d.keyword || ''} onChange={(v) => onChange({ keyword: v })} placeholder="fire only when the text matches" /></Field>
-                <Field label="Match">
-                    <select style={fieldInput} value={d.match || 'contains'} onChange={(e) => onChange({ match: e.target.value })}>
-                        {['contains', 'equals', 'startsWith', 'regex'].map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                </Field>
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>The bot must be in the channel and have the <code>channels:history</code> scope. The message is the run input: use <code>{'{{input.text}}'}</code>, <code>{'{{input.user}}'}</code>, <code>{'{{input.channel}}'}</code>.</p>
-            </>)}
-
-            {kind === 'trigger.webhook' && (<>
-                <button className="auto-btn auto-btn--block auto-btn--sm" onClick={onGenWebhook} style={{ marginBottom: 8 }}>Generate webhook URL</button>
-                {webhookUrl && (
-                    <div style={{ fontSize: 10.5, color: 'var(--ink-2)', wordBreak: 'break-all', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 8 }}>
-                        {webhookUrl}
-                        <button className="auto-btn auto-btn--sm" onClick={onCopyWebhook} style={{ marginTop: 6 }}>
-                            {copied ? <Check size={12} /> : <Copy size={12} />} <span>{copied ? 'Copied' : 'Copy'}</span>
-                        </button>
-                    </div>
-                )}
-                <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 8 }}>POST to this URL to trigger the workflow; the request body becomes the run input. Save the automation and keep it enabled.</p>
-            </>)}
-
-            {!isTrigger && kind !== 'output' && kind !== 'merge' && !String(kind).startsWith('gate.') && (() => {
-                const fwd = d.forward || '';
-                const hasFwd = !!fwd.trim();
-                let preview = null;
-                if (hasFwd) {
-                    const scope = { nodes: {}, last: lastRun && lastRun.output, input: {} };
-                    for (const id of Object.keys(allOutputs)) scope.nodes[id] = allOutputs[id] && allOutputs[id].output;
-                    try { preview = previewInterpolate(fwd, scope); } catch (_) { preview = null; }
-                }
-                const haveData = Object.keys(allOutputs).length > 0;
-                return (
-                    <div style={{ marginTop: 14, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
-                        <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>Output → next node</div>
-                        <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 6 }}>
-                            Type any text and insert data tags anywhere. Use <code>{'{{last}}'}</code> for this step's whole output, or <code>{'{{field}}'}</code> for one of its fields (e.g. <code>{'{{title}}'}</code>). Leave blank to send the whole output.
-                        </div>
-                        <TemplTextarea registerAsDefault style={{ minHeight: 56, fontFamily: 'inherit', fontSize: 13.5, resize: 'vertical' }} value={fwd} onChange={(v) => onChange({ forward: v })} placeholder={'e.g.  Top results:\n{{nodes.id.results.*.url}}'} />
-                        {hasFwd ? (
-                            <div style={{ marginTop: 5 }}>
-                                <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 3 }}>
-                                    Sends to next node{haveData ? '' : ' (run once to fill in tag values)'}:
-                                </div>
-                                <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 180, overflow: 'auto', background: 'var(--bg)', border: '1px solid var(--rule-2)', borderRadius: 6, padding: 8 }}>{preview === '' ? '(empty)' : preview}</pre>
-                                <button onClick={() => onChange({ forward: '' })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0, marginTop: 4 }}>
-                                    ↺ reset to send everything
-                                </button>
-                            </div>
-                        ) : (
-                            <div style={{ fontSize: 10.5, color: 'var(--ink-2)', marginTop: 5 }}>→ Sending the entire output</div>
-                        )}
-                    </div>
-                );
-            })()}
 
             {!isTrigger && (
                 <div className="auto-panel__ref" title="Reference this node's output in a later node">

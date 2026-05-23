@@ -6,6 +6,11 @@ import {
     Braces, Code, Download, MessageSquare, MessagesSquare, Send, Inbox, Repeat,
 } from 'lucide-react';
 
+// Set by AutomationView: handleDropChip(nodeId, ref) fills a node's primary slot
+// from a data chip dropped onto it on the canvas (and auto-wires the edge).
+export const NodeDropContext = React.createContext(null);
+const CHIP_REF_MIME = 'application/automation-ref';
+
 // Which handles a node exposes, by engine kind. Triggers are sources only,
 // output is a sink, gates fan out on named handles, everything else is in→out.
 export function handlesFor(kind, data = {}) {
@@ -116,8 +121,13 @@ function subtitleFor(kind, data) {
     return '';
 }
 
-export default function AutomationNode({ data, selected }) {
+export default function AutomationNode({ id, data, selected }) {
     const kind = data.kind;
+    const onDropChip = React.useContext(NodeDropContext);
+    const [chipOver, setChipOver] = useState(false);
+    const acceptsChip = (e) => Array.from(e.dataTransfer.types || []).includes(CHIP_REF_MIME);
+    const onChipDragOver = (e) => { if (onDropChip && acceptsChip(e)) { e.preventDefault(); e.stopPropagation(); setChipOver(true); } };
+    const onChipDrop = (e) => { if (!onDropChip || !acceptsChip(e)) return; e.preventDefault(); e.stopPropagation(); setChipOver(false); const ref = e.dataTransfer.getData(CHIP_REF_MIME); if (ref) onDropChip(id, ref); };
     const { targets, sources } = handlesFor(kind, data);
     const Icon = kind === 'tool' ? iconForTool(data.tool) : pickIcon(kind);
     const status = data.status; // running | done | failed | undefined
@@ -132,7 +142,8 @@ export default function AutomationNode({ data, selected }) {
     const sub = subtitleFor(kind, data);
 
     return (
-        <div className={`auto-node ${categoryClass(kind)} ${statusClass} ${animClass} ${selected ? 'selected' : ''}`}>
+        <div className={`auto-node ${categoryClass(kind)} ${statusClass} ${animClass} ${selected ? 'selected' : ''} ${chipOver ? 'is-chip-target' : ''}`}
+            onDragOver={onChipDragOver} onDragLeave={() => setChipOver(false)} onDrop={onChipDrop}>
             {/* target handles (left) */}
             {targets.map((t, i) => (
                 <Handle

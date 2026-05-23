@@ -2119,6 +2119,7 @@ const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
 const AGENT_PERMISSIONS_FILE = path.join(DATA_DIR, 'agent-permissions.json');
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');     // automation workflow definitions
 const NODE_TYPES_FILE = path.join(DATA_DIR, 'node-types.json');   // user-authored triggers/gates/connectors
+const CHIPS_FILE = path.join(DATA_DIR, 'chips.json');             // user-authored/LLM-built node settings chips
 
 // ============================================================================
 // IN-MEMORY CACHE FOR PERFORMANCE
@@ -2133,7 +2134,8 @@ const dataCache = {
     systemPrompts: { data: null, timestamp: 0 },
     modelConfigs: { data: null, timestamp: 0 },
     workflows: { data: null, timestamp: 0 },
-    nodeTypes: { data: null, timestamp: 0 }
+    nodeTypes: { data: null, timestamp: 0 },
+    chips: { data: null, timestamp: 0 }
 };
 
 // Cache TTL in milliseconds (5 minutes — matches CLAUDE.md)
@@ -2300,6 +2302,61 @@ async function saveNodeTypes(nodeTypes) {
     await fs.writeFile(NODE_TYPES_FILE, JSON.stringify(nodeTypes, null, 2));
     invalidateCache('nodeTypes');
 }
+
+async function loadChips() {
+    if (isCacheValid('chips')) return dataCache.chips.data;
+    try {
+        const data = await fs.readFile(CHIPS_FILE, 'utf8');
+        const chips = JSON.parse(data);
+        dataCache.chips.data = chips;
+        dataCache.chips.timestamp = Date.now();
+        return chips;
+    } catch (err) {
+        if (err.code === 'ENOENT') return [];
+        console.error('Error loading chips:', err);
+        return [];
+    }
+}
+async function saveChips(chips) {
+    await ensureDataDir();
+    await fs.writeFile(CHIPS_FILE, JSON.stringify(chips, null, 2));
+    invalidateCache('chips');
+}
+// Coerce a (user- or model-supplied) chip definition into a safe, stored shape.
+const CHIP_TYPES = ['value', 'multiline', 'choice', 'toggle', 'number'];
+function materializeChip(input) {
+    const c = input && typeof input === 'object' ? input : {};
+    const label = String(c.label || '').trim();
+    if (!label) throw new Error('a chip needs a label');
+    let field = String(c.field || '').trim();
+    if (!field) throw new Error('a chip needs a field it controls');
+    field = field.replace(/[^a-zA-Z0-9_.]/g, ''); // dotted path, safe chars only
+    if (!field) throw new Error('the field name is invalid');
+    const type = CHIP_TYPES.includes(c.type) ? c.type : 'value';
+    let appliesTo = c.appliesTo;
+    if (appliesTo === '*' || appliesTo === undefined || appliesTo === null) appliesTo = ['*'];
+    if (typeof appliesTo === 'string') appliesTo = [appliesTo];
+    if (!Array.isArray(appliesTo) || !appliesTo.length) appliesTo = ['*'];
+    appliesTo = appliesTo.map(String);
+    const out = { label, field, type, appliesTo };
+    if (type === 'choice') {
+        const opts = Array.isArray(c.options) ? c.options : [];
+        out.options = opts.map(o => (typeof o === 'string' ? { value: o, label: o } : { value: String(o.value ?? ''), label: String(o.label ?? o.value ?? '') })).filter(o => o.label);
+        if (!out.options.length) throw new Error('a choice chip needs options');
+    }
+    if (type === 'value' || type === 'multiline') out.acceptsData = c.acceptsData !== false;
+    if (c.placeholder) out.placeholder = String(c.placeholder).slice(0, 200);
+    if (c.default !== undefined) out.default = c.default;
+    if (c.when && typeof c.when === 'object' && c.when.field) out.when = { field: String(c.when.field), op: String(c.when.op || 'truthy'), value: c.when.value };
+    return out;
+}
+// Node kinds a chip can target (for the builder UI + the LLM prompt).
+const CHIP_NODE_KINDS = [
+    'model', 'tool', 'web_search', 'fetch_url', 'parse_json', 'db_store', 'db_query', 'render_html',
+    'export_file', 'slack', 'telegram', 'telegram_get', 'send_file', 'delay', 'set', 'map',
+    'gate.if', 'gate.filter', 'gate.switch', 'merge', 'output',
+    'trigger.manual', 'trigger.schedule', 'trigger.webhook', 'trigger.event', 'trigger.telegram', 'trigger.slack',
+];
 
 async function loadTasks() {
     // Check cache first
@@ -8579,6 +8636,116 @@ app.delete('/api/node-types/:id', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error deleting node-type:', error);
         res.status(500).json({ error: 'Failed to delete node-type' });
+    }
+});
+
+// --- Custom node-settings chips (the "armor" you attach to nodes) ---
+
+// Kinds a chip can target — drives the builder UI's node picker + LLM prompt.
+app.get('/api/chips/kinds', requireAuth, (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) return res.status(403).json({ error: 'Automation permission required' });
+    res.json(CHIP_NODE_KINDS);
+});
+
+app.get('/api/chips', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) return res.status(403).json({ error: 'Automation permission required' });
+    try {
+        const chips = await loadChips();
+        if (callerIsAdmin(req)) return res.json(await attachOwnerNames(chips));
+        res.json(filterByUserId(chips, req.userId));
+    } catch (error) {
+        console.error('Error loading chips:', error);
+        res.status(500).json({ error: 'Failed to load chips' });
+    }
+});
+
+app.post('/api/chips', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) return res.status(403).json({ error: 'Automation permission required' });
+    try {
+        let def;
+        try { def = materializeChip(req.body); }
+        catch (e) { return res.status(400).json({ error: e.message }); }
+        const chips = await loadChips();
+        const now = new Date().toISOString();
+        const chip = { id: crypto.randomBytes(12).toString('hex'), ...def, enabled: true, userId: req.userId || null, createdAt: now, updatedAt: now };
+        chips.push(chip);
+        await saveChips(chips);
+        res.status(201).json(chip);
+    } catch (error) {
+        console.error('Error creating chip:', error);
+        res.status(500).json({ error: 'Failed to create chip' });
+    }
+});
+
+app.put('/api/chips/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) return res.status(403).json({ error: 'Automation permission required' });
+    try {
+        const chips = await loadChips();
+        const idx = chips.findIndex(c => c.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Chip not found' });
+        if (!checkOwnership(chips[idx], req.userId) && !callerIsAdmin(req)) return res.status(403).json({ error: 'Access denied: chip belongs to another user' });
+        let def;
+        try { def = materializeChip({ ...chips[idx], ...req.body }); }
+        catch (e) { return res.status(400).json({ error: e.message }); }
+        chips[idx] = { ...chips[idx], ...def, enabled: req.body.enabled !== undefined ? req.body.enabled : chips[idx].enabled, updatedAt: new Date().toISOString() };
+        await saveChips(chips);
+        res.json(chips[idx]);
+    } catch (error) {
+        console.error('Error updating chip:', error);
+        res.status(500).json({ error: 'Failed to update chip' });
+    }
+});
+
+app.delete('/api/chips/:id', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) return res.status(403).json({ error: 'Automation permission required' });
+    try {
+        const chips = await loadChips();
+        const idx = chips.findIndex(c => c.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Chip not found' });
+        if (!checkOwnership(chips[idx], req.userId) && !callerIsAdmin(req)) return res.status(403).json({ error: 'Access denied: chip belongs to another user' });
+        chips.splice(idx, 1);
+        await saveChips(chips);
+        res.json({ message: 'Chip deleted' });
+    } catch (error) {
+        console.error('Error deleting chip:', error);
+        res.status(500).json({ error: 'Failed to delete chip' });
+    }
+});
+
+// LLM-built chip: describe a chip in plain language → a valid chip definition.
+app.post('/api/chips/build', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) return res.status(403).json({ error: 'Automation permission required' });
+    const { prompt, model } = req.body || {};
+    if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'Describe the chip you want' });
+    try {
+        const sys = [
+            'You design "chips" for an automation node settings panel. A chip controls one setting on a node. Output a SINGLE JSON object and NOTHING else.',
+            'Shape: {"label":"<short>","appliesTo":["<nodeKind>",…] or ["*"],"field":"<node.data path it controls>","type":"value|multiline|choice|toggle|number","options":[{"value","label"}]? ,"acceptsData":true|false,"placeholder":"…"?,"default":<any>?,"when":{"field","op":"truthy|eq|neq|in|notIn","value"}?}',
+            'Rules:',
+            '- "field" is the node.data key the chip writes (dotted for nested, e.g. "args.url", "condition.left"). Pick the real field for the target node.',
+            '- type "value"/"multiline" hold text and can accept data references (acceptsData true) — use for messages, URLs, prompts, content. "choice" replaces a dropdown (needs options). "toggle" is on/off. "number" is numeric.',
+            '- appliesTo lists the node kinds this chip is for, or ["*"] for any. Valid kinds: ' + CHIP_NODE_KINDS.join(', ') + '.',
+            '- Keep label short (1-3 words). Do not invent fields that conflict with required ones unless that is the intent.',
+            'Example — "a Bcc field for the email node": {"label":"Bcc","appliesTo":["email"],"field":"bcc","type":"value","acceptsData":true,"placeholder":"name@example.com"}',
+            'Example — "priority high/normal/low for tasks": {"label":"Priority","appliesTo":["*"],"field":"priority","type":"choice","options":[{"value":"high","label":"High"},{"value":"normal","label":"Normal"},{"value":"low","label":"Low"}],"default":"normal"}',
+        ].join('\n');
+        const messages = [
+            { role: 'system', content: sys },
+            { role: 'user', content: `Build a chip for this request:\n\n${String(prompt).trim()}\n\nRespond with ONLY the JSON object.` },
+        ];
+        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 800 });
+        let raw = String(text || '').trim();
+        const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
+        const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
+        let spec; try { spec = JSON.parse(raw); } catch (_) { spec = null; }
+        if (!spec) return res.status(422).json({ error: 'The model did not return a valid chip. Try rephrasing.' });
+        let def;
+        try { def = materializeChip(spec); }
+        catch (e) { return res.status(422).json({ error: `Could not build the chip: ${e.message}` }); }
+        res.json(def); // preview only — the client reviews then POSTs to save
+    } catch (error) {
+        console.error('Error building chip:', error);
+        res.status(500).json({ error: `Failed to build chip: ${error.message}` });
     }
 });
 
