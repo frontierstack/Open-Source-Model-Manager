@@ -125,6 +125,18 @@ const railBtn = {
     color: 'var(--ink-2)', fontSize: 12.5, fontWeight: 500, background: 'transparent',
     cursor: 'pointer',
 };
+// Paired action-row buttons (Build/Preview/Apply + Cancel/Discard). Both share
+// railBtn's height & type so a row reads as one balanced unit: a wide accent
+// primary CTA next to a compact, muted secondary. (Fixes the old mismatch where
+// Cancel was a small auto-width chip beside a full-width primary.)
+const railBtnPrimary = {
+    ...railBtn, justifyContent: 'center', flex: 1,
+    color: 'var(--accent)', borderColor: 'var(--accent)', fontWeight: 600,
+};
+const railBtnGhost = {
+    ...railBtn, justifyContent: 'center', flex: '0 0 auto', width: 'auto',
+    padding: '7px 16px', color: 'var(--ink-3)', borderColor: 'var(--rule-2)',
+};
 const fieldLabel = { fontSize: 12.5, color: 'var(--ink-3, var(--ink-2))', marginBottom: 4, display: 'block', fontWeight: 500 };
 const fieldInput = {
     width: '100%', padding: '7px 9px', borderRadius: 6, border: '1px solid var(--rule-2)',
@@ -873,7 +885,7 @@ function FlowEditor({ showSnackbar, models }) {
                 <div style={{ width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
                     <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />
                     <div style={{ padding: 10, borderBottom: '1px solid var(--rule)' }}>
-                        <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                        <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', fontWeight: 600, color: 'var(--accent-ink, #fff)', background: 'var(--accent)', borderColor: 'var(--accent)' }}>
                             <Plus size={14} /> <span>New automation</span>
                         </button>
                         <button onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} style={{ ...railBtn, justifyContent: 'center', marginTop: 6 }}>
@@ -894,10 +906,10 @@ function FlowEditor({ showSnackbar, models }) {
                                     <input type="checkbox" checked={buildTest} onChange={e => setBuildTest(e.target.checked)} disabled={building} /> Test &amp; improve (run it and let the model fix issues — slower)
                                 </label>
                                 <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                                    <button onClick={buildAutomation} disabled={building || !buildPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)', opacity: (building || !buildPrompt.trim()) ? 0.55 : 1, cursor: (building || !buildPrompt.trim()) ? 'default' : 'pointer' }}>
+                                    <button onClick={buildAutomation} disabled={building || !buildPrompt.trim()} style={{ ...railBtnPrimary, opacity: (building || !buildPrompt.trim()) ? 0.55 : 1, cursor: (building || !buildPrompt.trim()) ? 'default' : 'pointer' }}>
                                         {building ? 'Building…' : 'Build'}
                                     </button>
-                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building} style={{ ...railBtn, justifyContent: 'center', width: 'auto', flex: '0 0 auto', padding: '7px 14px', fontSize: 12 }}>Cancel</button>
+                                    <button onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building} style={railBtnGhost}>Cancel</button>
                                 </div>
                                 {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{buildTest ? 'Building, testing & improving…' : 'The model is assembling your workflow…'}</div>}
                                 {buildLog && (
@@ -928,10 +940,10 @@ function FlowEditor({ showSnackbar, models }) {
                                         <input type="checkbox" checked={editTest} onChange={(e) => setEditTest(e.target.checked)} disabled={editing} /> Test &amp; improve (run it and let the model fix issues — slower)
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
-                                        <button onClick={previewEdit} disabled={editing || !editPrompt.trim()} style={{ ...railBtn, justifyContent: 'center', flex: 1, opacity: (editing || !editPrompt.trim()) ? 0.55 : 1, cursor: (editing || !editPrompt.trim()) ? 'default' : 'pointer' }}>
+                                        <button onClick={previewEdit} disabled={editing || !editPrompt.trim()} style={{ ...railBtnPrimary, opacity: (editing || !editPrompt.trim()) ? 0.55 : 1, cursor: (editing || !editPrompt.trim()) ? 'default' : 'pointer' }}>
                                             {editing ? (editTest ? 'Testing…' : 'Thinking…') : 'Preview changes'}
                                         </button>
-                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing} style={{ ...railBtn, justifyContent: 'center', width: 'auto', flex: '0 0 auto', padding: '7px 14px', fontSize: 12 }}>Cancel</button>
+                                        <button onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing} style={railBtnGhost}>Cancel</button>
                                     </div>
                                     {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{editTest ? 'Revising, testing & improving…' : 'The model is revising your workflow…'}</div>}
                                 </>) : (<>
@@ -949,8 +961,8 @@ function FlowEditor({ showSnackbar, models }) {
                                         </div>
                                     )}
                                     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                                        <button onClick={applyEdit} disabled={editing} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: 'var(--accent)', borderColor: 'var(--accent)' }}>{editing ? 'Applying…' : 'Apply'}</button>
-                                        <button onClick={() => setEditResult(null)} disabled={editing} style={{ ...railBtn, justifyContent: 'center', width: 'auto', flex: '0 0 auto', padding: '7px 14px', fontSize: 12 }}>Discard</button>
+                                        <button onClick={applyEdit} disabled={editing} style={railBtnPrimary}>{editing ? 'Applying…' : 'Apply'}</button>
+                                        <button onClick={() => setEditResult(null)} disabled={editing} style={railBtnGhost}>Discard</button>
                                     </div>
                                 </>)}
                             </div>
@@ -1667,6 +1679,35 @@ function formatNodeOutput(out) {
     try { return JSON.stringify(out, null, 2); } catch { return String(out); }
 }
 
+// Append `?download=1` so the server sends `Content-Disposition: attachment`.
+// The HTML `download` attr alone is advisory — Chrome/Edge silently drop it
+// under self-signed HTTPS, COOP isolation, and corporate policies.
+function withDownloadFlag(url) {
+    if (typeof url !== 'string' || !url) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'download=1';
+}
+
+// Fetch the artifact as a blob, then hand the bytes to the browser via a
+// `blob:` URL + synthetic <a> click. A plain `<a href download>` to the
+// server URL gets blocked by Chrome with "Network issue" under a self-signed
+// cert + HSTS (it refuses to honor the cert exception for background download
+// requests) — the exact failure the user hit. A blob URL is in-memory and
+// same-origin, so it sidesteps those heuristics entirely. Mirrors the chat
+// app's ArtifactList.jsx fix.
+async function saveArtifactViaBlob(url, filename) {
+    const r = await fetch(url, { credentials: 'include' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+}
+
 // "Last result" card shown at the top of the node config panel — live during a
 // run, and seeded from the most recent run on load. Lets you inspect exactly
 // what a connector/gate/trigger returned, plus the reference to pipe it forward.
@@ -1695,12 +1736,22 @@ function NodeResult({ lastRun, nodeId, isTrigger }) {
                 {artifacts.length > 0 && (
                     <div style={{ marginBottom: 8 }}>
                         <div style={{ fontSize: 10, color: 'var(--ink-3)', marginBottom: 4 }}>Generated file{artifacts.length > 1 ? 's' : ''}</div>
-                        {artifacts.map((a, i) => (
-                            <a key={i} href={a.url} download={a.name} target="_blank" rel="noopener noreferrer"
+                        {artifacts.map((a, i) => {
+                            const dlUrl = withDownloadFlag(a.url);
+                            return (
+                            <a key={i} href={dlUrl} download={a.name} target="_blank" rel="noopener noreferrer"
+                               onClick={(e) => {
+                                   // fetch+blob first; the native <a download> on
+                                   // the href is the fallback (also keeps
+                                   // right-click → Save As working).
+                                   e.preventDefault();
+                                   saveArtifactViaBlob(dlUrl, a.name).catch(() => { window.location.href = dlUrl; });
+                               }}
                                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent)', borderRadius: 6, padding: '4px 9px', margin: '0 6px 6px 0', background: 'var(--accent-soft)' }}>
                                 <Download size={12} /> {a.name}{a.size ? <span style={{ color: 'var(--ink-3)', fontSize: 9.5 }}>{` · ${a.size < 1024 ? a.size + ' B' : Math.round(a.size / 1024) + ' KB'}`}</span> : null}
                             </a>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
                 {htmlPreview != null && (

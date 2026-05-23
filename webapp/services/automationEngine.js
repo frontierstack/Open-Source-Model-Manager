@@ -1000,33 +1000,93 @@ function materializeWorkflow(spec) {
     return { name, nodes, edges };
 }
 
+// Engine `type` alone doesn't identify a node — every tool-backed connector
+// (http_request, create_pdf, crawl …) shares type 'tool' and is told apart only
+// by data.tool. This signature is what id-recovery matches on.
+function nodeSignature(type, data) {
+    const t = type || '';
+    if (t === 'tool') return 'tool:' + ((data && data.tool) || '');
+    return t;
+}
+
 // Edit variant: resolve a model-revised spec against the EXISTING workflow —
 // preserve kept nodes' ids + positions, only position genuinely-new nodes, so an
 // edit doesn't renumber/relayout the whole graph (keeps the diff meaningful).
+//
+// Models routinely IGNORE the "keep existing ids" instruction and rename every
+// node (n1 → "schedule_node"). Without recovery the diff then reads as N added +
+// N removed instead of "changed" — the 7.2 bug. So we align proposed nodes back
+// onto base nodes: exact id first, then by signature among still-unclaimed base
+// nodes (the canonical flows have one node per signature, so this is unambiguous).
+// Edges are remapped through the recovered ids.
 function materializeWorkflowEdit(spec, base) {
     const byKey = new Map(), byType = new Map();
     for (const b of BUILTIN_NODE_TYPES) { byKey.set(b.key, b); byType.set(b.type, b); }
-    const baseNodes = new Map(((base && base.nodes) || []).map(n => [String(n.id), n]));
-    const nodes = [], usedIds = new Set();
+    const baseList = (base && base.nodes) || [];
+    const baseNodes = new Map(baseList.map(n => [String(n.id), n]));
+
+    // 1) resolve each proposed node to a builtin, keeping its raw (model) id +
+    //    merged data so we can both match and remap edges.
+    const raw = [];
     for (const n of (Array.isArray(spec && spec.nodes) ? spec.nodes : [])) {
         const k = String((n && (n.type || n.kind)) || '').trim();
         const b = byKey.get(k) || byType.get(k);
         if (!b) continue;
-        let id = (n && n.id != null && String(n.id).trim()) ? String(n.id).trim() : '';
-        if (!id || usedIds.has(id)) id = `n${nodes.length + 1}_${Math.random().toString(36).slice(2, 6)}`;
-        usedIds.add(id);
-        const baseN = baseNodes.get(id);
-        const data = { ...(b.defaults || {}), ...(n && n.data && typeof n.data === 'object' ? n.data : {}) };
-        if (!data.label) data.label = (baseN && baseN.data && baseN.data.label) || b.label;
-        const position = (baseN && baseN.position) || (n && n.position && typeof n.position === 'object' ? n.position : null);
-        nodes.push({ id, type: b.type, position, data });
+        raw.push({
+            rawId: (n && n.id != null && String(n.id).trim()) ? String(n.id).trim() : '',
+            b,
+            data: { ...(b.defaults || {}), ...(n && n.data && typeof n.data === 'object' ? n.data : {}) },
+            position: (n && n.position && typeof n.position === 'object') ? n.position : null,
+        });
     }
-    if (!nodes.length) throw new Error('the model produced no recognizable nodes');
+    if (!raw.length) throw new Error('the model produced no recognizable nodes');
+
+    // 2) align proposed → base ids. claimedBase guards 1:1 matching.
+    const claimedBase = new Set();
+    const finalIds = new Array(raw.length).fill(null);
+    // pass A — exact id match
+    for (let i = 0; i < raw.length; i++) {
+        const id = raw[i].rawId;
+        if (id && baseNodes.has(id) && !claimedBase.has(id)) { finalIds[i] = id; claimedBase.add(id); }
+    }
+    // pass B — by signature among unclaimed base nodes (handles dropped ids)
+    for (let i = 0; i < raw.length; i++) {
+        if (finalIds[i]) continue;
+        const sig = nodeSignature(raw[i].b.type, raw[i].data);
+        const match = baseList.find(bn => !claimedBase.has(String(bn.id)) && nodeSignature(bn.type, bn.data) === sig);
+        if (match) { finalIds[i] = String(match.id); claimedBase.add(String(match.id)); }
+    }
+    // pass C — genuinely new nodes get a fresh, collision-free id
+    const usedIds = new Set(finalIds.filter(Boolean));
+    for (let i = 0; i < raw.length; i++) {
+        if (finalIds[i]) continue;
+        let id = raw[i].rawId;
+        if (!id || usedIds.has(id) || baseNodes.has(id)) id = `n${i + 1}_${Math.random().toString(36).slice(2, 6)}`;
+        finalIds[i] = id; usedIds.add(id);
+    }
+
+    // 3) build nodes, preserving the matched base node's position + label.
+    const nodes = [];
+    for (let i = 0; i < raw.length; i++) {
+        const id = finalIds[i], r = raw[i];
+        const baseN = baseNodes.get(id);
+        const data = r.data;
+        if (!data.label) data.label = (baseN && baseN.data && baseN.data.label) || r.b.label;
+        const position = (baseN && baseN.position) || r.position || null;
+        nodes.push({ id, type: r.b.type, position, data });
+    }
     const ids = new Set(nodes.map(n => n.id));
+
+    // 4) remap edges through rawId → finalId (first occurrence wins); fall back
+    //    to identity so edges that already reference base/final ids still resolve.
+    const idMap = new Map();
+    for (let i = 0; i < raw.length; i++) { if (raw[i].rawId && !idMap.has(raw[i].rawId)) idMap.set(raw[i].rawId, finalIds[i]); }
+    for (const id of finalIds) if (!idMap.has(id)) idMap.set(id, id);
     const edges = []; let e = 0;
     for (const ed of (Array.isArray(spec && spec.edges) ? spec.edges : [])) {
         if (!ed) continue;
-        const s = String(ed.source), t = String(ed.target);
+        const s = idMap.get(String(ed.source)) || String(ed.source);
+        const t = idMap.get(String(ed.target)) || String(ed.target);
         if (!ids.has(s) || !ids.has(t) || s === t) continue;
         const edge = { id: `e${++e}`, source: s, target: t };
         if (ed.sourceHandle) edge.sourceHandle = String(ed.sourceHandle);
@@ -1063,7 +1123,16 @@ function diffWorkflows(base, proposed) {
         if ((a.type || '') !== (b.type || '')) out.unshift('type');
         return out;
     };
-    const changedNodes = [...pN].filter(([id, n]) => bN.has(id) && JSON.stringify([bN.get(id).type, bN.get(id).data]) !== JSON.stringify([n.type, n.data])).map(([id, n]) => ({ id, label: lbl(n), type: n.type, fields: changedFields(bN.get(id), n) }));
+    // A node is "changed" only when its type or an actual data field differs —
+    // NOT when the same data merely has its keys in a different order (the merge
+    // in materializeWorkflowEdit reorders keys, which a whole-object JSON.stringify
+    // compare would flag as a phantom change with an empty `fields` list).
+    const changedNodes = [];
+    for (const [id, n] of pN) {
+        if (!bN.has(id)) continue;
+        const fields = changedFields(bN.get(id), n);
+        if (fields.length) changedNodes.push({ id, label: lbl(n), type: n.type, fields });
+    }
     const ek = (e) => `${e.source}->${e.target}${e.sourceHandle ? '[' + e.sourceHandle + ']' : ''}`;
     const bE = new Set(((base && base.edges) || []).map(ek)), pE = new Set(((proposed && proposed.edges) || []).map(ek));
     return {
