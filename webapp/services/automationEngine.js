@@ -50,8 +50,8 @@ const BUILTIN_NODE_TYPES = [
     { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
     { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
     { key: 'render_chart',type: 'tool',       category: 'connector', label: 'Render Chart',     description: 'Renders a chart spec for display/download.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'render_chart' }, fields: ['args'] },
-    { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from MARKDOWN content (headings, tables, bullets, code, links). For styled HTML (CSS layouts/fonts) use the "HTML to PDF" node instead. Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send it, connect a Telegram or Slack node after this — it sends the file automatically.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
-    { key: 'html_to_pdf', type: 'tool',       category: 'connector', label: 'HTML to PDF',      description: 'Renders styled HTML (CSS layouts, web fonts, tables) to a PDF via WeasyPrint. Use this for HTML; use Create PDF for markdown. Args: { "content": "<html>…</html>", "outputName": "report.pdf" } (or "htmlPath": a /workspace HTML file). Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send it, connect a Telegram or Slack node after this — it sends the file automatically.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'html_to_pdf' }, fields: ['args'] },
+    { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from MARKDOWN content (headings, tables, bullets, code, links). For styled HTML (CSS layouts/fonts) use the "HTML to PDF" node instead. Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send it, connect a Telegram or Slack node after this. Optional "sendMode": "pdf" (default, file only) | "both" (data + file) | "data" (the rendered text only, no file) controls what that downstream node sends.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
+    { key: 'html_to_pdf', type: 'tool',       category: 'connector', label: 'HTML to PDF',      description: 'Renders styled HTML (CSS layouts, web fonts, tables) to a PDF via WeasyPrint. Use this for HTML; use Create PDF for markdown. Args: { "content": "<html>…</html>", "outputName": "report.pdf" } (or "htmlPath": a /workspace HTML file). Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send it, connect a Telegram or Slack node after this. Optional "sendMode": "pdf" (default) | "both" | "data" controls what that downstream node sends.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'html_to_pdf' }, fields: ['args'] },
     { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
     { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Run Python',       description: 'Runs a Python snippet in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
     { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Set a Unique key field (e.g. "url" or "id") to deduplicate — only unseen records are stored and the new ones are returned in `.new` (use this to track changes between runs). The key can be a comma-separated fallback list (first non-empty wins, e.g. "link,post_title") so a stable id is used when present. For a stable identity (so re-listed/edited records don\'t re-appear as new) add Ignore-words (e.g. "NEW") and/or turn on Normalize. Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value', 'key', 'keyStrip', 'keyNormalize'] },
@@ -339,6 +339,50 @@ function firstArtifact(...candidates) {
     return null;
 }
 
+// Like firstArtifact, but also returns the send preferences a PDF node tagged
+// onto its output: `sendMode` ('pdf' | 'both' | 'data') and `pdfData` (the text
+// that was rendered into the file). Lets a downstream Telegram/Slack node honor
+// the Create PDF node's "what to send" choice. sendMode is null when the carrier
+// didn't set one (any non-PDF artifact) → callers default to file-only.
+function upstreamFileInfo(...candidates) {
+    const isArt = (a) => a && typeof a === 'object' && a.name && (a.url || a.runId);
+    for (const c of candidates) {
+        if (!c) continue;
+        if (Array.isArray(c)) { if (isArt(c[0])) return { art: c[0], sendMode: null, pdfData: null }; continue; }
+        if (typeof c === 'object' && Array.isArray(c._artifacts) && isArt(c._artifacts[0])) {
+            return {
+                art: c._artifacts[0],
+                sendMode: (c._sendMode === 'pdf' || c._sendMode === 'both' || c._sendMode === 'data') ? c._sendMode : null,
+                pdfData: (typeof c._pdfData === 'string' && c._pdfData) ? c._pdfData : null,
+            };
+        }
+    }
+    return { art: null, sendMode: null, pdfData: null };
+}
+
+// Send `text` to a Telegram chat, splitting over the 4096-char limit into
+// chunks (see chunkText). Shared by the plain-text path and the "data + PDF" /
+// "data only" send modes. Throws with a helpful hint on failure.
+async function sendTelegramText(deps, ctx, node, token, chatId, text) {
+    const chunks = chunkText(text, 4000, 20);
+    let response;
+    for (const part of chunks) {
+        response = await dispatchTool(deps, ctx, node, 'http_request', {
+            url: `https://api.telegram.org/bot${token}/sendMessage`,
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text: part }),
+        });
+        const fail = httpFailureMessage(response);
+        if (fail) {
+            const hint = /403|forbidden/i.test(fail)
+                ? ' (the chat must message the bot first, or check the chat id / that the bot is a channel admin)'
+                : '';
+            throw new Error(`Telegram send failed — ${fail}${hint}`);
+        }
+    }
+    return { response, parts: chunks.length };
+}
+
 // Upload a workspace artifact to telegram / slack / http via the send_file skill.
 // Shared by the smart Telegram/Slack send nodes and the Create PDF "Send to"
 // delivery option. Throws on a skill-level failure so the user sees it.
@@ -423,7 +467,7 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 // Fold any non-reserved top-level data field into args without
                 // clobbering an explicit args entry — so the tool gets its params
                 // either way and we stop hitting "content … is required".
-                const RESERVED = new Set(['args', 'tool', 'label', 'kind', 'status', 'forward', 'description', 'model', 'temperature', 'maxTokens', 'delivery', 'botToken', 'chatId', 'channel', 'caption']);
+                const RESERVED = new Set(['args', 'tool', 'label', 'kind', 'status', 'forward', 'description', 'model', 'temperature', 'maxTokens', 'delivery', 'botToken', 'chatId', 'channel', 'caption', 'sendMode']);
                 for (const k of Object.keys(data)) {
                     if (!RESERVED.has(k) && !(k in args)) args[k] = data[k];
                 }
@@ -459,6 +503,15 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                     const r = await deliverArtifact(deps, ctx, node, dest, opts, art.name, caption);
                     parsed._delivered = { to: dest, file: art.name, ok: !(r && r.success === false) };
                 }
+            }
+            // Tag the PDF output with the "what to send" choice + the rendered
+            // content so a downstream Telegram/Slack node can send the file only,
+            // the data + file, or the data only. The artifact is always returned
+            // (the file stays downloadable) regardless of the mode.
+            if ((toolName === 'create_pdf' || toolName === 'html_to_pdf') && parsed && typeof parsed === 'object') {
+                parsed._sendMode = (data.sendMode === 'both' || data.sendMode === 'data') ? data.sendMode : 'pdf';
+                const rendered = args.content != null ? String(args.content) : '';
+                if (rendered.trim()) parsed._pdfData = rendered;
             }
             return parsed;
         }
@@ -551,26 +604,42 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
         case 'slack': {
             if (!deps.executeToolCall) throw new Error('Slack node needs the tool dispatcher.');
             // File from a previous step → upload via files.upload (needs an xoxb-
-            // bot token + channel; an incoming-webhook URL can only post text).
-            const slArt = (data.attachFile === false) ? null : firstArtifact(scope.last, ...(Array.isArray(inputs) ? inputs : []));
-            if (slArt) {
+            // bot token + channel; an incoming-webhook URL can only post text). A
+            // Create PDF node carries a sendMode: pdf=file only, both=file with the
+            // rendered data as its comment, data=the data as text (webhook) with no
+            // file. The "Attach upstream file" toggle (default on) opts out.
+            const url = String(data.webhookUrl || '').trim();
+            const postText = async (text) => {
+                if (!url) throw new Error('Slack: posting text needs a webhook URL (a bot token + channel can only upload files).');
+                const response = await dispatchTool(deps, ctx, node, 'http_request', {
+                    url, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+                });
+                const fail = httpFailureMessage(response);
+                if (fail) throw new Error(`Slack send failed — ${fail}`);
+                return response;
+            };
+            const info = (data.attachFile === false) ? { art: null } : upstreamFileInfo(scope.last, ...(Array.isArray(inputs) ? inputs : []));
+            if (info.art) {
+                const mode = info.sendMode || 'pdf';
+                if (mode === 'data') {
+                    const body = info.pdfData != null ? info.pdfData : ((data.text !== undefined && data.text !== '') ? String(data.text) : stringifyValue(scope.last));
+                    const response = await postText(body);
+                    return { sent: true, mode: 'text', response };
+                }
                 const botToken = String(data.botToken || '').trim();
                 const channel = String(data.channel || '').trim();
                 if (!botToken || !channel) {
                     throw new Error('Slack: to send a file, add a bot token (xoxb-…) and channel id — an incoming-webhook URL can only post text.');
                 }
-                const caption = (data.text !== undefined && data.text !== '') ? String(data.text) : '';
-                const r = await deliverArtifact(deps, ctx, node, 'slack', { botToken, channel }, slArt.name, caption);
-                return { sent: true, mode: 'document', file: slArt.name, response: r };
+                // "both" puts the full data in the file's comment (Slack allows a
+                // long initial_comment); "pdf" uses the node's text field if set.
+                const caption = (mode === 'both' && info.pdfData) ? info.pdfData
+                    : ((data.text !== undefined && data.text !== '') ? String(data.text) : '');
+                const r = await deliverArtifact(deps, ctx, node, 'slack', { botToken, channel }, info.art.name, caption);
+                return { sent: true, mode: mode === 'both' ? 'document+text' : 'document', file: info.art.name, response: r };
             }
-            const url = String(data.webhookUrl || '').trim();
-            if (!url) throw new Error('Slack node requires a webhook URL.');
             const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
-            const response = await dispatchTool(deps, ctx, node, 'http_request', {
-                url, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
-            });
-            const slackFail = httpFailureMessage(response);
-            if (slackFail) throw new Error(`Slack send failed — ${slackFail}`);
+            const response = await postText(text);
             return { sent: true, response };
         }
 
@@ -579,40 +648,35 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             const token = String(data.botToken || '').trim();
             const chatId = String(data.chatId || '').trim();
             if (!token || !chatId) throw new Error('Telegram node requires a bot token and chat id.');
-            // If a previous step produced a file (PDF/image/CSV…), send it as a
-            // document with any text as the caption — so "Create PDF → Telegram"
-            // just works. The "Attach upstream file" toggle (default on) opts out.
-            const tgArt = (data.attachFile === false) ? null : firstArtifact(scope.last, ...(Array.isArray(inputs) ? inputs : []));
-            if (tgArt) {
-                const caption = (data.text !== undefined && data.text !== '') ? String(data.text) : '';
-                const r = await deliverArtifact(deps, ctx, node, 'telegram', { botToken: token, chatId }, tgArt.name, caption);
-                return { sent: true, mode: 'document', file: tgArt.name, response: r };
-            }
-            const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
-            // Telegram rejects a sendMessage body over 4096 chars with HTTP 400
-            // ("message is too long"). Split into <=4096-char chunks (preferring
-            // paragraph/line/word boundaries) and send sequentially so a long
-            // model summary or a first-run flood of items goes through instead of
-            // failing the whole node. chunkText caps the number of parts so a
-            // pathological input can't fan out into hundreds of messages.
-            const chunks = chunkText(text, 4000, 20);
-            let response;
-            for (let ci = 0; ci < chunks.length; ci++) {
-                response = await dispatchTool(deps, ctx, node, 'http_request', {
-                    url: `https://api.telegram.org/bot${token}/sendMessage`,
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: chatId, text: chunks[ci] }),
-                });
-                const tgFail = httpFailureMessage(response);
-                if (tgFail) {
-                    // 403 = valid token but the bot can't message this chat.
-                    const hint = /403|forbidden/i.test(tgFail)
-                        ? ' (the chat must message the bot first, or check the chat id / that the bot is a channel admin)'
-                        : '';
-                    throw new Error(`Telegram send failed — ${tgFail}${hint}`);
+            // If a previous step produced a file (PDF/image/CSV…), send it — so
+            // "Create PDF → Telegram" just works. A Create PDF node also carries a
+            // "what to send" choice (sendMode): pdf=file only, both=file + the
+            // rendered data as text, data=the data as text with no file. Other
+            // artifacts (no sendMode) default to file-only. The "Attach upstream
+            // file" toggle (default on) opts out of file detection entirely.
+            const info = (data.attachFile === false) ? { art: null } : upstreamFileInfo(scope.last, ...(Array.isArray(inputs) ? inputs : []));
+            if (info.art) {
+                const mode = info.sendMode || 'pdf';
+                const captionText = (data.text !== undefined && data.text !== '') ? String(data.text) : '';
+                if (mode === 'data') {
+                    // Data only — skip the file, send the rendered content as text.
+                    const body = info.pdfData != null ? info.pdfData : (captionText || stringifyValue(scope.last));
+                    const { parts } = await sendTelegramText(deps, ctx, node, token, chatId, body);
+                    return { sent: true, mode: 'text', parts };
                 }
+                // pdf / both — send the document (Telegram caps captions at ~1024,
+                // so the full data goes as separate message(s) for "both").
+                const r = await deliverArtifact(deps, ctx, node, 'telegram', { botToken: token, chatId }, info.art.name, captionText);
+                if (mode === 'both' && info.pdfData) {
+                    const { parts } = await sendTelegramText(deps, ctx, node, token, chatId, info.pdfData);
+                    return { sent: true, mode: 'document+text', file: info.art.name, parts, response: r };
+                }
+                return { sent: true, mode: 'document', file: info.art.name, response: r };
             }
-            return { sent: true, parts: chunks.length, response };
+            // No file upstream — plain text send (chunked under the 4096 limit).
+            const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
+            const { response, parts } = await sendTelegramText(deps, ctx, node, token, chatId, text);
+            return { sent: true, parts, response };
         }
 
         case 'telegram_get': {
@@ -1242,7 +1306,7 @@ function buildBuilderSystemPrompt() {
         '- db_store: { "table": "items", "key": "id"?, "keyNormalize": true?, "value": "{{nodes.<id>}}"? } → outputs { new, stored, total }',
         '- db_query: { "table": "items", "limit": 100?, "order": "id DESC"?, "sql": "SELECT ..."? } → outputs the rows array',
         '- telegram: { "botToken": "...", "chatId": "...", "text": "..." }   slack: { "webhookUrl": "...", "text": "..." }',
-        '- SENDING A FILE (PDF/image/CSV) to Telegram/Slack: just wire the file step (e.g. create_pdf) → a telegram (or slack) node — it auto-detects the upstream file and sends it as a document, with "text" as the caption. Do NOT put {{...artifacts}} in "text" and do NOT add a separate send node. Slack file upload needs { "botToken": "xoxb-…", "channel": "..." } (a webhookUrl can only post text).',
+        '- SENDING A FILE (PDF/image/CSV) to Telegram/Slack: just wire the file step (e.g. create_pdf) → a telegram (or slack) node — it auto-detects the upstream file and sends it as a document, with "text" as the caption. Do NOT put {{...artifacts}} in "text" and do NOT add a separate send node. Slack file upload needs { "botToken": "xoxb-…", "channel": "..." } (a webhookUrl can only post text). To control what is sent, set the create_pdf/html_to_pdf node\'s "sendMode": "pdf" (file only, default) | "both" (the rendered data AND the file) | "data" (the rendered text only, no file).',
         '- gate.if / gate.filter: { "condition": { "left": "{{last}}", "op": "not_empty", "right": "" } } (ops: ==,!=,>,<,>=,<=,contains,not_contains,startsWith,endsWith,matches,empty,not_empty)',
         '- gate.switch: { "value": "{{last}}", "cases": [{ "op": "==", "value": "x", "handle": "x" }] }',
         '- set: { "name": "var", "value": "..." }   delay: { "ms": 1000 }',

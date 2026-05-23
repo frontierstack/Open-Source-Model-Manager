@@ -1680,7 +1680,16 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
                         ? 'Leave "content" blank (or omit it) to use the previous step’s output automatically — just connect the line. Or set it with {{last}} / {{nodes.id}} to override.'
                         : 'This tool reads its data from these Arguments — click a data tag to drop it into a value. (The incoming line isn’t passed in automatically.)'}</p>
                     {isPdf && (
-                        <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>The file stays downloadable from the result. To send it, connect a <b>Telegram</b> or <b>Slack</b> node after this — it sends the generated file automatically.</p>
+                        <div style={{ marginTop: 12, borderTop: '1px solid var(--rule-2)', paddingTop: 10 }}>
+                            <Field label="If a Telegram / Slack node follows, send">
+                                <select style={fieldInput} value={d.sendMode || 'pdf'} onChange={(e) => onChange({ sendMode: e.target.value })}>
+                                    <option value="pdf">The PDF only</option>
+                                    <option value="both">The data + the PDF</option>
+                                    <option value="data">The data only (no file)</option>
+                                </select>
+                            </Field>
+                            <p style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: -4 }}>The PDF always stays downloadable from the result. Connect a <b>Telegram</b> or <b>Slack</b> node after this to send it — this controls what that node sends.</p>
+                        </div>
                     )}
                 </>);
             })()}
