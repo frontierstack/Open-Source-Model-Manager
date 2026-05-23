@@ -1349,7 +1349,8 @@ function FlowEditor({ showSnackbar, models }) {
                             style={{ ...fieldInput, marginBottom: 0, padding: '6px 9px', fontSize: 12 }}
                         />
                     </div>
-                    <div style={{ overflowY: 'auto', flex: 1, padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
+                    <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+                    <div style={{ padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
                         {(() => {
                             const q = paletteQuery.trim().toLowerCase();
                             const searching = q.length > 0;
@@ -1431,7 +1432,7 @@ function FlowEditor({ showSnackbar, models }) {
                         <div style={{ padding: '0 8px 6px' }}>
                             <input type="text" value={chipLibQuery} onChange={(e) => setChipLibQuery(e.target.value)} placeholder="Search chips…" style={{ ...fieldInput, marginBottom: 0, padding: '6px 9px', fontSize: 12 }} />
                         </div>
-                        <div style={{ overflowY: 'auto', maxHeight: '32%', padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
+                        <div style={{ padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
                             {!selected && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', padding: '4px 2px 8px' }}>Open an automation to use chips.</div>}
                             {(() => {
                                 const q = chipLibQuery.trim().toLowerCase();
@@ -1457,6 +1458,7 @@ function FlowEditor({ showSnackbar, models }) {
                             })()}
                         </div>
                     </>)}
+                    </div>
                 </div>
 
                 {/* Canvas */}
