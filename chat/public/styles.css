@@ -6416,6 +6416,30 @@ svg.react-flow__connectionline {
 .auto-node__head { display: flex; align-items: center; gap: 7px; }
 .auto-node__icon { display: inline-flex; color: var(--accent); flex-shrink: 0; }
 .auto-node__title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Per-node power toggle — sits at the top-right of the node head. */
+.auto-node__power {
+    margin-left: auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 19px; height: 19px;
+    flex-shrink: 0;
+    border: none; border-radius: 5px;
+    background: transparent;
+    color: var(--ok, #22c55e);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.auto-node__power:hover { opacity: 1; background: var(--accent-soft, rgba(127,127,127,0.15)); }
+.auto-node__power.is-off { color: var(--danger, #ef4444); opacity: 1; }
+/* Disabled node: dim the body content but keep the power button bright so it
+   can be re-enabled. Opacity is per-element (not on the whole node) so the
+   button stays fully visible. */
+.auto-node.is-disabled { border-left-style: dashed; }
+.auto-node.is-disabled .auto-node__icon,
+.auto-node.is-disabled .auto-node__title,
+.auto-node.is-disabled .auto-node__sub,
+.auto-node.is-disabled .auto-node__out,
+.auto-node.is-disabled .auto-node__chips { opacity: 0.4; }
 .auto-node__sub {
     margin-top: 3px;
     font-size: 11px;

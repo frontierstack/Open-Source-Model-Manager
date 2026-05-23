@@ -992,6 +992,16 @@ async function runWorkflow(workflow, opts = {}) {
             let changed = false;
             for (const n of nodes) {
                 if (nodeState.get(n.id) !== 'pending') continue;
+                // Per-node power toggle: a disabled node never runs. Skip it and
+                // prune its outgoing edges so downstream branches that depend on
+                // it don't run either (a merge with another active input still
+                // runs, via the normal resolved/active edge logic below).
+                if (n.data && n.data.disabled) {
+                    nodeState.set(n.id, 'skipped');
+                    for (const e of outgoing.get(n.id)) edgeState.set(edgeKey(e), 'pruned');
+                    changed = true;
+                    continue;
+                }
                 const inc = incoming.get(n.id);
                 if (inc.length === 0) {
                     if (isEntry(n)) continue; // genuine entry — never auto-skipped

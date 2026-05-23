@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
-import AutomationNode, { iconFor, NodeDropContext } from './AutomationNode';
+import AutomationNode, { iconFor, NodeDropContext, NodeToggleContext } from './AutomationNode';
 
 const nodeTypes = { automation: AutomationNode };
 
@@ -766,6 +766,14 @@ function FlowEditor({ showSnackbar, models }) {
         setDirty(true);
     }, [setNodes]);
 
+    // Per-node power toggle — flips data.disabled. Disabled nodes are skipped by
+    // the engine (and their trigger doesn't fire), so this turns a single step
+    // off without deleting it.
+    const toggleNodeDisabled = useCallback((nodeId) => {
+        setNodes(ns => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, disabled: !n.data.disabled } } : n));
+        setDirty(true);
+    }, [setNodes]);
+
     // A library chip dropped onto a node on the canvas attaches to it (it
     // post-processes that node's output). Stored on data.chips; no duplicates.
     const handleDropChip = useCallback((nodeId, chipId) => {
@@ -1469,6 +1477,7 @@ function FlowEditor({ showSnackbar, models }) {
                         </div>
                     ) : (
                         <NodeDropContext.Provider value={handleDropChip}>
+                        <NodeToggleContext.Provider value={toggleNodeDisabled}>
                         <EdgeActionsContext.Provider value={edgeActions}>
                         <ReactFlow
                             className="automation-flow"
@@ -1492,6 +1501,7 @@ function FlowEditor({ showSnackbar, models }) {
                             <MiniMap pannable zoomable style={{ width: 130, height: 90 }} />
                         </ReactFlow>
                         </EdgeActionsContext.Provider>
+                        </NodeToggleContext.Provider>
                         </NodeDropContext.Provider>
                     )}
                     {assembling && (

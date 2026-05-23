@@ -8820,7 +8820,7 @@ async function fireAutomationEvent(eventName, payload = {}) {
         const workflows = await loadWorkflows();
         for (const wf of workflows) {
             if (!wf.enabled || wf.archived) continue;
-            const matches = (wf.nodes || []).some(n => n.type === 'trigger.event' && n.data && n.data.event === eventName);
+            const matches = (wf.nodes || []).some(n => n.type === 'trigger.event' && n.data && n.data.event === eventName && !n.data.disabled);
             if (!matches) continue;
             executeWorkflowRun(wf, {
                 userId: wf.userId || null,
@@ -8851,6 +8851,10 @@ async function automationSchedulerTick() {
             if (!wf.enabled || wf.archived) continue;
             for (const node of (wf.nodes || [])) {
                 if (node.type !== 'trigger.schedule') continue;
+                // Per-node power toggle: a disabled trigger does not fire. Skip
+                // before liveKeys.add so its schedule state is dropped (re-enabling
+                // re-seeds fresh, firing one interval later).
+                if (node.data && node.data.disabled) continue;
                 const key = `${wf.id}:${node.id}`;
                 liveKeys.add(key);
                 const d = node.data || {};
@@ -8952,6 +8956,7 @@ async function automationTelegramTick() {
             if (!wf.enabled || wf.archived) continue;
             for (const node of (wf.nodes || [])) {
                 if (node.type !== 'trigger.telegram') continue;
+                if (node.data && node.data.disabled) continue; // per-node power toggle
                 const token = String((node.data && node.data.botToken) || '').trim();
                 if (!token) continue;
                 if (!byToken.has(token)) byToken.set(token, []);
@@ -9028,6 +9033,7 @@ async function automationSlackTick() {
             if (!wf.enabled || wf.archived) continue;
             for (const node of (wf.nodes || [])) {
                 if (node.type !== 'trigger.slack') continue;
+                if (node.data && node.data.disabled) continue; // per-node power toggle
                 const token = String((node.data && node.data.botToken) || '').trim();
                 const channel = String((node.data && node.data.channel) || '').trim();
                 if (!token || !channel) continue;

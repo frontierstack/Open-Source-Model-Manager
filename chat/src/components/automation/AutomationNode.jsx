@@ -4,11 +4,15 @@ import {
     Zap, Clock, Webhook, Bell, Cpu, Wrench, Search, Globe, Database,
     BarChart3, FileText, Timer, Variable, GitBranch, Filter, Merge, Flag, Box as BoxIcon,
     Braces, Code, Download, MessageSquare, MessagesSquare, Send, Inbox, Repeat,
+    Power, PowerOff,
 } from 'lucide-react';
 
 // Set by AutomationView: attachChip(nodeId, chipId) attaches a library chip
 // dropped onto a node on the canvas (post-processes the node's output).
 export const NodeDropContext = React.createContext(null);
+// Set by AutomationView: toggleNodeDisabled(nodeId) flips data.disabled so the
+// per-node power button can disable/enable a node from running.
+export const NodeToggleContext = React.createContext(null);
 const CHIP_LIB_MIME = 'application/automation-chiplib';
 
 // Which handles a node exposes, by engine kind. Triggers are sources only,
@@ -131,6 +135,8 @@ function subtitleFor(kind, data) {
 export default function AutomationNode({ id, data, selected }) {
     const kind = data.kind;
     const attachChip = React.useContext(NodeDropContext);
+    const toggleDisabled = React.useContext(NodeToggleContext);
+    const disabled = !!data.disabled;
     const [chipOver, setChipOver] = useState(false);
     const acceptsChip = (e) => Array.from(e.dataTransfer.types || []).includes(CHIP_LIB_MIME);
     const onChipDragOver = (e) => { if (attachChip && acceptsChip(e)) { e.preventDefault(); e.stopPropagation(); setChipOver(true); } };
@@ -149,7 +155,7 @@ export default function AutomationNode({ id, data, selected }) {
     const sub = subtitleFor(kind, data);
 
     return (
-        <div className={`auto-node ${categoryClass(kind)} ${statusClass} ${animClass} ${selected ? 'selected' : ''} ${chipOver ? 'is-chip-target' : ''}`}
+        <div className={`auto-node ${categoryClass(kind)} ${statusClass} ${animClass} ${selected ? 'selected' : ''} ${chipOver ? 'is-chip-target' : ''} ${disabled ? 'is-disabled' : ''}`}
             onDragOver={onChipDragOver} onDragLeave={() => setChipOver(false)} onDrop={onChipDrop}>
             {/* target handles (left) */}
             {targets.map((t, i) => (
@@ -167,6 +173,21 @@ export default function AutomationNode({ id, data, selected }) {
                 <span className="auto-node__title">{data.label || kind}</span>
                 {status === 'running' && (
                     <span className="auto-node__status"><span className="auto-node__spinner" /></span>
+                )}
+                {/* Per-node power toggle (top-right). nodrag/stopPropagation so
+                    clicking it doesn't drag or select the node. Disabled nodes
+                    are skipped by the engine and don't fire their trigger. */}
+                {toggleDisabled && (
+                    <button
+                        type="button"
+                        className={`auto-node__power nodrag${disabled ? ' is-off' : ''}`}
+                        title={disabled ? 'Node disabled — click to enable' : 'Disable this node'}
+                        aria-label={disabled ? 'Enable node' : 'Disable node'}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => { e.stopPropagation(); toggleDisabled(id); }}
+                    >
+                        {disabled ? <PowerOff size={12} strokeWidth={2.4} /> : <Power size={12} strokeWidth={2.4} />}
+                    </button>
                 )}
             </div>
             {kind === 'trigger.schedule' && data.intervalMs && !data.cron
