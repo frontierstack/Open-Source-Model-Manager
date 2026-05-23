@@ -838,6 +838,112 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
 //   ctx      : { userId, apiKeyData, workspaceBucket }
 //   signal   : optional AbortSignal to cancel mid-run
 // returns { status:'completed'|'failed', result, error, timeline:[...] }
+// ============================================================
+// Library chips — post-process a node's output (parse / transform / filter).
+// A node carries data.chips = [chipId, …]; after it runs, each chip is applied
+// in order. Ids MUST match the chat app's CHIP_LIBRARY. Best-effort: a transform
+// that throws leaves the value unchanged rather than failing the run.
+// ============================================================
+function chipText(v) {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) return v.map(x => (x == null ? '' : (typeof x === 'string' ? x : JSON.stringify(x)))).join('\n');
+    try { return JSON.stringify(v); } catch { return String(v); }
+}
+function chipList(v) {
+    if (Array.isArray(v)) return v;
+    if (v == null) return [];
+    if (typeof v === 'string') return v.split(/\r?\n/);
+    if (typeof v === 'object') { for (const k of ['results', 'items', 'new', 'rows']) if (Array.isArray(v[k])) return v[k]; }
+    return [v];
+}
+function chipNum(v, fn) {
+    if (Array.isArray(v)) return v.map(x => chipNum(x, fn));
+    const n = typeof v === 'number' ? v : parseFloat(v);
+    return Number.isFinite(n) ? fn(n) : v;
+}
+const CHIP_URL_RE = /https?:\/\/[^\s)<>"']+/g;
+const CHIP_OPS = {
+    trim: v => chipText(v).trim(),
+    uppercase: v => chipText(v).toUpperCase(),
+    lowercase: v => chipText(v).toLowerCase(),
+    titlecase: v => chipText(v).replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()),
+    capitalize: v => { const s = chipText(v); return s.charAt(0).toUpperCase() + s.slice(1); },
+    collapse_ws: v => chipText(v).replace(/\s+/g, ' ').trim(),
+    remove_blank_lines: v => chipText(v).split(/\r?\n/).filter(l => l.trim()).join('\n'),
+    strip_html: v => chipText(v).replace(/<[^>]*>/g, ''),
+    slugify: v => chipText(v).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+    reverse_text: v => [...chipText(v)].reverse().join(''),
+    truncate_280: v => { const s = chipText(v); return s.length > 280 ? s.slice(0, 279) + '…' : s; },
+    word_count: v => (chipText(v).trim().match(/\S+/g) || []).length,
+    char_count: v => chipText(v).length,
+    dedent: v => { const lines = chipText(v).split(/\r?\n/); const ind = lines.filter(l => l.trim()).map(l => (l.match(/^\s*/)[0] || '').length); const m = ind.length ? Math.min(...ind) : 0; return lines.map(l => l.slice(m)).join('\n'); },
+    normalize_quotes: v => chipText(v).replace(/[“”]/g, '"').replace(/[‘’]/g, "'"),
+    parse_json: v => { if (typeof v === 'string') { try { return JSON.parse(v); } catch { return v; } } return v; },
+    to_json: v => { try { return JSON.stringify(v); } catch { return chipText(v); } },
+    extract_urls: v => chipText(v).match(CHIP_URL_RE) || [],
+    extract_emails: v => chipText(v).match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [],
+    extract_numbers: v => (chipText(v).match(/-?\d+(?:\.\d+)?/g) || []).map(Number),
+    extract_hashtags: v => chipText(v).match(/#[A-Za-z0-9_]+/g) || [],
+    first_url: v => (chipText(v).match(CHIP_URL_RE) || [''])[0],
+    domain_of: v => { const s = chipText(v).trim(); try { return new URL(s).hostname; } catch { const m = s.match(/^(?:https?:\/\/)?([^/\s]+)/i); return m ? m[1] : s; } },
+    md_to_text: v => chipText(v).replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`>#]+/g, '').replace(/^\s*[-+*]\s+/gm, '').trim(),
+    html_to_text: v => chipText(v).replace(/<\s*br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h[1-6])>/gi, '\n').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(),
+    csv_to_rows: v => { const lines = chipText(v).split(/\r?\n/).filter(l => l.trim()); if (!lines.length) return []; const split = l => l.split(',').map(c => c.trim().replace(/^"|"$/g, '')); const headers = split(lines[0]); return lines.slice(1).map(l => { const cells = split(l); const o = {}; headers.forEach((h, i) => { o[h] = cells[i]; }); return o; }); },
+    lines_to_list: v => chipText(v).split(/\r?\n/),
+    split_commas: v => chipText(v).split(',').map(s => s.trim()),
+    extract_dates: v => chipText(v).match(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g) || [],
+    first: v => chipList(v)[0],
+    last: v => { const a = chipList(v); return a[a.length - 1]; },
+    first_5: v => chipList(v).slice(0, 5),
+    first_10: v => chipList(v).slice(0, 10),
+    skip_1: v => chipList(v).slice(1),
+    reverse_list: v => chipList(v).slice().reverse(),
+    sort_az: v => chipList(v).slice().sort((a, b) => chipText(a).localeCompare(chipText(b))),
+    sort_za: v => chipList(v).slice().sort((a, b) => chipText(b).localeCompare(chipText(a))),
+    sort_numeric: v => chipList(v).slice().sort((a, b) => (parseFloat(a) || 0) - (parseFloat(b) || 0)),
+    dedupe: v => { const seen = new Set(); return chipList(v).filter(x => { const k = typeof x === 'object' ? JSON.stringify(x) : String(x); if (seen.has(k)) return false; seen.add(k); return true; }); },
+    remove_empties: v => chipList(v).filter(x => x != null && !(typeof x === 'string' && !x.trim()) && !(Array.isArray(x) && !x.length)),
+    count_items: v => chipList(v).length,
+    join_commas: v => chipList(v).map(chipText).join(', '),
+    join_newlines: v => chipList(v).map(chipText).join('\n'),
+    join_bullets: v => chipList(v).map(x => '- ' + chipText(x)).join('\n'),
+    flatten: v => chipList(v).reduce((a, x) => a.concat(Array.isArray(x) ? x : [x]), []),
+    shuffle: v => { const a = chipList(v).slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; } return a; },
+    filter_nonempty: v => chipList(v).filter(x => x != null && !(typeof x === 'string' && !x.trim()) && !(typeof x === 'object' && !Array.isArray(x) && Object.keys(x).length === 0)),
+    filter_has_url: v => chipList(v).filter(x => /https?:\/\//i.test(typeof x === 'string' ? x : JSON.stringify(x))),
+    filter_unique: v => CHIP_OPS.dedupe(v),
+    drop_nulls: v => { const clean = o => { if (Array.isArray(o)) return o.map(clean); if (o && typeof o === 'object') { const r = {}; for (const k of Object.keys(o)) { const val = o[k]; if (val != null && val !== '') r[k] = clean(val); } return r; } return o; }; return clean(v); },
+    round: v => chipNum(v, Math.round),
+    round_2: v => chipNum(v, n => Math.round(n * 100) / 100),
+    floor: v => chipNum(v, Math.floor),
+    ceil: v => chipNum(v, Math.ceil),
+    abs: v => chipNum(v, Math.abs),
+    to_currency: v => chipNum(v, n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })),
+    to_percent: v => chipNum(v, n => (n * 100).toFixed(1) + '%'),
+    wrap_code: v => '```\n' + chipText(v) + '\n```',
+    wrap_quotes: v => '"' + chipText(v) + '"',
+    to_uppercase_first: v => { const s = chipText(v).toLowerCase(); return s.charAt(0).toUpperCase() + s.slice(1); },
+    now_timestamp: v => chipText(v) + '\n\n' + new Date().toISOString(),
+    pretty_json: v => { let o = v; if (typeof v === 'string') { try { o = JSON.parse(v); } catch { return v; } } try { return JSON.stringify(o, null, 2); } catch { return chipText(v); } },
+    // add_prefix / add_suffix need a parameter (not in the chip model yet) → no-op.
+};
+function applyNodeChips(output, chips) {
+    // Common fetch/http outputs wrap the useful payload in .content/.data — unwrap
+    // so "Fetch URL → Parse JSON" transforms the fetched body, not the envelope.
+    let cur = output;
+    if (cur && typeof cur === 'object' && !Array.isArray(cur)) {
+        if (typeof cur.content === 'string') cur = cur.content;
+        else if (typeof cur.data === 'string') cur = cur.data;
+    }
+    for (const id of chips) {
+        const fn = CHIP_OPS[id];
+        if (typeof fn !== 'function') continue;
+        try { cur = fn(cur); } catch (_) { /* keep last good value on a transform error */ }
+    }
+    return cur;
+}
+
 async function runWorkflow(workflow, opts = {}) {
     const { input = {}, deps = {}, onEvent = () => {}, ctx = {}, signal = null } = opts;
     const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
@@ -960,6 +1066,12 @@ async function runWorkflow(workflow, opts = {}) {
                     continue;
                 }
                 let output = r.output;
+                // Apply attached library chips (parse/transform/filter) in order.
+                // Skipped for gate routing outputs so branch handles are preserved.
+                const chipIds = (node.data && Array.isArray(node.data.chips)) ? node.data.chips : [];
+                if (chipIds.length && !(output && typeof output === 'object' && output._handle)) {
+                    output = applyNodeChips(output, chipIds);
+                }
                 nodeState.set(node.id, 'done');
                 scope.nodes[node.id] = output;
                 scope.last = output;
