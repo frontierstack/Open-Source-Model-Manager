@@ -364,7 +364,17 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             } else {
                 toolName = data.tool;
                 if (!toolName) throw new Error('Tool node is missing a `tool` name.');
-                args = (data.args && typeof data.args === 'object') ? data.args : {};
+                args = (data.args && typeof data.args === 'object') ? { ...data.args } : {};
+                // Tolerate the common authoring/LLM mistake of putting a tool's
+                // parameters at the node-data TOP LEVEL instead of under `args`
+                // (e.g. create_pdf with content/filename as siblings of `tool`).
+                // Fold any non-reserved top-level data field into args without
+                // clobbering an explicit args entry — so the tool gets its params
+                // either way and we stop hitting "content … is required".
+                const RESERVED = new Set(['args', 'tool', 'label', 'kind', 'status', 'forward', 'description', 'model', 'temperature', 'maxTokens']);
+                for (const k of Object.keys(data)) {
+                    if (!RESERVED.has(k) && !(k in args)) args[k] = data[k];
+                }
             }
             const msg = await deps.executeToolCall(
                 { id: `auto-${node.id}`, function: { name: toolName, arguments: JSON.stringify(args) } },
@@ -824,6 +834,144 @@ function summarizeOutput(output) {
 }
 
 // ---------------------------------------------------------------------------
+// Run-health assessment — the core of result-aware "Test & improve".
+//
+// A workflow run can report status:'completed' yet have produced ZERO real data:
+// web_search nodes return {error:"rate-limited …"} (caught internally, not
+// thrown), a parse_json with the wrong path returns [], a misconfigured map
+// returns {results:[{error:'…needs a tool name'}]}, and a model node then writes
+// "Error Retrieving Content" into the final artifact. None of those throw, so the
+// engine declares success. This pure assessor scans the per-node outputs of a run
+// record and flags those silent failures so the repair loop can iterate.
+// ---------------------------------------------------------------------------
+
+// Phrases a model emits when it had no real source data to work from. Kept as a
+// named constant so it's easy to extend. Case-insensitive.
+const MODEL_NO_DATA_RE = /error retrieving|no content|unable to (retrieve|fetch|access)|couldn't (fetch|retrieve|access)|could not (fetch|retrieve|access)|no (data|articles|results) ((was|were) )?(found|available|retrieved)/i;
+
+// Node types that are SUPPOSED to produce data — an empty result from one of
+// these is a problem worth flagging; an empty `set`/`delay`/`output` is fine.
+const DATA_PRODUCING_TYPES = new Set([
+    'web_search', 'fetch_url', 'parse_json', 'map', 'merge', 'db_query',
+    'crawl', 'http_request', 'tool',
+]);
+
+// True when a node type is a model node (engine type is 'model').
+function isModelNodeType(t) { return t === 'model'; }
+
+// "Empty data" detector for an object/array node output. Returns the reason
+// string when the value carries no usable data, else null.
+function emptyDataReason(o) {
+    if (Array.isArray(o)) return o.length === 0 ? 'returned an empty array' : null;
+    if (o && typeof o === 'object') {
+        // Common engine output shapes: merge {items,count}, web_search {results},
+        // map {count,results}, db_query (array, handled above).
+        if (Array.isArray(o.results) && o.results.length === 0) return 'results is empty';
+        if (Array.isArray(o.items) && o.items.length === 0) return 'items is empty';
+        if (typeof o.count === 'number' && o.count === 0) return 'count is 0';
+        // parse_json wraps a scalar/empty value as { value: ... }; an empty array
+        // or null value there means the path matched nothing.
+        if ('value' in o && (o.value == null || (Array.isArray(o.value) && o.value.length === 0))) {
+            return 'extracted no value (path matched nothing)';
+        }
+    }
+    return null;
+}
+
+// Assess the health of a finished run record. Pure (no I/O).
+//   runRecord.nodes = [{ nodeId, type, status, error?, output? }]
+// Returns { ok, issues:[{nodeId,type,severity,detail}], score }.
+//
+// `ok` definition: NO high-severity issues anywhere, AND no medium-severity
+// issue on a TERMINAL node (a node with no outgoing edges / the last data
+// producer). Rationale: a mid-graph empty result is sometimes legitimate (a
+// dedupe gate may legitimately yield nothing this run), but the user-facing
+// END of the workflow producing nothing means the run was useless. We don't have
+// edge info on the run record, so "terminal" is approximated as the LAST node in
+// the timeline (runs append nodes in completion order) plus any explicit model
+// node (the model is what writes the artifact, so its emptiness is always
+// user-facing). High-severity issues always fail `ok` regardless of position.
+function assessRunHealth(runRecord) {
+    const issues = [];
+    const nodes = (runRecord && Array.isArray(runRecord.nodes)) ? runRecord.nodes : [];
+
+    nodes.forEach((n, idx) => {
+        const type = n.type || '';
+        const out = n.output;
+        const isLast = idx === nodes.length - 1;
+        const push = (severity, detail) => issues.push({ nodeId: n.nodeId, type, severity, detail });
+
+        // 1. Hard failure: the engine marked the node failed or set an error.
+        if (n.status === 'failed' || n.error) {
+            push('high', `node ${n.status === 'failed' ? 'failed' : 'errored'}${n.error ? ': ' + String(n.error).slice(0, 200) : ''}`);
+            // Don't double-flag the same node for its output below.
+            return;
+        }
+
+        // 2. The handler RETURNED an {error} payload instead of throwing
+        //    (web_search rate-limit, fetch fallbacks exhausted, etc.).
+        if (out && typeof out === 'object' && !Array.isArray(out) && typeof out.error === 'string' && out.error) {
+            push('high', `output carries an error: ${String(out.error).slice(0, 200)}`);
+            return;
+        }
+
+        // 3. A map node whose EVERY item failed (each slot is an {error} object).
+        if (type === 'map' && out && typeof out === 'object' && Array.isArray(out.results) && out.results.length) {
+            const allErr = out.results.every(r => r && typeof r === 'object' && typeof r.error === 'string' && r.error);
+            if (allErr) {
+                const sample = String(out.results[0].error).slice(0, 200);
+                push('high', `every map item failed (e.g. "${sample}")`);
+                return;
+            }
+        }
+
+        // 4. A model/terminal node whose text reads like a "no data" apology.
+        if (typeof out === 'string' && MODEL_NO_DATA_RE.test(out)) {
+            push('high', `${isModelNodeType(type) ? 'model' : 'node'} reported missing data: "${out.slice(0, 160).replace(/\s+/g, ' ').trim()}"`);
+            return;
+        }
+
+        // 5. A data-producing node that yielded nothing (medium). Severity is
+        //    medium because a mid-graph empty can be legitimate; `ok` only fails
+        //    on medium issues at the terminal node (see header comment).
+        if (DATA_PRODUCING_TYPES.has(type)) {
+            const reason = emptyDataReason(out);
+            if (reason) push('medium', `produced no data — ${reason}`);
+        }
+    });
+
+    // score: weighted issue count (high=3, medium=1).
+    const score = issues.reduce((s, i) => s + (i.severity === 'high' ? 3 : 1), 0);
+    const hasHigh = issues.some(i => i.severity === 'high');
+    const lastNodeId = nodes.length ? nodes[nodes.length - 1].nodeId : null;
+    // Medium issue is disqualifying only when it sits on a model node or the
+    // terminal node — i.e. the workflow's user-facing output is empty.
+    const terminalMedium = issues.some(i =>
+        i.severity === 'medium' && (isModelNodeType(i.type) || i.nodeId === lastNodeId));
+    const ok = !hasHigh && !terminalMedium;
+    return { ok, issues, score };
+}
+
+// Pure decision helper for the repair loop (kept here so it's unit-testable
+// without booting the server). Returns true when another model repair pass is
+// warranted: the run is unhealthy, it's NOT a pure-config error the user must
+// fix (token/credential/etc.), and we still have passes left.
+//   pass    — the pass index just completed (1-based)
+//   maxPass — MAX_REPAIR_PASSES
+function shouldRepair(assess, pass, maxPass, configError) {
+    if (configError) return false;          // user must supply the missing config
+    if (assess && assess.ok) return false;  // data is flowing — stop
+    return pass < maxPass;                   // unhealthy and passes remain
+}
+
+// Condense an assessment's issues into a short, node-grouped line for buildLog,
+// e.g. "n2/n3/n4 web_search rate-limited; n6 parse_json produced 0 items".
+function summarizeIssues(issues) {
+    if (!issues || !issues.length) return 'no issues';
+    return issues.map(i => `${i.nodeId}${i.type ? ' (' + i.type + ')' : ''}: ${i.detail}`).join('; ');
+}
+
+// ---------------------------------------------------------------------------
 // Cron matching (self-contained — no dependency). The scheduler ticks every
 // 60s, so we only need "does this minute match the expression", not next-run
 // computation. Supports the standard 5 fields (min hour dom month dow) with
@@ -901,11 +1049,15 @@ function buildBuilderSystemPrompt() {
         '- Reference a previous step inside any text/arg with {{nodes.<id>.<field>}} or {{last}} (previous output). Exact {{nodes.<id>}} is that node\'s whole output.',
         '- Branch from gates with sourceHandle on the OUTGOING edge: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case.',
         '- DEDUPE / "only new or unique items on future runs" / "track changes" / "notify only when something new": ALWAYS use a db_store node with a "key" (the unique field — id or url; add "keyNormalize": true and "keyStrip" for messy text/titles). It stores only unseen records and returns them in `.new`. Then add a gate.if on `{{nodes.<store>.new}}` with op "not_empty" and continue on the "true" handle. NEVER rely on the model to remember past items — persistence is what makes it unique across runs.',
+        '- LATEST NEWS / ARTICLES FROM A SITE: do NOT use a site-specific web_search (e.g. query "site:thehackernews.com latest") — DuckDuckGo rate-limits those and they usually return nothing. Instead use fetch_url or crawl_pages on the site\'s HOMEPAGE or its RSS/Atom FEED (e.g. https://thehackernews.com/, https://www.darkreading.com/, https://feeds.feedburner.com/TheHackersNews). web_search is only for open-ended "find pages about X" queries.',
+        '- CHAINING search/extract → parse_json: the parse_json "path" MUST match the REAL upstream shape. A merge node outputs {items:[...],count}; web_search outputs {results:[...]}. To pull every url from MERGED searches use path "items.*.results.*.url" (NOT "*.url"); from a single web_search use "results.*.url".',
+        '- A map (Loop) node\'s "action" is "tool" or "model" — NOT a tool name. For a tool action set "action":"tool" AND "tool":"<valid tool name e.g. fetch_url|crawl_pages>" AND put per-item args in "args" using {{item}} for the current list item. Never put the tool name in "action".',
         '',
         'Per-node data (set only what is needed):',
         '- model: { "prompt": "...", "systemPrompt": "..."? }  (the answer string is the output)',
         '- fetch_url: { "url": "..." }   web_search: { "query": "...", "limit": 5 }',
         '- http_request: { "args": { "url": "...", "method": "GET" } }   run_python: { "args": { "code": "print(1)" } }',
+        '- create_pdf / create_file / any tool node: ALWAYS nest the tool parameters under "args" — e.g. { "tool": "create_pdf", "args": { "content": "{{nodes.<id>}}", "filename": "report.pdf" } }. NEVER put content/filename/etc. at the node top level (siblings of "tool"); they will be ignored.',
         '- parse_json: { "source": "{{nodes.<id>.data}}", "path": "results.*.url"? }',
         '- db_store: { "table": "items", "key": "id"?, "keyNormalize": true?, "value": "{{nodes.<id>}}"? } → outputs { new, stored, total }',
         '- db_query: { "table": "items", "limit": 100?, "order": "id DESC"?, "sql": "SELECT ..."? } → outputs the rows array',
@@ -1152,4 +1304,7 @@ module.exports = {
     materializeWorkflow,
     materializeWorkflowEdit,
     diffWorkflows,
+    assessRunHealth,
+    shouldRepair,
+    summarizeIssues,
 };

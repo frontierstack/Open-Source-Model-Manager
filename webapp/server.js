@@ -7902,12 +7902,21 @@ app.post('/api/automations', requireAuth, async (req, res) => {
     }
 });
 
-// Run `wfObj` once and, if it failed with a fixable (non-config) error, ask the
-// model to repair it (one pass) — mutating wfObj.nodes/edges + appending to
-// buildLog. Does NOT persist (caller decides). `base` is the workflow the model
-// edits against (id/position preservation); for Build it's wfObj itself, for the
-// Edit preview it's the original (so the proposed revision is what's run/fixed).
+// Max model-driven repair passes per Test-&-improve invocation. A run that
+// "completes" with zero real data still counts as needing repair (see
+// automationEngine.assessRunHealth), so this loops run→assess→repair, not once.
+const MAX_REPAIR_PASSES = 3;
+
+// Run `wfObj`, assess whether it actually produced data, and — while it didn't and
+// the failure isn't pure missing-config — ask the model to repair it, looping up
+// to MAX_REPAIR_PASSES. Mutates wfObj.nodes/edges in place and appends a rich
+// per-pass log to buildLog. Does NOT persist (caller decides). `base` is the
+// workflow the model edits against (id/position preservation); for Build it's
+// wfObj itself, for the Edit preview it's the original (so the proposed revision
+// is what's run/fixed). Keeps the BEST (fewest-issues) version seen.
 async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
+    // Compact per-node summary fed back to the model so it fixes against the
+    // ACTUAL outputs (wrong paths, error payloads, empty results).
     const summarize = (outcome, rec) => {
         const L = [`status=${outcome.status}`];
         if (outcome.error) L.push(`error: ${outcome.error}`);
@@ -7921,19 +7930,70 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
     const runOnce = async () => {
         try {
             // Mirror test-run events to the user's SSE stream so the editor
-            // animates the run on the board when the workflow is open (Edit case).
+            // animates each pass on the board when the workflow is open (Edit case).
             const { runId, outcome } = await executeWorkflowRun(wfObj, { userId: req.userId, apiKeyData: req.apiKeyData || null, trigger: 'test', input: {}, onEvent: (evt) => { try { mirrorAutomationEvent(req.userId, evt); } catch (_) {} } });
             let rec = null; try { rec = await workflowRunStore.getRun(req.userId, runId); } catch (_) {}
             return { outcome, rec };
         } catch (e) { return { outcome: { status: 'failed', error: e.message }, rec: null }; }
     };
+    // Pure-config errors the user must resolve (don't burn passes trying to fix
+    // a missing token or an unreachable site — that's not a wiring bug).
     const isConfigError = (s) => /token|credential|chat id|webhook url|bot token|api key|not in the channel|channels:history|requires a /i.test(String(s || ''));
-    const { outcome, rec } = await runOnce();
-    buildLog.push(`Test run: ${outcome.status}${outcome.error ? ` — ${outcome.error}` : ''}`);
-    if (outcome.status === 'failed' && !isConfigError(outcome.error)) {
+
+    // Targeted, data-driven guidance appended to every repair request — these are
+    // the exact traps the cybersecurity-newspaper workflow fell into.
+    const REPAIR_GUIDANCE = [
+        'GUIDANCE — apply only what the run results above show is broken:',
+        '- If web_search nodes returned an {error} about rate-limiting / DuckDuckGo / Brave / Scrapling: site-specific web_search queries are unreliable. Replace them with fetch_url or crawl_pages directly on the source site\'s homepage or RSS/Atom feed (e.g. https://thehackernews.com/, https://www.darkreading.com/, https://cybersecuritynews.com/, or that site\'s feed URL).',
+        '- If a parse_json node returned [] or extracted nothing: its "path" does not match the real upstream shape shown above. A merge outputs {items:[...],count}; web_search outputs {results:[...]}. To get all urls from MERGED searches use path "items.*.results.*.url" (NOT "*.url").',
+        '- If a map node returned results full of {error:"…needs a tool/skill name"}: a map\'s "action" must be "tool" or "model". For a tool action set "action":"tool", set "tool" to a valid name (e.g. "fetch_url" or "crawl_pages"), and put per-item args in "args" using {{item}} for the current item. Do NOT put the tool name in "action".',
+        '- If a map node failed EVERY item with "Invalid URL" (or ran once treating a whole string as a single item): its "items" resolved to a STRING, not a list. A model node\'s output is a STRING, so you CANNOT feed a model node straight into a map. Fix it one of two ways: (a) replace that model node with a "set" node whose "value" is a real JSON array of the actual URLs (e.g. {"name":"urls","value":["https://a.com/feed/","https://b.com/rss.xml"]}); OR (b) add a "parse_json" node after the model to parse its JSON-array string into a real array. Then point the map\'s "items" at that node with an EXACT template (items:"{{nodes.<id>}}" or "{{nodes.<id>.<field>}}", no surrounding text) so the raw array is passed.',
+        '- For "latest news from a site", fetch_url works on the site HOMEPAGE and on its RSS/Atom FEED and returns real recent content. Prefer feed URLs, e.g. https://www.bleepingcomputer.com/feed/ , https://www.darkreading.com/rss.xml , https://krebsonsecurity.com/feed/ , https://thehackernews.com/ (homepage). Avoid feedburner.com mirrors (often refused).',
+        '- If the final model node wrote an "error retrieving / no content" style message: that means it had no real source data — fix the upstream fetch/extract nodes so real content reaches it.',
+    ].join('\n');
+
+    // Snapshot the best version seen so a worse final pass doesn't win.
+    let best = { score: Infinity, nodes: null, edges: null };
+    const remember = (assess) => {
+        if (assess && assess.score < best.score) {
+            best = { score: assess.score, nodes: JSON.parse(JSON.stringify(wfObj.nodes)), edges: JSON.parse(JSON.stringify(wfObj.edges)) };
+        }
+    };
+
+    let lastAssess = null;
+    let lastOutcome = null;
+    let configStop = false;
+
+    for (let pass = 1; pass <= MAX_REPAIR_PASSES; pass++) {
+        const { outcome, rec } = await runOnce();
+        lastOutcome = outcome;
+        const configError = outcome.status === 'failed' && isConfigError(outcome.error);
+        // assessRunHealth reads rec.nodes; if the run threw before producing a
+        // record, treat the thrown error itself as a high-severity issue.
+        let assess;
+        if (rec) {
+            assess = automationEngine.assessRunHealth(rec);
+        } else {
+            assess = { ok: outcome.status === 'completed', issues: outcome.error ? [{ nodeId: '(run)', type: '', severity: 'high', detail: outcome.error }] : [], score: outcome.error ? 3 : 0 };
+        }
+        lastAssess = assess;
+        remember(assess);
+
+        const issuesLine = automationEngine.summarizeIssues(assess.issues);
+        buildLog.push(`Pass ${pass}: ${assess.ok ? 'data is flowing' : 'issues — ' + issuesLine}`);
+
+        // Stop early when healthy, or when the only thing wrong is missing config.
+        if (configError) {
+            buildLog.push('That failure is just missing configuration (e.g. a token / unreachable site) — fill it in and it will run.');
+            configStop = true;
+            break;
+        }
+        if (!automationEngine.shouldRepair(assess, pass, MAX_REPAIR_PASSES, configError)) break;
+
+        // Ask the model to repair against the ACTUAL failing outputs + guidance.
         const messages = [
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `This workflow was just run and FAILED. Fix the cause (wrong field paths, bad wiring, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nRun results:\n${summarize(outcome, rec)}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
+            { role: 'user', content: `This workflow was just run and produced bad/empty results. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nDetected problems:\n${issuesLine}\n\nRun results (per node):\n${summarize(outcome, rec)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
         ];
         try {
             const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });
@@ -7942,12 +8002,28 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
             const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
             const revised = automationEngine.materializeWorkflowEdit(JSON.parse(raw), base);
             wfObj.nodes = revised.nodes; wfObj.edges = revised.edges;
-            buildLog.push('Refined the workflow to fix the error.');
-            const r2 = await runOnce();
-            buildLog.push(`Test run after refine: ${r2.outcome.status}${r2.outcome.error ? ` — ${r2.outcome.error}` : ''}`);
-        } catch (e) { buildLog.push(`Auto-fix skipped: ${e.message}`); }
-    } else if (outcome.status === 'failed') {
-        buildLog.push('That failure is just missing configuration (e.g. a token) — fill it in and it will run.');
+            buildLog.push(`Pass ${pass}: applied a repair, re-running…`);
+        } catch (e) {
+            buildLog.push(`Pass ${pass}: auto-fix skipped — ${e.message}`);
+            break; // can't repair without a usable model edit; stop
+        }
+    }
+
+    // Restore the best version if the final pass regressed (more issues than an
+    // earlier attempt). best.nodes is null only if every pass scored Infinity,
+    // which can't happen (a clean run scores 0), so this is safe.
+    if (best.nodes && lastAssess && lastAssess.score > best.score) {
+        wfObj.nodes = best.nodes; wfObj.edges = best.edges;
+        buildLog.push(`Kept the best attempt (${best.score} issue-points) over a worse final pass.`);
+    }
+
+    // Clear verdict.
+    if (configStop) {
+        // already logged the config message above
+    } else if (lastAssess && lastAssess.ok) {
+        buildLog.push('Result: data is flowing ✓');
+    } else {
+        buildLog.push('Result: still no data after repair passes — best attempt kept; likely needs the sites\' RSS feeds or a configured search/API key.');
     }
 }
 

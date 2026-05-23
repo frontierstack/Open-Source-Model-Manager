@@ -108,7 +108,7 @@ function serverToRF(wf, labelFor) {
 function rfToServer(rfNodes, rfEdges) {
     return {
         nodes: rfNodes.map(n => {
-            const { kind, status, ...rest } = n.data || {};
+            const { kind, status, anim, ...rest } = n.data || {};
             return { id: n.id, type: kind, position: n.position, data: rest };
         }),
         edges: rfEdges.map(e => ({
@@ -332,10 +332,53 @@ function DataTagPalette({ outputs = {}, nodes = [], edges = [], currentNodeId })
     );
 }
 
+// Kahn-level topological order over RF nodes/edges: trigger/source nodes first,
+// then BFS by depth, ties broken left→right (x, then y). Returns node ids grouped
+// into waves so the construction replay reveals dependency-deep nodes after their
+// sources. Cycles (shouldn't happen in a valid DAG) are appended at the end so no
+// node is ever dropped from the reveal.
+function topoWaves(rfNodes, rfEdges) {
+    const ids = rfNodes.map(n => n.id);
+    const idSet = new Set(ids);
+    const indeg = new Map(ids.map(id => [id, 0]));
+    const adj = new Map(ids.map(id => [id, []]));
+    for (const e of rfEdges) {
+        if (!idSet.has(e.source) || !idSet.has(e.target)) continue;
+        adj.get(e.source).push(e.target);
+        indeg.set(e.target, (indeg.get(e.target) || 0) + 1);
+    }
+    const posOf = id => { const n = rfNodes.find(x => x.id === id); const p = (n && n.position) || {}; return [p.x || 0, p.y || 0]; };
+    const sortLR = arr => arr.slice().sort((a, b) => { const [ax, ay] = posOf(a); const [bx, by] = posOf(b); return ax - bx || ay - by; });
+    const waves = [];
+    let frontier = sortLR(ids.filter(id => (indeg.get(id) || 0) === 0));
+    const placed = new Set();
+    while (frontier.length) {
+        waves.push(frontier);
+        frontier.forEach(id => placed.add(id));
+        const next = [];
+        for (const id of frontier) {
+            for (const t of (adj.get(id) || [])) {
+                indeg.set(t, indeg.get(t) - 1);
+                if (indeg.get(t) === 0 && !placed.has(t)) next.push(t);
+            }
+        }
+        frontier = sortLR(next);
+    }
+    // Append any leftover (cycle) nodes so the reveal stays complete.
+    const leftover = sortLR(ids.filter(id => !placed.has(id)));
+    if (leftover.length) waves.push(leftover);
+    return waves;
+}
+
+const prefersReducedMotion = () => {
+    try { return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+    catch (_) { return false; }
+};
+
 function FlowEditor({ showSnackbar, models }) {
     const setView = useChatStore(s => s.setView);
     const confirm = useConfirm();
-    const { screenToFlowPosition } = useReactFlow();
+    const { screenToFlowPosition, fitView } = useReactFlow();
     const runningModels = useMemo(() => (models || []).filter(m => m.status === 'running'), [models]);
 
     const [automations, setAutomations] = useState([]);
@@ -367,7 +410,11 @@ function FlowEditor({ showSnackbar, models }) {
     });
     const runAbortRef = useRef(null);
     const addCountRef = useRef(0);
-
+    // Construction/diff replay: a token + timer registry so a replay is fully
+    // cancellable (navigate away / start another build) with no leaked timers.
+    const [assembling, setAssembling] = useState(false);
+    const animTokenRef = useRef(0);
+    const animTimersRef = useRef([]);
     useEffect(() => { try { localStorage.setItem('automationPanelWidth', String(panelWidth)); } catch (_) {} }, [panelWidth]);
     const [leftWidth, setLeftWidth] = useState(() => {
         const v = Number(localStorage.getItem('automationLeftWidth'));
@@ -460,8 +507,16 @@ function FlowEditor({ showSnackbar, models }) {
         } catch (_) { /* best-effort */ }
     }, []);
 
+    // animateConstruction/animateDiff are declared further down (they depend on
+    // fitView etc.). selectAutomation is declared first but only needs them at
+    // call time, so we reach them through a ref kept current each render — avoids
+    // a temporal-dead-zone reference and stale closures.
+    const animFnsRef = useRef({});
+
     // ---- selection ----
-    const selectAutomation = useCallback(async (id) => {
+    // `animate`: 'build' replays the graph construction instead of slamming it in.
+    const selectAutomation = useCallback(async (id, { animate } = {}) => {
+        if (animFnsRef.current.cancelAnim) animFnsRef.current.cancelAnim(); // stop any in-flight replay
         try {
             const res = await fetch(`/api/automations/${id}`, { credentials: 'include' });
             if (!res.ok) throw new Error('Failed to load automation');
@@ -469,14 +524,18 @@ function FlowEditor({ showSnackbar, models }) {
             const { nodes: n, edges: e } = serverToRF(wf, labelFor);
             setSelected(wf);
             setName(wf.name || '');
-            setNodes(n);
-            setEdges(e);
             setSelectedNodeId(null);
             setDirty(false);
             setRunResult(null);
             setWebhookUrl('');
             setNodeOutputs({});
             addCountRef.current = n.length;
+            if (animate === 'build' && n.length && animFnsRef.current.animateConstruction) {
+                animFnsRef.current.animateConstruction(n, e);
+            } else {
+                setNodes(n);
+                setEdges(e);
+            }
             seedNodeOutputs(id);
         } catch (err) { notify(err.message, 'error'); }
     }, [labelFor, setNodes, setEdges, seedNodeOutputs]);
@@ -515,7 +574,7 @@ function FlowEditor({ showSnackbar, models }) {
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to build automation');
             await loadAutomations();
-            selectAutomation(data.id);
+            selectAutomation(data.id, { animate: 'build' });
             setBuildPrompt('');
             const log = Array.isArray(data.buildLog) ? data.buildLog : null;
             setBuildLog(log);
@@ -552,6 +611,10 @@ function FlowEditor({ showSnackbar, models }) {
     const applyEdit = useCallback(async () => {
         if (!editResult || !selected) return;
         setEditing(true);
+        // Snapshot the current (pre-apply) board so the diff replay can fade out
+        // removed nodes before revealing the new graph.
+        const baseNodes = nodes;
+        const baseEdges = edges;
         try {
             const res = await fetch(`/api/automations/${selected.id}`, {
                 method: 'PUT', credentials: 'include',
@@ -559,13 +622,30 @@ function FlowEditor({ showSnackbar, models }) {
                 body: JSON.stringify({ name: editResult.proposed.name, nodes: editResult.proposed.nodes, edges: editResult.proposed.edges }),
             });
             if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Failed to apply changes'); }
+            const saved = await res.json().catch(() => null);
+            const wf = saved || { ...selected, ...editResult.proposed };
+            const { nodes: nextNodes, edges: nextEdges } = serverToRF(wf, labelFor);
+            // Update selection metadata (mirrors selectAutomation) without an
+            // instant graph set, then replay the diff onto the board.
+            setSelected(wf);
+            setName(wf.name || '');
+            setSelectedNodeId(null);
+            setDirty(false);
+            setRunResult(null);
+            setWebhookUrl('');
+            setNodeOutputs({});
+            addCountRef.current = nextNodes.length;
+            const diff = editResult.diff;
+            const animateDiffFn = animFnsRef.current.animateDiff;
+            if (animateDiffFn) animateDiffFn(baseNodes, baseEdges, nextNodes, nextEdges, diff);
+            else { setNodes(nextNodes); setEdges(nextEdges); }
             await loadAutomations();
-            selectAutomation(selected.id);
+            seedNodeOutputs(selected.id);
             setEditResult(null); setEditPrompt(''); setEditOpen(false);
             notify('Changes applied', 'success');
         } catch (err) { notify(err.message, 'error'); }
         finally { setEditing(false); }
-    }, [editResult, selected, loadAutomations, selectAutomation]);
+    }, [editResult, selected, nodes, edges, labelFor, loadAutomations, setNodes, setEdges, seedNodeOutputs]);
 
     // ---- graph edits ----
     const onConnect = useCallback((params) => {
@@ -683,12 +763,132 @@ function FlowEditor({ showSnackbar, models }) {
         } catch (err) { notify(err.message, 'error'); }
     }, [selected]);
 
+    // ---- construction / diff replay animation ----
+    // The Build/Edit model calls are non-streaming (the backend returns the
+    // whole materialized graph). To give the user the "watch it get wired up"
+    // feel they asked for, we replay the result client-side: reveal nodes in
+    // dependency (topological) order with a staggered fade/scale-in, drawing
+    // each node's incoming edges with the existing dashed-glow "is-active"
+    // animation as it appears. Fully cancellable via animTokenRef so navigating
+    // away or starting another build never leaves a half-animated board; honors
+    // prefers-reduced-motion by setting the graph instantly.
+    const cancelAnim = useCallback(() => {
+        animTokenRef.current++;
+        animTimersRef.current.forEach(t => clearTimeout(t));
+        animTimersRef.current = [];
+    }, []);
+    // Schedule a callback tied to the current animation token; auto-no-ops if a
+    // newer replay (or cancel) has superseded it.
+    const animLater = useCallback((token, ms, fn) => {
+        const t = setTimeout(() => {
+            animTimersRef.current = animTimersRef.current.filter(x => x !== t);
+            if (animTokenRef.current === token) fn();
+        }, ms);
+        animTimersRef.current.push(t);
+        return t;
+    }, []);
+
+    // Reveal `rfNodes`/`rfEdges` one wave at a time. `accent(id)` (optional) tags
+    // a node for the pulse (changed) class instead of the appear class — used by
+    // the diff replay. Resolves when the reveal completes (or is cancelled).
+    const animateConstruction = useCallback((rfNodes, rfEdges, { accentIds } = {}) => {
+        cancelAnim();
+        const token = animTokenRef.current;
+        const STAGGER = 170;     // per-node reveal cadence (140–220ms feel)
+        const EDGE_SETTLE = 520; // glow → settled
+
+        if (prefersReducedMotion() || !rfNodes.length) {
+            setNodes(rfNodes);
+            setEdges(rfEdges);
+            setAssembling(false);
+            try { requestAnimationFrame(() => fitView({ duration: 200, padding: 0.2 })); } catch (_) {}
+            return;
+        }
+
+        setAssembling(true);
+        const waves = topoWaves(rfNodes, rfEdges);
+        const revealOrder = waves.flat();
+        const revealAt = new Map();
+        revealOrder.forEach((id, i) => revealAt.set(id, i));
+        const accent = accentIds instanceof Set ? accentIds : null;
+
+        // Start with every node staged-but-invisible (is-hidden) and every edge
+        // pending (path opacity 0); flipping anim→appear/pulse kicks the keyframe.
+        const hidden = rfNodes.map(n => ({ ...n, data: { ...n.data, anim: 'hidden', status: undefined } }));
+        setNodes(hidden);
+        setEdges(rfEdges.map(e => ({ ...e, className: 'is-pending', animated: false })));
+
+        revealOrder.forEach((id, idx) => {
+            animLater(token, idx * STAGGER, () => {
+                const animKind = accent && accent.has(id) ? 'pulse' : 'appear';
+                setNodes(ns => ns.map(n => n.id === id ? { ...n, data: { ...n.data, anim: animKind } } : n));
+                // Draw the incoming edges whose source has already appeared.
+                setEdges(es => es.map(e => {
+                    if (e.target !== id) return e;
+                    const srcAt = revealAt.get(e.source);
+                    if (srcAt == null || srcAt > idx) return e; // source not revealed yet
+                    return { ...e, className: 'is-drawing is-active', animated: true };
+                }));
+                // Settle this node's incoming edges to the "done" look a beat later.
+                animLater(token, EDGE_SETTLE, () => {
+                    setEdges(es => es.map(e => (e.target === id && (e.className || '').includes('is-active'))
+                        ? { ...e, className: 'is-done', animated: false } : e));
+                });
+            });
+        });
+
+        // Final cleanup: clear transient classes/flags, draw any edges that were
+        // still pending (e.g. into cycle nodes), settle, fit the view.
+        const total = revealOrder.length * STAGGER + EDGE_SETTLE + 120;
+        animLater(token, total, () => {
+            setEdges(es => es.map(e => (e.className === 'is-pending' || (e.className || '').includes('is-active'))
+                ? { ...e, className: undefined, animated: false } : e));
+            setNodes(ns => ns.map(n => n.data && n.data.anim ? { ...n, data: { ...n.data, anim: null } } : n));
+            setAssembling(false);
+            try { fitView({ duration: 260, padding: 0.2 }); } catch (_) {}
+        });
+    }, [cancelAnim, animLater, setNodes, setEdges, fitView]);
+
+    // Diff-aware replay for Edit→Apply: removed nodes fade out first, then the
+    // new graph is revealed with changed nodes pulsing accent and added nodes
+    // fading in (animateConstruction handles the reveal; we pass changed ids as
+    // the accent set). `base` = the pre-apply RF nodes/edges (for the fade-out).
+    const animateDiff = useCallback((baseNodes, baseEdges, nextNodes, nextEdges, diff) => {
+        cancelAnim();
+        if (prefersReducedMotion()) {
+            setNodes(nextNodes); setEdges(nextEdges); setAssembling(false);
+            try { requestAnimationFrame(() => fitView({ duration: 200, padding: 0.2 })); } catch (_) {}
+            return;
+        }
+        const removedIds = new Set((diff && diff.removedNodes || []).map(n => n.id));
+        const changedIds = new Set((diff && diff.changedNodes || []).map(n => n.id));
+        const FADE = 460;
+        if (removedIds.size) {
+            setAssembling(true);
+            const token = ++animTokenRef.current; // claim a token for the fade phase
+            // Show the OLD graph, flag removed nodes with the remove keyframe.
+            setNodes(baseNodes.map(n => removedIds.has(n.id) ? { ...n, data: { ...n.data, anim: 'remove' } } : { ...n, data: { ...n.data, anim: null } }));
+            setEdges(baseEdges.map(e => (removedIds.has(e.source) || removedIds.has(e.target)) ? { ...e, className: 'is-removing-edge', animated: false } : e));
+            animLater(token, FADE, () => animateConstruction(nextNodes, nextEdges, { accentIds: changedIds }));
+        } else {
+            animateConstruction(nextNodes, nextEdges, { accentIds: changedIds });
+        }
+    }, [cancelAnim, animLater, animateConstruction, setNodes, setEdges, fitView]);
+
+    // Keep the ref current so selectAutomation (declared earlier) can reach the
+    // replay helpers at call time.
+    useEffect(() => { animFnsRef.current = { animateConstruction, animateDiff, cancelAnim }; }, [animateConstruction, animateDiff, cancelAnim]);
+    // Cancel any in-flight replay on unmount.
+    useEffect(() => () => cancelAnim(), [cancelAnim]);
+
     // ---- run (SSE) + animation ----
     const resetRunVisuals = useCallback(() => {
-        setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, status: undefined } })));
+        cancelAnim(); // a run supersedes any in-flight construction replay
+        setAssembling(false);
+        setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, status: undefined, anim: null } })));
         setEdges(es => es.map(e => ({ ...e, className: undefined, animated: false })));
         setNodeOutputs({});
-    }, [setNodes, setEdges]);
+    }, [setNodes, setEdges, cancelAnim]);
 
     const handleRunEvent = useCallback((evt) => {
         switch (evt.type) {
@@ -803,14 +1003,20 @@ function FlowEditor({ showSnackbar, models }) {
 
     const clearRuns = useCallback(async () => {
         if (!selected) return;
-        if (!window.confirm('Clear all run history for this automation?')) return;
+        const confirmed = await confirm({
+            title: 'Clear run history',
+            message: 'Clear all run history for this automation? This cannot be undone.',
+            confirmText: 'Clear', cancelText: 'Cancel', variant: 'danger',
+        });
+        if (!confirmed) return;
         try {
             const res = await fetch(`/api/automations/${selected.id}/runs`, { method: 'DELETE', credentials: 'include' });
             if (!res.ok) throw new Error('Failed to clear run history');
             setRunDetail(null);
             await loadRuns();
+            notify('Run history cleared');
         } catch (err) { notify(err.message, 'error'); }
-    }, [selected, loadRuns]);
+    }, [selected, loadRuns, confirm]);
 
     const openHistory = useCallback(() => {
         setSelectedNodeId(null);
@@ -882,15 +1088,22 @@ function FlowEditor({ showSnackbar, models }) {
 
             <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
                 {/* Left rail: automations + palette */}
-                <div style={{ width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+                <div className="auto-rail" style={{ width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
                     <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />
-                    <div style={{ padding: 10, borderBottom: '1px solid var(--rule)' }}>
-                        <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', fontWeight: 600, color: 'var(--accent-ink, #fff)', background: 'var(--accent)', borderColor: 'var(--accent)' }}>
-                            <Plus size={14} /> <span>New automation</span>
+                    <div style={{ padding: '12px 12px 11px', borderBottom: '1px solid var(--rule)' }}>
+                        <button onClick={newAutomation} style={{ ...railBtn, justifyContent: 'center', fontWeight: 600, padding: '9px 9px', color: 'var(--accent-ink, #fff)', background: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                            <Plus size={15} /> <span>New automation</span>
                         </button>
-                        <button onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} style={{ ...railBtn, justifyContent: 'center', marginTop: 6 }}>
-                            <Sparkles size={14} /> <span>Build with LLM</span>
-                        </button>
+                        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                            <button onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: buildOpen ? 'var(--accent)' : 'var(--ink-2)', borderColor: buildOpen ? 'var(--accent)' : 'var(--rule-2)' }} title="Describe an automation and let the model assemble it">
+                                <Sparkles size={14} /> <span>Build</span>
+                            </button>
+                            {selected && (
+                                <button onClick={() => { setEditOpen(o => !o); setEditResult(null); }} style={{ ...railBtn, justifyContent: 'center', flex: 1, color: editOpen ? 'var(--accent)' : 'var(--ink-2)', borderColor: editOpen ? 'var(--accent)' : 'var(--rule-2)' }} title="Describe a change to the open automation">
+                                    <Sparkles size={14} /> <span>Edit</span>
+                                </button>
+                            )}
+                        </div>
                         {buildOpen && (
                             <div style={{ marginTop: 6 }}>
                                 <textarea
@@ -918,11 +1131,6 @@ function FlowEditor({ showSnackbar, models }) {
                                     </div>
                                 )}
                             </div>
-                        )}
-                        {selected && (
-                            <button onClick={() => { setEditOpen(o => !o); setEditResult(null); }} style={{ ...railBtn, justifyContent: 'center', marginTop: 6 }}>
-                                <Sparkles size={14} /> <span>Edit with LLM</span>
-                            </button>
                         )}
                         {selected && editOpen && (
                             <div style={{ marginTop: 6 }}>
@@ -968,32 +1176,41 @@ function FlowEditor({ showSnackbar, models }) {
                             </div>
                         )}
                     </div>
-                    <div style={{ overflowY: 'auto', flex: '0 0 auto', maxHeight: '38%', padding: '6px 8px' }}>
-                        {automations.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--ink-3)', padding: 8 }}>No automations yet.</div>}
-                        {automations.map(a => (
+                    <div style={{ overflowY: 'auto', flex: '0 0 auto', maxHeight: '38%', padding: '4px 8px 8px' }}>
+                        <div className="auto-rail__section">
+                            <span>Automations</span>
+                            {automations.length > 0 && <span className="auto-rail__count">{automations.length}</span>}
+                        </div>
+                        {automations.length === 0 && (
+                            <div style={{ fontSize: 11.5, color: 'var(--ink-3)', padding: '10px 8px', lineHeight: 1.5, textAlign: 'center' }}>
+                                No automations yet.<br />Create one or build with the model.
+                            </div>
+                        )}
+                        {automations.map(a => {
+                            const isSel = selected && selected.id === a.id;
+                            return (
                             <div key={a.id}
+                                className={`auto-rail__item ${isSel ? 'is-selected' : ''}`}
                                 onClick={() => selectAutomation(a.id)}
-                                style={{
-                                    display: 'flex', alignItems: 'center', gap: 7, padding: '7px 8px', borderRadius: 7, cursor: 'pointer', marginBottom: 2,
-                                    background: selected && selected.id === a.id ? 'var(--accent-soft)' : 'transparent',
-                                    color: selected && selected.id === a.id ? 'var(--accent)' : 'var(--ink-2)',
-                                    opacity: a.archived ? 0.55 : 1,
-                                }}
+                                style={{ opacity: a.archived ? 0.55 : 1 }}
+                                title={a.name || 'Untitled'}
                             >
-                                <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: a.enabled !== false ? 'var(--ok, #22c55e)' : 'var(--ink-4, #64748b)' }} />
+                                <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: a.enabled !== false ? 'var(--ok, #22c55e)' : 'var(--ink-4, #64748b)' }} title={a.enabled !== false ? 'Enabled' : 'Disabled'} />
                                 <span style={{ flex: 1, fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Untitled'}</span>
                                 {a._ownerName && (
-                                    <span style={{ flexShrink: 0, fontSize: 9.5, color: 'var(--accent)', background: 'var(--accent-soft)', borderRadius: 4, padding: '1px 5px' }} title={`Owner: ${a._ownerName}`}>{a._ownerName}</span>
+                                    <span style={{ flexShrink: 0, fontSize: 9.5, color: 'var(--accent)', background: 'var(--accent-soft)', borderRadius: 999, padding: '1px 6px' }} title={`Owner: ${a._ownerName}`}>{a._ownerName}</span>
                                 )}
-                                <button onClick={(e) => { e.stopPropagation(); deleteAutomation(a.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Delete">
+                                <button className="auto-rail__del" onClick={(e) => { e.stopPropagation(); deleteAutomation(a.id); }} title="Delete">
                                     <Trash2 size={13} />
                                 </button>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                     {/* Palette */}
-                    <div style={{ borderTop: '1px solid var(--rule)', padding: '8px 8px 4px', fontSize: 11, fontWeight: 600, color: 'var(--ink-3)' }}>
-                        NODE PALETTE {selected ? '' : '(select an automation)'}
+                    <div className="auto-rail__section" style={{ borderTop: '1px solid var(--rule)', padding: '10px 8px 6px' }}>
+                        <span>Node Palette</span>
+                        {!selected && <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: 'var(--ink-4, var(--ink-3))' }}>select an automation</span>}
                     </div>
                     <div style={{ padding: '0 8px 6px' }}>
                         <input
@@ -1001,7 +1218,7 @@ function FlowEditor({ showSnackbar, models }) {
                             value={paletteQuery}
                             onChange={(e) => setPaletteQuery(e.target.value)}
                             placeholder="Search nodes…"
-                            style={{ ...fieldInput, padding: '5px 8px', fontSize: 12 }}
+                            style={{ ...fieldInput, marginBottom: 0, padding: '6px 9px', fontSize: 12 }}
                         />
                     </div>
                     <div style={{ overflowY: 'auto', flex: 1, padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
@@ -1011,33 +1228,32 @@ function FlowEditor({ showSnackbar, models }) {
                             const matches = (item) => !searching || (`${item.label} ${item.description || ''}`).toLowerCase().includes(q);
                             const renderItemBtn = (item, displayLabel) => (
                                 <button key={item.key}
+                                    className="auto-chip"
                                     draggable
                                     onDragStart={(e) => onPaletteDragStart(e, item)}
                                     onClick={() => addFromPalette(item)}
-                                    style={{ ...railBtn, padding: '6px 8px', marginBottom: 3, fontSize: 12, cursor: 'grab' }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-2)'; }}
                                     title={item.description || item.label}
                                 >
-                                    <Plus size={12} /> <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{displayLabel}</span>
+                                    <span className="auto-chip__icon"><Plus size={12} /></span>
+                                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{displayLabel}</span>
                                     {item.custom && <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--accent)' }}>★</span>}
                                 </button>
                             );
-                            return CATEGORY_ORDER.map(cat => {
+                            const renderedCats = CATEGORY_ORDER.map(cat => {
                                 const allItems = groupedPalette[cat];
                                 if (!allItems || allItems.length === 0) return null;
                                 const items = allItems.filter(matches);
                                 if (items.length === 0) return null; // hide categories with no matches
                                 const collapsed = !searching && !!collapsedCats[cat];
                                 return (
-                                    <div key={cat} style={{ marginBottom: 6 }}>
+                                    <div key={cat} style={{ marginBottom: 4 }}>
                                         <button
+                                            className="auto-cat"
                                             onClick={() => setCollapsedCats(c => ({ ...c, [cat]: !c[cat] }))}
-                                            style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', padding: '6px 2px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}
                                         >
                                             {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                                             <span>{CATEGORY_LABEL[cat] || cat}</span>
-                                            <span style={{ marginLeft: 'auto', color: 'var(--ink-4, var(--ink-3))' }}>{items.length}</span>
+                                            <span className="auto-rail__count">{items.length}</span>
                                         </button>
                                         {!collapsed && (cat === 'connector' ? (() => {
                                             // Connectors: group by external app into collapsible sub-sections.
@@ -1052,14 +1268,15 @@ function FlowEditor({ showSnackbar, models }) {
                                                     const appCollapsed = !searching && !!collapsedApps[app];
                                                     const prefix = `${app} · `;
                                                     return (
-                                                        <div key={app} style={{ marginLeft: 6 }}>
+                                                        <div key={app} style={{ marginLeft: 8, paddingLeft: 4, borderLeft: '1px solid var(--rule-2, var(--rule))' }}>
                                                             <button
+                                                                className="auto-cat"
+                                                                style={{ fontSize: 9.5, padding: '5px 2px 4px', textTransform: 'none', letterSpacing: 0.2 }}
                                                                 onClick={() => setCollapsedApps(c => ({ ...c, [app]: !c[app] }))}
-                                                                style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', padding: '4px 2px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 9.5, fontWeight: 600 }}
                                                             >
                                                                 {appCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
                                                                 <span>{app}</span>
-                                                                <span style={{ marginLeft: 'auto', color: 'var(--ink-4, var(--ink-3))' }}>{appItems.length}</span>
+                                                                <span className="auto-rail__count">{appItems.length}</span>
                                                             </button>
                                                             {!appCollapsed && appItems.map(item => renderItemBtn(item, item.label.startsWith(prefix) ? item.label.slice(prefix.length) : item.label))}
                                                         </div>
@@ -1069,7 +1286,11 @@ function FlowEditor({ showSnackbar, models }) {
                                         })() : items.map(item => renderItemBtn(item, item.label)))}
                                     </div>
                                 );
-                            });
+                            }).filter(Boolean);
+                            if (searching && renderedCats.length === 0) {
+                                return <div style={{ fontSize: 11.5, color: 'var(--ink-3)', padding: '12px 6px', textAlign: 'center' }}>No nodes match “{paletteQuery.trim()}”.</div>;
+                            }
+                            return renderedCats;
                         })()}
                     </div>
                 </div>
@@ -1104,6 +1325,12 @@ function FlowEditor({ showSnackbar, models }) {
                             <MiniMap pannable zoomable style={{ width: 130, height: 90 }} />
                         </ReactFlow>
                         </EdgeActionsContext.Provider>
+                    )}
+                    {assembling && (
+                        <div className="auto-assembling-badge" style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 7, background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 999, padding: '5px 13px', fontSize: 12, fontWeight: 600, color: 'var(--accent)', boxShadow: '0 2px 10px rgba(0,0,0,0.18)', zIndex: 5 }}>
+                            <span className="auto-node__spinner" style={{ width: 12, height: 12 }} />
+                            <span>Assembling…</span>
+                        </div>
                     )}
                     {runResult && (
                         <div style={{ position: 'absolute', bottom: 12, left: 12, right: 150, maxHeight: 140, overflow: 'auto', background: 'var(--surface)', border: `1px solid ${runResult.status === 'failed' ? 'var(--danger, #ef4444)' : 'var(--ok, #22c55e)'}`, borderRadius: 8, padding: '8px 10px', fontSize: 11.5, color: 'var(--ink-2)' }}>

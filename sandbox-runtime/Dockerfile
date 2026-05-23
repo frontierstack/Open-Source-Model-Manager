@@ -164,6 +164,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /root/.cache /tmp/* \
     && chmod -R a+rX /opt/whisper-models
 
+# DejaVu italic/oblique faces (NOT in fonts-dejavu-core, installed early
+# above) so create_pdf renders *italic* spans in a Unicode-capable font
+# instead of falling back to Times-Italic (which drops non-Latin glyphs).
+# Added as a late layer so the heavy whisper/ctranslate2 layers above stay
+# cached on rebuild.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-extra \
+    && rm -rf /var/lib/apt/lists/*
+
 # matplotlib headless default — prevents "no display name" errors when
 # snippets forget plt.switch_backend('Agg').
 ENV MPLBACKEND=Agg

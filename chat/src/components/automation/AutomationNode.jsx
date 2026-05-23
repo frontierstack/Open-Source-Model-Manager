@@ -117,10 +117,17 @@ export default function AutomationNode({ data, selected }) {
     const Icon = kind === 'tool' ? iconForTool(data.tool) : pickIcon(kind);
     const status = data.status; // running | done | failed | undefined
     const statusClass = status === 'running' ? 'is-running' : status === 'completed' ? 'is-done' : status === 'failed' ? 'is-failed' : '';
+    // Transient construction/diff-replay state (set by AutomationView's
+    // animateConstruction / animateDiff). 'appear' | 'pulse' | 'remove'.
+    const anim = data.anim;
+    const animClass = anim === 'hidden' ? 'is-hidden'
+        : anim === 'appear' ? 'is-appearing'
+        : anim === 'pulse' ? 'is-pulsing'
+        : anim === 'remove' ? 'is-removing auto-node--diffremove' : '';
     const sub = subtitleFor(kind, data);
 
     return (
-        <div className={`auto-node ${categoryClass(kind)} ${statusClass} ${selected ? 'selected' : ''}`}>
+        <div className={`auto-node ${categoryClass(kind)} ${statusClass} ${animClass} ${selected ? 'selected' : ''}`}>
             {/* target handles (left) */}
             {targets.map((t, i) => (
                 <Handle

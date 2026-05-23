@@ -143,6 +143,18 @@ function parseThinkTags(content, streaming = false) {
     cleanContent = cleanContent.replace(/^\s+/, '').replace(/\s+$/, '');
     reasoning = reasoning.replace(/^\s+/, '').replace(/\s+$/, '');
 
+    // Strip a leading ellipsis artifact ("...", ". . .", or "…") that some
+    // reasoning models emit at the very START of the answer (right after their
+    // thinking block) — it's never meaningful and renders as stray dots at the
+    // top of the bubble. While still streaming, if the buffer is nothing but
+    // dots/whitespace so far, hold it empty so the loading indicator stays
+    // rather than flashing the bare dots for a frame.
+    if (streaming && /^[\s.．…]*$/.test(cleanContent)) {
+        cleanContent = '';
+    } else {
+        cleanContent = cleanContent.replace(/^\s*(?:…\s*|(?:[.．]\s*){2,})/, '').replace(/^\s+/, '');
+    }
+
     // If content is empty but we have reasoning from COMPLETED blocks,
     // the model likely wrapped its entire response in reasoning tags.
     // Only apply this on the final parse — mid-stream this same condition
