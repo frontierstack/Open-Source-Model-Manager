@@ -6,10 +6,10 @@ import {
     Braces, Code, Download, MessageSquare, MessagesSquare, Send, Inbox, Repeat,
 } from 'lucide-react';
 
-// Set by AutomationView: handleDropChip(nodeId, ref) fills a node's primary slot
-// from a data chip dropped onto it on the canvas (and auto-wires the edge).
+// Set by AutomationView: attachChip(nodeId, chipId) attaches a library chip
+// dropped onto a node on the canvas (post-processes the node's output).
 export const NodeDropContext = React.createContext(null);
-const CHIP_REF_MIME = 'application/automation-ref';
+const CHIP_LIB_MIME = 'application/automation-chiplib';
 
 // Which handles a node exposes, by engine kind. Triggers are sources only,
 // output is a sink, gates fan out on named handles, everything else is in→out.
@@ -123,11 +123,11 @@ function subtitleFor(kind, data) {
 
 export default function AutomationNode({ id, data, selected }) {
     const kind = data.kind;
-    const onDropChip = React.useContext(NodeDropContext);
+    const attachChip = React.useContext(NodeDropContext);
     const [chipOver, setChipOver] = useState(false);
-    const acceptsChip = (e) => Array.from(e.dataTransfer.types || []).includes(CHIP_REF_MIME);
-    const onChipDragOver = (e) => { if (onDropChip && acceptsChip(e)) { e.preventDefault(); e.stopPropagation(); setChipOver(true); } };
-    const onChipDrop = (e) => { if (!onDropChip || !acceptsChip(e)) return; e.preventDefault(); e.stopPropagation(); setChipOver(false); const ref = e.dataTransfer.getData(CHIP_REF_MIME); if (ref) onDropChip(id, ref); };
+    const acceptsChip = (e) => Array.from(e.dataTransfer.types || []).includes(CHIP_LIB_MIME);
+    const onChipDragOver = (e) => { if (attachChip && acceptsChip(e)) { e.preventDefault(); e.stopPropagation(); setChipOver(true); } };
+    const onChipDrop = (e) => { if (!attachChip || !acceptsChip(e)) return; e.preventDefault(); e.stopPropagation(); setChipOver(false); const cid = e.dataTransfer.getData(CHIP_LIB_MIME); if (cid) attachChip(id, cid); };
     const { targets, sources } = handlesFor(kind, data);
     const Icon = kind === 'tool' ? iconForTool(data.tool) : pickIcon(kind);
     const status = data.status; // running | done | failed | undefined
@@ -176,6 +176,12 @@ export default function AutomationNode({ id, data, selected }) {
                         <span className="auto-node__file-name">{data.artifactName}</span>
                         {data.delivered && <span className="auto-node__sent">→ sent</span>}
                     </span>
+                </div>
+            )}
+
+            {Array.isArray(data.chips) && data.chips.length > 0 && (
+                <div className="auto-node__chips">
+                    {data.chips.map((c, i) => <span key={i} className="auto-node__chip">{c}</span>)}
                 </div>
             )}
 

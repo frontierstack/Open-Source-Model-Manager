@@ -445,6 +445,8 @@ function FlowEditor({ showSnackbar, models }) {
     const [collapsedApps, setCollapsedApps] = useState({});
     // Live palette search box.
     const [paletteQuery, setPaletteQuery] = useState('');
+    const [chipsLibOpen, setChipsLibOpen] = useState(false);
+    const [chipLibQuery, setChipLibQuery] = useState('');
     const [showHistory, setShowHistory] = useState(false);
     const [runs, setRuns] = useState([]);
     const [runDetail, setRunDetail] = useState(null);
@@ -764,26 +766,17 @@ function FlowEditor({ showSnackbar, models }) {
         setDirty(true);
     }, [setNodes]);
 
-    // A data chip dropped onto a node on the canvas: drop the ref into the node's
-    // primary slot (append if it already has content) and auto-wire an edge from
-    // the source node so the data actually reaches it.
-    const handleDropChip = useCallback((nodeId, ref) => {
+    // A library chip dropped onto a node on the canvas attaches to it (it
+    // post-processes that node's output). Stored on data.chips; no duplicates.
+    const handleDropChip = useCallback((nodeId, chipId) => {
         setNodes(ns => ns.map(n => {
             if (n.id !== nodeId) return n;
-            const kind = n.data.kind;
-            const slot = kind === 'tool' ? (TOOL_PRIMARY_SLOT[n.data.tool] || null) : PRIMARY_SLOT[kind];
-            if (!slot) return n;
-            const cur = getAt(n.data, slot);
-            const val = (cur == null || cur === '') ? ref : `${cur} ${ref}`;
-            return { ...n, data: { ...n.data, ...patchFor(n.data, slot, val) } };
+            const chips = Array.isArray(n.data.chips) ? n.data.chips : [];
+            if (chips.includes(chipId)) return n;
+            return { ...n, data: { ...n.data, chips: [...chips, chipId] } };
         }));
-        const m = /\{\{\s*nodes\.([^.}\s]+)/.exec(ref);
-        const src = m && m[1];
-        if (src && src !== nodeId) {
-            setEdges(es => es.some(e => e.source === src && e.target === nodeId) ? es : addEdge({ source: src, target: nodeId, id: uid('e') }, es));
-        }
         setDirty(true);
-    }, [setNodes, setEdges]);
+    }, [setNodes]);
 
     const deleteSelectedNode = useCallback(() => {
         if (!selectedNodeId) return;
@@ -1428,6 +1421,42 @@ function FlowEditor({ showSnackbar, models }) {
                             return renderedCats;
                         })()}
                     </div>
+                    {/* Chips library — drag a chip onto a node to transform its output */}
+                    <div className="auto-rail__section auto-chips-head" style={{ borderTop: '1px solid var(--rule)', padding: '10px 8px 6px', cursor: 'pointer' }} onClick={() => setChipsLibOpen(o => !o)}>
+                        {chipsLibOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        <span>Chips</span>
+                        <span className="auto-rail__count">{CHIP_LIBRARY.length}</span>
+                    </div>
+                    {chipsLibOpen && (<>
+                        <div style={{ padding: '0 8px 6px' }}>
+                            <input type="text" value={chipLibQuery} onChange={(e) => setChipLibQuery(e.target.value)} placeholder="Search chips…" style={{ ...fieldInput, marginBottom: 0, padding: '6px 9px', fontSize: 12 }} />
+                        </div>
+                        <div style={{ overflowY: 'auto', maxHeight: '32%', padding: '0 8px 10px', opacity: selected ? 1 : 0.5, pointerEvents: selected ? 'auto' : 'none' }}>
+                            {!selected && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', padding: '4px 2px 8px' }}>Open an automation to use chips.</div>}
+                            {(() => {
+                                const q = chipLibQuery.trim().toLowerCase();
+                                const match = (c) => !q || (`${c.label} ${c.desc} ${c.category}`).toLowerCase().includes(q);
+                                const cats = CHIP_LIB_CATEGORIES.map(cat => {
+                                    const items = CHIP_LIBRARY.filter(c => c.category === cat && match(c));
+                                    if (!items.length) return null;
+                                    return (
+                                        <div key={cat} style={{ marginBottom: 6 }}>
+                                            <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: .3, color: 'var(--ink-3)', margin: '4px 2px' }}>{cat}</div>
+                                            <div className="cf-tray">
+                                                {items.map(c => (
+                                                    <span key={c.id} className="cf-libchip" draggable title={c.desc}
+                                                        onDragStart={(e) => { e.dataTransfer.setData(CHIP_LIB_DRAG, c.id); e.dataTransfer.effectAllowed = 'copy'; }}>
+                                                        {c.label}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                }).filter(Boolean);
+                                return cats.length ? cats : <div style={{ fontSize: 11.5, color: 'var(--ink-3)', padding: '8px 4px' }}>No chips match “{chipLibQuery.trim()}”.</div>;
+                            })()}
+                        </div>
+                    </>)}
                 </div>
 
                 {/* Canvas */}
@@ -2047,68 +2076,115 @@ function renderSpecial(s, d, onChange, ctx, registerActive) {
 }
 
 // The chip board: applied chips + an Add tray + the data-chip palette.
+// ============================================================
+// CHIPS LIBRARY — separate from node palette. A chip is a small behavior you
+// drag from the left "Chips" panel onto a node to post-process its output
+// (parse / transform / filter). Definitions only (id/label/category/desc); the
+// engine wiring that runs them is a follow-up.
+// ============================================================
+const CHIP_LIB_DRAG = 'application/automation-chiplib';
+const CHIP_LIBRARY = [
+    // Text
+    { id: 'trim', label: 'Trim', category: 'Text', desc: 'Strip leading/trailing whitespace' },
+    { id: 'uppercase', label: 'UPPERCASE', category: 'Text', desc: 'Convert text to upper case' },
+    { id: 'lowercase', label: 'lowercase', category: 'Text', desc: 'Convert text to lower case' },
+    { id: 'titlecase', label: 'Title Case', category: 'Text', desc: 'Capitalize each word' },
+    { id: 'capitalize', label: 'Capitalize', category: 'Text', desc: 'Capitalize the first letter' },
+    { id: 'collapse_ws', label: 'Collapse spaces', category: 'Text', desc: 'Collapse runs of whitespace to one space' },
+    { id: 'remove_blank_lines', label: 'Remove blank lines', category: 'Text', desc: 'Drop empty lines' },
+    { id: 'strip_html', label: 'Strip HTML', category: 'Text', desc: 'Remove HTML tags' },
+    { id: 'slugify', label: 'Slugify', category: 'Text', desc: 'Make a url-safe slug' },
+    { id: 'reverse_text', label: 'Reverse text', category: 'Text', desc: 'Reverse the characters' },
+    { id: 'truncate_280', label: 'Truncate 280', category: 'Text', desc: 'Cut to 280 characters' },
+    { id: 'word_count', label: 'Word count', category: 'Text', desc: 'Count words' },
+    { id: 'char_count', label: 'Character count', category: 'Text', desc: 'Count characters' },
+    { id: 'dedent', label: 'Dedent', category: 'Text', desc: 'Remove common leading indentation' },
+    { id: 'normalize_quotes', label: 'Normalize quotes', category: 'Text', desc: 'Curly → straight quotes' },
+    // Parse / extract
+    { id: 'parse_json', label: 'Parse JSON', category: 'Parse', desc: 'Parse a JSON string into data' },
+    { id: 'to_json', label: 'To JSON string', category: 'Parse', desc: 'Serialize data to JSON' },
+    { id: 'extract_urls', label: 'Extract URLs', category: 'Parse', desc: 'Pull all links out of the text' },
+    { id: 'extract_emails', label: 'Extract emails', category: 'Parse', desc: 'Pull all email addresses' },
+    { id: 'extract_numbers', label: 'Extract numbers', category: 'Parse', desc: 'Pull all numbers' },
+    { id: 'extract_hashtags', label: 'Extract #tags', category: 'Parse', desc: 'Pull all hashtags' },
+    { id: 'first_url', label: 'First link', category: 'Parse', desc: 'Keep only the first URL' },
+    { id: 'domain_of', label: 'Domain only', category: 'Parse', desc: 'Reduce a URL to its domain' },
+    { id: 'md_to_text', label: 'Markdown → text', category: 'Parse', desc: 'Strip markdown formatting' },
+    { id: 'html_to_text', label: 'HTML → text', category: 'Parse', desc: 'Render HTML to plain text' },
+    { id: 'csv_to_rows', label: 'CSV → rows', category: 'Parse', desc: 'Parse CSV into rows' },
+    { id: 'lines_to_list', label: 'Lines → list', category: 'Parse', desc: 'Split text into a list by line' },
+    { id: 'split_commas', label: 'Split on commas', category: 'Parse', desc: 'Split text into a list by comma' },
+    { id: 'extract_dates', label: 'Extract dates', category: 'Parse', desc: 'Pull date-like strings' },
+    // List
+    { id: 'first', label: 'First item', category: 'List', desc: 'Keep only the first item' },
+    { id: 'last', label: 'Last item', category: 'List', desc: 'Keep only the last item' },
+    { id: 'first_5', label: 'First 5', category: 'List', desc: 'Keep the first 5 items' },
+    { id: 'first_10', label: 'First 10', category: 'List', desc: 'Keep the first 10 items' },
+    { id: 'skip_1', label: 'Skip first', category: 'List', desc: 'Drop the first item' },
+    { id: 'reverse_list', label: 'Reverse list', category: 'List', desc: 'Reverse the order' },
+    { id: 'sort_az', label: 'Sort A→Z', category: 'List', desc: 'Sort ascending' },
+    { id: 'sort_za', label: 'Sort Z→A', category: 'List', desc: 'Sort descending' },
+    { id: 'sort_numeric', label: 'Sort numeric', category: 'List', desc: 'Sort as numbers' },
+    { id: 'dedupe', label: 'Remove duplicates', category: 'List', desc: 'Keep unique items' },
+    { id: 'remove_empties', label: 'Remove empties', category: 'List', desc: 'Drop empty/blank items' },
+    { id: 'count_items', label: 'Count items', category: 'List', desc: 'Return the number of items' },
+    { id: 'join_commas', label: 'Join with commas', category: 'List', desc: 'Join a list with ", "' },
+    { id: 'join_newlines', label: 'Join with new lines', category: 'List', desc: 'Join a list with line breaks' },
+    { id: 'join_bullets', label: 'Join as bullets', category: 'List', desc: 'Join a list as "- " bullets' },
+    { id: 'flatten', label: 'Flatten', category: 'List', desc: 'Flatten nested lists one level' },
+    { id: 'shuffle', label: 'Shuffle', category: 'List', desc: 'Randomize the order' },
+    // Filter
+    { id: 'filter_nonempty', label: 'Only non-empty', category: 'Filter', desc: 'Keep items that have content' },
+    { id: 'filter_has_url', label: 'Only with a URL', category: 'Filter', desc: 'Keep items containing a link' },
+    { id: 'filter_unique', label: 'Only new vs last run', category: 'Filter', desc: 'Keep items not seen last run' },
+    { id: 'drop_nulls', label: 'Drop null fields', category: 'Filter', desc: 'Remove null/empty object fields' },
+    // Number / format
+    { id: 'round', label: 'Round', category: 'Format', desc: 'Round numbers to whole' },
+    { id: 'round_2', label: 'Round (2 dp)', category: 'Format', desc: 'Round to 2 decimals' },
+    { id: 'floor', label: 'Floor', category: 'Format', desc: 'Round down' },
+    { id: 'ceil', label: 'Ceiling', category: 'Format', desc: 'Round up' },
+    { id: 'abs', label: 'Absolute value', category: 'Format', desc: 'Make numbers positive' },
+    { id: 'to_currency', label: 'To currency', category: 'Format', desc: 'Format a number as $1,234.56' },
+    { id: 'to_percent', label: 'To percent', category: 'Format', desc: 'Format a number as a percent' },
+    { id: 'add_prefix', label: 'Add prefix', category: 'Format', desc: 'Prepend a label' },
+    { id: 'add_suffix', label: 'Add suffix', category: 'Format', desc: 'Append a label' },
+    { id: 'wrap_code', label: 'Wrap in code block', category: 'Format', desc: 'Fence text as code' },
+    { id: 'wrap_quotes', label: 'Wrap in quotes', category: 'Format', desc: 'Surround with quotes' },
+    { id: 'to_uppercase_first', label: 'Sentence case', category: 'Format', desc: 'Lowercase then capitalize first letter' },
+    { id: 'now_timestamp', label: 'Add timestamp', category: 'Format', desc: 'Append the current date/time' },
+    { id: 'pretty_json', label: 'Pretty JSON', category: 'Format', desc: 'Indent JSON for readability' },
+];
+const CHIP_LIB_BY_ID = Object.fromEntries(CHIP_LIBRARY.map(c => [c.id, c]));
+const CHIP_LIB_CATEGORIES = Array.from(new Set(CHIP_LIBRARY.map(c => c.category)));
+
+// Bare-minimum node settings: just the node's own essential fields as plain
+// controls. No data palette, no {{…}} tags, no args box, no add tray — extra
+// behavior is added by dragging CHIPS (above) onto the node from the left panel.
 function ChipBoard({ node, ctx, onChange }) {
     const d = node.data || {}; const kind = d.kind;
-    const tagGroups = React.useContext(DataTagsContext);
-    const activeRef = useRef(null);
-    const registerActive = useCallback((api) => { activeRef.current = api; }, []);
-    const [added, setAdded] = useState(() => new Set());
-    useEffect(() => { setAdded(new Set()); }, [node.id]);
-    const specs = chipsForKind(kind, ctx);
+    const specs = chipsForKind(kind, ctx).filter(s => s.field !== 'forward' && s.special !== 'toolArgs' && !s._custom);
     const defaults = {}; for (const s of specs) if (s.default !== undefined) defaults[s.field] = s.default;
     const set = (s, val) => onChange(patchFor(d, s.field, val));
-    const visible = (s) => evalWhen(s.when, d, defaults);
-    const hasVal = (s) => { const v = getAt(d, s.field); return v !== undefined && v !== '' && !(Array.isArray(v) && !v.length); };
-    const isApplied = (s) => visible(s) && (s.required || s.type === 'toggle' || s.type === 'special' || hasVal(s) || added.has(s.field));
-    const appliedList = specs.filter(isApplied);
-    const trayList = specs.filter(s => visible(s) && !isApplied(s));
-    const addChip = (s) => { if (s.type === 'choice') { const o = resolveOptions(s, ctx); set(s, s.default !== undefined ? s.default : (o[0] && o[0].value)); } setAdded(p => { const n = new Set(p); n.add(s.field); return n; }); };
-    const removeChip = (s) => { setAdded(p => { const n = new Set(p); n.delete(s.field); return n; }); set(s, undefined); };
-    const renderChip = (s) => {
-        const rm = (!s.required && s.type !== 'special' && s.type !== 'toggle') ? () => removeChip(s) : undefined;
-        if (s.type === 'special') return <React.Fragment key={s.field}>{renderSpecial(s, d, onChange, ctx, registerActive)}</React.Fragment>;
-        if (s.type === 'choice') return <ChoiceChip key={s.field} chip={s} value={getAt(d, s.field)} options={resolveOptions(s, ctx)} onChange={(v) => set(s, v)} onRemove={rm} />;
+    const shown = specs.filter(s => evalWhen(s.when, d, defaults));
+    const renderField = (s) => {
+        if (s.type === 'special') return <React.Fragment key={s.field}>{renderSpecial(s, d, onChange, ctx, null)}</React.Fragment>;
+        if (s.type === 'choice') return <ChoiceChip key={s.field} chip={s} value={getAt(d, s.field)} options={resolveOptions(s, ctx)} onChange={(v) => set(s, v)} />;
         if (s.type === 'toggle') return <ToggleChip key={s.field} chip={s} value={getAt(d, s.field) ?? s.default} onChange={(v) => set(s, v)} />;
-        if (s.type === 'number') return <NumberChip key={s.field} chip={s} value={getAt(d, s.field)} onChange={(v) => set(s, v)} onRemove={rm} />;
-        return <ValueChip key={s.field} chip={s} value={getAt(d, s.field)} onChange={(v) => set(s, v)} nodeList={ctx.nodeList} registerActive={registerActive} suggestions={resolveSuggestions(s, ctx)} onRemove={rm} />;
+        if (s.type === 'number') return <NumberChip key={s.field} chip={s} value={getAt(d, s.field)} onChange={(v) => set(s, v)} />;
+        return <ValueChip key={s.field} chip={{ ...s, acceptsData: false }} value={getAt(d, s.field)} onChange={(v) => set(s, v)} />;
     };
-    const dataGroups = [];
-    if (kind === 'map') dataGroups.push({ id: '__item', label: 'Each item', predicted: false, tags: [{ ref: '{{item}}', label: 'item', sample: '' }, { ref: '{{item.url}}', label: 'item.url', sample: '' }, { ref: '{{index}}', label: 'index', sample: '' }] });
-    for (const g of (tagGroups || [])) dataGroups.push(g);
+    const attached = Array.isArray(d.chips) ? d.chips : [];
     return (
         <div className="cf-board">
-            <div className="cf-sec" style={{ gap: 8 }}>{appliedList.map(renderChip)}</div>
+            <div className="cf-sec" style={{ gap: 8 }}>{shown.map(renderField)}</div>
             <div className="cf-sec">
-                <div className="cf-sec__label">Add</div>
-                <div className="cf-tray">
-                    {trayList.map(s => (
-                        <button key={s.field} className={`cf-add${s._custom ? ' cf-add--custom' : ''}`} draggable onDragStart={(e) => { e.dataTransfer.setData(CHIP_ADD_DRAG, s.field); }} onClick={() => addChip(s)} title={s.hint || `Add ${s.label}`}><span className="cf-add__plus">+</span>{s.label}{s._custom ? ' ✦' : ''}</button>
-                    ))}
-                    {ctx.onOpenChipBuilder && <button className="cf-add cf-add--new" onClick={ctx.onOpenChipBuilder} title="Create a new chip"><span className="cf-add__plus">✦</span> New chip…</button>}
-                </div>
+                <div className="cf-sec__label">Chips</div>
+                {attached.length === 0
+                    ? <div className="cf-hint">Drag chips from the <b>Chips</b> panel on the left onto this node to parse or transform its output.</div>
+                    : <div className="cf-tray">{attached.map((cid, i) => { const c = CHIP_LIB_BY_ID[cid]; return (
+                        <span key={i} className="cf-chip-pill" title={c ? c.desc : cid}>{c ? c.label : cid}<button className="cf-sub__x" onClick={() => onChange({ chips: attached.filter((_, j) => j !== i) })}>×</button></span>
+                    ); })}</div>}
             </div>
-            {dataGroups.length > 0 && (
-                <div className="cf-sec">
-                    <div className="cf-sec__label">Data from earlier steps</div>
-                    <div className="cf-hint">Drag a chip into a value, or click to drop it into the field you last edited.</div>
-                    <div className="cf-data">
-                        {dataGroups.map(g => (
-                            <div className="cf-data__group" key={g.id}>
-                                <div className="cf-data__head">{g.label}{g.predicted ? <small> · expected</small> : null}</div>
-                                <div className="cf-data__chips">
-                                    {g.tags.map(t => (
-                                        <span key={t.ref} className="cf-datachip" draggable title={t.ref}
-                                            onDragStart={(e) => { e.dataTransfer.setData(CHIP_REF_DRAG, t.ref); e.dataTransfer.effectAllowed = 'copy'; }}
-                                            onClick={() => { if (activeRef.current) activeRef.current.insert(t.ref); }}>
-                                            {t.label}{t.sample ? <span className="cf-datachip__s">{t.sample}</span> : null}
-                                        </span>
-                                    ))}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
         </div>
     );
 }
@@ -2270,20 +2346,7 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
                 <button className="auto-btn auto-btn--icon auto-btn--sm auto-btn--danger" onClick={onDelete} title="Delete node" style={{ flexShrink: 0 }}><Trash2 size={14} /></button>
             </div>
 
-            <NodeResult lastRun={lastRun} nodeId={node.id} isTrigger={isTrigger} />
-
             <ChipBoard node={node} ctx={chipCtx} onChange={onChange} />
-
-
-            {!isTrigger && (
-                <div className="auto-panel__ref" title="Reference this node's output in a later node">
-                    <span>Use later:</span>
-                    <code>{`{{nodes.${node.id}}}`}</code>
-                    <button className="auto-panel__refbtn" onClick={copyRef}>
-                        {refCopied ? <Check size={12} /> : <Copy size={12} />} {refCopied ? 'Copied' : 'Copy'}
-                    </button>
-                </div>
-            )}
         </div>
         </DataTagsContext.Provider>
     );

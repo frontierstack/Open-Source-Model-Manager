@@ -535,3 +535,14 @@
 .cf-blabel { font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--ink-3); margin: 12px 0 5px; }
 .cf-binput { width: 100%; box-sizing: border-box; border: 1px solid var(--rule-2, var(--rule)); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px; outline: none; }
 .cf-binput:focus { border-color: var(--accent); }
+
+/* Chips library (left panel) — draggable behavior chips, separate from nodes. */
+.auto-chips-head { display: flex; align-items: center; gap: 5px; }
+.cf-libchip { display: inline-flex; align-items: center; border: 1px solid var(--rule-2, var(--rule)); background: var(--bg); color: var(--ink-2); border-radius: 999px; padding: 4px 10px; font-size: 11.5px; font-weight: 600; cursor: grab; user-select: none; }
+.cf-libchip:hover { border-color: var(--accent); color: var(--accent); }
+.cf-libchip:active { cursor: grabbing; }
+/* Attached chip shown in a node's settings (removable). */
+.cf-chip-pill { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 3px 4px 3px 10px; font-size: 11.5px; font-weight: 600; }
+/* Attached chip badges on the node card. */
+.auto-node__chips { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.auto-node__chip { font-size: 9px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
