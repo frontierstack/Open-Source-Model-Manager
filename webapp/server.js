@@ -8864,12 +8864,20 @@ async function automationSchedulerTick() {
                         }
                     }
                 } else if (d.intervalMs) {
-                    // Epoch-aligned interval so the editor's countdown (same formula,
-                    // client-side) always agrees with when this actually fires. Fires
+                    // Anchor-relative interval so "every N <unit>" fires N units after
+                    // it was configured (anchorMs), and the editor countdown (same
+                    // formula, client-side: scheduleNextFire) shows the FULL interval.
+                    // Pure epoch-alignment made "every 1 day" fire at UTC midnight, so
+                    // the countdown showed time-until-midnight (≤24h) — near 23:00 a
+                    // 1-day schedule read as "~1hr left", looking like the unit never
+                    // applied. Schedules saved before anchorMs existed fall back to the
+                    // legacy epoch-aligned base (0) so they keep firing unchanged. Fires
                     // when the period index advances; first sight seeds the current
                     // period so it doesn't fire immediately on enable.
                     const interval = Math.max(AUTOMATION_MIN_INTERVAL_MS, Number(d.intervalMs) || 0);
-                    const period = Math.floor(nowMs / interval);
+                    const anchor = Number(d.anchorMs);
+                    const base = Number.isFinite(anchor) ? anchor : 0;
+                    const period = Math.floor((nowMs - base) / interval);
                     const st = automationScheduleState.get(key) || { lastFiredPeriod: period };
                     if (st.lastFiredPeriod == null) st.lastFiredPeriod = period;
                     if (period > st.lastFiredPeriod) { due = true; st.lastFiredPeriod = period; }

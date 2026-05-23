@@ -95,10 +95,17 @@ function fmtCountdown(ms) {
     if (m) return `${m}m ${s}s`;
     return `${s}s`;
 }
-function ScheduleCountdown({ intervalMs }) {
+// Anchor-relative next-fire (see scheduleNextFire in AutomationView.jsx — kept
+// identical to the server formula so the canvas countdown matches actual fire).
+// Anchored: full interval from when it was set. Legacy (no anchor): epoch-aligned.
+function scheduleNextFire(now, interval, anchor) {
+    if (Number.isFinite(anchor)) return anchor + (Math.floor((now - anchor) / interval) + 1) * interval;
+    return (Math.floor(now / interval) + 1) * interval;
+}
+function ScheduleCountdown({ intervalMs, anchorMs }) {
     const [now, setNow] = useState(Date.now());
     useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
-    const next = (Math.floor(now / intervalMs) + 1) * intervalMs;
+    const next = scheduleNextFire(now, intervalMs, Number(anchorMs));
     return <>next run in {fmtCountdown(next - now)}</>;
 }
 
@@ -163,7 +170,7 @@ export default function AutomationNode({ id, data, selected }) {
                 )}
             </div>
             {kind === 'trigger.schedule' && data.intervalMs && !data.cron
-                ? <div className="auto-node__sub"><ScheduleCountdown intervalMs={Number(data.intervalMs)} /></div>
+                ? <div className="auto-node__sub"><ScheduleCountdown intervalMs={Number(data.intervalMs)} anchorMs={Number(data.anchorMs)} /></div>
                 : sub && <div className="auto-node__sub">{sub}</div>}
 
             {/* Cards stay minimal: the only after-run detail shown on the canvas

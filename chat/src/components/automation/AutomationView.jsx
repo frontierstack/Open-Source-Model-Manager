@@ -1607,11 +1607,23 @@ function fmtCountdown(ms) {
     if (m) return `${m}m ${s}s`;
     return `${s}s`;
 }
-function CountdownLine({ intervalMs }) {
+// Next fire time for an interval schedule. Anchor-relative ("every N units
+// from when it was set") when an anchorMs is present, so the countdown shows
+// the FULL chosen interval — e.g. "every 1 day" counts down ~24h instead of
+// the time-until-UTC-midnight that pure epoch-alignment produced (a 1-day
+// schedule near 23:00 looked like "~1hr left", reading as if the unit never
+// applied). Falls back to legacy epoch-alignment for schedules saved before
+// anchorMs existed. MUST stay identical to the server's automationSchedulerTick
+// formula so the editor countdown agrees with actual fire time.
+function scheduleNextFire(now, interval, anchor) {
+    if (Number.isFinite(anchor)) return anchor + (Math.floor((now - anchor) / interval) + 1) * interval;
+    return (Math.floor(now / interval) + 1) * interval;
+}
+function CountdownLine({ intervalMs, anchorMs }) {
     const [now, setNow] = useState(Date.now());
     useEffect(() => { if (!intervalMs) return undefined; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [intervalMs]);
     if (!intervalMs) return null;
-    const next = (Math.floor(now / intervalMs) + 1) * intervalMs;
+    const next = scheduleNextFire(now, intervalMs, Number(anchorMs));
     return (
         <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: 8, fontVariantNumeric: 'tabular-nums' }}>
             Next run in {fmtCountdown(next - now)} <span style={{ color: 'var(--ink-3)' }}>· {new Date(next).toLocaleTimeString()}</span>
@@ -1628,7 +1640,9 @@ function ScheduleConfig({ d, onChange }) {
     const [useCron, setUseCron] = useState(!!d.cron);
     const apply = (amt, un) => {
         const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1];
-        onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), cron: '' });
+        // Re-anchor on every edit so "every N <unit>" counts down the full
+        // interval from now (and fires N units later), not from a UTC boundary.
+        onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), anchorMs: Date.now(), cron: '' });
     };
     if (useCron) {
         return (<>
@@ -1644,7 +1658,7 @@ function ScheduleConfig({ d, onChange }) {
                 {SCHEDULE_UNITS.map(([n]) => <option key={n} value={n}>{n}</option>)}
             </select>
         </div>
-        <CountdownLine intervalMs={ms} />
+        <CountdownLine intervalMs={ms} anchorMs={Number(d.anchorMs)} />
         <button onClick={() => setUseCron(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 10.5, padding: 0 }}>Advanced: use a cron expression →</button>
     </>);
 }
@@ -1906,7 +1920,7 @@ function ScheduleChips({ d, onChange }) {
     let unit = 'minutes', amount = 5;
     if (ms > 0) { const u = [...SCHEDULE_UNITS].reverse().find(([, m]) => ms % m === 0) || SCHEDULE_UNITS[0]; unit = u[0]; amount = Math.round(ms / u[1]); }
     const [cronMode, setCronMode] = useState(!!d.cron);
-    const apply = (amt, un) => { const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1]; onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), cron: '' }); };
+    const apply = (amt, un) => { const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1]; onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), anchorMs: Date.now(), cron: '' }); };
     if (cronMode) {
         return (<div className="cf-sec">
             <ValueChip chip={{ label: 'Cron (min hour dom mon dow)', type: 'value', acceptsData: false, placeholder: '0 9 * * 1-5' }} value={d.cron || ''} onChange={(v) => onChange({ cron: v })} />
@@ -1916,7 +1930,7 @@ function ScheduleChips({ d, onChange }) {
     return (<div className="cf-sec">
         <div className="cf-chip cf-chip--num"><span className="cf-chip__label">Run every</span><input type="number" min="1" className="cf-num" value={amount} onChange={(e) => apply(e.target.value, unit)} /></div>
         <ChoiceChip chip={{ label: 'Unit' }} value={unit} options={SCHEDULE_UNITS.map(([n]) => ({ value: n, label: n }))} onChange={(v) => apply(amount, v)} />
-        <CountdownLine intervalMs={ms} />
+        <CountdownLine intervalMs={ms} anchorMs={Number(d.anchorMs)} />
         <button className="cf-add" onClick={() => setCronMode(true)}>Advanced: cron →</button>
     </div>);
 }
