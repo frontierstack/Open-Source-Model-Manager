@@ -51,6 +51,7 @@ const CATEGORY_LABEL = { trigger: 'Triggers', tools: 'Tools', connector: 'Connec
 const PALETTE_CATEGORY_OVERRIDE = {
     map: 'trigger',
     model: 'tools', web_search: 'tools', fetch_url: 'tools', render_html: 'tools',
+    playwright_fetch: 'tools', scrapling_fetch: 'tools',
     parse_json: 'tools', export_file: 'tools', http_request: 'tools', crawl: 'tools',
     sqlite: 'tools', render_chart: 'tools', create_pdf: 'tools', html_to_pdf: 'tools', create_file: 'tools',
     run_python: 'tools', db_store: 'tools', db_query: 'tools', tool: 'tools',
@@ -1823,7 +1824,7 @@ function ValueChip({ chip, value, onChange, onRemove, nodeList, registerActive, 
                 {parts.map(p => p.t === 'r'
                     ? <span key={p.id} className="cf-sub" title={p.v}><span className="cf-sub__t">{chipRefLabel(p.v, nodeList)}</span><button className="cf-sub__x" onMouseDown={(e) => e.preventDefault()} onClick={() => rmRef(p.id)}>×</button></span>
                     : (multi
-                        ? <textarea key={p.id} className="cf-text cf-text--multi" rows={1} value={p.v} placeholder={parts.length === 1 ? (chip.placeholder || '') : ''} ref={cfGrow} onFocus={() => registerActive && registerActive(apiRef.current)} onChange={(e) => { editText(p.id, e.target.value); cfGrow(e.target); }} />
+                        ? <textarea key={p.id} className={`cf-text cf-text--multi${chip.mono ? ' cf-text--mono' : ''}`} rows={1} value={p.v} placeholder={parts.length === 1 ? (chip.placeholder || '') : ''} ref={cfGrow} onFocus={() => registerActive && registerActive(apiRef.current)} onChange={(e) => { editText(p.id, e.target.value); cfGrow(e.target); }} />
                         : <input key={p.id} className="cf-text" size={Math.max((p.v || '').length || 1, parts.length === 1 ? Math.min(42, (chip.placeholder || '').length) : 1)} value={p.v} placeholder={parts.length === 1 ? (chip.placeholder || '') : ''} onFocus={() => registerActive && registerActive(apiRef.current)} onChange={(e) => editText(p.id, e.target.value)} />)
                 )}
             </div>
@@ -1871,10 +1872,13 @@ const TOOL_PARAMS = {
     create_pdf: [{ key: 'content', label: 'Content', multiline: true }, { key: 'filename', label: 'Filename' }],
     html_to_pdf: [{ key: 'content', label: 'HTML', multiline: true }, { key: 'outputName', label: 'Filename' }],
     http_request: [{ key: 'url', label: 'URL' }, { key: 'method', label: 'Method', options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] }, { key: 'body', label: 'Body', multiline: true }],
+    playwright_fetch: [{ key: 'url', label: 'URL' }, { key: 'timeout', label: 'Timeout (ms)' }, { key: 'maxLength', label: 'Max chars' }],
+    scrapling_fetch: [{ key: 'url', label: 'URL' }, { key: 'timeout', label: 'Timeout (ms)' }, { key: 'maxLength', label: 'Max chars' }],
+    download_html: [{ key: 'url', label: 'URL' }, { key: 'filename', label: 'Save as (filename)' }],
     query_sqlite: [{ key: 'query', label: 'SQL', multiline: true }, { key: 'db', label: 'Database file' }],
     create_file: [{ key: 'path', label: 'Path' }, { key: 'content', label: 'Content', multiline: true }],
-    run_python: [{ key: 'code', label: 'Python code', multiline: true }],
-    run_node: [{ key: 'code', label: 'JavaScript code', multiline: true }],
+    run_python: [{ key: 'code', label: 'Script', multiline: true, mono: true }],
+    run_node: [{ key: 'code', label: 'JavaScript code', multiline: true, mono: true }],
     render_chart: [{ key: 'chartSpec', label: 'Chart spec', multiline: true }],
 };
 function ToolArgsChips({ d, onChange, nodeList, registerActive }) {
@@ -1892,7 +1896,7 @@ function ToolArgsChips({ d, onChange, nodeList, registerActive }) {
             <div className="cf-sec__label">Parameters</div>
             {known.map(p => p.options
                 ? <ChoiceChip key={p.key} chip={{ label: p.label }} value={args[p.key]} options={p.options.map(o => ({ value: o, label: o }))} onChange={(v) => setArg(p.key, v)} />
-                : <ValueChip key={p.key} chip={{ label: p.label, type: p.multiline ? 'multiline' : 'value', acceptsData: true }} value={args[p.key]} onChange={(v) => setArg(p.key, v)} nodeList={nodeList} registerActive={registerActive} />)}
+                : <ValueChip key={p.key} chip={{ label: p.label, type: p.multiline ? 'multiline' : 'value', acceptsData: true, mono: p.mono }} value={args[p.key]} onChange={(v) => setArg(p.key, v)} nodeList={nodeList} registerActive={registerActive} />)}
             {extra.map(k => <ValueChip key={k} chip={{ label: k, type: 'value', acceptsData: true }} value={args[k]} onChange={(v) => setArg(k, v)} nodeList={nodeList} registerActive={registerActive} onRemove={() => { setArg(k, undefined); setCustomKeys(cs => cs.filter(x => x !== k)); }} />)}
             {adding ? (
                 <div className="cf-row__head">
@@ -2188,7 +2192,12 @@ const CHIP_LIB_CATEGORIES = Array.from(new Set(CHIP_LIBRARY.map(c => c.category)
 // behavior is added by dragging CHIPS (above) onto the node from the left panel.
 function ChipBoard({ node, ctx, onChange }) {
     const d = node.data || {}; const kind = d.kind;
-    const specs = chipsForKind(kind, ctx).filter(s => s.field !== 'forward' && s.special !== 'toolArgs' && !s._custom);
+    // NOTE: do NOT filter out `special: 'toolArgs'` here — that hid the
+    // Parameters section (a tool/Script Block node's args, e.g. the Python
+    // code) from the config panel entirely, so the LLM-generated script was
+    // invisible and uneditable. renderField → renderSpecial renders it like
+    // any other special (schedule/switch/webhook).
+    const specs = chipsForKind(kind, ctx).filter(s => s.field !== 'forward' && !s._custom);
     const defaults = {}; for (const s of specs) if (s.default !== undefined) defaults[s.field] = s.default;
     const set = (s, val) => onChange(patchFor(d, s.field, val));
     const shown = specs.filter(s => evalWhen(s.when, d, defaults));

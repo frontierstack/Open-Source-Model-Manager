@@ -8108,6 +8108,23 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
 // Build an automation from a natural-language prompt: the model emits a workflow
 // spec, which is validated + auto-laid-out + saved. Returns the created workflow.
 // With { test: true } it also runs it once and auto-fixes a fixable failure.
+// Parse a builder/edit model response into a workflow spec. Plain JSON.parse
+// fails whenever the model emits a Script Block (run_python) node, because the
+// `code` string almost always contains literal newlines/quotes that aren't
+// escaped as valid JSON — that's what made "Build with LLM" reject every
+// python step. Fall back to jsonrepair (already used for tool-call args), which
+// fixes unescaped newlines/quotes, trailing commas, and unquoted keys.
+function parseBuilderSpec(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    try { return JSON.parse(raw); } catch (_) { /* fall through to repair */ }
+    try {
+        const { jsonrepair } = require('jsonrepair');
+        const repaired = jsonrepair(raw);
+        const obj = JSON.parse(repaired);
+        return obj && typeof obj === 'object' ? obj : null;
+    } catch (_) { return null; }
+}
+
 app.post('/api/automations/build', requireAuth, async (req, res) => {
     if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
         return res.status(403).json({ error: 'Automation permission required' });
@@ -8128,8 +8145,7 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
         if (fence) raw = fence[1].trim();
         const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}');
         if (lo !== -1 && hi !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
-        let spec = null;
-        try { spec = JSON.parse(raw); } catch (_) { spec = null; }
+        const spec = parseBuilderSpec(raw);
         if (!spec || typeof spec !== 'object') {
             return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your request.' });
         }
@@ -8199,8 +8215,7 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
         if (fence) raw = fence[1].trim();
         const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}');
         if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
-        let spec = null;
-        try { spec = JSON.parse(raw); } catch (_) { spec = null; }
+        const spec = parseBuilderSpec(raw);
         if (!spec || typeof spec !== 'object') {
             return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your change.' });
         }
@@ -18210,6 +18225,9 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // the sandbox container exits, leaving every subsequent skill (extract,
     // read, hash, ...) staring at ENOENT.
     'download_file',
+    // download_html saves a page's raw HTML into /workspace so later tools
+    // (read_file/grep_code/parse_html) can parse it — needs the workspace mount.
+    'download_html',
     // archives — names match the actual entries in default-skills.json
     // (`tar_extract`/`tar_create`/`unzip_file`/`zip_files`). The previous
     // `create_archive`/`extract_archive` entries were dead names: no
@@ -18245,6 +18263,7 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
 // match any legacy entry is preserved (operator intent wins).
 const NETWORK_SANDBOX_DEFAULTS = {
     download_file:   { allowlist: ['*'], note: 'arbitrary URL download; tighten if policy allows' },
+    download_html:   { allowlist: ['*'], note: 'fetches a page HTML into the workspace; user-supplied URLs' },
     send_file:       { allowlist: ['*'], note: 'uploads a workspace file to telegram/slack/user URL' },
     fetch_url:       { allowlist: ['*'], note: 'user-supplied URLs' },
     http_request:    { allowlist: ['*'], note: 'user-supplied URLs' },

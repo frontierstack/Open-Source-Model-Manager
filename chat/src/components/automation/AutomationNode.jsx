@@ -69,7 +69,12 @@ function iconForTool(tool) {
         case 'create_pdf':
         case 'create_file': return FileText;
         case 'http_request':
-        case 'crawl_pages': return Globe;
+        case 'crawl_pages':
+        case 'playwright_fetch':
+        case 'scrapling_fetch':
+        case 'download_html': return Globe;
+        case 'run_python':
+        case 'run_node': return Code;
         default: return Wrench;
     }
 }
