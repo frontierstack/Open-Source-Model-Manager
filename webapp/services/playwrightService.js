@@ -354,28 +354,79 @@ async function applyStealthPatches(page) {
             return imageData;
         };
 
-        // Hide automation-related function modifications
-        const originalToString = Function.prototype.toString;
-        Function.prototype.toString = function() {
-            if (this === navigator.permissions.query) {
-                return 'function query() { [native code] }';
-            }
-            return originalToString.apply(this, arguments);
-        };
+        // Touch / pointer — a desktop browser (hasTouch:false) reports 0 touch
+        // points; a non-zero value with isMobile:false is inconsistent.
+        Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+
+        // PDF viewer present (real desktop Chrome). Its absence is a headless tell.
+        try { Object.defineProperty(navigator, 'pdfViewerEnabled', { get: () => true }); } catch (e) {}
+
+        // mimeTypes consistent with the spoofed plugins (length 0 alongside
+        // non-empty plugins is itself suspicious).
+        try {
+            const mimeTypes = [
+                { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+                { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+            ];
+            Object.defineProperty(navigator, 'mimeTypes', {
+                get: () => {
+                    const arr = Object.assign(mimeTypes.slice(), { length: mimeTypes.length });
+                    arr.item = (i) => mimeTypes[i];
+                    arr.namedItem = (name) => mimeTypes.find(m => m.type === name);
+                    return arr;
+                },
+            });
+        } catch (e) {}
+
+        // Headless Chromium leaves window.outer*/screenX/screenY at 0 — one of
+        // the strongest, easiest tells. Mirror inner size + typical chrome.
+        try {
+            Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
+            Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85 });
+            Object.defineProperty(window, 'screenX', { get: () => 0 });
+            Object.defineProperty(window, 'screenY', { get: () => 0 });
+        } catch (e) {}
 
         // Screen properties
         Object.defineProperty(screen, 'availWidth', { get: () => screen.width });
         Object.defineProperty(screen, 'availHeight', { get: () => screen.height - 40 });
 
         // Disable WebRTC IP leak
+        let _rtcPatched = null;
         if (typeof RTCPeerConnection !== 'undefined') {
             const origRTC = RTCPeerConnection;
-            window.RTCPeerConnection = function(...args) {
+            _rtcPatched = function(...args) {
                 const pc = new origRTC(...args);
                 pc.createDataChannel = () => ({});
                 return pc;
             };
+            window.RTCPeerConnection = _rtcPatched;
         }
+
+        // Native-code masking — make fn.toString() return
+        // "function NAME() { [native code] }" for EVERY function we replaced
+        // (not just permissions.query). A detector that calls
+        // WebGLRenderingContext.prototype.getParameter.toString() or
+        // Function.prototype.toString.toString() would otherwise see our JS
+        // source and flag the browser as instrumented.
+        const _origToString = Function.prototype.toString;
+        const _masked = new WeakMap();
+        const _mask = (fn, name) => {
+            if (typeof fn === 'function') {
+                try { _masked.set(fn, 'function ' + name + '() { [native code] }'); } catch (e) {}
+            }
+        };
+        _mask(navigator.permissions.query, 'query');
+        try { _mask(WebGLRenderingContext.prototype.getParameter, 'getParameter'); } catch (e) {}
+        try { _mask(WebGL2RenderingContext.prototype.getParameter, 'getParameter'); } catch (e) {}
+        try { _mask(CanvasRenderingContext2D.prototype.getImageData, 'getImageData'); } catch (e) {}
+        if (_rtcPatched) _mask(_rtcPatched, 'RTCPeerConnection');
+        const _newToString = function () {
+            if (_masked.has(this)) return _masked.get(this);
+            return _origToString.apply(this, arguments);
+        };
+        _mask(_newToString, 'toString');
+        Object.defineProperty(Function.prototype, 'toString', { value: _newToString, configurable: true, writable: true });
     });
 }
 
@@ -1036,7 +1087,17 @@ async function interactAndFetch(url, actions = [], options = {}) {
                         await page.evaluate(() => window.scrollBy(0, window.innerHeight));
                         break;
                     case 'waitForNavigation':
-                        await page.waitForNavigation({ timeout: actTimeout });
+                        // Best-effort: a preceding click very often FINISHES
+                        // navigating before this line starts listening (the
+                        // classic page.click → waitForNavigation race), so a
+                        // timeout here normally means "already navigated", not a
+                        // failure. Don't hard-fail — fall back to a short
+                        // load-state settle and continue so pagination works.
+                        try {
+                            await page.waitForNavigation({ timeout: actTimeout, waitUntil: 'load' });
+                        } catch (navErr) {
+                            try { await page.waitForLoadState('networkidle', { timeout: 3000 }); } catch (e) {}
+                        }
                         break;
                 }
             } catch (actionErr) {

@@ -20281,7 +20281,32 @@ app.use((req, res) => {
         /datadome/i,
         /px-captcha/i,
         /h-captcha/i,
+        /hcaptcha/i,
         /recaptcha/i,
+        // Cloudflare Turnstile + newer wording
+        /turnstile/i,
+        /cf-turnstile/i,
+        /verifying you are human/i,
+        /needs to review the security of your connection/i,
+        /one more step/i,
+        /ray id:/i,
+        /error 10(15|20)/i,
+        // DataDome
+        /captcha-delivery\.com/i,
+        /geo\.captcha-delivery/i,
+        // Imperva / Incapsula / Distil
+        /pardon our interruption/i,
+        /imperva/i,
+        /incapsula/i,
+        /_incapsula_/i,
+        /distil/i,
+        // Akamai / Sucuri / generic
+        /sucuri/i,
+        /unusual traffic from your computer network/i,
+        /are you a (?:robot|human)/i,
+        /please verify you('| a)re human/i,
+        /bot detection/i,
+        /enable cookies/i,
     ];
     function detectBotChallenge({ title = '', content = '' } = {}) {
         const blob = `${title}\n${content}`.slice(0, 8000);
@@ -20816,7 +20841,8 @@ app.use((req, res) => {
                     description:
                         'USE WHEN fetch_url returned empty/wrong content for a JS-rendered page (SPA, lazy-loaded, dynamic). ' +
                         'Fetch a webpage rendered by a real browser (Playwright + stealth). Use for JavaScript-heavy pages, SPAs, and sites where fetch_url returned empty or wrong content. Falls back to axios if Playwright is unavailable. Rejects private/internal addresses. ' +
-                        'If the result includes a `hint` mentioning bot protection or thin content (Cloudflare, "Just a moment...", CAPTCHA), retry the same URL with scrapling_fetch — do NOT ask the user to paste before trying it.',
+                        'If the result includes a `hint` mentioning bot protection or thin content (Cloudflare, "Just a moment...", CAPTCHA), retry the same URL with scrapling_fetch — do NOT ask the user to paste before trying it. ' +
+                        'This only loads ONE static view — to click, scroll for lazy content, paginate, search, or otherwise move around the page to find items, use playwright_interact instead.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -20874,14 +20900,25 @@ app.use((req, res) => {
                 function: {
                     name: 'playwright_interact',
                     description:
-                        'Navigate a page and perform an action sequence (click, type, wait, scroll, waitForNavigation) before extracting content. Use when a page needs interaction (accept cookies, submit a form, scroll for lazy content) before it renders useful text. Requires Playwright; errors if unavailable.',
+                        'Navigate a page and perform an action sequence (click, type, wait, scroll, waitForNavigation) before extracting content. Use when a page needs interaction (accept cookies, submit a form, scroll for lazy content) before it renders useful text, or to MOVE AROUND a page to find items. Requires Playwright; errors if unavailable.\n' +
+                        'FINDING ITEMS / MOVING AROUND:\n' +
+                        '• Dismiss blockers first: click the cookie/consent/"close" button if a banner or modal is covering the content (e.g. {"type":"click","selector":"#accept-cookies"}).\n' +
+                        '• Lazy-load / infinite scroll: add several {"type":"scroll"} actions (each scrolls one viewport down) with a {"type":"wait","timeout":1200} between them so new items load; content is read from the fully-scrolled page.\n' +
+                        '• "Load more" / "Show all": click that button — repeat the click for several batches, with a wait after each, to pull in more items.\n' +
+                        '• Search to locate an item: {"type":"type","selector":"#search","text":"<query>"} then click/submit, then {"type":"wait","selector":".results"}.\n' +
+                        '• Open a tab/category/filter: click it, then wait for its result selector before extraction.\n' +
+                        'PAGINATION (next pages): content is extracted only from the FINAL page state, so this returns ONE page per call. Two patterns: (a) click the Next/page link then {"type":"waitForNavigation"} (or wait for the results selector) to land on — and read — that page; (b) to collect items across MANY pages, call playwright_interact once per page, advancing the URL\'s page param (…?page=2, &offset=20) each call, and merge the results yourself. For broad link-following across a site, prefer crawl_pages.\n' +
+                        'If a selector times out, the page likely uses a different selector — inspect it first with playwright_fetch (includeLinks:true) or scrapling_fetch to find the real one rather than retrying blindly.',
                     parameters: {
                         type: 'object',
                         properties: {
                             url: { type: 'string', description: 'Absolute HTTP(S) URL to navigate to.' },
                             actions: {
                                 type: 'array',
-                                description: 'Ordered list of actions. Each action is an object with `type` (click|type|wait|scroll|waitForNavigation), plus `selector`, `text`, or `timeout` as needed.',
+                                description: 'Ordered actions run before content is extracted. Each: { "type": "click|type|wait|scroll|waitForNavigation", ... }. ' +
+                                    'click → needs "selector"; type → needs "selector" + "text"; wait → "selector" (wait until it appears) OR "timeout" (ms pause); scroll → scrolls one viewport down (repeat to trigger lazy/infinite loading); waitForNavigation → wait for a full page load after a click. ' +
+                                    'Optional per-action "timeout" (ms, default 8000) widens slow elements. ' +
+                                    'Examples — reveal more: [{"type":"click","selector":".load-more"},{"type":"wait","timeout":1500}]; next page: [{"type":"click","selector":"a.next"},{"type":"waitForNavigation"}]; search: [{"type":"type","selector":"#q","text":"laptop"},{"type":"click","selector":"button[type=submit]"},{"type":"wait","selector":".results"}].',
                                 items: { type: 'object' },
                             },
                             timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: 'Overall timeout in ms (default 30000).' },
