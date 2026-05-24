@@ -291,8 +291,8 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           │  │  120+ Skills Engine│ │ 6 Layouts│         │             │
           │  │  Native Tool Calls │ │Tool Chips│         │             │
           │  │  OpenAI Endpoints  │ │ OCR/File │         │             │
-          │  │  Web Scraping      │ │ Uploads  │         │             │
-          │  │  Map-Reduce        │ └────┬─────┘         │             │
+          │  │  Automation Engine │ │ Uploads  │         │             │
+          │  │  Scrape/Map-Reduce │ └────┬─────┘         │             │
           │  │  Docker Integration│      │               │             │
           │  └─────────┬──────────┘      │               │             │
           │            │◄────────────────┘───────────────┘             │
@@ -322,6 +322,8 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 **Data Persistence:** All user data stored in `./models/.modelserver/` as JSON files (agents, skills, conversations, API keys with AES-256-GCM encryption). Model containers mount `./models` read-only.
 
 **Sandbox image:** Skills that run user-provided code (or any of the new media skills — `transform_image`, `transcribe_audio`, `read_xlsx`, `query_sqlite`, `make_downloadable`) execute inside a ~2.6GB gVisor-isolated sandbox image with `faster-whisper`, `ffmpeg`, Pillow, openpyxl, and a bundled `small.en` Whisper model preloaded.
+
+**Automation Engine:** The visual workflow engine runs **in-process** inside the webapp — no extra service or container. It's a branch-pruning DAG executor (`webapp/services/automationEngine.js`) over a `{ nodes, edges }` graph with `{{...}}` data templating, reusing the same auth, sandboxed skills, and locally-served models. Triggers fire **manually, on a schedule** (one 5s `setInterval` tick, epoch-aligned intervals + cron), **by webhook, on a system event, or from a Telegram/Slack poll**; independent nodes at the same depth execute in parallel. Stateful nodes (`Database: Store`, `Track Changes`) keep per-workflow SQLite in a sandbox `automation-<id>` workspace for dedup/change-tracking across runs. An LLM **Build/Edit** path assembles workflows from a plain-language prompt and can **test-run and self-repair** them — running the graph, inspecting each node's output (and re-running to verify "only new/changed" logic) until the goal is met. Workflows, run history, and node types persist to `/models/.modelserver/` as JSON — no database service required.
 
 ---
 
