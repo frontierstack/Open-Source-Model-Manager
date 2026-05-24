@@ -20960,7 +20960,10 @@ app.use((req, res) => {
             const actions = Array.isArray(args?.actions) ? args.actions : [];
             try {
                 const result = await playwrightService.interactAndFetch(url, actions, { timeout, maxLength });
-                return { ...result, engine: 'playwright' };
+                const hint = result?.success
+                    ? (detectBotChallenge({ title: result.title, content: result.content }) || productPageHint(result.content))
+                    : null;
+                return { ...result, engine: 'playwright', ...(hint ? { hint } : {}) };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e), engine: 'playwright' };
             }
