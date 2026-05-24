@@ -724,8 +724,34 @@ function FlowEditor({ showSnackbar, models }) {
     // ---- graph edits ----
     const onConnect = useCallback((params) => {
         setEdges(eds => addEdge({ ...params, id: uid('e') }, eds));
+        // Auto-fill a gate's "value to check" with the source node's output when
+        // a node is wired into it. The engine already defaults a blank left to
+        // the previous node's output, but leaving the field empty in the editor
+        // makes it unclear what the gate tests — so populate {{nodes.<source>}}
+        // (with a sensible "is not empty" default op) so it's explicit and
+        // editable. Only fills when the value/condition is still blank, so a
+        // user- or LLM-set condition is never clobbered.
+        setNodes(nds => nds.map(n => {
+            if (n.id !== params.target) return n;
+            const t = n.type;
+            if (t !== 'gate.if' && t !== 'gate.filter' && t !== 'gate.switch') return n;
+            const ref = `{{nodes.${params.source}}}`;
+            const d = { ...(n.data || {}) };
+            if (t === 'gate.switch') {
+                if (d.value != null && String(d.value).trim() !== '') return n;
+                d.value = ref;
+            } else {
+                const cond = { ...(d.condition || {}) };
+                if (cond.left != null && String(cond.left).trim() !== '') return n;
+                cond.left = ref;
+                if (!cond.op) cond.op = 'not_empty';
+                if (cond.right == null) cond.right = '';
+                d.condition = cond;
+            }
+            return { ...n, data: d };
+        }));
         setDirty(true);
-    }, [setEdges]);
+    }, [setEdges, setNodes]);
 
     // Delete a single connection line (leaves the nodes intact) and mark dirty.
     const deleteEdge = useCallback((id) => {
@@ -1806,6 +1832,31 @@ function ValueChip({ chip, value, onChange, onRemove, nodeList, registerActive, 
                 {multi
                     ? <textarea className="cf-text cf-text--multi" value={value || ''} placeholder={chip.placeholder || ''} onChange={(e) => onChange(e.target.value)} />
                     : <input className="cf-text" style={{ flex: 1 }} value={value || ''} placeholder={chip.placeholder || ''} onChange={(e) => onChange(e.target.value)} />}
+                {onRemove && <button className="cf-chip__rm" title="Remove" onClick={onRemove}>×</button>}
+            </div>
+        );
+    }
+    // Code fields (run_python / run_node "Script", mono) render as ONE
+    // contiguous textarea. Tokenizing them like a value field split the script
+    // into multiple boxes around every embedded {{nodes.x}} — but in code that
+    // is intentional literal interpolation the author edits inline, not a data
+    // pill. A dropped/clicked data ref appends its {{...}} text instead.
+    if (chip.mono) {
+        const raw = value == null ? '' : String(value);
+        const append = (ref) => onChange((value == null ? '' : String(value)) + '{{' + ref + '}}');
+        return (
+            <div className="cf-chip cf-chip--value cf-chip--multi">
+                <span className="cf-chip__label">{chip.label}</span>
+                <textarea
+                    className="cf-text cf-text--multi cf-text--mono"
+                    value={raw}
+                    placeholder={chip.placeholder || ''}
+                    ref={cfGrow}
+                    onFocus={() => registerActive && registerActive({ insert: append })}
+                    onChange={(e) => { onChange(e.target.value); cfGrow(e.target); }}
+                    onDrop={(e) => { const ref = e.dataTransfer.getData(CHIP_REF_DRAG); if (ref) { e.preventDefault(); append(ref); } }}
+                    onDragOver={(e) => { if (Array.from(e.dataTransfer.types || []).includes(CHIP_REF_DRAG)) e.preventDefault(); }}
+                />
                 {onRemove && <button className="cf-chip__rm" title="Remove" onClick={onRemove}>×</button>}
             </div>
         );

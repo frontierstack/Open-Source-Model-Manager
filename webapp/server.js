@@ -8002,6 +8002,26 @@ app.post('/api/automations', requireAuth, async (req, res) => {
 // fix across the whole chain rather than giving up after one try).
 const MAX_REPAIR_PASSES = 5;
 
+// Ask the model whether a finished run actually achieved the user's stated goal
+// (semantic check beyond structural health) — e.g. a PDF was really produced
+// with real content, charts are present if asked, the report is substantive.
+// Returns { achieved:boolean, problems:string, fix:string }. Defaults to
+// achieved=true on any parse/transport failure so a flaky judge never blocks a
+// structurally-clean build. Credentials/unreachable-site gaps are out of scope
+// (the user supplies those).
+async function judgeGoalAchieved(goalPrompt, runSummary, model) {
+    const messages = [
+        { role: 'system', content: 'You verify whether an automation run achieved the user\'s goal. Reply with ONLY a JSON object: {"achieved": true|false, "problems": "<what is missing or wrong; empty if achieved>", "fix": "<one concrete change to the workflow; empty if achieved>"}. Judge the END RESULT, not intentions.' },
+        { role: 'user', content: `User's goal for the automation:\n${String(goalPrompt).slice(0, 1200)}\n\nWhat the run produced (per node, in order):\n${runSummary}\n\nDid the run ACHIEVE the goal? Require: real data flowed end-to-end (not placeholders, empties, or "no content" apologies); the FINAL artifact matches the request (if a PDF/report/file was asked for, an artifact was actually generated with real content; if charts/graphs were asked for, a chart/render step ran; if a summary/notification was asked for, it is substantive); and any "only new items / only when changed" requirement is implemented with a db_store key or track_changes node.\n\nIMPORTANT — judge the WIRING, not the luck of this run: a run that correctly produces NOTHING because there is no new/changed/matching data yet is SUCCESSFUL, not a failure. Specifically:\n- The FIRST run of a change monitor (track_changes returns changed=false / firstSeen — it stores a baseline) and a dedup re-run where nothing is new (db_store .new is empty, so a downstream gate correctly skips the notification) are CORRECT behavior.\n- For a workflow started by an EXTERNAL message/webhook trigger (telegram / slack / webhook), this TEST run uses PLACEHOLDER/empty input — so input-dependent gates (e.g. checking the message text for a keyword) will naturally NOT match and the run may take a default/no-op branch. That is EXPECTED, not a defect. Judge whether the gates REFERENCE the trigger input correctly (e.g. {{input.text}}) and each branch leads to a sensible action — NOT whether a particular branch fired this run.\nMark achieved=true whenever the graph WOULD deliver the right result when there IS new/changed/matching data. Only mark achieved=false for a real wiring/logic defect (missing PDF/chart step, broken field paths, no persistence for an "only new" requirement, a gate that can NEVER be true, empty/error data where there should be content). Ignore missing credentials/tokens and unreachable external sites. Respond with ONLY the JSON object.` },
+    ];
+    const text = await runModelCompletion({ messages, model, temperature: 0, maxTokens: 500 });
+    let raw = String(text || '').trim();
+    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
+    const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
+    const v = JSON.parse(raw);
+    return { achieved: v.achieved !== false, problems: v.problems || '', fix: v.fix || '' };
+}
+
 // Run `wfObj`, assess whether it actually produced data, and — while it didn't and
 // the failure isn't pure missing-config — ask the model to repair it, looping up
 // to MAX_REPAIR_PASSES. Mutates wfObj.nodes/edges in place and appends a rich
@@ -8009,7 +8029,7 @@ const MAX_REPAIR_PASSES = 5;
 // workflow the model edits against (id/position preservation); for Build it's
 // wfObj itself, for the Edit preview it's the original (so the proposed revision
 // is what's run/fixed). Keeps the BEST (fewest-issues) version seen.
-async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
+async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPrompt = '') {
     // Compact per-node summary fed back to the model so it fixes against the
     // ACTUAL outputs (wrong paths, error payloads, empty results).
     // Per-node summary fed back to the model. Healthy nodes get a short preview;
@@ -8070,10 +8090,12 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
     let lastAssess = null;
     let lastOutcome = null;
     let configStop = false;
+    let goalFix = '';
 
     for (let pass = 1; pass <= MAX_REPAIR_PASSES; pass++) {
         const { outcome, rec } = await runOnce();
         lastOutcome = outcome;
+        goalFix = '';
         const configError = outcome.status === 'failed' && isConfigError(outcome.error);
         // assessRunHealth reads rec.nodes; if the run threw before producing a
         // record, treat the thrown error itself as a high-severity issue.
@@ -8083,6 +8105,63 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
         } else {
             assess = { ok: outcome.status === 'completed', issues: outcome.error ? [{ nodeId: '(run)', type: '', severity: 'high', detail: outcome.error }] : [], score: outcome.error ? 3 : 0 };
         }
+
+        // Deeper verification on a structurally-healthy run — this is what makes
+        // the loop iterate toward the user's ACTUAL goal, not just "no errors":
+        //   (a) re-run once and prove dedup / change-tracking suppresses repeats
+        //       (the only way to verify "only notify on NEW content" works);
+        //   (b) ask the model whether the END RESULT matches the user's request
+        //       (real data flowed, the PDF/report/chart actually got produced).
+        // Both run only when the structure is sound, so a broken graph isn't
+        // charged extra runs/model calls. Failures here become repairable issues.
+        if (assess.ok && !configError) {
+            const stateful = automationEngine.findStatefulNodes(wfObj);
+            if (stateful.any && rec && Array.isArray(rec.nodes)) {
+                const second = await runOnce();
+                const r2 = second.rec;
+                const outOf = (record, id) => {
+                    const n = record && Array.isArray(record.nodes) ? record.nodes.find(x => x.nodeId === id) : null;
+                    return n ? n.output : null;
+                };
+                for (const id of stateful.storeKeyIds) {
+                    const o1 = outOf(rec, id), o2 = outOf(r2, id);
+                    const n1 = (o1 && Array.isArray(o1.new)) ? o1.new.length : null;
+                    const n2 = (o2 && Array.isArray(o2.new)) ? o2.new.length : null;
+                    if (n1 != null && n2 != null && n1 > 0 && n2 >= n1) {
+                        assess.issues.push({ nodeId: id, type: 'db_store', severity: 'high', detail: `dedup is NOT working: re-running immediately produced ${n2} "new" record(s) again (same as the first run's ${n1}). The "key" is not a STABLE unique field of the actual records — set it to the real id/url field shown in the data above (add keyNormalize:true / a comma-fallback like "link,title") so already-seen items are suppressed on later runs.` });
+                        buildLog.push(`Pass ${pass}: dedup check — db_store ${id} re-reported ${n2} items (key not stable) ✗`);
+                    } else if (n1 != null && n2 != null) {
+                        buildLog.push(`Pass ${pass}: dedup check — db_store ${id} suppressed repeats on re-run (${n1}→${n2} new) ✓`);
+                    }
+                }
+                for (const id of stateful.trackIds) {
+                    const o2 = outOf(r2, id);
+                    if (o2 && typeof o2 === 'object' && o2.changed === true) {
+                        assess.issues.push({ nodeId: id, type: 'track_changes', severity: 'medium', detail: `change-tracker reported a change on an immediate re-run of the same source — the "key" should be a CONSTANT id (e.g. the page URL) so the previous snapshot is found next run.` });
+                        buildLog.push(`Pass ${pass}: change check — track_changes ${id} flagged a change on identical re-run (key may be unstable) ✗`);
+                    } else if (o2 && typeof o2 === 'object') {
+                        buildLog.push(`Pass ${pass}: change check — track_changes ${id} reported no change on re-run ✓`);
+                    }
+                }
+            }
+            if (goalPrompt) {
+                try {
+                    const verdict = await judgeGoalAchieved(goalPrompt, summarize(outcome, rec, new Set()), model);
+                    if (verdict && verdict.achieved === false) {
+                        goalFix = verdict.fix ? String(verdict.fix) : '';
+                        assess.issues.push({ nodeId: '(goal)', type: 'goal', severity: 'high', detail: `the run did not achieve the user's goal — ${String(verdict.problems || '').slice(0, 300)}${goalFix ? ' — FIX: ' + goalFix.slice(0, 300) : ''}` });
+                        buildLog.push(`Pass ${pass}: goal check — not met: ${String(verdict.problems || '').slice(0, 160)}`);
+                    } else if (verdict && verdict.achieved === true) {
+                        buildLog.push(`Pass ${pass}: goal check — achieved ✓`);
+                    }
+                } catch (e) { buildLog.push(`Pass ${pass}: goal check skipped — ${e.message}`); }
+            }
+            // Recompute health after enrichment: any newly-added high issue makes
+            // the run unhealthy so the loop keeps iterating toward the goal.
+            assess.score = assess.issues.reduce((s, i) => s + (i.severity === 'high' ? 3 : 1), 0);
+            if (assess.issues.some(i => i.severity === 'high')) assess.ok = false;
+        }
+
         lastAssess = assess;
         remember(assess);
 
@@ -8103,14 +8182,20 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog) {
         // Ask the model to repair against the ACTUAL failing outputs + guidance.
         const messages = [
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `This workflow was just run and produced bad/empty results. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.\n\nDetected problems:\n${issuesLine}\n\nRun results (per node, ⚠ marks the flagged ones):\n${summarize(outcome, rec, badIds)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
+            { role: 'user', content: `This workflow was just run and did not yet succeed. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args, or a missing step needed to meet the goal). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.${goalPrompt ? `\n\nThe user's ORIGINAL goal (the run must actually achieve this):\n${String(goalPrompt).slice(0, 800)}` : ''}${goalFix ? `\n\nGoal not met — required change: ${goalFix}` : ''}\n\nDetected problems:\n${issuesLine}\n\nRun results (per node, ⚠ marks the flagged ones):\n${summarize(outcome, rec, badIds)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
         ];
         try {
             const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });
             let raw = String(text || '').trim();
             const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
             const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
-            const revised = automationEngine.materializeWorkflowEdit(JSON.parse(raw), base);
+            // Use the jsonrepair-backed parser (same as build/edit) — repair
+            // replies routinely contain run_python code / long strings with raw
+            // newlines or trailing commas that plain JSON.parse rejects, which
+            // silently aborted the whole repair loop.
+            const spec = parseBuilderSpec(raw);
+            if (!spec || typeof spec !== 'object') throw new Error('repair reply was not valid JSON');
+            const revised = automationEngine.materializeWorkflowEdit(spec, base);
             wfObj.nodes = revised.nodes; wfObj.edges = revised.edges;
             buildLog.push(`Pass ${pass}: applied a repair, re-running…`);
         } catch (e) {
@@ -8203,7 +8288,7 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
         const buildLog = [`Built ${wf.nodes.length} node(s): ${wf.nodes.map(n => (n.data && n.data.label) || n.type).join(' → ')}`];
         if (req.body && req.body.test) {
             try {
-                await runAndRepairWorkflow(wf, wf, model, req, buildLog);
+                await runAndRepairWorkflow(wf, wf, model, req, buildLog, String(prompt).trim());
                 wf.updatedAt = new Date().toISOString();
                 await saveWorkflows(workflows); // persist any auto-fix
             } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
@@ -8261,7 +8346,7 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
                 // Run the PROPOSED revision (not saved) and auto-fix a fixable failure,
                 // so the diff the user confirms is the tested-and-improved version.
                 const probe = { ...wf, nodes: proposed.nodes, edges: proposed.edges };
-                await runAndRepairWorkflow(probe, wf, model, req, buildLog);
+                await runAndRepairWorkflow(probe, wf, model, req, buildLog, String(prompt).trim());
                 proposed.nodes = probe.nodes;
                 proposed.edges = probe.edges;
             } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
@@ -18335,6 +18420,14 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'create_email',
     // image manipulation (Pillow), spreadsheet read (openpyxl), SQL (sqlite3)
     'transform_image', 'read_xlsx', 'query_sqlite',
+    // per-workflow change tracking — keeps snapshot history in a /workspace
+    // SQLite db so it can diff a page/API against the previous run.
+    'track_changes',
+    // chart rendering (matplotlib, headless) — must run in the sandbox (where
+    // matplotlib lives) and mount /workspace so the PNG it writes into
+    // /workspace/artifacts/ becomes a downloadable artifact AND is readable by
+    // a later create_pdf in the same bucket (graphs embedded into a report).
+    'chart_plot',
     // audio transcription (faster-whisper, small.en bundled in sandbox image)
     'transcribe_audio',
 ]);

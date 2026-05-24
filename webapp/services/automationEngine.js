@@ -51,13 +51,16 @@ const BUILTIN_NODE_TYPES = [
     { key: 'http_request',type: 'tool',       category: 'connector', label: 'HTTP Request',     description: 'Calls an HTTP endpoint (SSRF-guarded — private IPs blocked).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'http_request' }, fields: ['args'] },
     { key: 'crawl',       type: 'tool',       category: 'connector', label: 'Crawl Pages',      description: 'Crawls and extracts content from multiple linked pages.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'crawl_pages' }, fields: ['args'] },
     { key: 'sqlite',      type: 'tool',       category: 'connector', label: 'SQLite Query',     description: 'Runs a SQL query against a SQLite database.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'query_sqlite' }, fields: ['args'] },
-    { key: 'render_chart',type: 'tool',       category: 'connector', label: 'Render Chart',     description: 'Renders a chart spec for display/download.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'render_chart' }, fields: ['args'] },
+    { key: 'render_chart',type: 'tool',       category: 'connector', label: 'Render Chart',     description: 'Renders a chart SPEC for inline display in chat (not a file). For a chart IMAGE you can embed in a PDF, use chart_plot instead.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'render_chart' }, fields: ['args'] },
+    { key: 'chart_plot',  type: 'tool',       category: 'connector', label: 'Plot Chart (PNG)', description: 'Renders a chart as a real PNG image saved into the workspace (downloadable, and embeddable in a PDF). Args: { "type": "line|bar|scatter|pie", "x": [...], "y": [...], "title": "...", "xlabel": "...", "ylabel": "..." } (or a CSV "path" + "x_col"/"y_col"). Returns { file, workspacePath, data_url }. To put the chart IN a PDF: chart_plot → create_pdf whose markdown content includes an image tag ![chart](artifacts/<the returned filename>).', inputs: ['in'], outputs: ['out'], defaults: { tool: 'chart_plot' }, fields: ['args'] },
+    { key: 'fetch_timeseries', type: 'tool',  category: 'connector', label: 'Fetch Time Series', description: 'Fetches free OHLC price history (stocks, indices, FX, crypto) from Yahoo Finance — no API key. Args: { "symbol": "AAPL", "period": "1mo|3mo|6mo|1y|2y|5y|ytd|max", "interval": "d|w|m" } (daily/weekly/monthly; NO intraday). Indices use ^GSPC / ^DJI / ^IXIC; FX like EURUSD=X; crypto like BTC-USD. Returns { symbol, count, data: [{date, close, open, high, low, volume}] } — the rows are in .data. Feed .data into chart_plot (x = .data.*.date, y = .data.*.close) for a graph and into a model for the written analysis.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'fetch_timeseries' }, fields: ['args'] },
     { key: 'create_pdf',  type: 'tool',       category: 'connector', label: 'Create PDF',       description: 'Generates a PDF from MARKDOWN content (headings, tables, bullets, code, links). For styled HTML (CSS layouts/fonts) use the "HTML to PDF" node instead. Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send or process it, connect another node after this (a Telegram/Slack/Send File node auto-sends the file as a document; any other node receives it too). Optional "sendMode": "pdf" (default, file only) | "both" (data + file) | "data" (the rendered text only, no file) controls what flows to the next node.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_pdf' }, fields: ['args'] },
     { key: 'html_to_pdf', type: 'tool',       category: 'connector', label: 'HTML to PDF',      description: 'Renders styled HTML (CSS layouts, web fonts, tables) to a PDF via WeasyPrint. Use this for HTML; use Create PDF for markdown. Args: { "content": "<html>…</html>", "outputName": "report.pdf" } (or "htmlPath": a /workspace HTML file). Leave args.content blank to use the previous step\'s output. The PDF is downloadable; to send or process it, connect another node after this (a Telegram/Slack/Send File node auto-sends the file as a document; any other node receives it too). Optional "sendMode": "pdf" (default) | "both" | "data" controls what flows to the next node.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'html_to_pdf' }, fields: ['args'] },
     { key: 'create_file', type: 'tool',       category: 'connector', label: 'Create File',      description: 'Writes a file into the run workspace.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'create_file' }, fields: ['args'] },
     { key: 'run_python',  type: 'tool',       category: 'connector', label: 'Script Block',      description: 'Runs a Python script in the sandbox for data transforms / glue between nodes (stdlib + Pillow/openpyxl, ffmpeg, requests). The script is shown and editable in the node settings panel. Args: { "code": "print(...)", "timeout": 30000 }. Reference upstream output via {{last}} / {{nodes.<id>}} inside the code string.', inputs: ['in'], outputs: ['out'], defaults: { tool: 'run_python' }, fields: ['args'] },
     { key: 'db_store',    type: 'db_store',   category: 'connector', label: 'Database: Store',   description: 'Appends the incoming data to a persistent per-automation database table (auto-created, lives in this workflow\'s workspace). Each item of a list becomes its own row, so "fetch/search → Store" collects results across runs. Set a Unique key field (e.g. "url" or "id") to deduplicate — only unseen records are stored and the new ones are returned in `.new` (use this to track changes between runs). The key can be a comma-separated fallback list (first non-empty wins, e.g. "link,post_title") so a stable id is used when present. For a stable identity (so re-listed/edited records don\'t re-appear as new) add Ignore-words (e.g. "NEW") and/or turn on Normalize. Defaults: table "records", db "automation.db".', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'value', 'key', 'keyStrip', 'keyNormalize'] },
     { key: 'db_query',    type: 'db_query',   category: 'connector', label: 'Database: Query',   description: 'Reads rows back from the database (newest first) so you can feed the collected data into a model / Telegram / file. Defaults: table "records", limit 100, order "id DESC". For advanced reads provide a raw SELECT (records are JSON in a `data` column alongside `id`,`ts`; filter with json_extract(data,\'$.field\')) — a model node can generate this SQL. Output is the array of stored records.', inputs: ['in'], outputs: ['out'], fields: ['table', 'db', 'limit', 'order', 'sql'] },
+    { key: 'track_changes', type: 'track_changes', category: 'connector', label: 'Track Changes', description: 'Watches a SINGLE source (a web page, an API response, or any text) for changes BETWEEN runs and reports WHAT changed. Give it a stable "key" (e.g. the page URL) and the "content" to watch (leave blank to use the previous step\'s output — it auto-reads a Fetch URL page body or an HTTP Request body). It stores the latest snapshot per key; when the content differs from the last run it returns changed=true plus a human-readable diff, the added/removed lines, and a revision number. The FIRST run stores a baseline (changed=false) so nothing fires until there is a real change. This is the node for "monitor a page and tell me what changed" — use db_store instead only for FEEDS where new ITEMS appear over time. Pair with: gate.if on {{nodes.<id>.changed}} (op not_empty / == true) → model (summarize {{nodes.<id>.diff}}) → telegram/slack. Set ignoreWhitespace to ignore pure spacing changes.', inputs: ['in'], outputs: ['out'], fields: ['key', 'content', 'table', 'ignoreWhitespace'] },
     { key: 'tool',        type: 'tool',       category: 'connector', label: 'Run Tool / Skill', description: 'Invokes any enabled skill or native tool by name.', inputs: ['in'], outputs: ['out'], fields: ['tool', 'args'] },
     { key: 'delay',       type: 'delay',      category: 'connector', label: 'Delay / Wait',     description: 'Pauses the workflow for N milliseconds.', inputs: ['in'], outputs: ['out'], fields: ['ms'] },
     { key: 'set',         type: 'set',        category: 'connector', label: 'Set Variable',     description: 'Stores a value in the run scope for later nodes.', inputs: ['in'], outputs: ['out'], fields: ['name', 'value'] },
@@ -115,7 +118,13 @@ function resolveParts(cur, parts) {
     return cur;
 }
 function resolvePath(scope, pathStr) {
-    const parts = String(pathStr).trim().split('.').filter(Boolean);
+    // Normalize bracket indexing to dotted form so the natural shapes a model
+    // emits resolve: a[0].b → a.0.b, a["k"]/a['k'] → a.k, a[*] → a.*.
+    const normalized = String(pathStr).trim()
+        .replace(/\[\s*(\d+)\s*\]/g, '.$1')
+        .replace(/\[\s*["']([^"']+)["']\s*\]/g, '.$1')
+        .replace(/\[\s*\*\s*\]/g, '.*');
+    const parts = normalized.split('.').filter(Boolean);
     if (!parts.length) return undefined;
     const head = parts[0];
     // A bare field ref — anything that isn't input/vars/nodes/last — resolves
@@ -551,6 +560,33 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             // Output the array of records directly so downstream nodes (model fan-in,
             // {{nodes.id}} / {{nodes.id.*.field}}) get clean data.
             return (r && Array.isArray(r.rows)) ? r.rows : (r || []);
+        }
+
+        case 'track_changes': {
+            // Watch ONE source for changes between runs and emit the diff. The
+            // content defaults to the previous node's output; fetch_url puts the
+            // page in .content and http_request in .data, so unwrap those so a
+            // bare "<fetch> → Track Changes" wiring just works.
+            let content = (data.content === undefined || data.content === '') ? scope.last : data.content;
+            if (content && typeof content === 'object' && !Array.isArray(content)) {
+                if (typeof content.content === 'string') content = content.content;      // fetch_url
+                else if (typeof content.data === 'string') content = content.data;       // http_request
+                else if (typeof content.text === 'string') content = content.text;       // model node
+                else content = stringifyValue(content);
+            } else if (content != null && typeof content !== 'string') {
+                content = stringifyValue(content);
+            }
+            const args = {
+                action: 'track',
+                db: data.db || 'automation.db',
+                table: data.table || 'snapshots',
+                key: (data.key && String(data.key).trim()) || 'page',
+                content: content == null ? '' : String(content),
+            };
+            if (data.ignoreWhitespace === true || data.ignoreWhitespace === 'true') args.ignoreWhitespace = true;
+            const r = await dispatchTool(deps, ctx, node, 'track_changes', args);
+            if (r && r.success === false) throw new Error(`Change tracking failed — ${r.error || 'unknown error'}`);
+            return r; // { changed, firstSeen, diff, added, removed, revision, ... }
         }
 
         case 'parse_json': {
@@ -1346,6 +1382,22 @@ function summarizeIssues(issues) {
     return issues.map(i => `${i.nodeId}${i.type ? ' (' + i.type + ')' : ''}: ${i.detail}`).join('; ');
 }
 
+// Identify nodes whose PURPOSE is cross-run state — dedup feeds (db_store with
+// a key) and change trackers (track_changes). The build-test loop re-runs the
+// workflow once more and checks these behaved (run-2 suppressed already-seen
+// items / reported no change). It's the only way to verify an "only notify on
+// NEW content" / "report what changed" requirement actually works — a single
+// run can never demonstrate cross-run dedup.
+function findStatefulNodes(wf) {
+    const storeKeyIds = [], trackIds = [];
+    for (const n of (wf && Array.isArray(wf.nodes) ? wf.nodes : [])) {
+        const t = n.type, d = n.data || {};
+        if (t === 'db_store' && d.key != null && String(d.key).trim() !== '') storeKeyIds.push(n.id);
+        else if (t === 'track_changes') trackIds.push(n.id);
+    }
+    return { storeKeyIds, trackIds, any: storeKeyIds.length + trackIds.length > 0 };
+}
+
 // ---------------------------------------------------------------------------
 // Cron matching (self-contained — no dependency). The scheduler ticks every
 // 60s, so we only need "does this minute match the expression", not next-run
@@ -1400,7 +1452,7 @@ function cronMatches(expr, date = new Date()) {
 function buildBuilderSystemPrompt() {
     const cat = { trigger: [], tools: [], connector: [], gate: [], output: [] };
     // mirror the chat palette grouping so the model sees sensible categories
-    const TOOLS = new Set(['model','web_search','fetch_url','playwright_fetch','scrapling_fetch','render_html','parse_json','export_file','http_request','crawl','sqlite','render_chart','create_pdf','html_to_pdf','create_file','run_python','db_store','db_query','tool']);
+    const TOOLS = new Set(['model','web_search','fetch_url','playwright_fetch','scrapling_fetch','render_html','parse_json','export_file','http_request','crawl','sqlite','render_chart','chart_plot','fetch_timeseries','create_pdf','html_to_pdf','create_file','run_python','db_store','db_query','track_changes','tool']);
     const GATEX = new Set(['delay','set']);
     for (const b of BUILTIN_NODE_TYPES) {
         if (b.key === 'output') continue; // hidden / not needed
@@ -1423,13 +1475,16 @@ function buildBuilderSystemPrompt() {
         '- Wire every step with edges (source→target). Data flows trigger → … → final step.',
         '- Reference a previous step inside any text/arg with {{nodes.<id>.<field>}} or {{last}} (previous output). Exact {{nodes.<id>}} is that node\'s whole output.',
         '- Branch from gates with sourceHandle on the OUTGOING edge: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case.',
-        '- DEDUPE / "only new or unique items on future runs" / "track changes" / "notify only when something new": ALWAYS use a db_store node with a "key" (the unique field — id or url; add "keyNormalize": true and "keyStrip" for messy text/titles). It stores only unseen records and returns them in `.new`. Then add a gate.if on `{{nodes.<store>.new}}` with op "not_empty" and continue on the "true" handle. NEVER rely on the model to remember past items — persistence is what makes it unique across runs.',
+        '- DEDUPE A FEED / "only new or unique ITEMS on future runs" / "notify only when a new post/article/listing appears": use a db_store node with a "key" (the unique field — id or url; add "keyNormalize": true and "keyStrip" for messy text/titles). It stores only unseen records and returns them in `.new`. Then add a gate.if on `{{nodes.<store>.new}}` with op "not_empty" and continue on the "true" handle. NEVER rely on the model to remember past items — persistence is what makes it unique across runs.',
+        '- MONITOR ONE PAGE/SOURCE FOR CHANGES AND REPORT WHAT CHANGED (a single URL/API whose CONTENT mutates over time — NOT a feed of new items): use a track_changes node, NOT db_store. Wire: fetch_url (or scrapling_fetch for bot-protected sites, or http_request for a JSON API) → track_changes { "key": "<the url>" } (leave "content" blank to use the fetched body) → gate.if { "condition": { "left": "{{nodes.<track>.changed}}", "op": "not_empty", "right": "" } } → model (prompt the diff, e.g. "Summarize what changed on the page:\\n{{nodes.<track>.diff}}") on the "true" handle → telegram/slack. track_changes stores the previous snapshot per key and returns { changed, diff, added, removed, revision }; the FIRST run stores a baseline (changed=false) so nothing is sent until a real change. db_store CANNOT do this (keying a single page by its content makes every version look "new" and gives no diff).',
         '- LATEST NEWS / ARTICLES FROM A SITE: do NOT use a site-specific web_search (e.g. query "site:thehackernews.com latest") — DuckDuckGo rate-limits those and they usually return nothing. Instead use fetch_url or crawl_pages on the site\'s HOMEPAGE or its RSS/Atom FEED (e.g. https://thehackernews.com/, https://www.darkreading.com/, https://feeds.feedburner.com/TheHackersNews). web_search is only for open-ended "find pages about X" queries.',
         '- CHAINING search/extract → parse_json: the parse_json "path" MUST match the REAL upstream shape. A merge node outputs {items:[...],count}; web_search outputs {results:[...]}. To pull every url from MERGED searches use path "items.*.results.*.url" (NOT "*.url"); from a single web_search use "results.*.url".',
         '- A map (Loop) node\'s "action" is "tool" or "model" — NOT a tool name. For a tool action set "action":"tool" AND "tool":"<valid tool name e.g. fetch_url|crawl_pages>" AND put per-item args in "args" using {{item}} for the current list item. Never put the tool name in "action".',
         '- STRUCTURED DATA FROM A SITE (a JSON API / feed): if the source exposes a JSON endpoint (e.g. .../api/recent, .../api.json, an RSS/Atom feed), ALWAYS use http_request to that endpoint then parse_json — NEVER scrape the HTML page with run_python. parse_json\'s "source" must be the http_request output\'s data, i.e. "{{nodes.<httpId>.data}}"; leave "path" empty to keep the whole parsed array/object, or set it to the field you want (e.g. "results.*.link"). Then db_store the parsed array for dedupe.',
         '- run_python / run_node DO NOT have access to workflow data as variables. There is NO `nodes`, `last`, `input` or any node id available as a Python/JS name — referencing them throws "NameError: name \'nodes\' is not defined". To use an upstream value inside the code you MUST interpolate it as a literal via templating, e.g. code: "import json\\ndata = json.loads(r\'\'\'{{nodes.n2.content}}\'\'\')\\n…". But prefer NOT using run_python for fetching/parsing at all — use http_request + parse_json (JSON) or fetch_url + a model node (HTML). Reserve run_python for pure local transforms on already-interpolated data.',
         '- fetch_url returns { url, title, content, success } — the page text is in "content" (NOT "data"). http_request returns { success, status, data } — the response body is in "data" (a string for JSON APIs; feed it to parse_json).',
+        '- A REPORT WITH GRAPHS/CHARTS IN A PDF: get the numbers (fetch_timeseries for stock/market data — args.symbol/period/interval, rows come back in .data; or http_request+parse_json for a JSON API), then chart_plot { "args": { "type":"line", "x":"{{nodes.<dataId>.data.*.date}}", "y":"{{nodes.<dataId>.data.*.close}}", "title":"..." } } to render a PNG into the workspace, then create_pdf whose markdown "content" embeds that image with an image tag: ![Chart]({{nodes.<chartId>.file}}) alongside the written analysis. create_pdf renders ![alt](path) images from /workspace (and /workspace/artifacts). Do NOT use render_chart for a PDF (it only makes an on-screen spec, not a file). Wire: fetch_timeseries → chart_plot → model (write the analysis) → create_pdf (embed ![Chart]({{nodes.<chartId>.file}}) + the analysis).',
+        '- COLLECTING/MONITORING DATA "over/throughout an hour": a single run is one point in time and cannot watch for an hour by itself. fetch_timeseries is DAILY/weekly/monthly only (no intraday), so for live intraday monitoring use a Schedule trigger at a short interval (e.g. every 5 minutes) that fetches the current value (http_request to the quote/price endpoint) and appends it to db_store; then a db_query (newest-N) feeds the chart/report from the rows collected across runs. If the user just wants a price trend, fetch_timeseries daily history over a period (e.g. 1mo) charted is the simple path.',
         '',
         'Per-node data (set only what is needed):',
         '- model: { "prompt": "...", "systemPrompt": "..."? }  (the answer string is the output)',
@@ -1440,6 +1495,9 @@ function buildBuilderSystemPrompt() {
         '- parse_json: { "source": "{{nodes.<id>.data}}", "path": "results.*.url"? }',
         '- db_store: { "table": "items", "key": "id"?, "keyNormalize": true?, "value": "{{nodes.<id>}}"? } → outputs { new, stored, total }',
         '- db_query: { "table": "items", "limit": 100?, "order": "id DESC"?, "sql": "SELECT ..."? } → outputs the rows array',
+        '- track_changes: { "key": "https://site.com/page", "content": "{{nodes.<fetchId>.content}}"? (blank = previous output), "ignoreWhitespace": true? } → outputs { changed, firstSeen, diff, added, removed, addedCount, removedCount, revision }',
+        '- fetch_timeseries: { "args": { "symbol": "AAPL", "period": "1mo", "interval": "d" } } → { count, data:[{date, close, open, high, low, volume}] } (rows in .data; daily/weekly/monthly only)',
+        '- chart_plot: { "args": { "type": "line", "x": "{{nodes.<dataId>.data.*.date}}", "y": "{{nodes.<dataId>.data.*.close}}", "title": "AAPL", "xlabel": "Date", "ylabel": "Price" } } → { file } (a PNG in the workspace; embed in create_pdf as ![Chart]({{nodes.<id>.file}}))',
         '- telegram: { "botToken": "...", "chatId": "...", "text": "..." }   slack: { "webhookUrl": "...", "text": "..." }',
         '- SENDING A FILE (PDF/image/CSV) to Telegram/Slack: just wire the file step (e.g. create_pdf) → a telegram (or slack) node — it auto-detects the upstream file and sends it as a document, with "text" as the caption. Do NOT put {{...artifacts}} in "text" and do NOT add a separate send node. Slack file upload needs { "botToken": "xoxb-…", "channel": "..." } (a webhookUrl can only post text). To control what flows to the next node (whatever it is), set the create_pdf/html_to_pdf node\'s "sendMode": "pdf" (file only, default) | "both" (the rendered data AND the file) | "data" (the rendered text only, no file).',
         '- gate.if / gate.filter: { "condition": { "left": "{{last}}", "op": "not_empty", "right": "" } } (ops: ==,!=,>,<,>=,<=,contains,not_contains,startsWith,endsWith,matches,empty,not_empty)',
@@ -1454,6 +1512,9 @@ function buildBuilderSystemPrompt() {
         '',
         'Example — "every morning fetch a JSON feed and DM me only new items on Telegram":',
         '{"name":"New items to Telegram","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":86400000}},{"id":"n2","type":"http_request","data":{"args":{"url":"https://example.com/feed.json","method":"GET"}}},{"id":"n3","type":"parse_json","data":{"source":"{{nodes.n2.data}}"}},{"id":"n4","type":"db_store","data":{"table":"items","key":"id","value":"{{nodes.n3}}"}},{"id":"n5","type":"gate.if","data":{"condition":{"left":"{{nodes.n4.new}}","op":"not_empty","right":""}}},{"id":"n6","type":"model","data":{"prompt":"Summarize these new items as a short list:\\n{{nodes.n4.new}}"}},{"id":"n7","type":"telegram","data":{"botToken":"<BOT_TOKEN>","chatId":"<CHAT_ID>","text":"{{nodes.n6}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5"},{"source":"n5","target":"n6","sourceHandle":"true"},{"source":"n6","target":"n7"}]}',
+        '',
+        'Example — "every hour check a web page and tell me on Telegram what changed":',
+        '{"name":"Page change monitor","nodes":[{"id":"n1","type":"trigger.schedule","data":{"intervalMs":3600000}},{"id":"n2","type":"fetch_url","data":{"url":"https://example.com/pricing"}},{"id":"n3","type":"track_changes","data":{"key":"https://example.com/pricing"}},{"id":"n4","type":"gate.if","data":{"condition":{"left":"{{nodes.n3.changed}}","op":"not_empty","right":""}}},{"id":"n5","type":"model","data":{"prompt":"This web page changed since the last check. Summarize exactly what changed in plain language for a notification.\\n\\nDIFF:\\n{{nodes.n3.diff}}"}},{"id":"n6","type":"telegram","data":{"botToken":"<BOT_TOKEN>","chatId":"<CHAT_ID>","text":"{{nodes.n5}}"}}],"edges":[{"source":"n1","target":"n2"},{"source":"n2","target":"n3"},{"source":"n3","target":"n4"},{"source":"n4","target":"n5","sourceHandle":"true"},{"source":"n5","target":"n6"}]}',
     ].join('\n');
 }
 
@@ -1717,4 +1778,5 @@ module.exports = {
     assessRunHealth,
     shouldRepair,
     summarizeIssues,
+    findStatefulNodes,
 };
