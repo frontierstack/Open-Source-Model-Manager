@@ -52,9 +52,9 @@ const PALETTE_CATEGORY_OVERRIDE = {
     map: 'trigger',
     model: 'tools', web_search: 'tools', fetch_url: 'tools', render_html: 'tools',
     playwright_fetch: 'tools', scrapling_fetch: 'tools',
-    parse_json: 'tools', export_file: 'tools', http_request: 'tools', crawl: 'tools',
-    sqlite: 'tools', render_chart: 'tools', create_pdf: 'tools', html_to_pdf: 'tools', create_file: 'tools',
-    run_python: 'tools', db_store: 'tools', db_query: 'tools', tool: 'tools',
+    parse_json: 'tools', parse_rss: 'tools', export_file: 'tools', http_request: 'tools', crawl: 'tools',
+    sqlite: 'tools', render_chart: 'tools', chart_plot: 'tools', fetch_timeseries: 'tools', create_pdf: 'tools', html_to_pdf: 'tools', create_file: 'tools',
+    run_python: 'tools', db_store: 'tools', db_query: 'tools', track_changes: 'tools', tool: 'tools',
     delay: 'gate', set: 'gate',
     'trigger.telegram': 'connector', 'trigger.slack': 'connector',
 };
@@ -101,6 +101,7 @@ const PRIMARY_SLOT = {
 const TOOL_PRIMARY_SLOT = {
     create_pdf: 'args.content', html_to_pdf: 'args.content', http_request: 'args.url',
     query_sqlite: 'args.query', create_file: 'args.content', run_python: 'args.code', run_node: 'args.code', render_chart: 'args.chartSpec',
+    parse_rss: 'args.url',
 };
 
 // ---- server <-> React Flow conversion ----
@@ -1926,6 +1927,7 @@ const TOOL_PARAMS = {
     playwright_fetch: [{ key: 'url', label: 'URL' }, { key: 'timeout', label: 'Timeout (ms)' }, { key: 'maxLength', label: 'Max chars' }],
     scrapling_fetch: [{ key: 'url', label: 'URL' }, { key: 'timeout', label: 'Timeout (ms)' }, { key: 'maxLength', label: 'Max chars' }],
     download_html: [{ key: 'url', label: 'URL' }, { key: 'filename', label: 'Save as (filename)' }],
+    parse_rss: [{ key: 'url', label: 'Feed URL' }, { key: 'limit', label: 'Max items' }],
     query_sqlite: [{ key: 'query', label: 'SQL', multiline: true }, { key: 'db', label: 'Database file' }],
     create_file: [{ key: 'path', label: 'Path' }, { key: 'content', label: 'Content', multiline: true }],
     run_python: [{ key: 'code', label: 'Script', multiline: true, mono: true }],

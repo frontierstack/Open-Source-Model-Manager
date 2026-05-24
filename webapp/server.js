@@ -8009,10 +8009,13 @@ const MAX_REPAIR_PASSES = 5;
 // achieved=true on any parse/transport failure so a flaky judge never blocks a
 // structurally-clean build. Credentials/unreachable-site gaps are out of scope
 // (the user supplies those).
-async function judgeGoalAchieved(goalPrompt, runSummary, model) {
+async function judgeGoalAchieved(goalPrompt, runSummary, model, dedupVerified = false) {
+    const dedupNote = dedupVerified
+        ? '\n\nALREADY VERIFIED (do not re-judge): the "only new / only changed" requirement was CONFIRMED working by re-running the workflow — duplicates were suppressed on the second run. Do NOT raise anything about only-new / dedup / filtering / "skipped: 0" / newness; treat that requirement as MET. Judge ONLY content quality and whether the requested artifact was produced.'
+        : '';
     const messages = [
-        { role: 'system', content: 'You verify whether an automation run achieved the user\'s goal. Reply with ONLY a JSON object: {"achieved": true|false, "problems": "<what is missing or wrong; empty if achieved>", "fix": "<one concrete change to the workflow; empty if achieved>"}. Judge the END RESULT, not intentions.' },
-        { role: 'user', content: `User's goal for the automation:\n${String(goalPrompt).slice(0, 1200)}\n\nWhat the run produced (per node, in order):\n${runSummary}\n\nDid the run ACHIEVE the goal? Require: real data flowed end-to-end (not placeholders, empties, or "no content" apologies); the FINAL artifact matches the request (if a PDF/report/file was asked for, an artifact was actually generated with real content; if charts/graphs were asked for, a chart/render step ran; if a summary/notification was asked for, it is substantive); and any "only new items / only when changed" requirement is implemented with a db_store key or track_changes node.\n\nIMPORTANT — judge the WIRING, not the luck of this run: a run that correctly produces NOTHING because there is no new/changed/matching data yet is SUCCESSFUL, not a failure. Specifically:\n- The FIRST run of a change monitor (track_changes returns changed=false / firstSeen — it stores a baseline) and a dedup re-run where nothing is new (db_store .new is empty, so a downstream gate correctly skips the notification) are CORRECT behavior.\n- For a workflow started by an EXTERNAL message/webhook trigger (telegram / slack / webhook), this TEST run uses PLACEHOLDER/empty input — so input-dependent gates (e.g. checking the message text for a keyword) will naturally NOT match and the run may take a default/no-op branch. That is EXPECTED, not a defect. Judge whether the gates REFERENCE the trigger input correctly (e.g. {{input.text}}) and each branch leads to a sensible action — NOT whether a particular branch fired this run.\nMark achieved=true whenever the graph WOULD deliver the right result when there IS new/changed/matching data. Only mark achieved=false for a real wiring/logic defect (missing PDF/chart step, broken field paths, no persistence for an "only new" requirement, a gate that can NEVER be true, empty/error data where there should be content). Ignore missing credentials/tokens and unreachable external sites. Respond with ONLY the JSON object.` },
+        { role: 'system', content: 'You verify whether an automation run achieved the user\'s goal. Reply with ONLY a JSON object: {"achieved": true|false, "problems": "<what is missing or wrong; empty if achieved>", "fix": "<one concrete change to the workflow; empty if achieved>"}. Judge the END RESULT, not intentions.' + dedupNote },
+        { role: 'user', content: `User's goal for the automation:\n${String(goalPrompt).slice(0, 1200)}\n\nWhat the run produced (per node, in order):\n${runSummary}\n\nDid the run ACHIEVE the goal? Require: real data flowed end-to-end (not placeholders, empties, or "no content" apologies); the FINAL artifact matches the request (if a PDF/report/file was asked for, an artifact was actually generated with real content; if charts/graphs were asked for, a chart/render step ran; if a summary/notification was asked for, it is substantive); and any "only new items / only when changed" requirement is implemented with a db_store key or track_changes node.\n\nIMPORTANT — judge the WIRING, not the luck of this run: a run that correctly produces NOTHING because there is no new/changed/matching data yet is SUCCESSFUL, not a failure. Specifically:\n- The FIRST run of a change monitor (track_changes returns changed=false / firstSeen — it stores a baseline) and a dedup re-run where nothing is new (db_store .new is empty, so a downstream gate correctly skips the notification) are CORRECT behavior.\n- For a workflow started by an EXTERNAL message/webhook trigger (telegram / slack / webhook), this TEST run uses PLACEHOLDER/empty input — so input-dependent gates (e.g. checking the message text for a keyword) will naturally NOT match and the run may take a default/no-op branch. That is EXPECTED, not a defect. Judge whether the gates REFERENCE the trigger input correctly (e.g. {{input.text}}) and each branch leads to a sensible action — NOT whether a particular branch fired this run.\nDo NOT judge whether cross-run dedup / "only new" / "only changed" actually works — that is verified SEPARATELY by re-running the workflow. In particular, a FRESH run that stores ALL items with 0 skipped/duplicates is CORRECT (nothing has been seen yet) — never call that a dedup failure. Treat the "only new" requirement as satisfied as long as the graph HAS the right structure for it: a db_store with a key (or a track_changes node) feeding a gate that routes the new/changed data onward. Judge only what THIS run shows: did real content flow (not placeholders/errors), and was the requested final output (PDF/report/file/chart/message) actually produced this run.\nMark achieved=true whenever real content flowed and the requested artifact was produced (or correctly skipped on a no-new/no-match run). Only mark achieved=false for a real wiring/logic defect (missing PDF/chart step, broken field paths, NO db_store-key/track_changes at all for an "only new" requirement, a gate that can NEVER be true, empty/error data where there should be content). Ignore missing credentials/tokens and unreachable external sites. Respond with ONLY the JSON object.` },
     ];
     const text = await runModelCompletion({ messages, model, temperature: 0, maxTokens: 500 });
     let raw = String(text || '').trim();
@@ -8020,6 +8023,32 @@ async function judgeGoalAchieved(goalPrompt, runSummary, model) {
     const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
     const v = JSON.parse(raw);
     return { achieved: v.achieved !== false, problems: v.problems || '', fix: v.fix || '' };
+}
+
+// Before each build-test pass, clear any cross-run state (db_store tables /
+// track_changes snapshots) so the run starts FRESH — items appear as new and
+// the full happy path (gate true → notify / PDF) executes, which is what the
+// goal-judge needs to see. Without this, state persisted from an earlier pass
+// makes every later run a no-op (nothing new), and the judge wrongly concludes
+// the final step is broken. The dedup double-run later in the pass still proves
+// suppression because it runs AFTER this fresh run has populated the store.
+async function resetStatefulStorage(wfObj, req) {
+    const stateful = automationEngine.findStatefulNodes(wfObj);
+    if (!stateful.any) return;
+    const chatTools = require('./services/chatTools');
+    const ctx = { userId: req.userId, apiKeyData: req.apiKeyData || null, conversationId: null, workspaceBucket: `automation-${wfObj.id}` };
+    const dispatch = async (name, args) => {
+        try { await chatTools.executeToolCall({ id: `reset-${name}`, function: { name, arguments: JSON.stringify(args) } }, ctx); }
+        catch (_) { /* best-effort: a clear failure just means the dedup re-run still proves suppression */ }
+    };
+    for (const id of stateful.storeKeyIds) {
+        const d = (wfObj.nodes.find(x => x.id === id) || {}).data || {};
+        await dispatch('workspace_db', { action: 'clear', table: d.table || 'records', db: d.db || 'automation.db' });
+    }
+    for (const id of stateful.trackIds) {
+        const d = (wfObj.nodes.find(x => x.id === id) || {}).data || {};
+        await dispatch('track_changes', { action: 'clear', table: d.table || 'snapshots', db: d.db || 'automation.db' });
+    }
 }
 
 // Run `wfObj`, assess whether it actually produced data, and — while it didn't and
@@ -8093,6 +8122,9 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
     let goalFix = '';
 
     for (let pass = 1; pass <= MAX_REPAIR_PASSES; pass++) {
+        // Start each pass from clean cross-run state so this run exercises the
+        // full happy path (new items → notify/PDF) for the goal-judge to see.
+        await resetStatefulStorage(wfObj, req);
         const { outcome, rec } = await runOnce();
         lastOutcome = outcome;
         goalFix = '';
@@ -8116,6 +8148,7 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         // charged extra runs/model calls. Failures here become repairable issues.
         if (assess.ok && !configError) {
             const stateful = automationEngine.findStatefulNodes(wfObj);
+            let dedupVerified = false; // the re-run proved "only new/changed" works
             if (stateful.any && rec && Array.isArray(rec.nodes)) {
                 const second = await runOnce();
                 const r2 = second.rec;
@@ -8123,14 +8156,30 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
                     const n = record && Array.isArray(record.nodes) ? record.nodes.find(x => x.nodeId === id) : null;
                     return n ? n.output : null;
                 };
+                // Read the scalar `stored` count, not new.length — on a fresh
+                // run the large `.new` array makes db_store's output exceed the
+                // record size cap and it's stored as { _truncated, preview }, so
+                // new.length (and even o.stored) read null. The preview keeps the
+                // head of the JSON, where "stored":N sits before the big array.
+                const newCount = (o) => {
+                    if (!o || typeof o !== 'object') return null;
+                    if (typeof o.stored === 'number') return o.stored;
+                    if (Array.isArray(o.new)) return o.new.length;
+                    if (o._truncated && typeof o.preview === 'string') {
+                        const m = o.preview.match(/"stored"\s*:\s*(\d+)/);
+                        if (m) return parseInt(m[1], 10);
+                    }
+                    return null;
+                };
                 for (const id of stateful.storeKeyIds) {
                     const o1 = outOf(rec, id), o2 = outOf(r2, id);
-                    const n1 = (o1 && Array.isArray(o1.new)) ? o1.new.length : null;
-                    const n2 = (o2 && Array.isArray(o2.new)) ? o2.new.length : null;
+                    const n1 = newCount(o1);
+                    const n2 = newCount(o2);
                     if (n1 != null && n2 != null && n1 > 0 && n2 >= n1) {
                         assess.issues.push({ nodeId: id, type: 'db_store', severity: 'high', detail: `dedup is NOT working: re-running immediately produced ${n2} "new" record(s) again (same as the first run's ${n1}). The "key" is not a STABLE unique field of the actual records — set it to the real id/url field shown in the data above (add keyNormalize:true / a comma-fallback like "link,title") so already-seen items are suppressed on later runs.` });
                         buildLog.push(`Pass ${pass}: dedup check — db_store ${id} re-reported ${n2} items (key not stable) ✗`);
                     } else if (n1 != null && n2 != null) {
+                        if (n1 > 0 && n2 < n1) dedupVerified = true;
                         buildLog.push(`Pass ${pass}: dedup check — db_store ${id} suppressed repeats on re-run (${n1}→${n2} new) ✓`);
                     }
                 }
@@ -8140,17 +8189,40 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
                         assess.issues.push({ nodeId: id, type: 'track_changes', severity: 'medium', detail: `change-tracker reported a change on an immediate re-run of the same source — the "key" should be a CONSTANT id (e.g. the page URL) so the previous snapshot is found next run.` });
                         buildLog.push(`Pass ${pass}: change check — track_changes ${id} flagged a change on identical re-run (key may be unstable) ✗`);
                     } else if (o2 && typeof o2 === 'object') {
+                        dedupVerified = true;
                         buildLog.push(`Pass ${pass}: change check — track_changes ${id} reported no change on re-run ✓`);
                     }
                 }
             }
+            // Did the fresh run actually produce a downloadable artifact (PDF /
+            // file / chart)? Used to override the judge's known dedup blind spot.
+            const artifactProduced = Array.isArray(rec.nodes) && rec.nodes.some(n => {
+                const o = n && n.output;
+                return o && typeof o === 'object' && Array.isArray(o._artifacts) && o._artifacts.length > 0;
+            });
             if (goalPrompt) {
                 try {
-                    const verdict = await judgeGoalAchieved(goalPrompt, summarize(outcome, rec, new Set()), model);
+                    const verdict = await judgeGoalAchieved(goalPrompt, summarize(outcome, rec, new Set()), model, dedupVerified);
                     if (verdict && verdict.achieved === false) {
-                        goalFix = verdict.fix ? String(verdict.fix) : '';
-                        assess.issues.push({ nodeId: '(goal)', type: 'goal', severity: 'high', detail: `the run did not achieve the user's goal — ${String(verdict.problems || '').slice(0, 300)}${goalFix ? ' — FIX: ' + goalFix.slice(0, 300) : ''}` });
-                        buildLog.push(`Pass ${pass}: goal check — not met: ${String(verdict.problems || '').slice(0, 160)}`);
+                        // Deterministic guard against the judge's known blind spot:
+                        // it can't see edges in the run summary, so it often claims
+                        // "no only-new filtering / no notification" even though the
+                        // stateful node → gate is correctly wired. When the re-run
+                        // already PROVED the only-new/only-changed mechanism works
+                        // (and structural health ruled out empty/apology content),
+                        // the goal is objectively met for two cases:
+                        //  • dedup feed: the fresh run produced its artifact;
+                        //  • change monitor: its notify path can't fire in a rapid
+                        //    double-run (same content → no change), so "nothing this
+                        //    run" is the only testable — and correct — outcome.
+                        const isChangeMonitor = stateful.trackIds.length > 0;
+                        if (dedupVerified && (artifactProduced || isChangeMonitor)) {
+                            buildLog.push(`Pass ${pass}: goal check — overridden ✓ (${isChangeMonitor ? 'change-detection verified; no change this run is correct, it will notify on a real change' : 're-run proved dedup AND the fresh run produced its artifact'})`);
+                        } else {
+                            goalFix = verdict.fix ? String(verdict.fix) : '';
+                            assess.issues.push({ nodeId: '(goal)', type: 'goal', severity: 'high', detail: `the run did not achieve the user's goal — ${String(verdict.problems || '').slice(0, 300)}${goalFix ? ' — FIX: ' + goalFix.slice(0, 300) : ''}` });
+                            buildLog.push(`Pass ${pass}: goal check — not met: ${String(verdict.problems || '').slice(0, 160)}`);
+                        }
                     } else if (verdict && verdict.achieved === true) {
                         buildLog.push(`Pass ${pass}: goal check — achieved ✓`);
                     }
@@ -18445,6 +18517,7 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
 const NETWORK_SANDBOX_DEFAULTS = {
     download_file:   { allowlist: ['*'], note: 'arbitrary URL download; tighten if policy allows' },
     download_html:   { allowlist: ['*'], note: 'fetches a page HTML into the workspace; user-supplied URLs' },
+    parse_rss:       { allowlist: ['*'], note: 'fetches an RSS/Atom feed URL and parses it to items; user-supplied feed URLs' },
     send_file:       { allowlist: ['*'], note: 'uploads a workspace file to telegram/slack/user URL' },
     fetch_url:       { allowlist: ['*'], note: 'user-supplied URLs' },
     http_request:    { allowlist: ['*'], note: 'user-supplied URLs' },
