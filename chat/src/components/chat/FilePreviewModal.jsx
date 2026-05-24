@@ -21,6 +21,15 @@ export function isAttachmentPreviewable(att) {
     );
 }
 
+// Human-readable byte size for the preview header. Bytes < 1KB stay raw,
+// otherwise append a KB/MB approximation.
+function formatBytes(bytes) {
+    if (typeof bytes !== 'number' || !isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return `${bytes} bytes`;
+    if (bytes < 1024 * 1024) return `${bytes.toLocaleString()} bytes (${(bytes / 1024).toFixed(1)} KB)`;
+    return `${bytes.toLocaleString()} bytes (${(bytes / 1024 / 1024).toFixed(2)} MB)`;
+}
+
 // Map common extensions to prism language ids. Falls back to 'markup' for
 // anything we don't recognise — readable, just no highlighting.
 const EXT_TO_LANG = {
@@ -73,9 +82,10 @@ export default function FilePreviewModal({ attachment, onClose }) {
 
     if (!attachment) return null;
 
-    const { filename, type, charCount, pageCount, sheetCount, estimatedTokens } = attachment;
+    const { filename, type, charCount, pageCount, sheetCount, estimatedTokens, size } = attachment;
 
     const headerMeta = [];
+    if (typeof size === 'number') headerMeta.push(formatBytes(size));
     if (typeof charCount === 'number') headerMeta.push(`${charCount.toLocaleString()} chars`);
     if (typeof pageCount === 'number') headerMeta.push(`${pageCount} page${pageCount === 1 ? '' : 's'}`);
     if (typeof sheetCount === 'number') headerMeta.push(`${sheetCount} sheet${sheetCount === 1 ? '' : 's'}`);
@@ -200,6 +210,13 @@ function PreviewBody({ attachment }) {
                 Archives can't be previewed inline. Ask the model to extract this file — it'll use the <code style={{ fontFamily: 'var(--font-mono)' }}>extract_archive</code> tool.
             </div>
         );
+    }
+    // Persisted text whose inline content wasn't kept on the message — large
+    // uploads (.har, logs, csv) now store their bytes under attachmentId
+    // instead of inlining megabytes of text into the conversation. Fetch the
+    // text from the store, then re-render through the normal branches below.
+    if (!content && attachmentId && type !== 'pdf' && type !== 'image' && type !== 'spreadsheet') {
+        return <TextPreviewFromStore attachment={attachment} />;
     }
     if (type === 'email' && content) {
         return <EmailPreview content={content} attachment={attachment} />;
@@ -739,6 +756,46 @@ function PdfPreviewFromStore({ attachmentId }) {
         );
     }
     return <PdfPreview dataUrl={blobUrl} />;
+}
+
+// Fetch a persisted text file's bytes and render it through PreviewBody's
+// normal branches (csv / code / markdown / plain). Caps very large previews
+// so the modal — and prism, for code — don't choke; the full file is always
+// downloadable from the chip's other paths.
+function TextPreviewFromStore({ attachment }) {
+    const [text, setText] = useState(null);
+    const [error, setError] = useState(null);
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const resp = await fetch(`/api/attachments/${encodeURIComponent(attachment.attachmentId)}`, { credentials: 'include' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                let t = await resp.text();
+                const MAX = 200000;
+                if (t.length > MAX) {
+                    t = t.slice(0, MAX) +
+                        `\n\n…[preview truncated at ${MAX.toLocaleString()} of ${t.length.toLocaleString()} characters]`;
+                }
+                if (!cancelled) setText(t);
+            } catch (e) {
+                if (!cancelled) setError(e.message || String(e));
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [attachment.attachmentId]);
+    if (error) {
+        return <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13 }}>Failed to load file: {error}</div>;
+    }
+    if (text == null) {
+        return (
+            <div style={{ display: 'grid', placeItems: 'center', padding: 60, color: 'var(--ink-3)' }}>
+                <Loader2 className="animate-spin" style={{ width: 20, height: 20, marginBottom: 8 }} />
+                <span style={{ fontSize: 12 }}>Fetching file…</span>
+            </div>
+        );
+    }
+    return <PreviewBody attachment={{ ...attachment, content: text }} />;
 }
 
 function SpreadsheetPreviewFromStore({ attachmentId }) {

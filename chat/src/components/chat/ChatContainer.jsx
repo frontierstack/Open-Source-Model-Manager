@@ -1242,12 +1242,31 @@ export default function ChatContainer({
             const textParts = [];
             let fileIndex = 0;
 
+            // Human-readable size; bytes < 1KB stay raw, else add KB/MB. Lets
+            // the model answer "what's the file size?" with the real on-disk
+            // byte count instead of conflating it with the character count.
+            const fmtBytes = (b) => {
+                if (typeof b !== 'number' || !isFinite(b) || b < 0) return null;
+                if (b < 1024) return `${b} bytes`;
+                if (b < 1024 * 1024) return `${b.toLocaleString()} bytes (${(b / 1024).toFixed(1)} KB)`;
+                return `${b.toLocaleString()} bytes (${(b / 1024 / 1024).toFixed(2)} MB)`;
+            };
+            // "(8,224,768 bytes (7.84 MB); 1,234,567 chars)" — both metrics,
+            // clearly labelled so they're never mistaken for each other. The
+            // server's describeUploadedSize() parses the byte figure back out
+            // of this header when a large upload is swapped for a doc handle.
+            const sizeMeta = (att) => {
+                const chars = att.charCount != null ? att.charCount : (att.content ? att.content.length : null);
+                const parts = [fmtBytes(att.size), chars != null ? `${chars.toLocaleString()} chars` : null].filter(Boolean);
+                return parts.length ? ` (${parts.join('; ')})` : '';
+            };
+
             // Include non-image file content
             attachedFiles
                 .filter(att => att.type !== 'image')
                 .forEach(att => {
                     fileIndex++;
-                    textParts.push(`=== FILE ${fileIndex}: ${att.filename} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
+                    textParts.push(`=== FILE ${fileIndex}: ${att.filename}${sizeMeta(att)} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
                 });
 
             // Include OCR text from images (if available)
@@ -1255,7 +1274,7 @@ export default function ChatContainer({
                 .filter(att => att.type === 'image' && att.content)
                 .forEach(att => {
                     fileIndex++;
-                    textParts.push(`=== FILE ${fileIndex}: ${att.filename} (OCR) ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
+                    textParts.push(`=== FILE ${fileIndex}: ${att.filename} (OCR)${sizeMeta(att)} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
                 });
 
             if (textParts.length > 0) {
@@ -1344,10 +1363,17 @@ export default function ChatContainer({
                 filename: a.filename,
                 type: a.type,
                 ...(a.attachmentId ? { attachmentId: a.attachmentId } : {}),
-                ...(a.content ? { content: a.content } : {}),
+                // Persist inline content only when there's no durable
+                // attachmentId fallback, or it's small enough not to bloat the
+                // conversation JSON. Large text uploads (.har, logs, csv) now
+                // carry an attachmentId, so the preview re-fetches from the
+                // store on reload instead of relying on multi-MB inline text
+                // surviving — which is what made big files lose their preview.
+                ...(a.content && (!a.attachmentId || a.content.length <= 65536) ? { content: a.content } : {}),
                 ...(a.dataUrl ? { dataUrl: a.dataUrl } : {}),
                 ...(Array.isArray(a.sheets) ? { sheets: a.sheets } : {}),
                 ...(a.mimeType ? { mimeType: a.mimeType } : {}),
+                ...(a.size != null ? { size: a.size } : {}),
                 ...(a.charCount != null ? { charCount: a.charCount } : {}),
                 ...(a.pageCount != null ? { pageCount: a.pageCount } : {}),
                 ...(a.sheetCount != null ? { sheetCount: a.sheetCount } : {}),

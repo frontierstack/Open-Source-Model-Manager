@@ -561,6 +561,38 @@ function extractAgenticQuery(textContent) {
     return { queryPart: '', contentPart: textContent };
 }
 
+// Human-readable byte size. Bytes < 1KB stay raw; otherwise append a KB/MB
+// approximation so the model can quote either form.
+function formatByteSize(bytes) {
+    if (typeof bytes !== 'number' || !isFinite(bytes) || bytes < 0) return null;
+    if (bytes < 1024) return `${bytes} bytes`;
+    if (bytes < 1024 * 1024) return `${bytes.toLocaleString()} bytes (${(bytes / 1024).toFixed(1)} KB)`;
+    return `${bytes.toLocaleString()} bytes (${(bytes / 1024 / 1024).toFixed(2)} MB)`;
+}
+
+// The chat UI stamps each upload's true on-disk size into its === FILE N ===
+// header, e.g. "=== FILE 1: app.har (8,224,768 bytes (7.84 MB); 1,234 chars) ===".
+// When a large upload is swapped for a document handle, the body (and its
+// header) leave the model's context — so we parse the original byte size(s)
+// out here and fold them into the handle notice. Returns a short descriptor
+// for the handle, or '' when no size marker is present (pasted text, etc.).
+function describeUploadedSize(text) {
+    if (typeof text !== 'string' || !text) return '';
+    // Lazy `.*?` (which never crosses a newline, so it stays on the header
+    // line) tolerates parentheses in the filename, e.g. "report (1).har".
+    const re = /=== FILE \d+:.*?\(([\d,]+) bytes/g;
+    let m;
+    let total = 0;
+    let count = 0;
+    while ((m = re.exec(text)) !== null) {
+        const n = parseInt(m[1].replace(/,/g, ''), 10);
+        if (Number.isFinite(n)) { total += n; count++; }
+    }
+    if (count === 0 || total === 0) return '';
+    const label = count > 1 ? `${count} uploaded files total` : 'original file';
+    return `  •  ${label}: ${formatByteSize(total)}`;
+}
+
 /**
  * Condense content using query-focused extractive summarization
  * @param {string} content - The content to condense
@@ -13321,6 +13353,13 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'File content is required' });
         }
 
+        // True on-disk size of the uploaded file: the client base64-encodes the
+        // raw bytes (FileReader.readAsDataURL), so decoding gives back the exact
+        // file size the user sees on their machine. Surfaced as `size` on every
+        // response below so the UI and model report bytes — never conflating
+        // that with the post-extraction character count.
+        const uploadedByteSize = Buffer.from(content, 'base64').length;
+
         // Helper to optionally optimize content
         const maybeOptimize = (text) => optimize ? optimizeContent(text) : text;
 
@@ -13369,15 +13408,36 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
 
         if (isText) {
             try {
-                let decoded = Buffer.from(content, 'base64').toString('utf8');
+                const rawBytes = Buffer.from(content, 'base64');
+                let decoded = rawBytes.toString('utf8');
                 const originalLength = decoded.length;
                 decoded = sanitizeForModel(maybeOptimize(decoded));
                 const prepared = prepareContent(decoded, originalLength);
 
+                // Persist the original bytes so the file remains previewable
+                // after a reload (via attachmentId, the same durable path PDFs
+                // use) instead of relying on multi-MB inline content surviving
+                // in the conversation JSON. Best-effort: on failure the inline
+                // content still works for the current turn.
+                let attachmentId = null;
+                try {
+                    const ownerId = req.user?.id || req.apiKeyData?.id || 'default';
+                    attachmentId = await attachmentStore.save(ownerId, {
+                        filename,
+                        mimeType: mimeType || 'text/plain; charset=utf-8',
+                        type: 'text',
+                        bytes: rawBytes,
+                    });
+                } catch (persistErr) {
+                    console.error('[Chat Upload] text persist failed:', persistErr);
+                }
+
                 return res.json({
                     type: 'text',
                     filename,
+                    ...(attachmentId ? { attachmentId } : {}),
                     content: prepared.content,
+                    size: rawBytes.length,
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
                     saved: originalLength - prepared.content.length,
@@ -13509,6 +13569,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     type: 'pdf',
                     filename,
                     content: prepared.content,
+                    size: uploadedByteSize,
                     pageCount: pageCount,
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
@@ -13614,6 +13675,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     type: 'email',
                     filename,
                     content: prepared.content,
+                    size: uploadedByteSize,
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
                     saved: originalLength - prepared.content.length,
@@ -13694,6 +13756,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     type: 'email',
                     filename,
                     content: prepared.content,
+                    size: uploadedByteSize,
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
                     saved: originalLength - prepared.content.length,
@@ -13726,6 +13789,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     type: 'document',
                     filename,
                     content: prepared.content,
+                    size: uploadedByteSize,
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
                     saved: originalLength - prepared.content.length,
@@ -13805,6 +13869,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     type: 'spreadsheet',
                     filename,
                     content: prepared.content,
+                    size: uploadedByteSize,
                     charCount: prepared.content.length,
                     originalCharCount: originalLength,
                     saved: originalLength - prepared.content.length,
@@ -13880,6 +13945,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 type: 'image',
                 filename,
                 dataUrl: imageDataUrl,
+                size: uploadedByteSize,
                 mimeType: imageMimeType
             };
 
@@ -13938,6 +14004,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                     filename: safeName,
                     archiveId,
                     archiveSize: buf.length,
+                    size: buf.length,
                     content: marker,
                     charCount: marker.length,
                     estimatedTokens: Math.ceil(marker.length / 4),
@@ -14044,10 +14111,27 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
             const originalLength = decoded.length;
             decoded = maybeOptimize(decoded);
 
+            // Persist original bytes for a durable, reload-safe preview (see
+            // the text-path note above). Best-effort.
+            let attachmentId = null;
+            try {
+                const ownerId = req.user?.id || req.apiKeyData?.id || 'default';
+                attachmentId = await attachmentStore.save(ownerId, {
+                    filename,
+                    mimeType: mimeType || 'text/plain; charset=utf-8',
+                    type: 'text',
+                    bytes: buffer,
+                });
+            } catch (persistErr) {
+                console.error('[Chat Upload] text persist (catch-all) failed:', persistErr);
+            }
+
             return res.json({
                 type: 'text',
                 filename,
+                ...(attachmentId ? { attachmentId } : {}),
                 content: decoded,
+                size: buffer.length,
                 charCount: decoded.length,
                 originalCharCount: originalLength,
                 saved: originalLength - decoded.length
@@ -15031,9 +15115,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     conversationId: streamingConversationId || null,
                                 });
 
+                                const sizeNote = describeUploadedSize(contentPart);
                                 const handleNotice =
                                     `[SYSTEM: A large document was indexed for retrieval. You CANNOT see the full document body — it is NOT in your context.\n` +
-                                    `documentId="${indexed.id}"  •  chunks=${indexed.totalChunks}  •  chars=${indexed.totalChars.toLocaleString()}\n\n` +
+                                    `documentId="${indexed.id}"  •  chunks=${indexed.totalChunks}  •  extracted text=${indexed.totalChars.toLocaleString()} chars${sizeNote}\n` +
+                                    `(When asked the FILE's size, report the original file size in bytes/MB above — NOT the "extracted text … chars" count, which is the character length of the indexed text and is a different number.)\n\n` +
                                     `An auto-prime tool call has already been issued for you — a query_document relevance search when your question targets something specific (a section number, a value, a named thing), or read_document_chunk over the opening of the document for a whole-document task. Its result is the assistant→tool message pair immediately following this user turn — read it before you answer.\n\n` +
                                     `Tools available:\n` +
                                     `  • query_document(documentId, query, topK?) — TF-IDF top-K relevance search (use for "find X", "highest/lowest Y", "rows where Z", any targeted lookup)\n` +
@@ -15259,9 +15345,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             conversationId: streamingConversationId || null,
                         });
 
+                        const sizeNote = describeUploadedSize(contentPart);
                         const handleNotice =
-                            `[A large document (${indexed.totalChars.toLocaleString()} chars, ${indexed.totalChunks} chunks) was indexed for retrieval.\n` +
-                            `documentId="${indexed.id}"\n\n` +
+                            `[A large document (extracted text=${indexed.totalChars.toLocaleString()} chars, ${indexed.totalChunks} chunks${sizeNote}) was indexed for retrieval.\n` +
+                            `documentId="${indexed.id}"\n` +
+                            `(When asked the FILE's size, report the original file size in bytes/MB above — NOT the "extracted text … chars" count, which is the character length of the indexed text, a different number.)\n\n` +
                             `You CANNOT see the document body in your context. To answer the question below, walk the document with these tools:\n` +
                             `  • query_document(documentId="${indexed.id}", query="...") — top-K relevant chunks (use first for targeted questions)\n` +
                             `  • read_document_chunk(documentId="${indexed.id}", chunkIndex=N, count=1..5) — sequential read\n\n` +

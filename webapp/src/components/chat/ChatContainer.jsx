@@ -492,16 +492,31 @@ export default function ChatContainer({
         let fullTextContent = content;
         const textParts = [];
         let fileIndex = 0;
+        // "(8,224,768 bytes (7.84 MB); 1,234,567 chars)" — both metrics in the
+        // header so the model answers size questions with the real byte count,
+        // never the character count. Server's describeUploadedSize() parses the
+        // byte figure back out when a large upload becomes a doc handle.
+        const fmtBytes = (b) => {
+            if (typeof b !== 'number' || !isFinite(b) || b < 0) return null;
+            if (b < 1024) return `${b} bytes`;
+            if (b < 1024 * 1024) return `${b.toLocaleString()} bytes (${(b / 1024).toFixed(1)} KB)`;
+            return `${b.toLocaleString()} bytes (${(b / 1024 / 1024).toFixed(2)} MB)`;
+        };
+        const sizeMeta = (att) => {
+            const chars = att.charCount != null ? att.charCount : (att.content ? att.content.length : null);
+            const parts = [fmtBytes(att.size), chars != null ? `${chars.toLocaleString()} chars` : null].filter(Boolean);
+            return parts.length ? ` (${parts.join('; ')})` : '';
+        };
         if (textAttachments.length > 0) {
             textAttachments.forEach(att => {
                 fileIndex++;
-                textParts.push(`=== FILE ${fileIndex}: ${att.filename} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
+                textParts.push(`=== FILE ${fileIndex}: ${att.filename}${sizeMeta(att)} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
             });
         }
         // Include OCR text from images when available
         imageAttachments.filter(att => att.content).forEach(att => {
             fileIndex++;
-            textParts.push(`=== FILE ${fileIndex}: ${att.filename} (OCR) ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
+            textParts.push(`=== FILE ${fileIndex}: ${att.filename} (OCR)${sizeMeta(att)} ===\n${att.content}\n=== END FILE ${fileIndex} ===`);
         });
         if (textParts.length > 0) {
             // Files are on disk at /workspace/uploads/<filename> in the

@@ -105,7 +105,7 @@ export default function ChatInput({
                     onAddAttachment({
                         id: crypto.randomUUID(),
                         filename: file.name,
-                        size: file.size,
+                        size: data.size != null ? data.size : file.size,
                         type: data.type,
                         content: data.content,
                         dataUrl: data.dataUrl,
@@ -181,7 +181,7 @@ export default function ChatInput({
                 onAddAttachment({
                     id: crypto.randomUUID(),
                     filename,
-                    size: pastedText.length,
+                    size: data.size != null ? data.size : pastedText.length,
                     type: data.type,
                     content: data.content,
                     charCount: data.charCount,

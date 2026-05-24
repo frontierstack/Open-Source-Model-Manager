@@ -236,7 +236,7 @@ export default function ChatInput({
                     onAddAttachment({
                         id: crypto.randomUUID(),
                         filename: file.name,
-                        size: file.size,
+                        size: data.size != null ? data.size : file.size,
                         type: data.type,
                         content: data.content,
                         dataUrl: data.dataUrl,
@@ -306,7 +306,7 @@ export default function ChatInput({
                 onAddAttachment({
                     id: crypto.randomUUID(),
                     filename,
-                    size: pastedText.length,
+                    size: data.size != null ? data.size : pastedText.length,
                     type: data.type,
                     content: data.content,
                     attachmentId: data.attachmentId,
@@ -546,9 +546,14 @@ export default function ChatInput({
                                     border: `1px solid ${att.requiresChunking ? 'var(--accent)' : 'var(--rule)'}`,
                                     fontSize: 11, color: 'var(--ink-2)',
                                 };
-                                const sizeHint = att.charCount
-                                    ? ` · ${att.charCount.toLocaleString()} chars (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)`
+                                const byteHint = typeof att.size === 'number'
+                                    ? ` · ${att.size < 1024 * 1024
+                                        ? `${(att.size / 1024).toFixed(1)} KB`
+                                        : `${(att.size / 1024 / 1024).toFixed(2)} MB`}`
                                     : '';
+                                const sizeHint = att.charCount
+                                    ? `${byteHint} · ${att.charCount.toLocaleString()} chars (~${att.estimatedTokens?.toLocaleString() || Math.ceil(att.charCount/4).toLocaleString()} tokens)`
+                                    : byteHint;
                                 const title = previewable
                                     ? (att.requiresChunking
                                         ? `Click to preview · Large file: ~${att.estimatedTokens?.toLocaleString()} tokens (${att.totalChunks} chunks).`
