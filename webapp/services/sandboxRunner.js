@@ -379,14 +379,38 @@ except Exception as _e:
         // urllib stack — pip, requests, urllib.request) authenticate by
         // source IP. curl/git keep working through Proxy-Authorization;
         // either path applies the same allowlist + private-network checks.
+        //
+        // Under runsc (gVisor) the IP is NOT always populated in the first
+        // inspect right after start() — gVisor attaches its netstack a beat
+        // later, so a single read often returned "" and bindGrantToIp was
+        // skipped, leaving the WHOLE run getting 407 from the egress proxy.
+        // Poll briefly until the IP appears (or the container exits) instead of
+        // giving up after one read. The window is small — the IP normally shows
+        // within tens of ms, well before the Python workload finishes booting
+        // under gVisor and issues its first request.
         if (egressToken) {
-            try {
-                const info = await container.inspect();
-                const nets = info && info.NetworkSettings && info.NetworkSettings.Networks;
-                const netInfo = nets && nets[DEFAULT_NETWORK_NAME];
-                const ip = netInfo && netInfo.IPAddress;
-                if (ip) egressProxy.bindGrantToIp(egressToken, ip);
-            } catch (_) { /* fall back to header auth — curl/git still succeed */ }
+            const deadline = Date.now() + 1500;
+            let bound = false;
+            while (!bound && Date.now() < deadline) {
+                try {
+                    const info = await container.inspect();
+                    const nets = info && info.NetworkSettings && info.NetworkSettings.Networks;
+                    const netInfo = nets && nets[DEFAULT_NETWORK_NAME];
+                    const ip = netInfo && netInfo.IPAddress;
+                    if (ip) {
+                        egressProxy.bindGrantToIp(egressToken, ip);
+                        bound = true;
+                        break;
+                    }
+                    // Container finished before an IP ever appeared (fast skill
+                    // with no network use) — nothing to bind, stop polling.
+                    const st = info && info.State;
+                    if (st && st.Running === false && st.Status === 'exited') break;
+                } catch (_) { /* mid-setup or already gone — retry until deadline */ }
+                await new Promise(r => setTimeout(r, 25));
+            }
+            // curl/git still authenticate via the Basic-auth proxy URL even if
+            // the IP never bound, so a miss here is degraded, not broken.
         }
 
         const waitResult = await Promise.race([
