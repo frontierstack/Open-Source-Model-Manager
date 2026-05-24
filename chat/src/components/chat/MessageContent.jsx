@@ -151,6 +151,28 @@ const remarkPlugins = [remarkGfm, remarkMath];
 // (no MathML twin tree we don't display).
 const rehypePlugins = [[rehypeKatex, { strict: false, output: 'html', throwOnError: false }]];
 
+// Currency vs math. remark-math treats single `$...$` as inline math, so a reply
+// like "it's $289.99 (Amazon) ... or $275.49 used" gets the two `$` paired and
+// everything between them rendered as (mangled) KaTeX — spaces stripped, `*`→`∗`,
+// `-`→`−`. Prices are far more common than inline LaTeX in chat, so escape a `$`
+// that begins a currency amount (digit-led number ending at a NON-math boundary)
+// to a literal `\$`, while leaving real math untouched: `$\alpha$` and number-led
+// math like `$466.36 \text{ g/mol}$` (number followed by a LaTeX command) are NOT
+// escaped because the lookahead sees the `\`/`^`/`_`/`{`. Code spans/blocks are
+// skipped (there `$` is already literal and a backslash would show through).
+function escapeCurrency(md) {
+    if (!md || md.indexOf('$') === -1) return md;
+    // Split keeps code regions (odd indices) verbatim; only even segments get escaped.
+    // The two `(?!\d)(?!\.\d)` lookaheads stop the optional-decimal group from
+    // backtracking to a shorter number (e.g. matching "$466" out of "$466.36
+    // \text{…}$" and escaping it); the last lookahead leaves real math alone.
+    return md.split(/(```[\s\S]*?```|`[^`\n]*`)/g).map((seg, i) => (
+        i % 2 === 1
+            ? seg
+            : seg.replace(/\$(\d[\d,]*(?:\.\d+)?)(?!\d)(?!\.\d)(?!\s*[\\^_{}])/g, '\\$$$1')
+    )).join('');
+}
+
 export default React.memo(function MessageContent({ content, isStreaming }) {
     if (!content) return null;
 
@@ -172,7 +194,7 @@ export default React.memo(function MessageContent({ content, isStreaming }) {
                 : line
         )).join('\n')
         : content;
-    const processed = repairedTables.replace(/<br\s*\/?>/gi, '  \n');
+    const processed = escapeCurrency(repairedTables.replace(/<br\s*\/?>/gi, '  \n'));
     return (
         <div className="markdown-content">
             <ReactMarkdown

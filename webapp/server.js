@@ -20319,6 +20319,21 @@ app.use((req, res) => {
         return null;
     }
 
+    // Shopping/product pages inject price & stock client-side, so a fetch can
+    // "succeed" with a large page that omits or stales the figure, with no
+    // bot-challenge marker (detectBotChallenge stays silent). The model then
+    // re-scrapes the same URL with a second engine (which hits the same page)
+    // before pivoting — the slow, 6-call path seen in practice. Recognize such a
+    // page from its OWN visible text (vendor-agnostic — works for ANY store, no
+    // hardcoded site list) and advise switching source via web_search. No site
+    // name and no third-party service is hardcoded.
+    const PRODUCT_SIGNALS = /\badd to (?:cart|basket|bag)\b|\badd to wishlist\b|\b(?:currently\s+)?(?:in|out of) stock\b/i;
+    function productPageHint(content) {
+        if (!content || !PRODUCT_SIGNALS.test(content)) return null;
+        return 'this looks like a shopping/product page; price and availability are typically loaded dynamically and are often missing or out of date in scraped HTML. ' +
+            'If the exact figure you need is not clearly present here, re-fetching this URL with another scraper will hit the same page — use web_search to get it from another source and cite that source.';
+    }
+
     // ----- web_search ------------------------------------------------------
     tools.registerTool({
         name: 'web_search',
@@ -20458,9 +20473,10 @@ app.use((req, res) => {
                 function: {
                     name: 'fetch_url',
                     description:
-                        'Fetch a URL and return its readable text. Rejects private/internal addresses. Pipeline: Scrapling → Playwright → axios. ' +
+                        'Fetch a URL and return its readable text. Rejects private/internal addresses. ' +
+                        'Already cascades Scrapling (anti-bot) → Playwright (JS render) → axios internally, so after a fetch_url that returns content there is no point re-fetching the SAME url with playwright_fetch or scrapling_fetch — they hit the same page. ' +
                         'Trust the fetched content over training when they conflict, and cite the URL. ' +
-                        'If the result includes a `hint` about bot protection or thin content, retry with scrapling_fetch. ' +
+                        'If the result includes a `hint`, follow it: a bot-protection/thin-content hint means retry with scrapling_fetch; a shopping/product-page hint means the price or stock is dynamically gated — switch SOURCE (web_search) instead of re-scraping the same URL. ' +
                         'For long results (>1000 chars) where the user wants a specific fact, follow up with search_string on the returned text.',
                     parameters: {
                         type: 'object',
@@ -20486,7 +20502,7 @@ app.use((req, res) => {
                 }
                 const content = (result.content || '').slice(0, maxLength);
                 const title = result.title || '';
-                const hint = detectBotChallenge({ title, content });
+                const hint = detectBotChallenge({ title, content }) || productPageHint(content);
                 return {
                     url,
                     success: true,
@@ -20809,6 +20825,7 @@ app.use((req, res) => {
                     return { url, success: false, error: result?.error || 'scrapling fetch failed', engine: 'scrapling' };
                 }
                 const content = typeof result.content === 'string' ? result.content.slice(0, maxLength) : '';
+                const hint = productPageHint(content);
                 return {
                     url,
                     success: true,
@@ -20816,6 +20833,7 @@ app.use((req, res) => {
                     content,
                     ...(extractLinks && Array.isArray(result.links) ? { links: result.links.slice(0, 100) } : {}),
                     engine: 'scrapling',
+                    ...(hint ? { hint } : {}),
                 };
             } catch (e) {
                 return { url, success: false, error: e.message || String(e), engine: 'scrapling' };
@@ -20879,7 +20897,7 @@ app.use((req, res) => {
                     timeout, waitForJS, includeLinks, maxLength,
                 });
                 const hint = result?.success
-                    ? detectBotChallenge({ title: result.title, content: result.content })
+                    ? (detectBotChallenge({ title: result.title, content: result.content }) || productPageHint(result.content))
                     : null;
                 return { ...result, engine: 'playwright', ...(hint ? { hint } : {}) };
             } catch (e) {
