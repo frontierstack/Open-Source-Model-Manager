@@ -40,8 +40,11 @@ const SANDBOX_DIR_IN_CONTAINER = '/models/.modelserver/sandbox';
 let sandboxHostBase = null;
 
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'modelserver-sandbox-python:latest';
-// Public resolvers bind-mounted into the sandbox to fix DNS under gVisor (see
-// the dns block in runPythonSkill). Override with SANDBOX_DNS=1.1.1.1,9.9.9.9.
+// Public DNS FALLBACKS, appended after the network's own resolvers in the
+// sandbox resolv.conf (see the dns block in runPythonSkill). The network/host
+// resolvers are preferred so corporate/LAN names resolve and networks that
+// block public DNS still work; these are the safety net. Override with
+// SANDBOX_DNS=1.1.1.1,9.9.9.9.
 const SANDBOX_DNS = (process.env.SANDBOX_DNS || '8.8.8.8,1.1.1.1')
     .split(',').map(s => s.trim()).filter(Boolean);
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -69,6 +72,57 @@ function setHostBase(hostModelsPath) {
     if (hostModelsPath) {
         sandboxHostBase = path.posix.join(hostModelsPath, '.modelserver/sandbox');
     }
+    // Warm the host-resolver cache so the first networked sandbox run doesn't
+    // pay the discovery probe latency. Best-effort.
+    getHostResolvers().catch(() => {});
+}
+
+// Discover the host's real upstream DNS resolvers, once, and cache. On a
+// user-defined Docker network the container's resolv.conf only lists Docker's
+// embedded resolver 127.0.0.11, which gVisor can't reach — but the actual
+// upstreams are exactly what Docker writes into a DEFAULT-bridge container's
+// resolv.conf (loopback entries filtered out). Read them from a throwaway
+// bridge container so the sandbox can PREFER the network's own DNS (corporate /
+// LAN names, environments that block public DNS), keeping 8.8.8.8/1.1.1.1 only
+// as a fallback. Returns [] on any failure (caller then uses the fallbacks).
+let _hostResolversPromise = null;
+async function discoverHostResolvers() {
+    let c = null;
+    try {
+        c = await docker.createContainer({
+            Image: SANDBOX_IMAGE,
+            Cmd: ['cat', '/etc/resolv.conf'],
+            HostConfig: { NetworkMode: 'bridge', AutoRemove: false },
+            AttachStdout: true, AttachStderr: true,
+        });
+        let out = '';
+        const stream = await c.attach({ stream: true, stdout: true, stderr: true });
+        const pt = new PassThrough();
+        pt.on('data', b => { out += b.toString('utf8'); });
+        c.modem.demuxStream(stream, pt, pt);
+        await c.start();
+        await Promise.race([
+            c.wait(),
+            new Promise(r => setTimeout(r, 8000)),
+        ]);
+        const servers = [];
+        for (const line of out.split('\n')) {
+            const m = line.match(/^\s*nameserver\s+(\d{1,3}(?:\.\d{1,3}){3})\b/);
+            // Skip loopback stubs (127.0.0.11 embedded resolver, 127.0.0.53
+            // systemd-resolved) — unreachable from the gVisor sandbox.
+            if (m && !m[1].startsWith('127.')) servers.push(m[1]);
+        }
+        return servers;
+    } catch (e) {
+        console.warn('[sandboxRunner] host DNS discovery failed:', e.message);
+        return [];
+    } finally {
+        if (c) { try { await c.remove({ force: true }); } catch (_) {} }
+    }
+}
+function getHostResolvers() {
+    if (!_hostResolversPromise) _hostResolversPromise = discoverHostResolvers();
+    return _hostResolversPromise;
 }
 
 /** True when runsc is available on the Docker daemon. Computed once. */
@@ -312,20 +366,29 @@ except Exception as _e:
     // 127.0.0.11, which gVisor's userspace netstack can't reach (it depends on
     // host iptables NAT that gVisor bypasses) — so EVERY hostname lookup fails
     // with "Temporary failure in name resolution" even though the path to a
-    // public resolver works. `--dns` doesn't help: on user networks Docker
-    // keeps 127.0.0.11 and only repoints its upstream. Bind a resolv.conf that
-    // points straight at public resolvers so socket/urllib/requests/yt-dlp can
-    // resolve. Only for runsc + networked tiers ('none' has no network; under
+    // real resolver works. `--dns` doesn't help: on user networks Docker keeps
+    // 127.0.0.11 and only repoints its upstream. Bind a resolv.conf that lists
+    // the network's OWN resolvers first (so corporate/LAN names resolve and
+    // environments that block public DNS still work), with 8.8.8.8/1.1.1.1 as
+    // fallbacks. Only for runsc + networked tiers ('none' has no network; under
     // runc 127.0.0.11 is reachable so we leave it alone). Well-behaved HTTP
     // clients still honor HTTP(S)_PROXY, so the allowlist/private-IP checks at
     // the egress proxy continue to apply to proxied traffic on the allowlist tier.
     const dnsBinds = [];
-    if (useRunsc && networkMode !== 'none' && SANDBOX_DNS.length) {
-        const resolvConf = SANDBOX_DNS.map(s => `nameserver ${s}`).join('\n') + '\noptions timeout:3 attempts:2\n';
-        try {
-            await fs.writeFile(path.join(scratchIn, 'resolv.conf'), resolvConf);
-            dnsBinds.push(`${path.posix.join(scratchHost, 'resolv.conf')}:/etc/resolv.conf:ro`);
-        } catch (_) { /* fall back to the default resolv.conf — DNS may fail under gVisor */ }
+    if (useRunsc && networkMode !== 'none') {
+        const hostResolvers = await getHostResolvers();
+        // Network DNS first, public fallbacks after; dedupe. glibc reads at most
+        // MAXNS (3) nameservers, so cap the list.
+        const servers = [...new Set([...hostResolvers, ...SANDBOX_DNS])].slice(0, 3);
+        if (servers.length) {
+            // timeout:2 attempts:1 — if the primary (network) resolver is slow or
+            // down, glibc moves to the next entry (the public fallback) quickly.
+            const resolvConf = servers.map(s => `nameserver ${s}`).join('\n') + '\noptions timeout:2 attempts:1\n';
+            try {
+                await fs.writeFile(path.join(scratchIn, 'resolv.conf'), resolvConf);
+                dnsBinds.push(`${path.posix.join(scratchHost, 'resolv.conf')}:/etc/resolv.conf:ro`);
+            } catch (_) { /* fall back to the default resolv.conf — DNS may fail under gVisor */ }
+        }
     }
 
     const memoryBytes = parseMemory(memory);
