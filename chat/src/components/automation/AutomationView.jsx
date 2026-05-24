@@ -1971,7 +1971,7 @@ const CHIP_DEFS_BY_KIND = {
     tool: [
         { field: 'tool', label: 'Tool / skill name', type: 'value', acceptsData: false, required: true, placeholder: 'e.g. query_sqlite' },
         { field: '__args', label: 'Parameters', type: 'special', special: 'toolArgs', required: true },
-        { field: 'sendMode', label: 'When sent to Telegram/Slack', type: 'choice', options: SEND_MODE_OPTS, default: 'pdf', when: { field: 'tool', op: 'in', value: ['create_pdf', 'html_to_pdf'] } },
+        { field: 'sendMode', label: 'When sent to next node', type: 'choice', options: SEND_MODE_OPTS, default: 'pdf', when: { field: 'tool', op: 'in', value: ['create_pdf', 'html_to_pdf'] } },
     ],
     web_search: [
         { field: 'query', label: 'Query', type: 'value', required: true },

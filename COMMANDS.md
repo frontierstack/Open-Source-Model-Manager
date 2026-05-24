@@ -11,8 +11,13 @@ Complete command reference for Open Source Model Manager utilities and managemen
 - [WSL2 Setup (Windows hosts without Docker Desktop)](#wsl2-setup-windows-hosts-without-docker-desktop)
 - [Model Instance Management](#model-instance-management)
 - [Monitoring & Debugging](#monitoring--debugging)
+- [Chat UI Features](#chat-ui-features)
+- [Automation Engine](#automation-engine)
 - [Docker Commands](#docker-commands)
 - [Troubleshooting Commands](#troubleshooting-commands)
+- [Advanced Usage](#advanced-usage)
+- [Tips & Best Practices](#tips--best-practices)
+- [Support](#support)
 
 ---
 
@@ -492,6 +497,101 @@ When a model response is cut off due to length limits:
 Select from saved system prompts to customize the AI's behavior:
 - Click the scroll icon to select a prompt
 - Create/edit prompts in Settings
+
+### Automation
+
+The chat app hosts the visual workflow editor for the first-party **Automation Engine**. Click the **"Automation"** button next to **"+ New chat"** to switch into the full-screen editor:
+- Drag nodes from the palette (Triggers / Tools / Connectors / Logic Gates) onto the board and wire them into a DAG.
+- Configure each node with draggable **chips** instead of raw `{{}}` templates — drop an upstream step's output into any field via the "Data from earlier steps" palette.
+- Toggle a node's **power button** to disable it (and any branch depending only on it) on the next run.
+- Use **Build with LLM** / **Edit with LLM** to generate or revise a workflow from a plain-language description.
+
+See [Automation Engine](#automation-engine) for the full building-block list and the scripting API.
+
+---
+
+## Automation Engine
+
+First-party, **in-process** workflow automation — no extra service to run. An automation is a DAG of nodes built visually in the **chat app** (the "Automation" button next to "+ New chat"). It reuses the app's auth, sandbox skills, models, and SSE streaming. A workflow can run:
+
+- **manually** (from the editor),
+- on a **schedule** (every N seconds/minutes/hours/days, or cron),
+- by **webhook** (token-gated, unauthenticated, runs as the owner),
+- by an incoming **Telegram** or **Slack** message,
+- or on a **system event** (e.g. `model.loaded`).
+
+### Building Blocks
+
+- **Triggers** — Manual, Schedule, Webhook, Telegram, Slack, Event.
+- **Tools** — Model/LLM, Web Search, Fetch URL, Playwright Fetch, Scrapling Fetch, HTTP Request, Script Block (Python), Create PDF, HTML to PDF, Create File, Render Chart, query_sqlite, Database: Store / Query.
+- **Connectors** — Parse JSON, Render HTML, Export File, Slack, Telegram, Send File, Map/Loop.
+- **Logic Gates** — If/Else, Switch, Filter, Merge, Delay, Set.
+
+### Editor Features (chat app)
+
+- **Chip-based node settings** — each node is configured with draggable chips (value / choice / toggle / number / parameter) rather than raw `{{}}` templates or dropdowns. A **"Data from earlier steps"** palette lets you drag an upstream node's output into any field. Custom chips can be authored (guided modal or LLM-assisted via the chip builder) and persist per user.
+- **Per-node power toggle** — a power button on each node disables it (`node.data.disabled`). A disabled node, and any branch that depends only on it, is skipped on the next run; a disabled trigger node won't fire.
+- **Build / Edit with LLM** — describe a workflow in plain language to generate a new one or edit the open one. Edit returns a preview diff you Apply.
+
+### `download_html` Skill
+
+`download_html` is a sandbox skill that downloads a page's **raw HTML** into the workspace, so you can then parse it with `read_file` / `grep_code` rather than relying on inline extraction. Useful inside automation runs (and chat) when you need the full unprocessed markup.
+
+### Automation API
+
+All routes require an API key with the **`automation`** permission. Use a bearer-mode key (`Authorization: Bearer <key>`); `-k` skips verification of the self-signed dev cert.
+
+```bash
+BASE=https://localhost:3001
+AUTH="Authorization: Bearer your_bearer_token"
+
+# List / create automations
+curl -sk "$BASE/api/automations" -H "$AUTH"
+curl -sk -X POST "$BASE/api/automations" -H "$AUTH" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"My workflow","nodes":[],"edges":[]}'
+
+# Get / update / delete one
+curl -sk "$BASE/api/automations/<id>" -H "$AUTH"
+curl -sk -X PUT "$BASE/api/automations/<id>" -H "$AUTH" \
+  -H "Content-Type: application/json" -d '{"name":"Renamed","nodes":[],"edges":[]}'
+curl -sk -X DELETE "$BASE/api/automations/<id>" -H "$AUTH"
+
+# Run it — SSE stream (live node events) ...
+curl -sk -N -X POST "$BASE/api/automations/<id>/run" -H "$AUTH"
+# ... or run-sync (final JSON only — use this for scripts / Pi)
+curl -sk -X POST "$BASE/api/automations/<id>/run-sync" -H "$AUTH"
+
+# Run history
+curl -sk -X POST "$BASE/api/automations/<id>/runs" -H "$AUTH"   # list runs
+curl -sk "$BASE/api/automations/runs/<runId>" -H "$AUTH"         # one run's per-node detail
+
+# Build / edit with LLM
+curl -sk -X POST "$BASE/api/automations/build" -H "$AUTH" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Every hour, fetch a feed and Telegram me new items","test":true}'
+# Edit returns {proposed, diff} — preview only, does NOT save
+curl -sk -X POST "$BASE/api/automations/<id>/edit" -H "$AUTH" \
+  -H "Content-Type: application/json" -d '{"prompt":"change the schedule to daily"}'
+
+# Public webhook trigger (NO auth header — token gates it; runs as the owner)
+curl -sk -X POST "$BASE/api/automations/webhook/<token>" \
+  -H "Content-Type: application/json" -d '{"any":"payload"}'
+
+# Custom node-setting chips
+curl -sk "$BASE/api/chips" -H "$AUTH"
+curl -sk "$BASE/api/chips/kinds" -H "$AUTH"
+curl -sk -X POST "$BASE/api/chips" -H "$AUTH" -H "Content-Type: application/json" -d '{...}'
+curl -sk -X PUT "$BASE/api/chips/<id>" -H "$AUTH" -H "Content-Type: application/json" -d '{...}'
+curl -sk -X DELETE "$BASE/api/chips/<id>" -H "$AUTH"
+curl -sk -X POST "$BASE/api/chips/build" -H "$AUTH" \
+  -H "Content-Type: application/json" -d '{"prompt":"a chip for picking a Slack channel"}'
+
+# Custom node-types (building blocks)
+curl -sk "$BASE/api/node-types" -H "$AUTH"
+curl -sk "$BASE/api/node-types/builtin" -H "$AUTH"
+curl -sk -X POST "$BASE/api/node-types" -H "$AUTH" -H "Content-Type: application/json" -d '{...}'
+```
 
 ---
 

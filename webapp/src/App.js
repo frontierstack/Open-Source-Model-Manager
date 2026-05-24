@@ -6834,6 +6834,422 @@ const res = await fetch('${baseUrl}/v1/chat/completions', {
   })
 });
 console.log(await res.json());`
+            },
+            // ============================================================================
+            // AUTOMATION & CHIPS
+            // ============================================================================
+            '/api/automations': {
+                curl: `# List all workflow automations. Requires the \`automation\` permission.
+
+# Bearer Token Authentication
+curl -k -X GET ${baseUrl}/api/automations \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/automations \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Create a new automation (a { nodes, edges } DAG)
+curl -k -X POST ${baseUrl}/api/automations \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Daily digest",
+    "nodes": [
+      { "id": "t1", "type": "trigger.schedule", "data": { "intervalMs": 86400000 } },
+      { "id": "m1", "type": "model", "data": { "prompt": "Summarize the day." } }
+    ],
+    "edges": [{ "source": "t1", "target": "m1" }]
+  }'`,
+                python: `import requests
+
+# List automations — Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/automations',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/automations',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+automations = response.json()
+print(f"Automations: {len(automations)}")
+
+# Create an automation
+response = requests.post(
+    '${baseUrl}/api/automations',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'name': 'Daily digest',
+        'nodes': [
+            {'id': 't1', 'type': 'trigger.schedule', 'data': {'intervalMs': 86400000}},
+            {'id': 'm1', 'type': 'model', 'data': {'prompt': 'Summarize the day.'}}
+        ],
+        'edges': [{'source': 't1', 'target': 'm1'}]
+    },
+    verify=False
+)
+print(f"Created automation: {response.json()['id']}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token"; "Content-Type" = "application/json" }
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+    "Content-Type" = "application/json"
+}
+
+# List automations
+$automations = Invoke-RestMethod -Uri "${baseUrl}/api/automations" -Headers $headers
+Write-Output "Automations: $($automations.Count)"
+
+# Create an automation
+$body = @{
+    name  = "Daily digest"
+    nodes = @(
+        @{ id = "t1"; type = "trigger.schedule"; data = @{ intervalMs = 86400000 } },
+        @{ id = "m1"; type = "model"; data = @{ prompt = "Summarize the day." } }
+    )
+    edges = @(@{ source = "t1"; target = "m1" })
+} | ConvertTo-Json -Depth 6
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/automations" -Method Post -Headers $headers -Body $body
+Write-Output "Created automation: $($response.id)"`,
+                javascript: `// List automations — Bearer Token Authentication
+fetch('${baseUrl}/api/automations', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(automations => console.log(\`Automations: \${automations.length}\`));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/automations', {
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  }
+})
+.then(res => res.json())
+.then(automations => console.log(\`Automations: \${automations.length}\`));
+
+// Create an automation
+fetch('${baseUrl}/api/automations', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    name: 'Daily digest',
+    nodes: [
+      { id: 't1', type: 'trigger.schedule', data: { intervalMs: 86400000 } },
+      { id: 'm1', type: 'model', data: { prompt: 'Summarize the day.' } }
+    ],
+    edges: [{ source: 't1', target: 'm1' }]
+  })
+})
+.then(res => res.json())
+.then(result => console.log('Created automation:', result.id));`
+            },
+            '/api/automations/:id/run-sync': {
+                curl: `# Run an automation and get the final JSON result (non-SSE).
+# Use /api/automations/:id/run for an SSE live-frame stream instead.
+# Requires the \`automation\` permission.
+
+# Bearer Token Authentication
+curl -k -X POST ${baseUrl}/api/automations/your_automation_id/run-sync \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "input": { "text": "optional run input" } }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/automations/your_automation_id/run-sync \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "input": { "text": "optional run input" } }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/automations/your_automation_id/run-sync',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={'input': {'text': 'optional run input'}},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    '${baseUrl}/api/automations/your_automation_id/run-sync',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={'input': {'text': 'optional run input'}},
+    verify=False
+)
+print(response.json())`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token"; "Content-Type" = "application/json" }
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+    "Content-Type" = "application/json"
+}
+
+$body = @{ input = @{ text = "optional run input" } } | ConvertTo-Json
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/automations/your_automation_id/run-sync" -Method Post -Headers $headers -Body $body
+Write-Output $response`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/automations/your_automation_id/run-sync', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ input: { text: 'optional run input' } })
+})
+.then(res => res.json())
+.then(result => console.log('Run result:', result));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/automations/your_automation_id/run-sync', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ input: { text: 'optional run input' } })
+})
+.then(res => res.json())
+.then(result => console.log('Run result:', result));`
+            },
+            '/api/automations/build': {
+                curl: `# Build a workflow from a natural-language prompt (LLM-drafted).
+# Pass { "test": true } to run it once and auto-repair on failure.
+# Requires the \`automation\` permission.
+
+# Bearer Token Authentication
+curl -k -X POST ${baseUrl}/api/automations/build \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "prompt": "Every morning fetch the top HN story and send it to Telegram",
+    "test": true
+  }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/automations/build \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "prompt": "Every morning fetch the top HN story and send it to Telegram"
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+response = requests.post(
+    '${baseUrl}/api/automations/build',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'prompt': 'Every morning fetch the top HN story and send it to Telegram',
+        'test': True
+    },
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.post(
+    '${baseUrl}/api/automations/build',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret',
+        'Content-Type': 'application/json'
+    },
+    json={'prompt': 'Every morning fetch the top HN story and send it to Telegram'},
+    verify=False
+)
+workflow = response.json()
+print(f"Built automation: {workflow['id']}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token"; "Content-Type" = "application/json" }
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+    "Content-Type" = "application/json"
+}
+
+$body = @{
+    prompt = "Every morning fetch the top HN story and send it to Telegram"
+    test   = $true
+} | ConvertTo-Json
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/automations/build" -Method Post -Headers $headers -Body $body
+Write-Output "Built automation: $($response.id)"`,
+                javascript: `// Bearer Token Authentication
+fetch('${baseUrl}/api/automations/build', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    prompt: 'Every morning fetch the top HN story and send it to Telegram',
+    test: true
+  })
+})
+.then(res => res.json())
+.then(workflow => console.log('Built automation:', workflow.id));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/automations/build', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    prompt: 'Every morning fetch the top HN story and send it to Telegram'
+  })
+})
+.then(res => res.json())
+.then(workflow => console.log('Built automation:', workflow.id));`
+            },
+            '/api/chips': {
+                curl: `# List custom node-setting chips. Requires authentication.
+
+# Bearer Token Authentication
+curl -k -X GET ${baseUrl}/api/chips \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X GET ${baseUrl}/api/chips \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Create a chip (compiles to fields on node.data)
+curl -k -X POST ${baseUrl}/api/chips \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "kind": "model",
+    "label": "Temperature",
+    "fields": [{ "key": "temperature", "type": "number", "default": 0.7 }]
+  }'`,
+                python: `import requests
+
+# List chips — Bearer Token Authentication
+response = requests.get(
+    '${baseUrl}/api/chips',
+    headers={'Authorization': 'Bearer your_bearer_token'},
+    verify=False
+)
+
+# OR API Key + Secret Authentication
+response = requests.get(
+    '${baseUrl}/api/chips',
+    headers={
+        'X-API-Key': 'your_api_key',
+        'X-API-Secret': 'your_api_secret'
+    },
+    verify=False
+)
+chips = response.json()
+print(f"Chips: {len(chips)}")
+
+# Create a chip
+response = requests.post(
+    '${baseUrl}/api/chips',
+    headers={
+        'Authorization': 'Bearer your_bearer_token',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'kind': 'model',
+        'label': 'Temperature',
+        'fields': [{'key': 'temperature', 'type': 'number', 'default': 0.7}]
+    },
+    verify=False
+)
+print(f"Created chip: {response.json()['id']}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token"; "Content-Type" = "application/json" }
+
+# OR API Key + Secret Authentication
+$headers = @{
+    "X-API-Key" = "your_api_key"
+    "X-API-Secret" = "your_api_secret"
+    "Content-Type" = "application/json"
+}
+
+# List chips
+$chips = Invoke-RestMethod -Uri "${baseUrl}/api/chips" -Headers $headers
+Write-Output "Chips: $($chips.Count)"
+
+# Create a chip
+$body = @{
+    kind   = "model"
+    label  = "Temperature"
+    fields = @(@{ key = "temperature"; type = "number"; default = 0.7 })
+} | ConvertTo-Json -Depth 5
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/chips" -Method Post -Headers $headers -Body $body
+Write-Output "Created chip: $($response.id)"`,
+                javascript: `// List chips — Bearer Token Authentication
+fetch('${baseUrl}/api/chips', {
+  headers: { 'Authorization': 'Bearer your_bearer_token' }
+})
+.then(res => res.json())
+.then(chips => console.log(\`Chips: \${chips.length}\`));
+
+// OR API Key + Secret Authentication
+fetch('${baseUrl}/api/chips', {
+  headers: {
+    'X-API-Key': 'your_api_key',
+    'X-API-Secret': 'your_api_secret'
+  }
+})
+.then(res => res.json())
+.then(chips => console.log(\`Chips: \${chips.length}\`));
+
+// Create a chip
+fetch('${baseUrl}/api/chips', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer your_bearer_token',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    kind: 'model',
+    label: 'Temperature',
+    fields: [{ key: 'temperature', type: 'number', default: 0.7 }]
+  })
+})
+.then(res => res.json())
+.then(result => console.log('Created chip:', result.id));`
             }
         };
 
@@ -10380,6 +10796,11 @@ console.log(await res.json());`
                                                             <MenuItem value="/api/pi/install">GET /api/pi/install - Pi auto-installer (curl | bash)</MenuItem>
                                                             <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
                                                             <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Automation & Chips ───</MenuItem>
+                                                            <MenuItem value="/api/automations">GET/POST /api/automations - List / Create Automation</MenuItem>
+                                                            <MenuItem value="/api/automations/:id/run-sync">POST /api/automations/:id/run-sync - Run (final JSON)</MenuItem>
+                                                            <MenuItem value="/api/automations/build">POST /api/automations/build - Build from Prompt (LLM)</MenuItem>
+                                                            <MenuItem value="/api/chips">GET/POST /api/chips - List / Create Chips</MenuItem>
                                                         </Select>
                                                     </FormControl>
                                                 </Grid>
@@ -10648,7 +11069,7 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Tools</TableCell>
-                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Model, Web Search, Fetch URL, Render HTML, Parse JSON, Export File, HTTP Request, Crawl Pages, SQLite Query, Render Chart, Create PDF / File, Run Python</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Model, Web Search, Fetch URL, Playwright Fetch, Scrapling Fetch, Render HTML, Parse JSON, Export File, HTTP Request, Crawl Pages, SQLite Query, Render Chart, Create PDF / File, Run Python, Script Block (Python)</TableCell>
                                                     </TableRow>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', verticalAlign: 'top' }}>Connectors</TableCell>
@@ -10680,6 +11101,9 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 <li>Reference upstream data with <code>{'{{nodes.<id>.field}}'}</code> tags. The config panel lists clickable tags from every upstream step — with the expected fields shown before a run, so you can wire a flow without executing it first.</li>
                                                 <li><strong style={{ color: 'var(--text-primary)' }}>Logic gates</strong> support text operators: <code>equals</code>, <code>contains</code>, <code>starts with</code> / <code>ends with</code>, <code>regex</code>, <code>&gt;</code>, <code>&lt;</code>, <code>is-empty</code>, and more. Leave the &quot;Value to check&quot; blank and it defaults to the previous node&apos;s output.</li>
                                                 <li>Independent non-LLM nodes at the same depth run <strong style={{ color: 'var(--text-primary)' }}>in parallel</strong> — fan out, then <code>Merge</code> back together.</li>
+                                                <li>Node settings use <strong style={{ color: 'var(--text-primary)' }}>chips</strong>, not raw <code>{'{{}}'}</code> or dropdowns — pick a chip and it compiles to fields on the node; LLM-drafted custom chips come from <code>POST /api/chips/build</code>.</li>
+                                                <li>Each node has a <strong style={{ color: 'var(--text-primary)' }}>power toggle</strong> to disable it from running without removing it from the graph.</li>
+                                                <li>Author inline Python with a <strong style={{ color: 'var(--text-primary)' }}>Script Block</strong> node, and fetch JS-heavy or bot-protected pages with <strong style={{ color: 'var(--text-primary)' }}>Playwright Fetch</strong> / <strong style={{ color: 'var(--text-primary)' }}>Scrapling Fetch</strong>.</li>
                                             </Box>
                                         </Box>
 
@@ -10713,15 +11137,40 @@ ${baseUrl}/api/pi/extension/README.md`}</span>
                                                 Workflows are scriptable too — trigger one and get the final JSON back synchronously, or manage them via CRUD (requires the <code>automation</code> permission):
                                             </Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
-                                                <span>{`# Run a workflow and get the final result (non-streaming)
-POST ${baseUrl}/api/automations/:id/run-sync
+                                                <span>{`# Run a workflow
+POST ${baseUrl}/api/automations/:id/run        # SSE live frames (node spinners, edges)
+POST ${baseUrl}/api/automations/:id/run-sync   # final JSON only (no streaming)
 
 # CRUD
 GET    ${baseUrl}/api/automations          # list
-POST   ${baseUrl}/api/automations          # create
+POST   ${baseUrl}/api/automations          # create  { name, nodes, edges }
 GET    ${baseUrl}/api/automations/:id      # fetch
 PUT    ${baseUrl}/api/automations/:id      # update
-DELETE ${baseUrl}/api/automations/:id      # delete`}</span>
+DELETE ${baseUrl}/api/automations/:id      # delete
+
+# Build / edit with an LLM
+POST   ${baseUrl}/api/automations/build       # { prompt, test? }  draft a workflow from a prompt
+POST   ${baseUrl}/api/automations/:id/edit    # { prompt }  -> { proposed, diff } (preview, does not save)
+
+# Run history
+POST   ${baseUrl}/api/automations/:id/runs    # list past runs
+GET    ${baseUrl}/api/automations/runs/:runId # one run, with per-node outputs
+
+# Public webhook trigger (unauthenticated, token-gated, runs as the owner)
+POST   ${baseUrl}/api/automations/webhook/:token
+
+# Chips — custom node-setting building blocks (require auth)
+GET    ${baseUrl}/api/chips                 # list
+POST   ${baseUrl}/api/chips                 # create
+PUT    ${baseUrl}/api/chips/:id             # update
+DELETE ${baseUrl}/api/chips/:id             # delete
+GET    ${baseUrl}/api/chips/kinds           # valid chip kinds
+POST   ${baseUrl}/api/chips/build           # LLM-drafted chip from a prompt
+
+# Node-types — custom palette building blocks (require auth)
+GET    ${baseUrl}/api/node-types            # list
+POST   ${baseUrl}/api/node-types            # create
+GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                             </Box>
                                         </Box>
 
@@ -10863,6 +11312,10 @@ DELETE ${baseUrl}/api/automations/:id      # delete`}</span>
                                                                 <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>flattenJsonToText()</TableCell>
                                                                 <TableCell sx={{ color: 'var(--text-secondary)' }}>Collapses large homogeneous result sets from intercepted JSON (e.g. 94 scan engines all "undetected") into summary lines so the model isn't drowned in repetitive structure.</TableCell>
                                                             </TableRow>
+                                                            <TableRow>
+                                                                <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>download_html (skill)</TableCell>
+                                                                <TableCell sx={{ color: 'var(--text-secondary)' }}>When <code>fetch_url</code>'s extraction is too lossy, the <code>download_html</code> sandbox skill saves the page's <strong>raw, untruncated</strong> HTML into <code>/workspace</code> so <code>read_file</code> / <code>grep_code</code> / <code>parse_html</code> can work the full document. For bot-protected sites prefer <code>scrapling_fetch</code> / Playwright Fetch.</TableCell>
+                                                            </TableRow>
                                                         </TableBody>
                                                     </Table>
                                                 </Box>
@@ -10932,6 +11385,10 @@ DELETE ${baseUrl}/api/automations/:id      # delete`}</span>
                                                     <TableRow>
                                                         <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>create_docx</TableCell>
                                                         <TableCell sx={{ color: 'var(--text-secondary)' }}>Render an editable Word <code>.docx</code> (paragraphs separated by blank lines; <code># </code> / <code>## </code> lines map to Heading 1 / Heading 2). Params: <code>filename</code>, optional <code>title</code>, and <strong>either</strong> <code>content</code> inline <strong>or</strong> <code>contentFile</code> (a <code>/workspace</code> markdown file — preferred when the body exceeds ~5000 chars). Surfaces as a download chip on return.</TableCell>
+                                                    </TableRow>
+                                                    <TableRow>
+                                                        <TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)', whiteSpace: 'nowrap' }}>download_html</TableCell>
+                                                        <TableCell sx={{ color: 'var(--text-secondary)' }}>Download a web page&apos;s raw HTML into <code>/workspace</code> so other tools (<code>read_file</code> / <code>grep_code</code> / <code>parse_html</code>) can parse the full, <strong>untruncated</strong> page. Params: <code>url</code> (required), <code>filename</code> (optional). For bot-protected sites use <code>scrapling_fetch</code> instead.</TableCell>
                                                     </TableRow>
                                                 </TableBody>
                                             </Table>
