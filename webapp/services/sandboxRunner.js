@@ -40,6 +40,10 @@ const SANDBOX_DIR_IN_CONTAINER = '/models/.modelserver/sandbox';
 let sandboxHostBase = null;
 
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || 'modelserver-sandbox-python:latest';
+// Public resolvers bind-mounted into the sandbox to fix DNS under gVisor (see
+// the dns block in runPythonSkill). Override with SANDBOX_DNS=1.1.1.1,9.9.9.9.
+const SANDBOX_DNS = (process.env.SANDBOX_DNS || '8.8.8.8,1.1.1.1')
+    .split(',').map(s => s.trim()).filter(Boolean);
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MEMORY = '512m';
 const DEFAULT_CPUS = '1.0';
@@ -303,6 +307,27 @@ except Exception as _e:
         );
     }
 
+    // DNS fix for gVisor (runsc). On a user-defined Docker network the
+    // container's /etc/resolv.conf points at Docker's embedded resolver
+    // 127.0.0.11, which gVisor's userspace netstack can't reach (it depends on
+    // host iptables NAT that gVisor bypasses) — so EVERY hostname lookup fails
+    // with "Temporary failure in name resolution" even though the path to a
+    // public resolver works. `--dns` doesn't help: on user networks Docker
+    // keeps 127.0.0.11 and only repoints its upstream. Bind a resolv.conf that
+    // points straight at public resolvers so socket/urllib/requests/yt-dlp can
+    // resolve. Only for runsc + networked tiers ('none' has no network; under
+    // runc 127.0.0.11 is reachable so we leave it alone). Well-behaved HTTP
+    // clients still honor HTTP(S)_PROXY, so the allowlist/private-IP checks at
+    // the egress proxy continue to apply to proxied traffic on the allowlist tier.
+    const dnsBinds = [];
+    if (useRunsc && networkMode !== 'none' && SANDBOX_DNS.length) {
+        const resolvConf = SANDBOX_DNS.map(s => `nameserver ${s}`).join('\n') + '\noptions timeout:3 attempts:2\n';
+        try {
+            await fs.writeFile(path.join(scratchIn, 'resolv.conf'), resolvConf);
+            dnsBinds.push(`${path.posix.join(scratchHost, 'resolv.conf')}:/etc/resolv.conf:ro`);
+        } catch (_) { /* fall back to the default resolv.conf — DNS may fail under gVisor */ }
+    }
+
     const memoryBytes = parseMemory(memory);
     const nanoCpus = Math.round(parseFloat(cpus) * 1e9);
 
@@ -331,6 +356,7 @@ except Exception as _e:
                     `${scratchHost}:/work:ro`,
                     `${artifactsHost}:/artifacts:rw`,
                     ...(workspaceInfo ? [`${workspaceInfo.hostMount}:/workspace:rw`] : []),
+                    ...dnsBinds,
                 ],
                 Tmpfs: { '/tmp': 'rw,size=64m,mode=1777' },
             },
