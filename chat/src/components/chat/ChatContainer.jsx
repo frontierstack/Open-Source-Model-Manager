@@ -46,6 +46,31 @@ const OPEN_TAG_SRC = `<(${REASONING_TAG_ALT})(?:\\s[^>]*)?>`;   // group 1 = tag
 const CLOSE_TAG_SRC = `<\\/(?:${REASONING_TAG_ALT})\\s*>`;       // name not captured
 
 /**
+ * Drop standalone "filler ellipsis" lines ("...", "…", ". . .") that some
+ * tool-calling models emit each time they resume after a tool result. The
+ * leading-ellipsis strip inside parseThinkTags only catches the one at the
+ * very start of the buffer; in a multi-tool turn the dots BETWEEN narration
+ * segments survive and render as stray lines of dots. A line is filler only
+ * when it's nothing but dots/ellipsis (≥2 dots, or a … char) — and never
+ * inside a fenced code block, where "..." is meaningful (Python Ellipsis
+ * stub, diff/truncation marker).
+ */
+function stripFillerEllipsisLines(text) {
+    if (text.indexOf('.') === -1 && text.indexOf('…') === -1) return text;
+    let inFence = false;
+    const kept = [];
+    for (const line of text.split('\n')) {
+        if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; kept.push(line); continue; }
+        const t = line.trim();
+        const isFiller = !inFence && t.length > 0 && /^[.．…\s]+$/.test(t)
+            && (/…/.test(t) || (t.match(/[.．]/g) || []).length >= 2);
+        if (isFiller) continue;
+        kept.push(line);
+    }
+    return kept.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+/**
  * Parse reasoning tags from content and separate thinking from response.
  * Handles both complete and partial (streaming) content.
  *
@@ -154,6 +179,10 @@ function parseThinkTags(content, streaming = false) {
     } else {
         cleanContent = cleanContent.replace(/^\s*(?:…\s*|(?:[.．]\s*){2,})/, '').replace(/^\s+/, '');
     }
+    // Also drop filler ellipsis lines that appear BETWEEN tool-call narration
+    // segments in a multi-tool turn (the leading strip above only handles the
+    // very start of the buffer).
+    cleanContent = stripFillerEllipsisLines(cleanContent);
 
     // If content is empty but we have reasoning from COMPLETED blocks,
     // the model likely wrapped its entire response in reasoning tags.
