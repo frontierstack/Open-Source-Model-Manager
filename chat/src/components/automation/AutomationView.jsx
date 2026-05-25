@@ -8,7 +8,7 @@ import '@xyflow/react/dist/style.css';
 import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
-    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles, Download, Braces,
+    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles, Download, Braces, Menu as MenuIcon,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -476,6 +476,22 @@ function FlowEditor({ showSnackbar, models }) {
         return v >= 190 && v <= 520 ? v : 230;
     });
     useEffect(() => { try { localStorage.setItem('automationLeftWidth', String(leftWidth)); } catch (_) {} }, [leftWidth]);
+    // Mobile (<=768px): the fixed 3-column layout (left rail + canvas + right
+    // panel) can't fit, so it collapses to match the chat sidebar pattern — the
+    // left rail becomes a slide-out drawer (hamburger-toggled) and the config /
+    // history panel becomes a full-screen overlay. 768px is the app's `md`
+    // breakpoint (Tailwind `md:`, ChatSidebar's drawer cutover).
+    const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+    // Start the drawer open on mobile so the automations list is visible on
+    // first load (nothing is selected yet); it closes once one is picked.
+    const [leftDrawerOpen, setLeftDrawerOpen] = useState(() => typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+    useEffect(() => {
+        if (!window.matchMedia) return undefined;
+        const mq = window.matchMedia('(max-width: 768px)');
+        const onChange = () => setIsMobile(mq.matches);
+        if (mq.addEventListener) mq.addEventListener('change', onChange); else mq.addListener(onChange);
+        return () => { if (mq.removeEventListener) mq.removeEventListener('change', onChange); else mq.removeListener(onChange); };
+    }, []);
     // Drag the right edge of the left rail (automations + palette) to widen it.
     const onLeftResizeStart = useCallback((e) => {
         e.preventDefault();
@@ -584,6 +600,7 @@ function FlowEditor({ showSnackbar, models }) {
             setRunResult(null);
             setWebhookUrl('');
             setNodeOutputs({});
+            setLeftDrawerOpen(false); // mobile: reveal the canvas after picking from the drawer
             addCountRef.current = n.length;
             if (animate === 'build' && n.length && animFnsRef.current.animateConstruction) {
                 animFnsRef.current.animateConstruction(n, e);
@@ -771,6 +788,7 @@ function FlowEditor({ showSnackbar, models }) {
         }));
         setSelectedNodeId(id);
         setDirty(true);
+        setLeftDrawerOpen(false); // mobile: close the drawer so the new node + its config are visible
     }, [setNodes]);
 
     // Drag-and-drop from the palette onto the canvas.
@@ -1189,7 +1207,12 @@ function FlowEditor({ showSnackbar, models }) {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg)' }}>
             {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid var(--rule)', flexShrink: 0 }}>
+            <div className="auto-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid var(--rule)', flexShrink: 0 }}>
+                {isMobile && (
+                    <button className="auto-btn auto-btn--icon" onClick={() => setLeftDrawerOpen(o => !o)} title="Automations & nodes">
+                        <MenuIcon size={16} />
+                    </button>
+                )}
                 <button className="auto-btn" onClick={() => setView('chat')} title="Back to chat">
                     <ArrowLeft size={15} /> <span>Chat</span>
                 </button>
@@ -1205,9 +1228,9 @@ function FlowEditor({ showSnackbar, models }) {
                         <input
                             value={name} onChange={(e) => onNameChange(e.target.value)}
                             placeholder="Automation name"
-                            style={{ ...fieldInput, width: 240, marginBottom: 0 }}
+                            style={{ ...fieldInput, width: isMobile ? undefined : 240, flex: isMobile ? 1 : undefined, minWidth: isMobile ? 0 : undefined, marginBottom: 0 }}
                         />
-                        <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+                        <div className="auto-toolbar__actions" style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                             <button className={`auto-btn${selected.enabled !== false ? ' auto-btn--ok' : ''}`} onClick={() => toggleFlag('enabled')} title={selected.enabled !== false ? 'Enabled (triggers active)' : 'Disabled'}>
                                 {selected.enabled !== false ? <Power size={14} /> : <PowerOff size={14} />}
                                 <span>{selected.enabled !== false ? 'Enabled' : 'Disabled'}</span>
@@ -1236,9 +1259,15 @@ function FlowEditor({ showSnackbar, models }) {
             </div>
 
             <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-                {/* Left rail: automations + palette */}
-                <div className="auto-rail" style={{ width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
-                    <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />
+                {/* Backdrop behind the mobile drawer */}
+                {isMobile && leftDrawerOpen && (
+                    <div onClick={() => setLeftDrawerOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 55 }} />
+                )}
+                {/* Left rail: automations + palette (slide-out drawer on mobile) */}
+                <div className="auto-rail" style={isMobile
+                    ? { position: 'fixed', top: 0, bottom: 0, left: 0, zIndex: 60, width: 'min(86vw, 320px)', background: 'var(--bg)', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transform: leftDrawerOpen ? 'translateX(0)' : 'translateX(-100%)', transition: 'transform 0.28s ease', boxShadow: leftDrawerOpen ? '0 0 24px rgba(0,0,0,0.4)' : 'none' }
+                    : { width: leftWidth, position: 'relative', borderRight: '1px solid var(--rule)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+                    {!isMobile && <ResizeHandle side="right" onResizeStart={onLeftResizeStart} />}
                     <div style={{ padding: '12px 12px 11px', borderBottom: '1px solid var(--rule)', maxHeight: '52vh', overflowY: 'auto', flexShrink: 0 }}>
                         <button className="auto-btn auto-btn--accent auto-btn--block" onClick={newAutomation}>
                             <Plus size={15} /> <span>New automation</span>
@@ -1501,7 +1530,9 @@ function FlowEditor({ showSnackbar, models }) {
                 <div style={{ flex: 1, minWidth: 0, position: 'relative' }} onDragOver={onDragOver} onDrop={onDrop}>
                     {!selected ? (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--ink-3)', fontSize: 13, textAlign: 'center', padding: 24 }}>
-                            Select an automation on the left, or create a new one to start building a workflow.
+                            {isMobile
+                                ? 'Tap the menu (top-left) to pick an automation or create a new one.'
+                                : 'Select an automation on the left, or create a new one to start building a workflow.'}
                         </div>
                     ) : (
                         <NodeDropContext.Provider value={handleDropChip}>
@@ -1565,6 +1596,8 @@ function FlowEditor({ showSnackbar, models }) {
                         nodeList={nodes}
                         edgeList={edges}
                         width={panelWidth}
+                        mobile={isMobile}
+                        onClose={() => setSelectedNodeId(null)}
                         onResizeStart={onPanelResizeStart}
                         onChange={(patch) => updateNodeData(selectedNode.id, patch)}
                         onDelete={deleteSelectedNode}
@@ -1582,6 +1615,7 @@ function FlowEditor({ showSnackbar, models }) {
                     <RunHistoryPanel
                         runs={runs}
                         width={panelWidth}
+                        mobile={isMobile}
                         onResizeStart={onPanelResizeStart}
                         onClearHistory={clearRuns}
                         onClose={() => { setShowHistory(false); setRunDetail(null); }}
@@ -2394,7 +2428,7 @@ function ChipBuilder({ onClose, customChips, onSaved, notify }) {
     );
 }
 
-function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook, customChips = [], onOpenChipBuilder }) {
+function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs = {}, nodeList = [], edgeList = [], width = 300, mobile = false, onClose, onResizeStart, onChange, onDelete, webhookUrl, onGenWebhook, copied, onCopyWebhook, customChips = [], onOpenChipBuilder }) {
     const kind = node.data.kind;
     const d = node.data;
     // Fields available from the node feeding into this one (for the dedup-key
@@ -2423,9 +2457,14 @@ function NodeConfig({ node, typeLabel, runningModels = [], lastRun, allOutputs =
 
     return (
         <DataTagsContext.Provider value={tagGroups}>
-        <div style={{ position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
-            {onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
+        <div style={mobile
+            ? { position: 'fixed', inset: 0, zIndex: 60, width: '100%', overflowY: 'auto', padding: 12, background: 'var(--surface)' }
+            : { position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
+            {!mobile && onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
             <div className="auto-panel__head">
+                {mobile && (
+                    <button className="auto-btn auto-btn--icon auto-btn--sm" onClick={onClose} title="Close" style={{ flexShrink: 0 }}><CloseIcon size={15} /></button>
+                )}
                 <span className="auto-panel__icon"><HeadIcon size={16} strokeWidth={2} /></span>
                 <div style={{ minWidth: 0, flex: 1 }}>
                     <div className="auto-panel__title" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.label || typeLabel || kind}</div>
@@ -2597,7 +2636,7 @@ function runStatusColor(s) {
         : 'var(--ink-4, #64748b)';
 }
 
-function RunHistoryPanel({ runs, width = 300, onResizeStart, onClearHistory, onClose }) {
+function RunHistoryPanel({ runs, width = 300, mobile = false, onResizeStart, onClearHistory, onClose }) {
     const [openRunId, setOpenRunId] = useState(null);
     const [detail, setDetail] = useState(null);
 
@@ -2612,8 +2651,10 @@ function RunHistoryPanel({ runs, width = 300, onResizeStart, onClearHistory, onC
     }, [openRunId]);
 
     return (
-        <div style={{ position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
-            {onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
+        <div style={mobile
+            ? { position: 'fixed', inset: 0, zIndex: 60, width: '100%', overflowY: 'auto', padding: 12, background: 'var(--surface)' }
+            : { position: 'relative', width, borderLeft: '1px solid var(--rule)', flexShrink: 0, overflowY: 'auto', padding: 12, background: 'var(--surface)' }}>
+            {!mobile && onResizeStart && <ResizeHandle onResizeStart={onResizeStart} />}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                 <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 14 }}>Run history</span>
                 <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', display: 'flex' }} title="Close"><CloseIcon size={15} /></button>

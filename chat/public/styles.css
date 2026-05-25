@@ -6721,3 +6721,22 @@ svg.react-flow__connectionline {
 .auto-node__chips { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
 .auto-node__chip { font-size: 9px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
 
+/* ---- Mobile (<=768px) ----
+   The 3-column editor collapses to one column: the left rail becomes a
+   JS-driven slide-out drawer and the config/history panels become full-screen
+   overlays (both handled in AutomationView.jsx via the isMobile flag). These
+   rules tidy the toolbar + popovers so they fit a phone viewport. 768px is the
+   app's `md` breakpoint, matching the chat sidebar's drawer cutover. */
+@media (max-width: 768px) {
+    .auto-toolbar { flex-wrap: wrap; gap: 6px !important; }
+    /* Action buttons (Enabled/Archive/History/Save/Run) have distinct icons —
+       drop their text labels so the group fits. The two nav back-arrows
+       (Chat / Automations) keep their labels since their icons are identical. */
+    .auto-toolbar__actions .auto-btn span { display: none; }
+    /* The data-tag popover is position:fixed — keep it inside the viewport. */
+    .auto-tagmenu { max-width: calc(100vw - 24px); }
+    /* Chip builder modal: stack its node list above the form. */
+    .cf-modal__body { flex-direction: column; }
+    .cf-modal__list { width: auto; border-right: none; border-bottom: 1px solid var(--rule); max-height: 30vh; }
+}
+
