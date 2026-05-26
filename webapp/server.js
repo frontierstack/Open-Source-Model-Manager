@@ -21622,6 +21622,24 @@ app.use((req, res) => {
     const archiveExtractor = require('./services/archiveExtractor');
     const ARCHIVE_STORE_ROOT = '/tmp/modelserver-archives';
 
+    // List archive ids currently on disk for this user (1-hour TTL, see
+    // /api/chat/upload's sweep). Used both for auto-select when the model
+    // calls extract_archive without an id and to produce a helpful error
+    // listing valid ids when it passes a wrong/missing one.
+    async function listUserArchives(userId) {
+        const safeUser = String(userId || 'anon').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const root = `${ARCHIVE_STORE_ROOT}/${safeUser}`;
+        const fsp = require('fs').promises;
+        const ids = await fsp.readdir(root).catch(() => []);
+        const out = [];
+        for (const id of ids) {
+            if (!/^[a-f0-9]{32}$/.test(id)) continue;
+            const entries = await fsp.readdir(`${root}/${id}`).catch(() => []);
+            if (entries.length) out.push({ archiveId: id, filename: entries[0] });
+        }
+        return out;
+    }
+
     async function resolveArchiveById(archiveId, userId) {
         if (!/^[a-f0-9]{32}$/.test(String(archiveId || ''))) {
             throw new Error('archiveId must be a 32-char hex string.');
@@ -21678,14 +21696,35 @@ app.use((req, res) => {
         },
         async execute(args, ctx) {
             let buffer, filename;
-            const archiveId = String(args?.archiveId || '').trim();
+            let archiveId = String(args?.archiveId || '').trim();
+            // Model frequently calls extract_archive with no args or with the
+            // filename in the archiveId slot. Auto-select when there's a
+            // single archive on disk for this user, and produce a much more
+            // useful error otherwise (lists valid ids + their filenames).
+            const valid = /^[a-f0-9]{32}$/.test(archiveId);
+            const b64Given = !!String(args?.base64Data || '').trim();
+            if (!valid && !b64Given) {
+                const available = await listUserArchives(ctx?.userId).catch(() => []);
+                if (available.length === 1) {
+                    archiveId = available[0].archiveId;
+                } else if (available.length === 0) {
+                    return { error: 'No uploaded archives are available for this user. The user must upload the archive again (1-hour TTL).' };
+                } else {
+                    const list = available.map(a => `${a.archiveId} (${a.filename})`).join('; ');
+                    return { error: `archiveId is missing or malformed. Pass one of: ${list}` };
+                }
+            }
             if (archiveId) {
                 try {
                     const resolved = await resolveArchiveById(archiveId, ctx?.userId);
                     buffer = resolved.buffer;
                     filename = resolved.filename;
                 } catch (e) {
-                    return { error: e.message };
+                    const available = await listUserArchives(ctx?.userId).catch(() => []);
+                    const hint = available.length
+                        ? ` Available archiveIds: ${available.map(a => `${a.archiveId} (${a.filename})`).join('; ')}`
+                        : ' No uploaded archives are currently on disk for this user.';
+                    return { error: e.message + hint };
                 }
             } else {
                 const b64 = String(args?.base64Data || '').trim();
