@@ -16611,8 +16611,20 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                             const delta = parsed.choices[0].delta;
                                             // Scrub Harmony control tokens that some templates
                                             // leak as literal text when the model de-rails.
-                                            const rawContent = scrubHarmonyTokens(delta.content || '');
-                                            const reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
+                                            let rawContent = scrubHarmonyTokens(delta.content || '');
+                                            let reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
+                                            // When the user loaded the model with disableThinking=true
+                                            // but the model still emits reasoning (the /no_think
+                                            // prefix only works on Qwen3/DeepSeek-R1, and even there
+                                            // it sometimes leaks), suppress it client-bound so the
+                                            // Thinking dropdown doesn't appear. Also strip stray
+                                            // <think>...</think> from content for the same reason.
+                                            if (disableThinking) {
+                                                reasoning = '';
+                                                if (rawContent) {
+                                                    rawContent = rawContent.replace(/<\/?(?:think|thinking|reasoning|reasoning_engine|antThinking|antml:thinking|scratchpad)\b[^>]*>/gi, '');
+                                                }
+                                            }
 
                                             // Hermes/Qwen text-format tool calls — extract any
                                             // <tool_call>...</tool_call> blocks from content and
@@ -16755,8 +16767,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     }
                                     const delta = parsed.choices?.[0]?.delta;
                                     if (delta) {
-                                        const rawContent = scrubHarmonyTokens(delta.content || '');
-                                        const reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
+                                        let rawContent = scrubHarmonyTokens(delta.content || '');
+                                        let reasoning = scrubHarmonyTokens(delta.reasoning_content || delta.reasoning || '');
+                                        if (disableThinking) {
+                                            reasoning = '';
+                                            if (rawContent) {
+                                                rawContent = rawContent.replace(/<\/?(?:think|thinking|reasoning|reasoning_engine|antThinking|antml:thinking|scratchpad)\b[^>]*>/gi, '');
+                                            }
+                                        }
                                         // Pull any final-chunk textual tool calls out
                                         // before the content lands in fullResponse / SSE.
                                         const { passthrough, blocks } = textualToolCallExtractor(rawContent);

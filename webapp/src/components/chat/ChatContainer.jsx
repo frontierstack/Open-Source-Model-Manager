@@ -552,17 +552,13 @@ export default function ChatContainer({
             // sandbox AND inlined below. Inline is best for short content;
             // disk is best for slicing large files or re-reading after older
             // context has rolled off via memory compression / truncation.
-            const fileNamesList = [...textAttachments, ...imageAttachments.filter(a => a.content)]
-                .map(a => a.filename)
-                .join(', ');
-            const header =
-                `The user uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. ` +
-                `Full content is inlined in the === FILE N === blocks below, ` +
-                `AND each file is on disk at /workspace/uploads/<filename> (this turn: ${fileNamesList}). ` +
-                `Read inline for immediate access. For selective access to large files — or to re-read ` +
-                `after older context has rolled off — use read_file (with startLine/endLine), grep_code, ` +
-                `outline_file, head_file, tail_file, or list_directory on /workspace/uploads/.\n\n`;
-            fullTextContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
+            // Minimal prefix — reads like a fetched URL result, not a
+            // file-analysis briefing. The heavier "use read_file/grep_code/…"
+            // preamble was steering the model toward tool-heavy responses
+            // instead of just answering the user's question. Each attachment
+            // is still written to /workspace/uploads/<filename> server-side
+            // for skills that need disk access on large files.
+            fullTextContent = `${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
         }
 
         // Build API content - use vision format if there are images, otherwise string

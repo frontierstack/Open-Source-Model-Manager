@@ -1360,28 +1360,15 @@ export default function ChatContainer({
                 });
 
             if (textParts.length > 0) {
-                // Files are available BOTH inline (the === FILE N === blocks
-                // below — fastest for short content) AND on disk at
-                // /workspace/uploads/<filename> in the sandbox (best for
-                // slicing large files or when older inline content has rolled
-                // off via memory compression / token-budget truncation).
-                // Server-side /api/chat/stream writes each attachment to
-                // /workspace/uploads/ before the model dispatches, so disk-
-                // read skills (read_file, head_file, tail_file, grep_code,
-                // outline_file, list_directory) work from turn 1.
-                const fileNamesList = attachedFiles
-                    .filter(att => att.type !== 'image' || att.content)
-                    .map(att => att.filename)
-                    .join(', ');
-                const header =
-                    `The user uploaded ${fileIndex} file${fileIndex > 1 ? 's' : ''}. ` +
-                    `Full content is included inline in the === FILE N === blocks below, ` +
-                    `AND each file is on disk at /workspace/uploads/<filename> (this turn: ${fileNamesList}). ` +
-                    `For immediate access, read the inline content directly. ` +
-                    `For selective access to large files — or to re-read after older context has rolled off — ` +
-                    `use read_file (with startLine/endLine), grep_code, outline_file, head_file, tail_file, ` +
-                    `or list_directory on /workspace/uploads/.\n\n`;
-                fullContent = `${header}${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
+                // Keep this prefix minimal — it should read like a fetched
+                // URL result, not a tool-usage briefing. Heavier "use
+                // read_file/grep_code/head_file…" instructions previously
+                // steered the model into describing the upload as a
+                // file-analysis task instead of just answering the user's
+                // question. Each attachment is still written to
+                // /workspace/uploads/<filename> server-side, so disk-read
+                // skills work when needed for large files.
+                fullContent = `${textParts.join('\n\n')}\n\n---\n\nUser message: ${content}`;
             }
         } else {
             // No new attachments on this turn — but the user may still be
@@ -1484,13 +1471,6 @@ export default function ChatContainer({
         setStreamingReasoning('');
         setIsLoading(true);
         setProcessingStatus('processing', attachedFiles?.length > 0 ? 'Processing files' : 'Preparing request');
-        pushProcessingLog({
-            icon: attachedFiles?.length > 0 ? 'paperclip' : 'edit',
-            text: attachedFiles?.length > 0
-                ? `Preparing ${attachedFiles.length} attachment${attachedFiles.length === 1 ? '' : 's'}`
-                : 'Preparing request',
-            kind: 'setup'
-        });
 
         // Prepare messages for API (use fullContent for the last message to include attachments)
         // Also include search context from previous messages if they had web search results
@@ -1573,11 +1553,6 @@ export default function ChatContainer({
 
         try {
             setProcessingStatus('thinking', 'Model is thinking');
-            pushProcessingLog({
-                icon: 'brain',
-                text: `Waiting for ${settings.model || 'model'} to respond`,
-                kind: 'thinking'
-            });
 
             const requestBody = {
                 model: settings.model,
@@ -1619,11 +1594,6 @@ export default function ChatContainer({
 
             setIsLoading(false);
             setProcessingStatus('generating', 'Generating response');
-            pushProcessingLog({
-                icon: 'sparkles',
-                text: 'Generating response',
-                kind: 'generating'
-            });
 
             if (!response.ok) {
                 // Try to parse error body
