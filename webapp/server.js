@@ -15942,6 +15942,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         res.setTimeout(0);
 
         // Flush any deferred pre-stream notices now that SSE is live.
+        // Announce reasoning mode so the client can suppress the Thinking
+        // dropdown even if a leaked <think>...</think> survives the per-delta
+        // scrub (tags split across SSE chunks re-assemble on the client).
+        if (disableThinking) {
+            try { res.write(`data: ${JSON.stringify({ type: 'reasoning_mode', disabled: true })}\n\n`); } catch {}
+        }
         if (pendingMemoryNotice) {
             try { res.write(`data: ${JSON.stringify(pendingMemoryNotice)}\n\n`); } catch {}
             pendingMemoryNotice = null;

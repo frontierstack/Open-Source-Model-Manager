@@ -290,18 +290,6 @@ function buildNativeChipEntries(streamingToolCalls) {
     return out;
 }
 
-// Map a tool name to one of ProcessingLogFeed's icon keys.
-function pickToolIcon(name) {
-    if (!name) return 'cpu';
-    const n = String(name).toLowerCase();
-    if (n.includes('search')) return 'search';
-    if (n.includes('fetch') || n.includes('url') || n.includes('crawl') || n.includes('http')) return 'link';
-    if (n === 'load_skill') return 'paperclip';
-    if (n.includes('read') || n.includes('write') || n.includes('edit') || n.includes('file')) return 'edit';
-    if (n.includes('think') || n.includes('memory') || n.includes('recall')) return 'brain';
-    return 'cpu';
-}
-
 // Turn a snake_case tool id into a friendly verb phrase for the status row.
 function humanizeToolName(name) {
     if (!name) return 'tool';
@@ -408,8 +396,8 @@ export default function ChatContainer({
     //
     // Only subscribe to the fields actually read by this component's
     // render. Streaming buffers (streamingContent / streamingReasoning /
-    // processingStatus / processingMessage / processingLog /
-    // streamingToolCalls) and the setter functions used inside event
+    // processingStatus / processingMessage / streamingToolCalls) and
+    // the setter functions used inside event
     // handlers are read lazily via useChatStore.getState() at the call
     // sites or imported as standalone selectors below — subscribing to
     // them here would re-render ChatContainer on every rAF tick during
@@ -442,10 +430,6 @@ export default function ChatContainer({
         commitStreamingMessage,
         setProcessingStatus,
         clearProcessingStatus,
-        pushProcessingLog,
-        resolveProcessingLog,
-        clearProcessingLog,
-        setProcessingLog,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -479,10 +463,6 @@ export default function ChatContainer({
         commitStreamingMessage: state.commitStreamingMessage,
         setProcessingStatus: state.setProcessingStatus,
         clearProcessingStatus: state.clearProcessingStatus,
-        pushProcessingLog: state.pushProcessingLog,
-        resolveProcessingLog: state.resolveProcessingLog,
-        clearProcessingLog: state.clearProcessingLog,
-        setProcessingLog: state.setProcessingLog,
         addAttachment: state.addAttachment,
         removeAttachment: state.removeAttachment,
         clearAttachments: state.clearAttachments,
@@ -774,23 +754,6 @@ export default function ChatContainer({
                     };
                     const { kind, text } = phaseToStatus(data.phase, !!data.content);
                     setProcessingStatus(kind, text);
-                    // Replay the server-side event log so the ProcessingLogFeed
-                    // on a reconnected client matches what a continuously-
-                    // connected client would have shown (rolling credits of
-                    // chunking → map → synthesize → generate events instead
-                    // of a single stub line). Mark all replayed events as
-                    // done except the newest, which becomes the active row.
-                    if (Array.isArray(data.events) && data.events.length > 0) {
-                        const replayed = data.events.map((e, i) => ({
-                            ...e,
-                            status: i === data.events.length - 1 ? 'active' : 'done',
-                        }));
-                        setProcessingLog(replayed);
-                    } else {
-                        clearProcessingLog();
-                        pushProcessingLog({ icon: 'sparkles', text, kind });
-                    }
-
                     // Capture start time for response stats
                     const streamStartTime = data.startTime || Date.now();
 
@@ -842,18 +805,6 @@ export default function ChatContainer({
                                             ptext = 'Synthesizing chunks into final response...';
                                         }
                                         setProcessingStatus(pkind, ptext);
-                                        // Keep the event feed in sync with
-                                        // the server's log so new rolling-
-                                        // credits lines appear as phases
-                                        // progress (same behavior the
-                                        // stay-connected client sees).
-                                        if (Array.isArray(poll.events) && poll.events.length > 0) {
-                                            const replayed = poll.events.map((e, i) => ({
-                                                ...e,
-                                                status: i === poll.events.length - 1 ? 'active' : 'done',
-                                            }));
-                                            setProcessingLog(replayed);
-                                        }
                                         // Schedule next poll AFTER this one completes
                                         schedulePoll();
                                     } else {
@@ -1282,11 +1233,6 @@ export default function ChatContainer({
             return;
         }
 
-        // Reset the rolling-credits log at the very start of the turn so the
-        // streaming bubble can narrate everything the assistant is about to
-        // do (URL fetch, search, model thinking, streaming, chunking, synthesis).
-        clearProcessingLog();
-
         // Create conversation if none exists
         let conversationId = activeConversationId;
         let isNewConversation = false;
@@ -1624,6 +1570,13 @@ export default function ChatContainer({
             // top-of-bubble status from "Reading … result" back to
             // "Generating response" the moment real content resumes.
             let sawToolEventThisTurn = false;
+            // Server announces this once at stream start when the model was
+            // loaded with disableThinking=true (Reasoning: Off). Suppresses
+            // the Thinking dropdown end-to-end: ignore delta.reasoning, drop
+            // any leaked <think>…</think> from content (re-assembled across
+            // SSE chunks the per-delta server scrub can't catch).
+            let reasoningDisabled = false;
+            const REASONING_TAG_RE = /<\/?(?:think|thinking|reasoning|reasoning_engine|antThinking|antml:thinking|scratchpad)\b[^>]*>/gi;
 
             // Start the smooth-reveal pump for this turn. It ticks every
             // frame for the whole stream, de-jittering bursty MTP/spec output.
@@ -1698,6 +1651,14 @@ export default function ChatContainer({
                                 continue;
                             }
 
+                            // Reasoning suppression handshake (sent once at
+                            // stream start when the model was loaded with
+                            // Reasoning: Off).
+                            if (parsed.type === 'reasoning_mode') {
+                                reasoningDisabled = !!parsed.disabled;
+                                continue;
+                            }
+
                             // Native tool-calling events. Server emits these
                             // out-of-band (no `choices` field) so chip UI can
                             // reflect in-flight / finished tools live. At
@@ -1725,11 +1686,6 @@ export default function ChatContainer({
                                         ? `Calling ${human} — ${argSummary}`
                                         : `Calling ${human}`;
                                     setProcessingStatus('processing', text);
-                                    pushProcessingLog({
-                                        icon: pickToolIcon(parsed.name),
-                                        text,
-                                        kind: `tool_call:${parsed.name}`,
-                                    });
                                 }
                                 continue;
                             }
@@ -1763,32 +1719,9 @@ export default function ChatContainer({
                                 {
                                     const human = humanizeToolName(parsed.name);
                                     if (error) {
-                                        resolveProcessingLog('failed');
-                                        const msg = `${human} failed — ${String(error).slice(0, 80)}`;
                                         setProcessingStatus('thinking', `Recovering from ${human} error…`);
-                                        pushProcessingLog({
-                                            icon: 'alert',
-                                            text: msg,
-                                            kind: `tool_failed:${parsed.name}`,
-                                        });
-                                        // Mark this synthetic follow-up done
-                                        // immediately — the next event (more
-                                        // tools, content, or another error)
-                                        // will become the active row.
-                                        resolveProcessingLog('failed');
                                     } else {
-                                        resolveProcessingLog('done');
-                                        const summary = summarizeToolResult(parsed.name, result);
-                                        const text = summary
-                                            ? `${human} → ${summary}`
-                                            : `${human} done`;
                                         setProcessingStatus('thinking', `Reading ${human} result…`);
-                                        pushProcessingLog({
-                                            icon: 'check',
-                                            text,
-                                            kind: `tool_done:${parsed.name}`,
-                                        });
-                                        resolveProcessingLog('done');
                                     }
                                     sawToolEventThisTurn = true;
                                 }
@@ -1829,11 +1762,6 @@ export default function ChatContainer({
                             if (delta?.content) {
                                 if (sawToolEventThisTurn) {
                                     setProcessingStatus('generating', 'Generating response');
-                                    pushProcessingLog({
-                                        icon: 'sparkles',
-                                        text: 'Generating response',
-                                        kind: 'generating_after_tools',
-                                    });
                                     sawToolEventThisTurn = false;
                                 }
                                 assistantContent += delta.content;
@@ -1842,10 +1770,17 @@ export default function ChatContainer({
                                 // a closed <think> block to the bubble body before the
                                 // first real content character arrives.
                                 const thinkParsed = parseThinkTags(assistantContent, true);
-                                pendingContentRef.current = thinkParsed.content;
-                                if (thinkParsed.reasoning) {
-                                    assistantReasoning = thinkParsed.reasoning;
-                                    pendingReasoningRef.current = assistantReasoning;
+                                if (reasoningDisabled) {
+                                    // Strip any leaked reasoning tags from the bubble
+                                    // and drop the reasoning entirely — the user asked
+                                    // for Reasoning: Off at load time.
+                                    pendingContentRef.current = (thinkParsed.content || '').replace(REASONING_TAG_RE, '');
+                                } else {
+                                    pendingContentRef.current = thinkParsed.content;
+                                    if (thinkParsed.reasoning) {
+                                        assistantReasoning = thinkParsed.reasoning;
+                                        pendingReasoningRef.current = assistantReasoning;
+                                    }
                                 }
                                 // The smooth-reveal pump (started at stream begin)
                                 // reveals pendingContentRef gradually each frame.
@@ -1857,7 +1792,7 @@ export default function ChatContainer({
                             // (e.g. llama.cpp's reasoning parser emits these via
                             // reasoning_content -> delta.reasoning). The pump
                             // mirrors pendingReasoningRef into the dropdown.
-                            if (delta?.reasoning) {
+                            if (delta?.reasoning && !reasoningDisabled) {
                                 assistantReasoning += delta.reasoning;
                                 pendingReasoningRef.current = assistantReasoning;
                                 ensureSmoothPump(conversationId);
@@ -1884,7 +1819,6 @@ export default function ChatContainer({
                                     const charsStr = totalChars ? `${totalChars.toLocaleString()} chars` : '';
                                     const msg = `Indexed ${charsStr} into ${totalChunks} ${chunkWord(totalChunks)} — model will query/read via tools`;
                                     setProcessingStatus('processing', msg);
-                                    pushProcessingLog({ icon: 'layers', text: msg, kind: 'agentic_indexed' });
                                     continue;
                                 }
                                 if (phase === 'starting') {
@@ -1894,13 +1828,11 @@ export default function ChatContainer({
                                         msg += ` (condensed ${condensation.reductionPercent}%)`;
                                     }
                                     setProcessingStatus('chunking', msg);
-                                    pushProcessingLog({ icon: 'layers', text: msg, kind: 'chunk_start' });
                                 } else if (phase === 'chunking') {
                                     let msg = `Splitting into ${totalChunks} ${chunkWord(totalChunks)}`;
                                     if (tokenStr) msg += ` — ${tokenStr}`;
                                     if (chunkTokens) msg += ` (~${chunkTokens.toLocaleString()} tokens/chunk)`;
                                     setProcessingStatus('chunking', msg);
-                                    pushProcessingLog({ icon: 'scissors', text: msg, kind: 'chunk_split' });
                                 } else if (phase === 'map') {
                                     const done = completedChunks + failedChunks;
                                     const pct = totalChunks > 0 ? Math.round((done / totalChunks) * 100) : 0;
@@ -1916,15 +1848,12 @@ export default function ChatContainer({
                                         if (elapsed) msg += ` — ${elapsed}`;
                                     }
                                     setProcessingStatus('processing', msg);
-                                    pushProcessingLog({ icon: 'cpu', text: msg, kind: 'chunk_map' });
                                 } else if (phase === 'reduce') {
                                     let msg = `Synthesizing ${completedChunks} ${chunkWord(completedChunks)} into final response`;
                                     if (elapsed) msg += ` — ${elapsed} elapsed`;
                                     setProcessingStatus('synthesizing', msg);
-                                    pushProcessingLog({ icon: 'combine', text: msg, kind: 'chunk_reduce' });
                                 } else if (phase === 'complete') {
                                     setProcessingStatus('generating', `Streaming synthesized response${elapsed ? ` — completed in ${elapsed}` : ''}...`);
-                                    pushProcessingLog({ icon: 'sparkles', text: 'Streaming synthesized response', kind: 'chunk_complete' });
                                 }
                                 continue; // Don't process this as a content event
                             }
@@ -1937,7 +1866,6 @@ export default function ChatContainer({
                                 const tokens = parsed.tokens || 0;
                                 const noun = count === 1 ? 'memory' : 'memories';
                                 const msg = `Referenced ${count} ${noun} from this conversation (${tokens} tokens)`;
-                                pushProcessingLog({ icon: 'brain', text: msg, kind: 'memory_injected' });
                                 showSnackbar(msg, 'info');
                                 continue;
                             }
@@ -2460,6 +2388,8 @@ export default function ChatContainer({
             let tokenCount = 0;
             let lastFinishReason = null;
             let inStreamError = null;
+            let reasoningDisabled = false;
+            const REASONING_TAG_RE = /<\/?(?:think|thinking|reasoning|reasoning_engine|antThinking|antml:thinking|scratchpad)\b[^>]*>/gi;
 
             // Wrap stream reading in try-catch to handle network errors
             try {
@@ -2511,6 +2441,10 @@ export default function ChatContainer({
                                         : parsed.error;
                                     continue;
                                 }
+                                if (parsed.type === 'reasoning_mode') {
+                                    reasoningDisabled = !!parsed.disabled;
+                                    continue;
+                                }
                                 if (parsed.type === 'reasoning_reclassified') {
                                     // Continuation path mirror of the main-stream handler.
                                     // See the main loop for rationale — server detected
@@ -2532,22 +2466,25 @@ export default function ChatContainer({
                                     const thinkParsed = parseThinkTags(assistantContent, true);
                                     // Show original content + continuation in the same streaming bubble
                                     const currentActiveId = useChatStore.getState().activeConversationId;
+                                    const visibleContent = reasoningDisabled
+                                        ? (thinkParsed.content || '').replace(REASONING_TAG_RE, '')
+                                        : thinkParsed.content;
                                     if (currentActiveId === conversationId) {
-                                        setStreamingContent(originalContent + '\n\n' + thinkParsed.content);
-                                        if (thinkParsed.reasoning) {
+                                        setStreamingContent(originalContent + '\n\n' + visibleContent);
+                                        if (thinkParsed.reasoning && !reasoningDisabled) {
                                             assistantReasoning = thinkParsed.reasoning;
                                             const combinedReasoning = originalReasoning
                                                 ? originalReasoning + '\n\n' + assistantReasoning
                                                 : assistantReasoning;
                                             setStreamingReasoning(combinedReasoning);
                                         }
-                                    } else if (thinkParsed.reasoning) {
+                                    } else if (thinkParsed.reasoning && !reasoningDisabled) {
                                         assistantReasoning = thinkParsed.reasoning;
                                     }
                                     tokenCount++;
                                 }
 
-                                if (delta?.reasoning) {
+                                if (delta?.reasoning && !reasoningDisabled) {
                                     assistantReasoning += delta.reasoning;
                                     const currentActiveId = useChatStore.getState().activeConversationId;
                                     if (currentActiveId === conversationId) {

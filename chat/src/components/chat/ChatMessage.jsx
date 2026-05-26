@@ -5,7 +5,6 @@ import ThinkingIndicator from './ThinkingIndicator';
 import StatusIndicator from './StatusIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import SearchSources from './SearchSources';
-import ProcessingLogFeed from './ProcessingLogFeed';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
 import ArtifactList from './ArtifactList';
@@ -31,7 +30,6 @@ export default React.memo(function ChatMessage({
     isLoading,
     toolCalls,
     searchResults,
-    processingLog,
     modelName,
     onOpenArtifacts,
 }) {
@@ -292,13 +290,8 @@ export default React.memo(function ChatMessage({
                     {/* Body content */}
                     {isStreaming && !displayContent ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
-                            {/* When the model is mid tool-call(s), the chip stack
-                                below already shows live status — don't double up
-                                with the green-check ProcessingLogFeed. */}
                             {Array.isArray(toolCalls) && toolCalls.length > 0 ? (
                                 <ThinkingIndicator />
-                            ) : Array.isArray(processingLog) && processingLog.length > 0 ? (
-                                <ProcessingLogFeed log={processingLog} />
                             ) : processingStatus ? (
                                 <StatusIndicator status={processingStatus} message={processingMessage} />
                             ) : (
