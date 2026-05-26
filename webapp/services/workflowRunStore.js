@@ -41,6 +41,17 @@ function runPath(userId, runId) {
     return path.join(userDir(userId), `${runId}.json`);
 }
 
+// Persistent artifacts for a run (copied here at run-finish so they outlive the
+// 1-hour sandbox sweep). Deleted when the run record is removed.
+function runArtifactDir(userId, runId) {
+    return path.join(userDir(userId), 'artifacts', runId);
+}
+
+async function dropRunFiles(userId, runId) {
+    try { await fs.unlink(runPath(userId, runId)); } catch (_) { /* already gone */ }
+    try { await fs.rm(runArtifactDir(userId, runId), { recursive: true, force: true }); } catch (_) { /* none */ }
+}
+
 function newRunId() {
     return crypto.randomBytes(16).toString('hex');
 }
@@ -93,7 +104,7 @@ async function createRun(userId, { workflowId, workflowName, trigger }) {
     // Cap retained runs — delete the overflow files so disk doesn't grow without bound.
     const overflow = index.splice(MAX_RUNS_PER_USER);
     for (const old of overflow) {
-        try { await fs.unlink(runPath(userId, old.id)); } catch (_) { /* already gone */ }
+        await dropRunFiles(userId, old.id);
     }
     await writeIndex(userId, index);
     return runId;
@@ -160,7 +171,7 @@ async function deleteRunsForWorkflow(userId, workflowId) {
     const keep = [];
     for (const r of index) {
         if (r.workflowId === workflowId) {
-            try { await fs.unlink(runPath(userId, r.id)); } catch (_) { /* already gone */ }
+            await dropRunFiles(userId, r.id);
         } else {
             keep.push(r);
         }

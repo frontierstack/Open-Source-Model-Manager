@@ -8557,6 +8557,12 @@ async function executeWorkflowRun(wf, { userId = null, apiKeyData = null, trigge
         activeAutomationRuns.delete(runId);
     }
 
+    // Copy any `_artifacts` produced during this run to a persistent location
+    // so they remain downloadable from the run history after the 1-hour sandbox
+    // sweep deletes the per-tool-run scratch dir. URLs in the stored node
+    // outputs are rewritten to point at the workflow-run download endpoint.
+    try { await persistRunArtifacts(userId, runId, outcome); } catch (e) { console.warn('[automation] persistRunArtifacts failed:', e.message); }
+
     try {
         await workflowRunStore.updateRun(userId, runId, {
             status: outcome.status,
@@ -8568,6 +8574,37 @@ async function executeWorkflowRun(wf, { userId = null, apiKeyData = null, trigge
     } catch (_) {}
 
     return { runId, outcome };
+}
+
+// Copy sandboxed-tool artifacts (the bytes behind `_artifacts[].url`) into a
+// per-run directory under workflow-runs/<userIdSafe>/artifacts/<runId>/ and
+// rewrite the URLs to a stable endpoint so run-history downloads keep working
+// after the sandbox TTL sweep deletes the originals.
+async function persistRunArtifacts(userId, runId, outcome) {
+    if (!outcome || !runId) return;
+    const fsSync = require('fs');
+    const path = require('path');
+    const destDir = path.join('/models/.modelserver/workflow-runs', workflowRunStore.userIdSafe(userId), 'artifacts', runId);
+    let made = false;
+    const ensureDir = async () => { if (!made) { await fs.mkdir(destDir, { recursive: true }); made = true; } };
+    const copyOne = async (art) => {
+        if (!art || !art.runId || !art.name) return;
+        const safeName = path.basename(art.name);
+        if (!safeName || safeName.startsWith('.') || safeName.includes('..')) return;
+        const src = path.join('/models/.modelserver/sandbox', String(art.runId), 'artifacts', safeName);
+        if (!fsSync.existsSync(src)) return;
+        await ensureDir();
+        const dst = path.join(destDir, safeName);
+        try { await fs.copyFile(src, dst); } catch (_) { return; }
+        art.url = `/api/automations/runs/${runId}/artifacts/${encodeURIComponent(safeName)}`;
+        delete art.runId;
+    };
+    const visit = async (val) => {
+        if (!val || typeof val !== 'object') return;
+        if (Array.isArray(val._artifacts)) for (const a of val._artifacts) await copyOne(a);
+    };
+    for (const node of (outcome.timeline || [])) await visit(node.output);
+    await visit(outcome.result);
 }
 
 // Run a workflow now (manual trigger), streaming live status over SSE and
@@ -8707,6 +8744,34 @@ app.get('/api/automations/runs/:runId', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error loading run:', error);
         res.status(500).json({ error: 'Failed to load run' });
+    }
+});
+
+// Download a persisted run-history artifact. Bytes live under
+// /models/.modelserver/workflow-runs/<userIdSafe>/artifacts/<runId>/<name>
+// (copied off the per-tool-run scratch dir at run finish so they survive the
+// 1-hour sandbox sweep). Owner-scoped via the userIdSafe path segment.
+app.get('/api/automations/runs/:runId/artifacts/:name', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    const path = require('path');
+    const { runId, name } = req.params;
+    if (!/^[a-f0-9]{32}$/.test(runId || '')) return res.status(400).json({ error: 'bad runId' });
+    const safe = path.basename(name || '');
+    if (!safe || safe.startsWith('.') || safe.includes('..')) return res.status(400).json({ error: 'bad filename' });
+    const file = path.join('/models/.modelserver/workflow-runs', workflowRunStore.userIdSafe(req.userId), 'artifacts', runId, safe);
+    try {
+        const st = await fs.stat(file);
+        if (!st.isFile()) return res.status(404).json({ error: 'not a file' });
+        const ext = (safe.split('.').pop() || '').toLowerCase();
+        const mime = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', csv: 'text/csv', txt: 'text/plain', json: 'application/json', html: 'text/html', md: 'text/markdown', zip: 'application/zip' }[ext] || 'application/octet-stream';
+        res.setHeader('Content-Type', mime);
+        if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+        res.setHeader('Content-Length', st.size);
+        require('fs').createReadStream(file).pipe(res);
+    } catch (e) {
+        res.status(404).json({ error: 'not found' });
     }
 });
 
@@ -9063,15 +9128,49 @@ async function automationSchedulerTick() {
                 liveKeys.add(key);
                 const d = node.data || {};
                 let due = false;
-                if (d.cron) {
-                    if (automationEngine.cronMatches(d.cron, now)) {
+                // Calendar mode (multi-rule): d.crons[] is a list of 5-field cron
+                // expressions (each one weekday-group@time). Fire if ANY matches,
+                // once per minute. Coexists with the legacy single d.cron.
+                const cronList = [];
+                if (Array.isArray(d.crons)) for (const c of d.crons) if (typeof c === 'string' && c.trim()) cronList.push(c.trim());
+                if (typeof d.cron === 'string' && d.cron.trim()) cronList.push(d.cron.trim());
+                if (cronList.length) {
+                    const anyMatch = cronList.some(c => { try { return automationEngine.cronMatches(c, now); } catch (_) { return false; } });
+                    if (anyMatch) {
                         const st = automationScheduleState.get(key) || {};
                         if (st.lastFiredMinute !== minuteKey) {
                             due = true;
                             automationScheduleState.set(key, { ...st, lastFiredMinute: minuteKey });
                         }
                     }
-                } else if (d.intervalMs) {
+                }
+                // Calendar mode (specific dates): d.runAt[] is a list of ISO
+                // timestamps that should fire ONCE when wallclock passes them.
+                // In-memory `firedRunAt` Set per node tracks what already fired;
+                // a freshly-loaded server only fires entries whose ts is within
+                // the current minute (no replay of long-past timestamps).
+                if (Array.isArray(d.runAt) && d.runAt.length) {
+                    const st = automationScheduleState.get(key) || {};
+                    const fired = st.firedRunAt instanceof Set ? st.firedRunAt : new Set();
+                    for (const iso of d.runAt) {
+                        const ts = Date.parse(iso);
+                        if (!Number.isFinite(ts)) continue;
+                        if (fired.has(iso)) continue;
+                        // Fire if ts is in the current minute (now-60s..now+60s)
+                        // OR within ±AUTOMATION_TICK_MS of now and not already fired.
+                        if (Math.abs(nowMs - ts) <= 60000) {
+                            due = true;
+                            fired.add(iso);
+                        } else if (ts < nowMs - 60000) {
+                            // Past entry; mark fired so it doesn't replay if it
+                            // suddenly falls into range due to a clock jump.
+                            fired.add(iso);
+                        }
+                    }
+                    automationScheduleState.set(key, { ...st, firedRunAt: fired });
+                }
+                const hasCalendar = cronList.length || (Array.isArray(d.runAt) && d.runAt.length);
+                if (!hasCalendar && d.intervalMs) {
                     // Anchor-relative interval so "every N <unit>" fires N units after
                     // it was configured (anchorMs), and the editor countdown (same
                     // formula, client-side: scheduleNextFire) shows the FULL interval.

@@ -675,7 +675,9 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 const caption = (mode === 'both' && info.pdfData) ? info.pdfData
                     : ((data.text !== undefined && data.text !== '') ? String(data.text) : '');
                 const r = await deliverArtifact(deps, ctx, node, 'slack', { botToken, channel }, info.art.name, caption);
-                return { sent: true, mode: mode === 'both' ? 'document+text' : 'document', file: info.art.name, response: r };
+                // Propagate the upstream artifact so the node's "Last result" card
+                // (and any further downstream node) can still surface a download chip.
+                return { sent: true, mode: mode === 'both' ? 'document+text' : 'document', file: info.art.name, response: r, _artifacts: [info.art], _delivered: { to: 'slack', file: info.art.name } };
             }
             const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
             const response = await postText(text);
@@ -708,9 +710,9 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
                 const r = await deliverArtifact(deps, ctx, node, 'telegram', { botToken: token, chatId }, info.art.name, captionText);
                 if (mode === 'both' && info.pdfData) {
                     const { parts } = await sendTelegramText(deps, ctx, node, token, chatId, info.pdfData);
-                    return { sent: true, mode: 'document+text', file: info.art.name, parts, response: r };
+                    return { sent: true, mode: 'document+text', file: info.art.name, parts, response: r, _artifacts: [info.art], _delivered: { to: 'telegram', file: info.art.name } };
                 }
-                return { sent: true, mode: 'document', file: info.art.name, response: r };
+                return { sent: true, mode: 'document', file: info.art.name, response: r, _artifacts: [info.art], _delivered: { to: 'telegram', file: info.art.name } };
             }
             // No file upstream — plain text send (chunked under the 4096 limit).
             const text = (data.text === undefined || data.text === '') ? stringifyValue(scope.last) : String(data.text);
@@ -752,6 +754,13 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             else if (to === 'http') { args.url = data.url; }
             const r = await dispatchTool(deps, ctx, node, 'send_file', args);
             if (r && r.success === false) throw new Error(`Send File failed — ${r.error || 'unknown error'}`);
+            // Propagate the upstream artifact so it stays downloadable on the
+            // Send File node card / Last result panel.
+            const upstreamArt = firstArtifact(scope.last, ...(Array.isArray(inputs) ? inputs : []));
+            if (upstreamArt && r && typeof r === 'object' && !Array.isArray(r._artifacts)) {
+                r._artifacts = [upstreamArt];
+                r._delivered = { to, file: upstreamArt.name };
+            }
             return r;
         }
 

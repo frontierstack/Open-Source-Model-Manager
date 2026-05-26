@@ -1614,6 +1614,7 @@ function FlowEditor({ showSnackbar, models }) {
                 {showHistory && (
                     <RunHistoryPanel
                         runs={runs}
+                        nodes={nodes}
                         width={panelWidth}
                         mobile={isMobile}
                         onResizeStart={onPanelResizeStart}
@@ -2016,24 +2017,334 @@ function SwitchCases({ d, onChange, nodeList, registerActive }) {
         </div>
     );
 }
+// Advanced schedule modes compile to a single 5-field cron expression the
+// engine's cronMatches() understands. Layout: "M H DOM MON DOW".
+//   daily   → "M H * <months|*> *"
+//   weekly  → "M H * <months|*> <dows>"
+//   monthly → "M H <doms> <months|*> *"
+// scheduleTime is "HH:MM"; scheduleDow is 0-6 (Sun=0); scheduleDom is 1-31;
+// scheduleMonths is 1-12. Empty months list = every month.
+const DOW_LABELS = [['Sun', 0], ['Mon', 1], ['Tue', 2], ['Wed', 3], ['Thu', 4], ['Fri', 5], ['Sat', 6]];
+const MONTH_LABELS = [['Jan', 1], ['Feb', 2], ['Mar', 3], ['Apr', 4], ['May', 5], ['Jun', 6], ['Jul', 7], ['Aug', 8], ['Sep', 9], ['Oct', 10], ['Nov', 11], ['Dec', 12]];
+function parseHHMM(s) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim());
+    if (!m) return [9, 0];
+    return [Math.min(23, Math.max(0, parseInt(m[1], 10))), Math.min(59, Math.max(0, parseInt(m[2], 10)))];
+}
+function compileScheduleCron(sd) {
+    const [hh, mm] = parseHHMM(sd.scheduleTime);
+    const mon = (sd.scheduleMonths && sd.scheduleMonths.length) ? sd.scheduleMonths.slice().sort((a, b) => a - b).join(',') : '*';
+    if (sd.scheduleMode === 'daily') return `${mm} ${hh} * ${mon} *`;
+    if (sd.scheduleMode === 'weekly') {
+        const dow = (sd.scheduleDow && sd.scheduleDow.length) ? sd.scheduleDow.slice().sort((a, b) => a - b).join(',') : '*';
+        return `${mm} ${hh} * ${mon} ${dow}`;
+    }
+    if (sd.scheduleMode === 'monthly') {
+        const dom = (sd.scheduleDom && sd.scheduleDom.length) ? sd.scheduleDom.slice().sort((a, b) => a - b).join(',') : '1';
+        return `${mm} ${hh} ${dom} ${mon} *`;
+    }
+    return '';
+}
+// ---- Calendar schedule: per-day times + one-off specific dates -------------
+// Compiles weekly per-day times → array of 5-field crons (grouped by time).
+// `weeklyTimes` shape: { '0': '09:00', '3': '14:30' } (dow 0=Sun … 6=Sat).
+// Specific dates fire ONCE via `runAt[]` (ISO local strings parsed server-side).
+const DOW_FULL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function compileWeeklyTimesCrons(weeklyTimes) {
+    const byTime = new Map();
+    for (const [k, tm] of Object.entries(weeklyTimes || {})) {
+        const dow = Number(k);
+        if (!Number.isInteger(dow) || dow < 0 || dow > 6) continue;
+        if (!/^\d{1,2}:\d{2}$/.test(String(tm || ''))) continue;
+        const list = byTime.get(tm) || []; list.push(dow); byTime.set(tm, list);
+    }
+    const out = [];
+    for (const [tm, dows] of byTime) {
+        const [hh, mm] = parseHHMM(tm);
+        out.push(`${mm} ${hh} * * ${dows.slice().sort((a, b) => a - b).join(',')}`);
+    }
+    return out;
+}
+function fmtCronHuman(c) {
+    const m = /^(\d{1,2})\s+(\d{1,2})\s+\S+\s+\S+\s+(\S+)$/.exec(c || '');
+    if (!m) return c;
+    const mm = m[1].padStart(2, '0'), hh = m[2].padStart(2, '0');
+    const dow = m[3];
+    const days = dow === '*' ? 'every day' : dow.split(',').map(x => DOW_FULL[Number(x)] || x).join(', ');
+    return `${days} at ${hh}:${mm}`;
+}
+function fmtRunAt(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return `${MONTH_FULL[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} at ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+function localIsoFromYMDHM(y, m, day, hh, mm) {
+    // Build a local-time ISO string the server can Date.parse() back to the
+    // same wallclock instant. e.g. (2026,5,1,9,30) → "2026-06-01T09:30:00"
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${y}-${pad(m + 1)}-${pad(day)}T${pad(hh)}:${pad(mm)}:00`;
+}
+function monthMatrix(year, month /* 0-11 */) {
+    // 6×7 grid starting on Sunday. Cells outside the month are null.
+    const first = new Date(year, month, 1);
+    const startDow = first.getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < startDow; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+    while (cells.length % 7) cells.push(null);
+    while (cells.length < 42) cells.push(null);
+    return cells;
+}
+function CalendarPickerModal({ initialWeekly, initialRunAt, onSave, onClose }) {
+    const [weekly, setWeekly] = useState(() => ({ ...(initialWeekly || {}) }));
+    const [runAt, setRunAt] = useState(() => Array.isArray(initialRunAt) ? [...initialRunAt] : []);
+    const [defaultTime, setDefaultTime] = useState('09:00');
+    const today = new Date();
+    const [viewYear, setViewYear] = useState(today.getFullYear());
+    const [viewMonth, setViewMonth] = useState(today.getMonth());
+    const toggleDow = (dow) => setWeekly(w => { const next = { ...w }; if (next[dow] !== undefined) delete next[dow]; else next[dow] = defaultTime; return next; });
+    const setDowTime = (dow, tm) => setWeekly(w => ({ ...w, [dow]: tm }));
+    const applyDefaultToAll = () => setWeekly(w => { const next = {}; for (const k of Object.keys(w)) next[k] = defaultTime; return next; });
+    const dateKeyForCell = (day) => localIsoFromYMDHM(viewYear, viewMonth, day, 9, 0).slice(0, 10); // YYYY-MM-DD
+    const runAtForDay = (day) => {
+        const ymd = dateKeyForCell(day);
+        return runAt.find(iso => iso.startsWith(ymd));
+    };
+    const toggleDate = (day) => {
+        const ymd = dateKeyForCell(day);
+        const existing = runAt.find(iso => iso.startsWith(ymd));
+        if (existing) setRunAt(r => r.filter(x => x !== existing));
+        else {
+            const [hh, mm] = parseHHMM(defaultTime);
+            setRunAt(r => [...r, localIsoFromYMDHM(viewYear, viewMonth, day, hh, mm)].sort());
+        }
+    };
+    const setRunAtTime = (oldIso, newIso) => setRunAt(r => r.map(x => x === oldIso ? newIso : x).sort());
+    const removeRunAt = (iso) => setRunAt(r => r.filter(x => x !== iso));
+    const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); };
+    const nextMonth = () => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); } else setViewMonth(m => m + 1); };
+    const cells = monthMatrix(viewYear, viewMonth);
+    const todayYmd = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const weeklyEntries = Object.keys(weekly).map(k => Number(k)).sort((a, b) => a - b);
+    return (
+        <div className="cf-modal-backdrop" onMouseDown={onClose}>
+            <div className="cf-modal" style={{ width: 820 }} onMouseDown={(e) => e.stopPropagation()}>
+                <div className="cf-modal__head">
+                    <b>Calendar &amp; time picker</b>
+                    <button className="cf-chip__rm" onClick={onClose}>×</button>
+                </div>
+                <div className="cf-modal__body" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                    {/* Recurring weekly */}
+                    <div style={{ padding: 14, borderRight: '1px solid var(--rule)', overflowY: 'auto' }}>
+                        <div className="cf-sec__label">Recurring weekly</div>
+                        <div className="cf-hint" style={{ marginBottom: 8 }}>Pick the days this should run. Each day can have its own time.</div>
+                        <div className="cf-chip" style={{ marginBottom: 8 }}>
+                            <span className="cf-chip__label">Default time</span>
+                            <input type="time" className="cf-num" style={{ width: 110 }} value={defaultTime} onChange={(e) => setDefaultTime(e.target.value)} />
+                            <button className="cf-add" style={{ marginLeft: 'auto' }} onClick={applyDefaultToAll} disabled={!weeklyEntries.length}>Apply to all</button>
+                        </div>
+                        <div className="cf-tray" style={{ marginBottom: 10 }}>
+                            {DOW_LABELS.map(([label, dow]) => (
+                                <button key={dow} type="button" className={`cf-add${weekly[dow] !== undefined ? ' is-on' : ''}`} onClick={() => toggleDow(dow)}>{label}</button>
+                            ))}
+                        </div>
+                        {weeklyEntries.length === 0 && <div className="cf-hint">No days picked yet.</div>}
+                        {weeklyEntries.map(dow => (
+                            <div key={dow} className="cf-chip" style={{ marginBottom: 6 }}>
+                                <span className="cf-chip__label" style={{ width: 60 }}>{DOW_FULL[dow]}</span>
+                                <input type="time" className="cf-num" style={{ width: 110 }} value={weekly[dow]} onChange={(e) => setDowTime(dow, e.target.value)} />
+                                <button className="cf-chip__rm" onClick={() => toggleDow(dow)} title="Remove">×</button>
+                            </div>
+                        ))}
+                    </div>
+                    {/* Specific dates */}
+                    <div style={{ padding: 14, overflowY: 'auto' }}>
+                        <div className="cf-sec__label">Specific dates (one-off)</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, marginBottom: 8 }}>
+                            <button className="cf-add" onClick={prevMonth}>‹</button>
+                            <div style={{ flex: 1, textAlign: 'center', fontWeight: 600, color: 'var(--ink)' }}>{MONTH_FULL[viewMonth]} {viewYear}</div>
+                            <button className="cf-add" onClick={nextMonth}>›</button>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 3, marginBottom: 10 }}>
+                            {DOW_LABELS.map(([lbl, dow]) => (
+                                <div key={dow} style={{ textAlign: 'center', fontSize: 10, fontWeight: 700, color: 'var(--ink-3)', textTransform: 'uppercase' }}>{lbl}</div>
+                            ))}
+                            {cells.map((day, i) => {
+                                if (!day) return <div key={i} />;
+                                const ymd = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                                const isSelected = !!runAtForDay(day);
+                                const isToday = ymd === todayYmd;
+                                const isPast = ymd < todayYmd;
+                                return (
+                                    <button
+                                        key={i}
+                                        type="button"
+                                        onClick={() => toggleDate(day)}
+                                        disabled={isPast && !isSelected}
+                                        title={isPast ? 'Past date' : ''}
+                                        style={{
+                                            aspectRatio: '1', border: '1px solid ' + (isSelected ? 'var(--accent)' : 'var(--rule-2, var(--rule))'),
+                                            background: isSelected ? 'var(--accent)' : (isToday ? 'var(--accent-soft, var(--bg))' : 'var(--bg)'),
+                                            color: isSelected ? '#fff' : (isPast ? 'var(--ink-3)' : 'var(--ink)'),
+                                            borderRadius: 7, fontSize: 12, fontWeight: isToday ? 700 : 500,
+                                            cursor: isPast && !isSelected ? 'not-allowed' : 'pointer', opacity: isPast && !isSelected ? 0.45 : 1,
+                                            padding: 0
+                                        }}
+                                    >{day}</button>
+                                );
+                            })}
+                        </div>
+                        {runAt.length === 0 && <div className="cf-hint">No specific dates picked yet. Click a date above.</div>}
+                        {runAt.map(iso => {
+                            const d = new Date(iso);
+                            if (Number.isNaN(d.getTime())) return null;
+                            const tm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                            return (
+                                <div key={iso} className="cf-chip" style={{ marginBottom: 6 }}>
+                                    <span className="cf-chip__label" style={{ width: 96 }}>{MONTH_FULL[d.getMonth()].slice(0, 3)} {d.getDate()}, {d.getFullYear()}</span>
+                                    <input type="time" className="cf-num" style={{ width: 110 }} value={tm} onChange={(e) => {
+                                        const [hh, mm] = parseHHMM(e.target.value);
+                                        setRunAtTime(iso, localIsoFromYMDHM(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm));
+                                    }} />
+                                    <button className="cf-chip__rm" onClick={() => removeRunAt(iso)} title="Remove">×</button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: 12, borderTop: '1px solid var(--rule)' }}>
+                    <button className="auto-btn auto-btn--ghost" onClick={onClose}>Cancel</button>
+                    <button className="auto-btn auto-btn--primary" onClick={() => onSave({ weekly, runAt })}>Done</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function DayPillRow({ items, selected, onToggle }) {
+    const sel = new Set(selected || []);
+    return (
+        <div className="cf-tray">
+            {items.map(([label, value]) => (
+                <button key={value} type="button" className={`cf-add${sel.has(value) ? ' is-on' : ''}`} onClick={() => { const next = new Set(sel); if (next.has(value)) next.delete(value); else next.add(value); onToggle([...next]); }}>{label}</button>
+            ))}
+        </div>
+    );
+}
 function ScheduleChips({ d, onChange }) {
     const ms = Number(d.intervalMs) || 0;
     let unit = 'minutes', amount = 5;
     if (ms > 0) { const u = [...SCHEDULE_UNITS].reverse().find(([, m]) => ms % m === 0) || SCHEDULE_UNITS[0]; unit = u[0]; amount = Math.round(ms / u[1]); }
-    const [cronMode, setCronMode] = useState(!!d.cron);
-    const apply = (amt, un) => { const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1]; onChange({ intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), anchorMs: Date.now(), cron: '' }); };
-    if (cronMode) {
-        return (<div className="cf-sec">
-            <ValueChip chip={{ label: 'Cron (min hour dom mon dow)', type: 'value', acceptsData: false, placeholder: '0 9 * * 1-5' }} value={d.cron || ''} onChange={(v) => onChange({ cron: v })} />
-            <button className="cf-add" onClick={() => { setCronMode(false); onChange({ cron: '' }); }}>← simple interval</button>
-        </div>);
-    }
-    return (<div className="cf-sec">
-        <div className="cf-chip cf-chip--num"><span className="cf-chip__label">Run every</span><input type="number" min="1" className="cf-num" value={amount} onChange={(e) => apply(e.target.value, unit)} /></div>
-        <ChoiceChip chip={{ label: 'Unit' }} value={unit} options={SCHEDULE_UNITS.map(([n]) => ({ value: n, label: n }))} onChange={(v) => apply(amount, v)} />
-        <CountdownLine intervalMs={ms} anchorMs={Number(d.anchorMs)} />
-        <button className="cf-add" onClick={() => setCronMode(true)}>Advanced: cron →</button>
-    </div>);
+    const hasCalendar = (Array.isArray(d.crons) && d.crons.length) || (Array.isArray(d.runAt) && d.runAt.length) || (d.weeklyTimes && Object.keys(d.weeklyTimes).length);
+    const initialMode = d.scheduleMode || (hasCalendar ? 'calendar' : (d.cron ? 'cron' : 'interval'));
+    const [mode, setMode] = useState(initialMode);
+    const [calOpen, setCalOpen] = useState(false);
+    const apply = (amt, un) => { const unitMs = (SCHEDULE_UNITS.find(([n]) => n === un) || SCHEDULE_UNITS[1])[1]; onChange({ scheduleMode: 'interval', intervalMs: Math.max(5000, Math.max(1, Number(amt) || 1) * unitMs), anchorMs: Date.now(), cron: '' }); };
+    // Patch one of the schedule fields, then recompile the cron expression so
+    // the server-side scheduler picks it up (cronMatches reads d.cron only).
+    const patchSchedule = (patch) => {
+        const merged = { ...d, scheduleMode: mode, ...patch };
+        const cron = compileScheduleCron(merged);
+        onChange({ ...patch, scheduleMode: mode, cron, intervalMs: 0 });
+    };
+    const switchMode = (newMode) => {
+        setMode(newMode);
+        if (newMode === 'interval') {
+            onChange({ scheduleMode: 'interval', cron: '', crons: [], runAt: [], weeklyTimes: {}, intervalMs: ms || 300000, anchorMs: Date.now() });
+        } else if (newMode === 'cron') {
+            onChange({ scheduleMode: 'cron', crons: [], runAt: [], weeklyTimes: {}, intervalMs: 0 });
+        } else if (newMode === 'calendar') {
+            onChange({ scheduleMode: 'calendar', cron: '', intervalMs: 0, weeklyTimes: d.weeklyTimes || {}, crons: d.crons || [], runAt: d.runAt || [] });
+        } else {
+            const seed = {
+                scheduleMode: newMode,
+                scheduleTime: d.scheduleTime || '09:00',
+                scheduleDow: d.scheduleDow || (newMode === 'weekly' ? [1, 2, 3, 4, 5] : []),
+                scheduleDom: d.scheduleDom || (newMode === 'monthly' ? [1] : []),
+                scheduleMonths: d.scheduleMonths || []
+            };
+            const cron = compileScheduleCron(seed);
+            onChange({ ...seed, cron, intervalMs: 0 });
+        }
+    };
+    const MODE_OPTS = [
+        { value: 'interval', label: 'Every N…' },
+        { value: 'calendar', label: 'Calendar' },
+        { value: 'daily', label: 'Daily' },
+        { value: 'weekly', label: 'Weekly' },
+        { value: 'monthly', label: 'Monthly' },
+        { value: 'cron', label: 'Cron' }
+    ];
+    const time = d.scheduleTime || '09:00';
+    const months = d.scheduleMonths || [];
+    return (
+        <div className="cf-sec">
+            <ChoiceChip chip={{ label: 'Mode' }} value={mode} options={MODE_OPTS} onChange={switchMode} />
+            {mode === 'interval' && (<>
+                <div className="cf-chip cf-chip--num"><span className="cf-chip__label">Run every</span><input type="number" min="1" className="cf-num" value={amount} onChange={(e) => apply(e.target.value, unit)} /></div>
+                <ChoiceChip chip={{ label: 'Unit' }} value={unit} options={SCHEDULE_UNITS.map(([n]) => ({ value: n, label: n }))} onChange={(v) => apply(amount, v)} />
+                <CountdownLine intervalMs={ms} anchorMs={Number(d.anchorMs)} />
+            </>)}
+            {(mode === 'daily' || mode === 'weekly' || mode === 'monthly') && (<>
+                <div className="cf-chip"><span className="cf-chip__label">At time</span><input type="time" className="cf-num" style={{ width: 110 }} value={time} onChange={(e) => patchSchedule({ scheduleTime: e.target.value })} /></div>
+                {mode === 'weekly' && (
+                    <div className="cf-chip cf-chip--multi"><span className="cf-chip__label">On days</span>
+                        <DayPillRow items={DOW_LABELS} selected={d.scheduleDow || []} onToggle={(v) => patchSchedule({ scheduleDow: v })} />
+                    </div>
+                )}
+                {mode === 'monthly' && (
+                    <div className="cf-chip cf-chip--multi"><span className="cf-chip__label">Day of month</span>
+                        <DayPillRow items={Array.from({ length: 31 }, (_, i) => [String(i + 1), i + 1])} selected={d.scheduleDom || []} onToggle={(v) => patchSchedule({ scheduleDom: v })} />
+                    </div>
+                )}
+                <div className="cf-chip cf-chip--multi"><span className="cf-chip__label">{months.length ? 'In months' : 'Months (empty = every month)'}</span>
+                    <DayPillRow items={MONTH_LABELS} selected={months} onToggle={(v) => patchSchedule({ scheduleMonths: v })} />
+                </div>
+                {d.cron && <div className="cf-hint" style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--ink-3)', fontSize: 11 }}>Cron: <code>{d.cron}</code></div>}
+            </>)}
+            {mode === 'cron' && (
+                <ValueChip chip={{ label: 'Cron (min hour dom mon dow)', type: 'value', acceptsData: false, placeholder: '0 9 * * 1-5' }} value={d.cron || ''} onChange={(v) => onChange({ cron: v, scheduleMode: 'cron', intervalMs: 0 })} />
+            )}
+            {mode === 'calendar' && (<>
+                <button className="cf-add" style={{ width: '100%', justifyContent: 'center', padding: '8px 12px', fontSize: 12.5 }} onClick={() => setCalOpen(true)}>
+                    <span className="cf-add__plus">📅</span> Open calendar &amp; time picker
+                </button>
+                {(d.crons || []).length === 0 && (d.runAt || []).length === 0 && (
+                    <div className="cf-hint">Pick recurring days (each with its own time) and/or specific one-off dates.</div>
+                )}
+                {(d.crons || []).length > 0 && (
+                    <div className="cf-chip cf-chip--multi">
+                        <span className="cf-chip__label">Recurring</span>
+                        {(d.crons || []).map((c, i) => (
+                            <div key={i} style={{ fontSize: 11.5, color: 'var(--ink-2)', padding: '2px 0' }}>• {fmtCronHuman(c)}</div>
+                        ))}
+                    </div>
+                )}
+                {(d.runAt || []).length > 0 && (
+                    <div className="cf-chip cf-chip--multi">
+                        <span className="cf-chip__label">Specific dates</span>
+                        {(d.runAt || []).map((iso, i) => (
+                            <div key={i} style={{ fontSize: 11.5, color: 'var(--ink-2)', padding: '2px 0' }}>• {fmtRunAt(iso)}</div>
+                        ))}
+                    </div>
+                )}
+                {calOpen && (
+                    <CalendarPickerModal
+                        initialWeekly={d.weeklyTimes || {}}
+                        initialRunAt={d.runAt || []}
+                        onClose={() => setCalOpen(false)}
+                        onSave={({ weekly, runAt }) => {
+                            const crons = compileWeeklyTimesCrons(weekly);
+                            onChange({ scheduleMode: 'calendar', weeklyTimes: weekly, crons, runAt, cron: '', intervalMs: 0 });
+                            setCalOpen(false);
+                        }}
+                    />
+                )}
+            </>)}
+        </div>
+    );
 }
 function WebhookChip({ ctx }) {
     return (<div className="cf-sec">
@@ -2057,6 +2368,8 @@ const CHIP_DEFS_BY_KIND = {
     ],
     tool: [
         { field: 'tool', label: 'Tool / skill name', type: 'value', acceptsData: false, required: true, placeholder: 'e.g. query_sqlite' },
+        { field: 'args.filename', label: 'File name', type: 'value', acceptsData: false, placeholder: 'report.pdf', when: { field: 'tool', op: 'eq', value: 'create_pdf' } },
+        { field: 'args.outputName', label: 'File name', type: 'value', acceptsData: false, placeholder: 'report.pdf', when: { field: 'tool', op: 'eq', value: 'html_to_pdf' } },
         { field: '__args', label: 'Parameters', type: 'special', special: 'toolArgs', required: true },
         { field: 'sendMode', label: 'When sent to next node', type: 'choice', options: SEND_MODE_OPTS, default: 'pdf', when: { field: 'tool', op: 'in', value: ['create_pdf', 'html_to_pdf'] } },
     ],
@@ -2636,7 +2949,65 @@ function runStatusColor(s) {
         : 'var(--ink-4, #64748b)';
 }
 
-function RunHistoryPanel({ runs, width = 300, mobile = false, onResizeStart, onClearHistory, onClose }) {
+// ---- Run history: friendly per-node summary ---------------------------------
+// Turns a raw node output into a short, human-readable one-liner. Falls back to
+// "view raw" for anything that doesn't smart-summarize cleanly.
+function summarizeNodeOutput(output) {
+    if (output == null) return null;
+    if (typeof output === 'string') {
+        const s = output.trim();
+        if (!s) return '(empty string)';
+        return s.length > 180 ? s.slice(0, 180) + '…' : s;
+    }
+    if (typeof output === 'number' || typeof output === 'boolean') return String(output);
+    if (Array.isArray(output)) {
+        if (output.length === 0) return '(empty list)';
+        const first = output[0];
+        if (typeof first === 'string' || typeof first === 'number') {
+            const preview = output.slice(0, 3).join(', ');
+            return `${output.length} item${output.length === 1 ? '' : 's'}: ${preview}${output.length > 3 ? ', …' : ''}`;
+        }
+        return `${output.length} item${output.length === 1 ? '' : 's'}`;
+    }
+    if (typeof output === 'object') {
+        // Common "this is a fetch/scrape" shape
+        if (output.url && (output.title || output.content)) {
+            return `${output.title || output.url}${output.content ? ' — ' + String(output.content).slice(0, 120).replace(/\s+/g, ' ') + '…' : ''}`;
+        }
+        // db_store change-feed
+        if ('new' in output && Array.isArray(output.new)) {
+            return `${output.new.length} new · ${output.stored != null ? output.stored + ' stored' : ''}${output.total != null ? ' · ' + output.total + ' total' : ''}`;
+        }
+        // Tool result with a status flag
+        if (output.success === true && output.message) return String(output.message).slice(0, 180);
+        if (output.error) return `Error: ${String(output.error).slice(0, 180)}`;
+        // sent/delivered confirmations
+        if (output.sent === true) return 'Sent ✓';
+        if (output._delivered) return `Delivered to ${output._delivered}`;
+        // Generic: first 3 scalar keys
+        const keys = Object.keys(output).filter(k => k !== '_artifacts' && k !== '_handle' && k !== '_delivered');
+        const parts = [];
+        for (const k of keys.slice(0, 3)) {
+            const v = output[k];
+            if (v == null) continue;
+            if (typeof v === 'string') parts.push(`${k}: ${v.length > 50 ? v.slice(0, 50) + '…' : v}`);
+            else if (typeof v === 'number' || typeof v === 'boolean') parts.push(`${k}: ${v}`);
+            else if (Array.isArray(v)) parts.push(`${k}: [${v.length}]`);
+            else parts.push(`${k}: {…}`);
+        }
+        return parts.length ? parts.join(' · ') : '(object)';
+    }
+    return null;
+}
+function nodeFriendlyType(type) {
+    if (!type) return '';
+    if (type.startsWith('trigger.')) return type.slice(8) + ' trigger';
+    return type.replace(/_/g, ' ');
+}
+function NodeStatusDot({ status }) {
+    return <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: runStatusColor(status), display: 'inline-block' }} />;
+}
+function RunHistoryPanel({ runs, nodes: wfNodes = [], width = 300, mobile = false, onResizeStart, onClearHistory, onClose }) {
     const [openRunId, setOpenRunId] = useState(null);
     const [detail, setDetail] = useState(null);
 
@@ -2691,22 +3062,58 @@ function RunHistoryPanel({ runs, width = 300, mobile = false, onResizeStart, onC
                                             {rec.durationMs != null ? ` · ${(rec.durationMs / 1000).toFixed(1)}s` : ''}
                                         </div>
                                         {rec.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 10.5, marginBottom: 6 }}>{rec.error}</div>}
-                                        {(rec.nodes || []).map((n, i) => (
-                                            <div key={i} style={{ marginBottom: 6, fontSize: 11 }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                    <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: runStatusColor(n.status) }} />
-                                                    <span style={{ color: 'var(--ink-2)' }}>{n.nodeId || n.type}</span>
-                                                    <span style={{ color: 'var(--ink-3)', fontSize: 10 }}>({n.type})</span>
-                                                    <span style={{ marginLeft: 'auto', color: 'var(--ink-3)', fontSize: 10, textTransform: 'capitalize' }}>{n.status}</span>
+                                        {(rec.nodes || []).map((n, i) => {
+                                            // Friendly label: prefer the workflow node's data.label,
+                                            // fall back to the engine type, then nodeId. Surface any
+                                            // generated files as download chips. Output renders as a
+                                            // smart one-line summary with a "view raw" disclosure.
+                                            const wfNode = wfNodes.find(x => x.id === n.nodeId);
+                                            const label = (wfNode && wfNode.data && (wfNode.data.label || wfNode.data.tool)) || nodeFriendlyType(n.type) || n.nodeId;
+                                            const arts = (n.output && typeof n.output === 'object' && Array.isArray(n.output._artifacts))
+                                                ? n.output._artifacts.filter(a => a && a.url && a.name) : [];
+                                            const summary = n.status === 'skipped' ? 'Skipped' : summarizeNodeOutput(n.output);
+                                            const isLast = i === rec.nodes.length - 1;
+                                            return (
+                                                <div key={i}>
+                                                    <div style={{ border: '1px solid var(--rule-2)', borderRadius: 8, background: 'var(--bg)', padding: '7px 9px' }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                            <NodeStatusDot status={n.status} />
+                                                            <span style={{ color: 'var(--ink)', fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+                                                            <span style={{ color: 'var(--ink-3)', fontSize: 9.5, marginLeft: 'auto', textTransform: 'uppercase', letterSpacing: '.3px' }}>{n.status}</span>
+                                                        </div>
+                                                        {n.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11, marginTop: 4 }}>{n.error}</div>}
+                                                        {summary && !n.error && (
+                                                            <div style={{ color: 'var(--ink-2)', fontSize: 11, marginTop: 4, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{summary}</div>
+                                                        )}
+                                                        {arts.length > 0 && (
+                                                            <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                                                {arts.map((a, j) => {
+                                                                    const dlUrl = withDownloadFlag(a.url);
+                                                                    return (
+                                                                        <a key={j} href={dlUrl} download={a.name} target="_blank" rel="noopener noreferrer"
+                                                                           onClick={(e) => { e.preventDefault(); saveArtifactViaBlob(dlUrl, a.name).catch(() => { window.location.href = dlUrl; }); }}
+                                                                           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: 'var(--accent)', textDecoration: 'none', border: '1px solid var(--accent)', borderRadius: 5, padding: '2px 7px', background: 'var(--accent-soft)' }}>
+                                                                            <Download size={10} /> {a.name}
+                                                                        </a>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        )}
+                                                        {n.output != null && (
+                                                            <details style={{ marginTop: 5 }}>
+                                                                <summary style={{ cursor: 'pointer', fontSize: 10, color: 'var(--ink-3)', userSelect: 'none' }}>view raw</summary>
+                                                                <pre style={{ margin: '4px 0 0 0', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 140, overflow: 'auto', background: 'var(--surface)', border: '1px solid var(--rule-2)', borderRadius: 4, padding: 5 }}>
+                                                                    {typeof n.output === 'string' ? n.output : JSON.stringify(n.output, null, 2)}
+                                                                </pre>
+                                                            </details>
+                                                        )}
+                                                    </div>
+                                                    {!isLast && (
+                                                        <div style={{ textAlign: 'center', color: 'var(--ink-3)', fontSize: 12, lineHeight: '14px', padding: '2px 0' }}>↓</div>
+                                                    )}
                                                 </div>
-                                                {n.error && <div style={{ color: 'var(--danger, #ef4444)', fontSize: 10, marginLeft: 12 }}>{n.error}</div>}
-                                                {n.output != null && (
-                                                    <pre style={{ margin: '2px 0 0 12px', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 80, overflow: 'auto' }}>
-                                                        {typeof n.output === 'string' ? n.output.slice(0, 300) : JSON.stringify(n.output).slice(0, 300)}
-                                                    </pre>
-                                                )}
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </>
                                 )}
                             </div>
