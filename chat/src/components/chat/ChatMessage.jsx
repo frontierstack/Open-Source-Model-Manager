@@ -2,7 +2,6 @@ import React, { useState, useRef } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircle, Sparkles, User, RefreshCw, Eye, Code as CodeIcon } from 'lucide-react';
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
-import StatusIndicator from './StatusIndicator';
 import ToolCallBlock from './ToolCallBlock';
 import SearchSources from './SearchSources';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
@@ -22,8 +21,6 @@ export default React.memo(function ChatMessage({
     streamingReasoning,
     responseTime,
     tokenCount,
-    processingStatus,
-    processingMessage,
     needsContinuation,
     isPartial,
     onContinue,
@@ -289,15 +286,7 @@ export default React.memo(function ChatMessage({
 
                     {/* Body content */}
                     {isStreaming && !displayContent ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
-                            {Array.isArray(toolCalls) && toolCalls.length > 0 ? (
-                                <ThinkingIndicator />
-                            ) : processingStatus ? (
-                                <StatusIndicator status={processingStatus} message={processingMessage} />
-                            ) : (
-                                <ThinkingIndicator />
-                            )}
-                        </div>
+                        <ThinkingIndicator />
                     ) : bodyCollapsed ? (
                         (() => {
                             const cleaned = (displayContent || '')

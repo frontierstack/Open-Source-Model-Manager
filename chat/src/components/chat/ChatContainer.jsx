@@ -396,8 +396,7 @@ export default function ChatContainer({
     //
     // Only subscribe to the fields actually read by this component's
     // render. Streaming buffers (streamingContent / streamingReasoning /
-    // processingStatus / processingMessage / streamingToolCalls) and
-    // the setter functions used inside event
+    // streamingToolCalls) and the setter functions used inside event
     // handlers are read lazily via useChatStore.getState() at the call
     // sites or imported as standalone selectors below — subscribing to
     // them here would re-render ChatContainer on every rAF tick during
@@ -428,8 +427,6 @@ export default function ChatContainer({
         finishStreamingToolCall,
         clearStreaming,
         commitStreamingMessage,
-        setProcessingStatus,
-        clearProcessingStatus,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -461,8 +458,6 @@ export default function ChatContainer({
         finishStreamingToolCall: state.finishStreamingToolCall,
         clearStreaming: state.clearStreaming,
         commitStreamingMessage: state.commitStreamingMessage,
-        setProcessingStatus: state.setProcessingStatus,
-        clearProcessingStatus: state.clearProcessingStatus,
         addAttachment: state.addAttachment,
         removeAttachment: state.removeAttachment,
         clearAttachments: state.clearAttachments,
@@ -621,7 +616,6 @@ export default function ChatContainer({
             // Clear streaming UI so it doesn't bleed into the new conversation.
             clearStreaming();
             setIsLoading(false);
-            clearProcessingStatus();
         }
         if (activeConversationId) {
             loadConversationMessages(activeConversationId);
@@ -753,7 +747,6 @@ export default function ChatContainer({
                         }
                     };
                     const { kind, text } = phaseToStatus(data.phase, !!data.content);
-                    setProcessingStatus(kind, text);
                     // Capture start time for response stats
                     const streamStartTime = data.startTime || Date.now();
 
@@ -804,7 +797,6 @@ export default function ChatContainer({
                                             pkind = 'synthesizing';
                                             ptext = 'Synthesizing chunks into final response...';
                                         }
-                                        setProcessingStatus(pkind, ptext);
                                         // Schedule next poll AFTER this one completes
                                         schedulePoll();
                                     } else {
@@ -875,7 +867,6 @@ export default function ChatContainer({
                                             clearStreaming();
                                         }
                                         setIsLoading(false);
-                                        clearProcessingStatus();
                                         showSnackbar('Background response completed', 'success');
                                     }
                                 } else {
@@ -1416,8 +1407,6 @@ export default function ChatContainer({
         setStreamingContent('');
         setStreamingReasoning('');
         setIsLoading(true);
-        setProcessingStatus('processing', attachedFiles?.length > 0 ? 'Processing files' : 'Preparing request');
-
         // Prepare messages for API (use fullContent for the last message to include attachments)
         // Also include search context from previous messages if they had web search results
         // Only include context from last N messages to prevent context overflow
@@ -1498,8 +1487,6 @@ export default function ChatContainer({
         let messageSaved = false; // Track if assistant message was saved (for finally rescue)
 
         try {
-            setProcessingStatus('thinking', 'Model is thinking');
-
             const requestBody = {
                 model: settings.model,
                 messages: apiMessages,
@@ -1539,8 +1526,6 @@ export default function ChatContainer({
             });
 
             setIsLoading(false);
-            setProcessingStatus('generating', 'Generating response');
-
             if (!response.ok) {
                 // Try to parse error body
                 let errorBody = null;
@@ -1685,7 +1670,6 @@ export default function ChatContainer({
                                     const text = argSummary
                                         ? `Calling ${human} — ${argSummary}`
                                         : `Calling ${human}`;
-                                    setProcessingStatus('processing', text);
                                 }
                                 continue;
                             }
@@ -1719,9 +1703,7 @@ export default function ChatContainer({
                                 {
                                     const human = humanizeToolName(parsed.name);
                                     if (error) {
-                                        setProcessingStatus('thinking', `Recovering from ${human} error…`);
                                     } else {
-                                        setProcessingStatus('thinking', `Reading ${human} result…`);
                                     }
                                     sawToolEventThisTurn = true;
                                 }
@@ -1761,7 +1743,6 @@ export default function ChatContainer({
 
                             if (delta?.content) {
                                 if (sawToolEventThisTurn) {
-                                    setProcessingStatus('generating', 'Generating response');
                                     sawToolEventThisTurn = false;
                                 }
                                 assistantContent += delta.content;
@@ -1818,7 +1799,6 @@ export default function ChatContainer({
                                     // status comes from native_tool_call events.
                                     const charsStr = totalChars ? `${totalChars.toLocaleString()} chars` : '';
                                     const msg = `Indexed ${charsStr} into ${totalChunks} ${chunkWord(totalChunks)} — model will query/read via tools`;
-                                    setProcessingStatus('processing', msg);
                                     continue;
                                 }
                                 if (phase === 'starting') {
@@ -1827,12 +1807,10 @@ export default function ChatContainer({
                                     if (condensation) {
                                         msg += ` (condensed ${condensation.reductionPercent}%)`;
                                     }
-                                    setProcessingStatus('chunking', msg);
                                 } else if (phase === 'chunking') {
                                     let msg = `Splitting into ${totalChunks} ${chunkWord(totalChunks)}`;
                                     if (tokenStr) msg += ` — ${tokenStr}`;
                                     if (chunkTokens) msg += ` (~${chunkTokens.toLocaleString()} tokens/chunk)`;
-                                    setProcessingStatus('chunking', msg);
                                 } else if (phase === 'map') {
                                     const done = completedChunks + failedChunks;
                                     const pct = totalChunks > 0 ? Math.round((done / totalChunks) * 100) : 0;
@@ -1847,13 +1825,10 @@ export default function ChatContainer({
                                         if (failedChunks) msg += ` — ${failedChunks} failed`;
                                         if (elapsed) msg += ` — ${elapsed}`;
                                     }
-                                    setProcessingStatus('processing', msg);
                                 } else if (phase === 'reduce') {
                                     let msg = `Synthesizing ${completedChunks} ${chunkWord(completedChunks)} into final response`;
                                     if (elapsed) msg += ` — ${elapsed} elapsed`;
-                                    setProcessingStatus('synthesizing', msg);
                                 } else if (phase === 'complete') {
-                                    setProcessingStatus('generating', `Streaming synthesized response${elapsed ? ` — completed in ${elapsed}` : ''}...`);
                                 }
                                 continue; // Don't process this as a content event
                             }
@@ -1888,7 +1863,6 @@ export default function ChatContainer({
 
                             // Handle auto-continuation events (server auto-continues when response hits length limit)
                             if (parsed.type === 'auto_continuation') {
-                                setProcessingStatus('generating', `Auto-continuing response (${parsed.continuation}/${parsed.maxContinuations})...`);
                                 continue;
                             }
 
@@ -1903,11 +1877,6 @@ export default function ChatContainer({
                                     : Math.round((cont.currentChunk / cont.totalChunks) * 100);
 
                                 // Update status indicator with detailed chunk info
-                                setProcessingStatus(
-                                    'chunking',
-                                    `Chunk ${cont.currentChunk}/${cont.totalChunks} (${percentComplete}% complete)`
-                                );
-
                                 // Show detailed snackbar with token info
                                 showSnackbar(
                                     `Processing chunk ${cont.currentChunk} of ${cont.totalChunks} | ${processedTokens} tokens processed | ${remainingTokens} tokens remaining`,
@@ -2257,7 +2226,6 @@ export default function ChatContainer({
                     }
 
                     setIsLoading(false);
-                    clearProcessingStatus();
                 }
                 streamingConversationRef.current = null;
                 abortControllerRef.current = null;
@@ -2274,8 +2242,6 @@ export default function ChatContainer({
         clearBackgroundPoll();
         // Immediate UI feedback — don't wait for the async cleanup
         setIsLoading(false);
-        setProcessingStatus(null, null);
-
         // Also cancel the server-side background stream
         const convId = streamingConversationRef.current || activeConversationId;
         if (convId) {
@@ -2349,7 +2315,6 @@ export default function ChatContainer({
         setStreaming(true);
         setStreamingContent(originalContent);
         setStreamingReasoning(originalReasoning);
-        setProcessingStatus('thinking', 'Continuing response...');
         abortControllerRef.current = new AbortController();
 
         // Capture messages at start for proper saving even if user switches
@@ -2601,7 +2566,6 @@ export default function ChatContainer({
 
                 setIsLoading(false);
                 clearStreaming();
-                clearProcessingStatus();
             }
             streamingConversationRef.current = null;
             abortControllerRef.current = null;

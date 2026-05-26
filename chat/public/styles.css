@@ -1322,9 +1322,6 @@ body.font-size-large .markdown-content,
 .min-w-0{
   min-width: 0px;
 }
-.min-w-\[220px\]{
-  min-width: 220px;
-}
 .min-w-\[320px\]{
   min-width: 320px;
 }
@@ -2274,12 +2271,6 @@ body.font-size-large .markdown-content,
 }
 .duration-300{
   transition-duration: 300ms;
-}
-.duration-500{
-  transition-duration: 500ms;
-}
-.ease-in-out{
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 .ease-out{
   transition-timing-function: cubic-bezier(0, 0, 0.2, 1);

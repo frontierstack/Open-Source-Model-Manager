@@ -118,10 +118,6 @@ export const useChatStore = create(
         // The streaming message uses the key '__streaming__'.
         collapsedMessageIds: {},
 
-        // Processing status for UI indicators
-        processingStatus: null, // null, 'thinking', 'searching', 'parsing', 'processing', 'generating'
-        processingMessage: null,
-
         // Attachments
         attachments: [],
 
@@ -499,8 +495,6 @@ export const useChatStore = create(
                 streamingReasoning: '',
                 streamingToolCalls: [],
                 isStreaming: false,
-                processingStatus: null,
-                processingMessage: null,
                 collapsedMessageIds: (() => {
                     const next = { ...state.collapsedMessageIds };
                     delete next['__streaming__'];
@@ -514,8 +508,6 @@ export const useChatStore = create(
             streamingReasoning: '',
             streamingToolCalls: [],
             isStreaming: false,
-            processingStatus: null,
-            processingMessage: null,
             // Clear the streaming message collapse entry when streaming ends
             collapsedMessageIds: (() => {
                 const next = { ...state.collapsedMessageIds };
@@ -544,18 +536,6 @@ export const useChatStore = create(
                 delete next[messageId];
             }
             return { collapsedMessageIds: next };
-        }),
-
-        // ==================== Processing Status Actions ====================
-
-        setProcessingStatus: (status, message = null) => set({
-            processingStatus: status,
-            processingMessage: message,
-        }),
-
-        clearProcessingStatus: () => set({
-            processingStatus: null,
-            processingMessage: null,
         }),
 
         // ==================== Attachment Actions ====================

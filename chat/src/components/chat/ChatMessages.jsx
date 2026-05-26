@@ -12,8 +12,6 @@ function StreamingMessage() {
     const streamingContent = useChatStore(state => state.streamingContent);
     const streamingReasoning = useChatStore(state => state.streamingReasoning);
     const streamingToolCalls = useChatStore(state => state.streamingToolCalls);
-    const processingStatus = useChatStore(state => state.processingStatus);
-    const processingMessage = useChatStore(state => state.processingMessage);
 
     // Map the in-flight tool records to the ToolCallBlock shape so chips can
     // render live alongside streaming content.
@@ -66,8 +64,6 @@ function StreamingMessage() {
             isStreaming={true}
             streamingContent={streamingContent}
             streamingReasoning={streamingReasoning}
-            processingStatus={processingStatus}
-            processingMessage={processingMessage}
             toolCalls={liveToolCalls.length ? liveToolCalls : undefined}
         />
     );
