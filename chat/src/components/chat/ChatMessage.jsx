@@ -9,6 +9,66 @@ import ChartBlock from './ChartBlock';
 import ArtifactList from './ArtifactList';
 import { useChatStore } from '../../stores/useChatStore';
 
+// Map a tool name to a short present-tense verb phrase shown next to
+// the 3-dot ThinkingIndicator while that tool is running. Falls back
+// to humanizing the snake_case name (e.g. extract_archive → "Extract
+// archive") so newly-added skills still get a reasonable label.
+const TOOL_VERBS = {
+    web_search: 'Searching the web',
+    fetch_url: 'Fetching page',
+    crawl_pages: 'Crawling pages',
+    playwright_fetch: 'Loading page',
+    playwright_interact: 'Interacting with page',
+    scrapling_fetch: 'Loading page',
+    download_html: 'Downloading page',
+    dns_lookup: 'Resolving DNS',
+    virustotal_lookup: 'Checking VirusTotal',
+    base64_decode: 'Decoding',
+    load_skill: 'Loading skill',
+    render_chart: 'Rendering chart',
+    fetch_timeseries: 'Fetching data',
+    read_file: 'Reading file',
+    head_file: 'Reading file',
+    tail_file: 'Reading file',
+    write_file: 'Writing file',
+    create_file: 'Writing file',
+    append_to_file: 'Editing file',
+    replace_lines: 'Editing file',
+    edit_file: 'Editing file',
+    move_file: 'Moving file',
+    copy_file: 'Copying file',
+    delete_file: 'Deleting file',
+    list_directory: 'Listing files',
+    grep_code: 'Searching code',
+    outline_file: 'Outlining file',
+    create_pdf: 'Creating PDF',
+    create_docx: 'Creating document',
+    create_xlsx: 'Creating spreadsheet',
+    read_xlsx: 'Reading spreadsheet',
+    query_sqlite: 'Querying database',
+    workspace_db: 'Querying database',
+    transform_image: 'Editing image',
+    transcribe_audio: 'Transcribing audio',
+    extract_archive: 'Expanding archive',
+    send_file: 'Sending file',
+    run_python: 'Running script',
+    run_node: 'Running script',
+    make_downloadable: 'Preparing download',
+};
+function describeRunningTool(toolCalls) {
+    if (!Array.isArray(toolCalls) || !toolCalls.length) return null;
+    // Most recent partial/running tool drives the label.
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+        const t = toolCalls[i];
+        if (t && t.status === 'partial') {
+            const name = t.label || t.name || '';
+            if (TOOL_VERBS[name]) return TOOL_VERBS[name];
+            return name ? name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : null;
+        }
+    }
+    return null;
+}
+
 export default React.memo(function ChatMessage({
     id,
     role,
@@ -286,7 +346,7 @@ export default React.memo(function ChatMessage({
 
                     {/* Body content */}
                     {isStreaming && !displayContent ? (
-                        <ThinkingIndicator />
+                        <ThinkingIndicator label={describeRunningTool(toolCalls)} />
                     ) : bodyCollapsed ? (
                         (() => {
                             const cleaned = (displayContent || '')
