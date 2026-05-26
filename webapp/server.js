@@ -20727,7 +20727,8 @@ app.use((req, res) => {
                     description:
                         'Search the web via DuckDuckGo; returns up to 5 results (title, url, snippet). Snippets are short — almost always follow up with fetch_url on top results. ' +
                         'For single-fact lookups, fetch 1 result; for lists / comparisons / "what\'s new" / multi-aspect questions, fetch 2–3 in parallel in the same round. ' +
-                        'Trust the snippets over training when they conflict, and cite URLs in answers. Use search_string on long fetched pages instead of re-reading them.',
+                        'Trust the snippets over training when they conflict, and cite URLs in answers. Use search_string on long fetched pages instead of re-reading them. ' +
+                        '**Don\'t lead with web_search when the artifact itself is available.** For a named npm / PyPI / crates.io / RubyGems / NuGet / GitHub package, the registry tarball is the source of truth — fetch it (npm: `https://registry.npmjs.org/<pkg>/-/<pkg>-<version>.tgz`; PyPI: `https://pypi.org/pypi/<pkg>/json` → `urls[*].url`; GitHub: clone or download the archive) via fetch_url / download_file, extract via extract_archive / tar_extract / unzip_file, and read the actual code. Reserve web_search for post-hoc cross-reference (CVE IDs, advisory write-ups) AFTER you\'ve looked at the artifact. If a search has already been rate-limited (DDG / Scrapling / Brave all failed), stop re-querying — pivot to the artifact instead.',
                     parameters: {
                         type: 'object',
                         properties: {
