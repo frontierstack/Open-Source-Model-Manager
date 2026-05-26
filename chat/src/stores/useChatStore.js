@@ -113,6 +113,11 @@ export const useChatStore = create(
         // assistant message on commit.
         streamingToolCalls: [],
 
+        // Optional server-driven status for the streaming bubble (chunking,
+        // synthesizing, etc.). Cleared when streaming ends or when token
+        // content arrives. Shape: { kind, text } or null.
+        streamingStatus: null,
+
         // Collapse state: object mapping messageId -> true. Lives in the store
         // (not local component state) so it survives React remounts/re-renders.
         // The streaming message uses the key '__streaming__'.
@@ -229,6 +234,7 @@ export const useChatStore = create(
                 // This prevents flash of empty state and race conditions during long streaming
                 streamingContent: '',
                 streamingReasoning: '',
+                streamingStatus: null,
                 isStreaming: false
             }));
         },
@@ -245,6 +251,7 @@ export const useChatStore = create(
                 messages: [],
                 streamingContent: '',
                 streamingReasoning: '',
+                streamingStatus: null,
                 isStreaming: false,
                 attachments: []
             }));
@@ -382,6 +389,7 @@ export const useChatStore = create(
                 messages: [],
                 streamingContent: '',
                 streamingReasoning: '',
+                streamingStatus: null,
                 isStreaming: false,
                 attachments: []
             });
@@ -477,6 +485,8 @@ export const useChatStore = create(
 
         clearStreamingToolCalls: () => set({ streamingToolCalls: [] }),
 
+        setStreamingStatus: (streamingStatus) => set({ streamingStatus }),
+
         // Atomically append the final assistant message(s) AND clear the
         // streaming state in one set() call. Doing these separately (append
         // first, clear in a later finally block) left a one-frame window
@@ -493,6 +503,7 @@ export const useChatStore = create(
                 messages: toAdd.length ? [...state.messages, ...toAdd] : state.messages,
                 streamingContent: '',
                 streamingReasoning: '',
+                streamingStatus: null,
                 streamingToolCalls: [],
                 isStreaming: false,
                 collapsedMessageIds: (() => {
@@ -506,6 +517,7 @@ export const useChatStore = create(
         clearStreaming: () => set(state => ({
             streamingContent: '',
             streamingReasoning: '',
+            streamingStatus: null,
             streamingToolCalls: [],
             isStreaming: false,
             // Clear the streaming message collapse entry when streaming ends
@@ -593,6 +605,7 @@ export const useChatStore = create(
                 messages: [],
                 streamingContent: '',
                 streamingReasoning: '',
+                streamingStatus: null,
                 isStreaming: false,
                 attachments: []
             });
@@ -607,6 +620,7 @@ export const useChatStore = create(
                 messages: [],
                 streamingContent: '',
                 streamingReasoning: '',
+                streamingStatus: null,
                 isStreaming: false,
                 attachments: []
             });

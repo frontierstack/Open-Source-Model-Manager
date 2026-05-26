@@ -427,6 +427,7 @@ export default function ChatContainer({
         finishStreamingToolCall,
         clearStreaming,
         commitStreamingMessage,
+        setStreamingStatus,
         addAttachment,
         removeAttachment,
         clearAttachments,
@@ -458,6 +459,7 @@ export default function ChatContainer({
         finishStreamingToolCall: state.finishStreamingToolCall,
         clearStreaming: state.clearStreaming,
         commitStreamingMessage: state.commitStreamingMessage,
+        setStreamingStatus: state.setStreamingStatus,
         addAttachment: state.addAttachment,
         removeAttachment: state.removeAttachment,
         clearAttachments: state.clearAttachments,
@@ -1798,19 +1800,21 @@ export default function ChatContainer({
                                     // / read_document_chunk tool calls. Subsequent
                                     // status comes from native_tool_call events.
                                     const charsStr = totalChars ? `${totalChars.toLocaleString()} chars` : '';
-                                    const msg = `Indexed ${charsStr} into ${totalChunks} ${chunkWord(totalChunks)} — model will query/read via tools`;
+                                    setStreamingStatus({ kind: 'indexed', text: `Indexed ${charsStr} into ${totalChunks} ${chunkWord(totalChunks)}` });
                                     continue;
                                 }
                                 if (phase === 'starting') {
-                                    let msg = 'Preparing content for parallel processing...';
-                                    if (tokenStr) msg = `Preparing ${tokenStr} for parallel processing...`;
+                                    let msg = 'Preparing content for parallel processing';
+                                    if (tokenStr) msg = `Preparing ${tokenStr} for parallel processing`;
                                     if (condensation) {
                                         msg += ` (condensed ${condensation.reductionPercent}%)`;
                                     }
+                                    setStreamingStatus({ kind: 'preparing', text: msg });
                                 } else if (phase === 'chunking') {
                                     let msg = `Splitting into ${totalChunks} ${chunkWord(totalChunks)}`;
                                     if (tokenStr) msg += ` — ${tokenStr}`;
                                     if (chunkTokens) msg += ` (~${chunkTokens.toLocaleString()} tokens/chunk)`;
+                                    setStreamingStatus({ kind: 'chunking', text: msg });
                                 } else if (phase === 'map') {
                                     const done = completedChunks + failedChunks;
                                     const pct = totalChunks > 0 ? Math.round((done / totalChunks) * 100) : 0;
@@ -1825,10 +1829,13 @@ export default function ChatContainer({
                                         if (failedChunks) msg += ` — ${failedChunks} failed`;
                                         if (elapsed) msg += ` — ${elapsed}`;
                                     }
+                                    setStreamingStatus({ kind: 'mapping', text: msg });
                                 } else if (phase === 'reduce') {
                                     let msg = `Synthesizing ${completedChunks} ${chunkWord(completedChunks)} into final response`;
                                     if (elapsed) msg += ` — ${elapsed} elapsed`;
+                                    setStreamingStatus({ kind: 'synthesizing', text: msg });
                                 } else if (phase === 'complete') {
+                                    setStreamingStatus(null);
                                 }
                                 continue; // Don't process this as a content event
                             }

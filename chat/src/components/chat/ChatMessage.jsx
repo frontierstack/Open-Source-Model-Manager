@@ -69,6 +69,20 @@ function describeRunningTool(toolCalls) {
     return null;
 }
 
+// Derive the most informative live label for the streaming bubble.
+// Precedence: running tool > server-driven phase (chunking/synth) >
+// reasoning-only > content streaming > fallback. This keeps the
+// indicator visible AT ALL TIMES while the assistant is producing
+// output, not just before the first content token.
+function deriveStreamingLabel({ toolCalls, streamingStatus, hasContent, hasReasoning }) {
+    const toolLabel = describeRunningTool(toolCalls);
+    if (toolLabel) return toolLabel;
+    if (streamingStatus && streamingStatus.text && !hasContent) return streamingStatus.text;
+    if (!hasContent && hasReasoning) return 'Thinking';
+    if (hasContent) return 'Generating';
+    return 'Thinking';
+}
+
 export default React.memo(function ChatMessage({
     id,
     role,
@@ -89,6 +103,7 @@ export default React.memo(function ChatMessage({
     searchResults,
     modelName,
     onOpenArtifacts,
+    streamingStatus,
 }) {
     const [copied, setCopied] = useState(false);
     const [reasoningExpanded, setReasoningExpanded] = useState(false);
@@ -346,7 +361,12 @@ export default React.memo(function ChatMessage({
 
                     {/* Body content */}
                     {isStreaming && !displayContent ? (
-                        <ThinkingIndicator label={describeRunningTool(toolCalls)} />
+                        <ThinkingIndicator label={deriveStreamingLabel({
+                            toolCalls,
+                            streamingStatus,
+                            hasContent: false,
+                            hasReasoning: !!displayReasoning,
+                        })} />
                     ) : bodyCollapsed ? (
                         (() => {
                             const cleaned = (displayContent || '')
@@ -388,6 +408,51 @@ export default React.memo(function ChatMessage({
                     ) : (
                         <MessageContent content={displayContent} isStreaming={isStreaming} />
                     )}
+
+                    {/* Live status footer — keeps the activity indicator
+                        visible WHILE content streams. Pre-content the
+                        ThinkingIndicator above is shown instead. Hidden
+                        once streaming finishes. */}
+                    {isStreaming && displayContent && !bodyCollapsed && (() => {
+                        const label = deriveStreamingLabel({
+                            toolCalls,
+                            streamingStatus,
+                            hasContent: true,
+                            hasReasoning: !!displayReasoning,
+                        });
+                        return (
+                            <div
+                                className="streaming-status-chip"
+                                aria-live="polite"
+                                style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    marginTop: 10,
+                                    padding: '4px 10px 4px 8px',
+                                    borderRadius: 999,
+                                    background: 'color-mix(in oklab, var(--accent, #6366f1) 10%, transparent)',
+                                    border: '1px solid color-mix(in oklab, var(--accent, #6366f1) 22%, transparent)',
+                                    color: 'var(--ink-3)',
+                                    fontSize: 11.5,
+                                    lineHeight: 1,
+                                    maxWidth: '100%',
+                                }}
+                            >
+                                <div className="flex items-center gap-1">
+                                    <div className="thinking-dot" style={{ animationDelay: '0s' }} />
+                                    <div className="thinking-dot" style={{ animationDelay: '0.2s' }} />
+                                    <div className="thinking-dot" style={{ animationDelay: '0.4s' }} />
+                                </div>
+                                <span style={{
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    maxWidth: 360,
+                                }}>{label}</span>
+                            </div>
+                        );
+                    })()}
 
                     {/* Inline charts — surface render_chart results in the
                         main response body so users don't have to expand the
