@@ -2080,10 +2080,10 @@ function fmtRunAt(iso) {
     return `${MONTH_FULL[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} at ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 function localIsoFromYMDHM(y, m, day, hh, mm) {
-    // Build a local-time ISO string the server can Date.parse() back to the
-    // same wallclock instant. e.g. (2026,5,1,9,30) → "2026-06-01T09:30:00"
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${y}-${pad(m + 1)}-${pad(day)}T${pad(hh)}:${pad(mm)}:00`;
+    // Build a UTC ISO (…Z) representing the user's chosen LOCAL wallclock so
+    // the server's Date.parse fires at the correct instant regardless of its
+    // own timezone (the webapp container is UTC; users may be elsewhere).
+    return new Date(y, m, day, hh, mm, 0, 0).toISOString();
 }
 function monthMatrix(year, month /* 0-11 */) {
     // 6×7 grid starting on Sunday. Cells outside the month are null.
@@ -2107,14 +2107,13 @@ function CalendarPickerModal({ initialWeekly, initialRunAt, onSave, onClose }) {
     const toggleDow = (dow) => setWeekly(w => { const next = { ...w }; if (next[dow] !== undefined) delete next[dow]; else next[dow] = defaultTime; return next; });
     const setDowTime = (dow, tm) => setWeekly(w => ({ ...w, [dow]: tm }));
     const applyDefaultToAll = () => setWeekly(w => { const next = {}; for (const k of Object.keys(w)) next[k] = defaultTime; return next; });
-    const dateKeyForCell = (day) => localIsoFromYMDHM(viewYear, viewMonth, day, 9, 0).slice(0, 10); // YYYY-MM-DD
-    const runAtForDay = (day) => {
-        const ymd = dateKeyForCell(day);
-        return runAt.find(iso => iso.startsWith(ymd));
-    };
+    // Compare in LOCAL time (runAt[] holds UTC ISO — direct prefix match would
+    // break across midnight in non-UTC timezones).
+    const ymdLocal = (iso) => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+    const cellYmd = (day) => `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const runAtForDay = (day) => { const ymd = cellYmd(day); return runAt.find(iso => ymdLocal(iso) === ymd); };
     const toggleDate = (day) => {
-        const ymd = dateKeyForCell(day);
-        const existing = runAt.find(iso => iso.startsWith(ymd));
+        const existing = runAtForDay(day);
         if (existing) setRunAt(r => r.filter(x => x !== existing));
         else {
             const [hh, mm] = parseHHMM(defaultTime);

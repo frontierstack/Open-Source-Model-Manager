@@ -9133,7 +9133,9 @@ async function automationSchedulerTick() {
                 // once per minute. Coexists with the legacy single d.cron.
                 const cronList = [];
                 if (Array.isArray(d.crons)) for (const c of d.crons) if (typeof c === 'string' && c.trim()) cronList.push(c.trim());
-                if (typeof d.cron === 'string' && d.cron.trim()) cronList.push(d.cron.trim());
+                // Tolerate the LLM emitting `cron` as an array — treat it the same as crons[].
+                if (Array.isArray(d.cron)) for (const c of d.cron) if (typeof c === 'string' && c.trim()) cronList.push(c.trim());
+                else if (typeof d.cron === 'string' && d.cron.trim()) cronList.push(d.cron.trim());
                 if (cronList.length) {
                     const anyMatch = cronList.some(c => { try { return automationEngine.cronMatches(c, now); } catch (_) { return false; } });
                     if (anyMatch) {
@@ -9158,7 +9160,10 @@ async function automationSchedulerTick() {
                         if (fired.has(iso)) continue;
                         // Fire if ts is in the current minute (now-60s..now+60s)
                         // OR within ±AUTOMATION_TICK_MS of now and not already fired.
-                        if (Math.abs(nowMs - ts) <= 60000) {
+                        // Fire on the FIRST tick whose wallclock has reached ts
+                        // (and within the last 60s, so we don't replay long-past
+                        // entries if state was lost). Never fire EARLY.
+                        if (nowMs >= ts && nowMs - ts <= 60000) {
                             due = true;
                             fired.add(iso);
                         } else if (ts < nowMs - 60000) {
