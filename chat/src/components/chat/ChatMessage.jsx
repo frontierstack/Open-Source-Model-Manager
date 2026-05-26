@@ -3,6 +3,7 @@ import { Copy, Check, ChevronDown, ChevronUp, Clock, Zap, PlayCircle, AlertCircl
 import MessageContent from './MessageContent';
 import ThinkingIndicator from './ThinkingIndicator';
 import ToolCallBlock from './ToolCallBlock';
+import ToolMilestones from './ToolMilestones';
 import SearchSources from './SearchSources';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
@@ -357,6 +358,16 @@ export default React.memo(function ChatMessage({
                                 </div>
                             )}
                         </div>
+                    )}
+
+                    {/* Live tool-call milestones — short breadcrumb per
+                        in-flight / completed tool so the user gets running
+                        narration of what the model is actually doing
+                        (separate from the bottom dot-chip). Only during
+                        streaming; the collapsed chip strip below takes
+                        over once the message is committed. */}
+                    {isStreaming && Array.isArray(toolCalls) && toolCalls.length > 0 && (
+                        <ToolMilestones toolCalls={toolCalls} />
                     )}
 
                     {/* Body content */}

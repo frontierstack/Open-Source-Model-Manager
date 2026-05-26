@@ -15268,7 +15268,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // and lets messages past the chunking gate that then get rejected by
         // the backend with "request exceeds context size". /tokenize is cheap
         // (one POST) and authoritative for exactly this model's tokenizer.
-        try {
+        // **Snappy path**: skip the precall entirely when the estimate is
+        // well below the ceiling. Dense-content undercount is at worst ~2.5×,
+        // so anything under (available / 2.8) is unconditionally safe and
+        // the precall would just add ~50-150ms of latency for no benefit.
+        // For tiny chat turns (≪1k tokens) this avoids the roundtrip
+        // entirely; for borderline-sized payloads we still tokenize.
+        const tokenizeSafetyCutoff = Math.floor(availableContextForInput / 2.8);
+        if (totalInputTokens >= tokenizeSafetyCutoff) try {
             const concatenatedText = chatMessages.map(m => {
                 if (typeof m.content === 'string') return m.content;
                 if (Array.isArray(m.content)) {
