@@ -14259,7 +14259,7 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const buf = Buffer.from(content, 'base64');
                 await require('fs').promises.writeFile(diskPath, buf);
 
-                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents.]`;
+                const marker = `[Archive uploaded: ${safeName} (archiveId=${archiveId}, size=${buf.length} bytes). Call the extract_archive tool with {"archiveId":"${archiveId}"} to list and read its contents — DO NOT extract via run_python/tarfile/zipfile/subprocess; extract_archive lands the files under /workspace/archives/${archiveId}/ where read_file, grep_code, and outline_file can see them, and returns inline text for small entries so you often won't need a follow-up tool call at all.]`;
                 return res.json({
                     type: 'archive',
                     filename: safeName,
