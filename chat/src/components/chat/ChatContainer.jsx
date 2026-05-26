@@ -237,6 +237,59 @@ function extractSources(toolName, result) {
     return null;
 }
 
+// Convert streamingToolCalls entries (server-shaped) into the chip shape
+// persisted on the assistant message. Shared by the normal commit path
+// and the continuation merge so both surface the chips that were live
+// during streaming.
+function buildNativeChipEntries(streamingToolCalls) {
+    const out = [];
+    if (!Array.isArray(streamingToolCalls)) return out;
+    for (const tc of streamingToolCalls) {
+        let argPreview = '';
+        let parsedArgsForChip = null;
+        if (tc.arguments) {
+            try {
+                parsedArgsForChip = JSON.parse(tc.arguments);
+                const pairs = Object.entries(parsedArgsForChip)
+                    .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`);
+                argPreview = pairs.join(', ');
+            } catch (_) {
+                argPreview = String(tc.arguments).slice(0, 80);
+            }
+        }
+        const sources = extractSources(tc.name, tc.result);
+        const tcChartSpec = (tc.result && typeof tc.result === 'object' && tc.result.chartSpec) ? tc.result.chartSpec : null;
+        const tcChartSummary = (tc.result && typeof tc.result === 'object' && typeof tc.result.summary === 'string') ? tc.result.summary : '';
+        const tcArtifacts = (
+            tc.result && typeof tc.result === 'object' && Array.isArray(tc.result._artifacts)
+                ? tc.result._artifacts
+                    .filter(a => a && typeof a === 'object' && typeof a.url === 'string' && typeof a.name === 'string')
+                    .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
+                : null
+        );
+        out.push({
+            type: 'native_tool_call',
+            label: tc.name || 'tool',
+            query: argPreview,
+            args: parsedArgsForChip,
+            durationMs: tc.durationMs,
+            status: tc.status === 'running' ? 'partial'
+                : tc.status === 'success' ? 'success'
+                : 'failed',
+            error: tc.error,
+            preview: tc.preview,
+            sources: sources && sources.length ? sources : undefined,
+            chartSpec: tcChartSpec || undefined,
+            chartSummary: tcChartSummary || undefined,
+            artifacts: tcArtifacts && tcArtifacts.length ? tcArtifacts : undefined,
+            sandboxed: tc.sandboxed,
+            sandboxSource: tc.sandboxSource,
+            sandboxNetwork: tc.sandboxNetwork,
+        });
+    }
+    return out;
+}
+
 // Map a tool name to one of ProcessingLogFeed's icon keys.
 function pickToolIcon(name) {
     if (!name) return 'cpu';
@@ -2100,66 +2153,8 @@ export default function ChatContainer({
             // Mapping to ToolCallBlock's shape: type='native_tool_call',
             // status=success/failed, resultCount=n/a, label="<name>(args)".
             const nativeToolCallEntries = useChatStore.getState().streamingToolCalls || [];
-            for (const tc of nativeToolCallEntries) {
-                let argPreview = '';
-                let parsedArgsForChip = null;
-                if (tc.arguments) {
-                    try {
-                        parsedArgsForChip = JSON.parse(tc.arguments);
-                        const pairs = Object.entries(parsedArgsForChip)
-                            .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`);
-                        argPreview = pairs.join(', ');
-                    } catch (_) {
-                        argPreview = String(tc.arguments).slice(0, 80);
-                    }
-                }
-                // Pull link references from the structured result when the
-                // tool was a search / URL fetch — promotes them to the
-                // top-level `sources` field so SearchSources can render
-                // clickable cards below the chip, matching the old
-                // client-side web-search UX.
-                const sources = extractSources(tc.name, tc.result);
-                // Lift the chartSpec / summary out of `tc.result` for
-                // render_chart calls so the chip carries just the chart
-                // payload — not the full tool result, which for other
-                // tools (fetch_url, web_search) would bloat the persisted
-                // message and SSE round-trips with redundant data.
-                const tcChartSpec = (tc.result && typeof tc.result === 'object' && tc.result.chartSpec) ? tc.result.chartSpec : null;
-                const tcChartSummary = (tc.result && typeof tc.result === 'object' && typeof tc.result.summary === 'string') ? tc.result.summary : '';
-                // Lift the _artifacts list out of the tool result so the chip
-                // (and the inline links rendered below the bubble) can show
-                // download buttons. Same shape as chartSpec lifting — keeps
-                // the persisted message lean by carrying just the artifact
-                // metadata, not the full tool_result payload.
-                const tcArtifacts = (
-                    tc.result && typeof tc.result === 'object' && Array.isArray(tc.result._artifacts)
-                        ? tc.result._artifacts
-                            .filter(a => a && typeof a === 'object' && typeof a.url === 'string' && typeof a.name === 'string')
-                            .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
-                        : null
-                );
-                toolCalls.push({
-                    type: 'native_tool_call',
-                    label: tc.name || 'tool',
-                    query: argPreview,
-                    args: parsedArgsForChip,
-                    durationMs: tc.durationMs,
-                    status: tc.status === 'running' ? 'partial'
-                        : tc.status === 'success' ? 'success'
-                        : 'failed',
-                    error: tc.error,
-                    preview: tc.preview,
-                    sources: sources && sources.length ? sources : undefined,
-                    chartSpec: tcChartSpec || undefined,
-                    chartSummary: tcChartSummary || undefined,
-                    artifacts: tcArtifacts && tcArtifacts.length ? tcArtifacts : undefined,
-                    // Sandbox metadata for the chip badge. Undefined when the
-                    // server didn't supply it (older stream or native tool
-                    // for which the policy couldn't be resolved).
-                    sandboxed: tc.sandboxed,
-                    sandboxSource: tc.sandboxSource,
-                    sandboxNetwork: tc.sandboxNetwork,
-                });
+            for (const chip of buildNativeChipEntries(nativeToolCallEntries)) {
+                toolCalls.push(chip);
             }
 
             // Use the messages we had at the start (updatedMessages) since the user may have switched
@@ -2629,6 +2624,19 @@ export default function ChatContainer({
             const currentActiveId = useChatStore.getState().activeConversationId;
             const userSwitchedConversation = currentActiveId !== conversationId;
 
+            // Fold any tool-call chips that fired during this continuation
+            // turn into the merged message. Without this the chips render
+            // live (from streamingToolCalls) but disappear on commit because
+            // the spread of originalMsg only carries the pre-continuation
+            // toolCalls.
+            const continuationChips = buildNativeChipEntries(
+                useChatStore.getState().streamingToolCalls || []
+            );
+            const mergedToolCalls = [
+                ...(Array.isArray(originalMsg.toolCalls) ? originalMsg.toolCalls : []),
+                ...continuationChips,
+            ];
+
             // Merge continuation content into the original message and restore it
             const mergedMsg = {
                 ...originalMsg,
@@ -2638,6 +2646,7 @@ export default function ChatContainer({
                 reasoning: finalReasoning
                     ? (originalReasoning ? originalReasoning + '\n\n' + finalReasoning : finalReasoning)
                     : originalReasoning || undefined,
+                toolCalls: mergedToolCalls.length > 0 ? mergedToolCalls : undefined,
                 responseTime: (originalMsg.responseTime || 0) + responseTime,
                 tokenCount: ((originalMsg.tokenCount || 0) + (tokenCount > 0 ? tokenCount : 0)) || undefined,
                 needsContinuation,
