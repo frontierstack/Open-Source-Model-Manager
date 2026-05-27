@@ -9594,6 +9594,21 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
             console.log(`[Agent ${agentId}] Executing skill: ${skillName}`);
         }
 
+        // Broadcast to Process Logs so API-key callers (Pi, scripts) are
+        // visible in the webapp Logs tab — previously these only hit stdout
+        // and never surfaced in the UI, so users couldn't tell whether Pi
+        // was actually invoking tools against the server.
+        if (req.apiKeyData) {
+            try {
+                broadcast({
+                    type: 'log',
+                    message: `[Pi/API] ${req.apiKeyData.name || 'key'} → skill ${skillName}`,
+                    level: 'info',
+                    targetUserId: req.userId
+                });
+            } catch (_) { /* never break execution on log failure */ }
+        }
+
         let result;
 
         // Bearer-key (Pi) and other API-key callers get one persistent,
@@ -9630,6 +9645,18 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
         if (agentId) {
             result.executedBy = agentId;
             result.executedAt = new Date().toISOString();
+        }
+
+        if (req.apiKeyData) {
+            try {
+                const ok = !(result && result.success === false);
+                broadcast({
+                    type: 'log',
+                    message: `[Pi/API] skill ${skillName} ${ok ? 'completed' : 'failed'}`,
+                    level: ok ? 'success' : 'warning',
+                    targetUserId: req.userId
+                });
+            } catch (_) { /* ignore */ }
         }
 
         res.json(result);
@@ -20473,6 +20500,22 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             console.log(`[Proxy] Stream parameter:`, streamParam, `(type: ${typeof streamParam}, isStreaming: ${isStreaming})`);
         }
 
+        // Surface external chat-completions calls (Pi, OpenAI SDK clients,
+        // scripts) in the Process Logs tab. Skip /v1/models polls (handled
+        // above) — they're noisy and never carry usage.
+        if (req.apiKeyData && req.path !== '/v1/models') {
+            try {
+                const msgCount = Array.isArray(req.body?.messages) ? req.body.messages.length : 0;
+                const toolCount = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
+                broadcast({
+                    type: 'log',
+                    message: `[Pi/API] ${authName} → ${req.method} ${req.path} (${msgCount} msgs${toolCount ? `, ${toolCount} tools` : ''}${isStreaming ? ', stream' : ''})`,
+                    level: 'info',
+                    targetUserId: req.userId
+                });
+            } catch (_) { /* ignore */ }
+        }
+
         if (isStreaming) {
             // Handle streaming response
             console.log('[Proxy] Streaming request detected');
@@ -20572,6 +20615,14 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         stats.tokenCount += lastSeenTotalTokens;
                         apiKeyUsageStats.set(req.apiKeyData.id, stats);
                         console.log(`[Proxy] Tracked ${lastSeenTotalTokens} tokens (stream) for ${req.apiKeyData.name}`);
+                        try {
+                            broadcast({
+                                type: 'log',
+                                message: `[Pi/API] ${req.apiKeyData.name} ← ${lastSeenTotalTokens} tokens`,
+                                level: 'success',
+                                targetUserId: req.userId
+                            });
+                        } catch (_) { /* ignore */ }
                     }
                 }
                 if (!res.writableEnded) {
@@ -20606,6 +20657,14 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     }
                     apiKeyUsageStats.set(req.apiKeyData.id, stats);
                     console.log(`[Proxy] Tracked ${tokens} tokens for ${req.apiKeyData.name}`);
+                    try {
+                        broadcast({
+                            type: 'log',
+                            message: `[Pi/API] ${req.apiKeyData.name} ← ${tokens} tokens`,
+                            level: 'success',
+                            targetUserId: req.userId
+                        });
+                    } catch (_) { /* ignore */ }
                 }
             }
 

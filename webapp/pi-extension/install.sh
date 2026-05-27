@@ -100,14 +100,14 @@ if ! have curl; then
 fi
 log "  curl present: $(curl --version | head -1)"
 
-# ---------- step 3: ensure Node >= 20 ----------
-log "Step 3/6: Node >= 20"
+# ---------- step 3: ensure Node >= 22 (Pi >=0.75 requires 22.19+) ----------
+log "Step 3/6: Node >= 22.19"
 maj=$(node_major)
-if [ "$maj" -ge 20 ] 2>/dev/null; then
+if [ "$maj" -ge 22 ] 2>/dev/null; then
     log "  Node $(node -v) detected — OK"
 else
     if [ "$maj" -gt 0 ]; then
-        warn "  Node $(node -v) too old (need >=20); upgrading."
+        warn "  Node $(node -v) too old (Pi >=0.75 needs Node >=22.19); upgrading."
     else
         log "  Node not installed; installing Node 22 LTS"
     fi
@@ -127,11 +127,11 @@ else
             printf '\n=== apt install nodejs ===\n'
             sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y nodejs
         } >>"$NODE_LOG" 2>&1
-        if [ "$(node_major)" -ge 20 ] 2>/dev/null; then
+        if [ "$(node_major)" -ge 22 ] 2>/dev/null; then
             installed=1
             ok "  installed system Node $(node -v)"
         else
-            warn "  NodeSource path didn't produce Node>=20; tail of log:"
+            warn "  NodeSource path didn't produce Node>=22; tail of log:"
             tail -8 "$NODE_LOG" | sed 's/^/    /' >&2
         fi
     fi
@@ -167,21 +167,21 @@ else
         # Some MITM proxies break nvm's fetch of nodejs.org/dist/index.tab,
         # which makes the `22` alias unresolvable. Fall back to pinned
         # Node 22 LTS releases (try latest first, then known-stable).
-        if [ "$(node_major)" -lt 20 ] 2>/dev/null || ! have node; then
-            for ver in 22.11.0 22.9.0 22.6.0; do
+        if [ "$(node_major)" -lt 22 ] 2>/dev/null || ! have node; then
+            for ver in 22.20.0 22.19.0 22.11.0; do
                 log "  alias '22' unresolvable; trying pinned v$ver"
                 {
                     printf '\n=== nvm install %s ===\n' "$ver"
                     NODE_TLS_REJECT_UNAUTHORIZED=0 nvm install "$ver"
                 } >>"$NODE_LOG" 2>&1
-                if [ "$(node_major)" -ge 20 ] 2>/dev/null; then break; fi
+                if [ "$(node_major)" -ge 22 ] 2>/dev/null; then break; fi
             done
         fi
         # Final fallback: direct tarball install if nvm can't reach
         # nodejs.org/dist/ at all.
-        if [ "$(node_major)" -lt 20 ] 2>/dev/null || ! have node; then
+        if [ "$(node_major)" -lt 22 ] 2>/dev/null || ! have node; then
             log "  nvm can't reach nodejs.org/dist/; trying direct tarball install"
-            tarball_ver=22.11.0
+            tarball_ver=22.20.0
             arch=$(uname -m); case "$arch" in
                 x86_64) arch=x64 ;;
                 aarch64|arm64) arch=arm64 ;;
@@ -196,12 +196,12 @@ else
             } >>"$NODE_LOG" 2>&1
             rm -rf "$tdir"
         fi
-        if [ "$(node_major)" -ge 20 ] 2>/dev/null; then
+        if [ "$(node_major)" -ge 22 ] 2>/dev/null; then
             installed=1
             nvm use "$(node -v | sed 's/^v//')" >>"$NODE_LOG" 2>&1 || true
             ok "  installed Node $(node -v)"
         else
-            err "Could not install Node>=20 by any path; tail of log:"
+            err "Could not install Node>=22 by any path; tail of log:"
             tail -30 "$NODE_LOG" | sed 's/^/    /' >&2
             err "Full log: $NODE_LOG"
             exit 1
@@ -209,7 +209,7 @@ else
     fi
 
     if [ "$installed" = 0 ]; then
-        err "Could not install Node >=20 by any path. Aborting."
+        err "Could not install Node >=22 by any path. Aborting."
         exit 1
     fi
 fi
@@ -218,10 +218,23 @@ fi
 log "Step 4/6: Pi CLI"
 npm config set strict-ssl false >/dev/null 2>&1 || true
 
-if have pi && pi --version >/dev/null 2>&1; then
-    log "  Pi already installed: $(pi --version)"
+pi_ver=""
+if have pi && pi --version >/dev/null 2>&1; then pi_ver="$(pi --version 2>/dev/null | tr -d '[:space:]')"; fi
+# Pi <0.75 is missing context-overflow auto-recovery + supply-chain hardening
+# and predates the Node 22.19 requirement bump; force-upgrade.
+pi_needs_upgrade=0
+if [ -n "$pi_ver" ]; then
+    pi_minor="$(printf '%s' "$pi_ver" | cut -d. -f2)"
+    [ "${pi_minor:-0}" -ge 75 ] 2>/dev/null || pi_needs_upgrade=1
+fi
+if [ -n "$pi_ver" ] && [ "$pi_needs_upgrade" = 0 ]; then
+    log "  Pi already installed: $pi_ver"
 else
-    log "  installing @earendil-works/pi-coding-agent globally"
+    if [ -n "$pi_ver" ]; then
+        log "  Pi $pi_ver is older than 0.75 — upgrading to latest"
+    else
+        log "  installing @earendil-works/pi-coding-agent globally"
+    fi
     # Capture combined npm output to a log so failures are DIAGNOSABLE. The
     # old `>/dev/null 2>&1` hid the real error (e.g. "RangeError: Maximum call
     # stack size exceeded" from a broken npm cache / too-old npm), leaving only
@@ -230,10 +243,10 @@ else
     pi_npm_install() {
         # nvm globals are user-owned (no sudo); otherwise try sudo then plain.
         if [ -n "${NVM_DIR:-}" ] && [ -f "$NVM_DIR/nvm.sh" ]; then
-            npm install -g @earendil-works/pi-coding-agent >"$PI_NPM_LOG" 2>&1
+            npm install -g @earendil-works/pi-coding-agent@latest >"$PI_NPM_LOG" 2>&1
         else
-            sudo_run npm install -g @earendil-works/pi-coding-agent >"$PI_NPM_LOG" 2>&1 \
-                || npm install -g @earendil-works/pi-coding-agent >"$PI_NPM_LOG" 2>&1
+            sudo_run npm install -g @earendil-works/pi-coding-agent@latest >"$PI_NPM_LOG" 2>&1 \
+                || npm install -g @earendil-works/pi-coding-agent@latest >"$PI_NPM_LOG" 2>&1
         fi
     }
     if pi_npm_install; then
