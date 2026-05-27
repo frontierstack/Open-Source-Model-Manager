@@ -54,6 +54,11 @@ services:
       # "Failed to initialize NVML: Unknown Error" and GPU monitoring breaks.
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Container timezone — drives Node's `new Date()` local time, which the
+      # automation scheduler uses to evaluate cron expressions. Without this
+      # the container runs UTC and "0 6 * * *" fires at 06:00 UTC instead of
+      # 6 AM Central. Override via TZ=... in .env if you're not in Chicago.
+      - TZ=${TZ:-America/Chicago}
       # Additional proxy settings (uncomment if needed):
       # - SSL_CERT_FILE=${SSL_CERT_FILE:-}
       # - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}

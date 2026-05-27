@@ -9134,8 +9134,11 @@ async function automationSchedulerTick() {
                 const cronList = [];
                 if (Array.isArray(d.crons)) for (const c of d.crons) if (typeof c === 'string' && c.trim()) cronList.push(c.trim());
                 // Tolerate the LLM emitting `cron` as an array — treat it the same as crons[].
-                if (Array.isArray(d.cron)) for (const c of d.cron) if (typeof c === 'string' && c.trim()) cronList.push(c.trim());
-                else if (typeof d.cron === 'string' && d.cron.trim()) cronList.push(d.cron.trim());
+                if (Array.isArray(d.cron)) {
+                    for (const c of d.cron) if (typeof c === 'string' && c.trim()) cronList.push(c.trim());
+                } else if (typeof d.cron === 'string' && d.cron.trim()) {
+                    cronList.push(d.cron.trim());
+                }
                 if (cronList.length) {
                     const anyMatch = cronList.some(c => { try { return automationEngine.cronMatches(c, now); } catch (_) { return false; } });
                     if (anyMatch) {
