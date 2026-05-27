@@ -15000,12 +15000,17 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // Broadcast to the Process Logs tab so chat activity shows up in
         // real time alongside model / download logs. The completion log
         // already exists below; this covers the start and prep phases.
+        // Modern arrow-style logs: `[Chat] <who> → <model> (N msgs)` mirrors
+        // the Pi/API format so the Logs tab reads consistently across all
+        // chat surfaces.
+        const chatWho = req.user?.username || req.apiKeyData?.name || 'user';
         const logChatActivity = (message, level = 'info') => {
             try {
-                broadcast({ type: 'log', message: `[Chat] ${message}`, level });
+                broadcast({ type: 'log', message: `[Chat] ${message}`, level, targetUserId: req.userId });
             } catch (e) { /* broadcast is best-effort */ }
         };
-        logChatActivity(`Request received for ${targetModel}${streamingConversationId ? ` (conv ${streamingConversationId.substring(0, 8)})` : ''}`);
+        const msgCount = Array.isArray(req.body?.messages) ? req.body.messages.length : 0;
+        logChatActivity(`${chatWho} → ${targetModel} (${msgCount} msgs)`);
 
         // Materialize this turn's attachments to /workspace/uploads/ before
         // the model runs, so a tool call in the very first iteration can see
@@ -17140,7 +17145,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const finalizedCalls = chatTools.finalizeToolCalls(accumulatedToolCalls);
                     if (!finalizedCalls.length) break; // no valid calls — bail
 
-                    logChatActivity(`Tool-call round ${toolCallRound + 1}: ${finalizedCalls.length} call(s)`);
+                    const toolNames = finalizedCalls.map(c => c?.function?.name || c?.name).filter(Boolean).join(', ');
+                    logChatActivity(`→ ${finalizedCalls.length} tool${finalizedCalls.length === 1 ? '' : 's'}${toolNames ? `: ${toolNames}` : ''} (round ${toolCallRound + 1})`);
                     // toolPolicy was hoisted to before the outer loop so the
                     // (potentially large) skills file is read once per request
                     // instead of once per round. policyCache memoizes per name.
@@ -17930,10 +17936,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // Broadcast chat request completion to logs
             const chatResponseTimeMs = Date.now() - streamStartTime;
             const chatTotalTokens = promptTokens + completionTokens;
+            const elapsed = chatResponseTimeMs >= 1000 ? `${(chatResponseTimeMs / 1000).toFixed(1)}s` : `${chatResponseTimeMs}ms`;
             broadcast({
                 type: 'log',
-                message: `[Chat] ${targetModel} | ${chatTotalTokens} tokens (${promptTokens} prompt + ${completionTokens} completion) | ${chatResponseTimeMs >= 1000 ? (chatResponseTimeMs / 1000).toFixed(1) + 's' : chatResponseTimeMs + 'ms'} | Conversation: ${streamingConversationId?.substring(0, 8) || 'N/A'}`,
-                level: 'info'
+                message: `[Chat] ${chatWho} ← ${chatTotalTokens} tokens (${promptTokens}+${completionTokens}, ${elapsed})`,
+                level: 'success',
+                targetUserId: req.userId
             });
 
             try {
