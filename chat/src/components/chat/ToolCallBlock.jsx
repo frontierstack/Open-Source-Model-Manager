@@ -12,14 +12,7 @@ import ArtifactList from './ArtifactList';
  * preview, error details, and any structured sources.
  */
 export default function ToolCallBlock({ tool }) {
-    // Auto-expand failed calls AND chart results on first render. Charts
-    // are the whole point of the call — the user shouldn't have to click
-    // the chip to see the rendered chart. Still toggleable to collapse.
-    const hasChart = !!tool?.chartSpec;
-    const hasArtifactsOnTool = Array.isArray(tool?.artifacts) && tool.artifacts.length > 0;
-    // Auto-expand on artifacts too — when the model just produced a file the
-    // user wants the download button visible without having to click the chip.
-    const [open, setOpen] = useState(tool?.status === 'failed' || hasChart || hasArtifactsOnTool);
+    const [open, setOpen] = useState(false);
     if (!tool) return null;
 
     const {

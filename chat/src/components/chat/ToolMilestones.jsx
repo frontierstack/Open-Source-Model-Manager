@@ -123,8 +123,28 @@ function doneDetail(tc) {
     return '';
 }
 
+// Collapse consecutive same-name calls into a single line carrying the
+// LAST subject + a count badge. A group with any running call shows the
+// running spinner; any failed call flips the whole group to failed;
+// otherwise it's a completed group. Keeps long sequences from spamming
+// the bubble (e.g. 5× "Ran Git show commit · 55f6e21…" → one line ×5).
+function groupMilestones(toolCalls) {
+    const groups = [];
+    for (const tc of toolCalls) {
+        const name = tc.label || tc.name || tc.type || 'tool';
+        const last = groups[groups.length - 1];
+        if (last && last.name === name) {
+            last.calls.push(tc);
+        } else {
+            groups.push({ name, calls: [tc] });
+        }
+    }
+    return groups;
+}
+
 export default function ToolMilestones({ toolCalls }) {
     if (!Array.isArray(toolCalls) || toolCalls.length === 0) return null;
+    const groups = groupMilestones(toolCalls);
 
     return (
         <div
@@ -138,16 +158,23 @@ export default function ToolMilestones({ toolCalls }) {
                 paddingLeft: 2,
             }}
         >
-            {toolCalls.map((tc, i) => {
-                const name = tc.label || tc.name || tc.type || 'tool';
-                const done = tc.status === 'success';
-                const failed = tc.status === 'failed';
-                const running = !done && !failed;
+            {groups.map((g, i) => {
+                const count = g.calls.length;
+                const anyRunning = g.calls.some(c => !(c.status === 'success' || c.status === 'failed'));
+                const anyFailed  = g.calls.some(c => c.status === 'failed');
+                const running = anyRunning;
+                const failed  = !running && anyFailed;
+                const done    = !running && !failed;
+                const last = g.calls[g.calls.length - 1];
+                const name = g.name;
                 const verb = verbFor(name, done || failed);
-                const subject = extractSubject(tc);
-                const detail = done ? doneDetail(tc) : '';
-                const dur = (done || failed) && tc.durationMs
-                    ? `${tc.durationMs < 1000 ? tc.durationMs + 'ms' : (tc.durationMs / 1000).toFixed(1) + 's'}`
+                const subject = extractSubject(last);
+                const detail = done && count === 1 ? doneDetail(last) : '';
+                const totalMs = (done || failed)
+                    ? g.calls.reduce((a, c) => a + (c.durationMs || 0), 0)
+                    : 0;
+                const dur = totalMs > 0
+                    ? `${totalMs < 1000 ? totalMs + 'ms' : (totalMs / 1000).toFixed(1) + 's'}`
                     : '';
 
                 return (
@@ -183,6 +210,20 @@ export default function ToolMilestones({ toolCalls }) {
                             )}
                         </span>
                         <span style={{ fontWeight: running ? 500 : 400 }}>{verb}</span>
+                        {count > 1 && (
+                            <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                padding: '0 6px',
+                                height: 15,
+                                borderRadius: 7,
+                                background: 'color-mix(in oklab, var(--accent, #6366f1) 14%, transparent)',
+                                color: 'var(--accent, #6366f1)',
+                                fontSize: 10.5,
+                                fontWeight: 600,
+                                fontVariantNumeric: 'tabular-nums',
+                            }}>×{count}</span>
+                        )}
                         {subject && (
                             <>
                                 <span style={{ color: 'var(--ink-4)' }}>·</span>

@@ -10,6 +10,23 @@ import ChartBlock from './ChartBlock';
 import ArtifactList from './ArtifactList';
 import { useChatStore } from '../../stores/useChatStore';
 
+// Break a reasoning blob into discrete thought-steps so long chains of
+// "Let me also check…" / "Now I'll…" don't render as one giant wall.
+// Splits on paragraph breaks first; if the model emitted no paragraphs,
+// splits on sentence boundaries that lead into a new cue phrase.
+const STEP_CUE = /(?:Let me|Let's|Now|Next|Actually|Wait|Hmm|Okay|OK|First|Then|So|Alright|But|However|Looking|Checking|I(?:'| a)?ll|I need|I should|I'll|I'm going|Maybe|Perhaps|Finally)\b/;
+function splitReasoningIntoSteps(text) {
+    if (!text) return [];
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    let parts = trimmed.split(/\n\s*\n+/).map(s => s.trim()).filter(Boolean);
+    if (parts.length < 2) {
+        const cueSplit = trimmed.split(new RegExp(`(?<=[.!?])\\s+(?=${STEP_CUE.source})`));
+        if (cueSplit.length >= 3) parts = cueSplit.map(s => s.trim()).filter(Boolean);
+    }
+    return parts;
+}
+
 // Map a tool name to a short present-tense verb phrase shown next to
 // the 3-dot ThinkingIndicator while that tool is running. Falls back
 // to humanizing the snake_case name (e.g. extract_archive → "Extract
@@ -117,7 +134,7 @@ export default React.memo(function ChatMessage({
     // already-loaded messages) they collapse to the summary line.
     // For chart calls the chart itself surfaces in the main bubble
     // body anyway, so the chip strip is purely a transparency footer.
-    const [toolsExpanded, setToolsExpanded] = useState(!!isStreaming);
+    const [toolsExpanded, setToolsExpanded] = useState(false);
     const prevStreamingRef = useRef(isStreaming);
     React.useEffect(() => {
         if (prevStreamingRef.current && !isStreaming) {
@@ -336,27 +353,64 @@ export default React.memo(function ChatMessage({
                                     : <ChevronDown style={{ width: 12, height: 12 }} strokeWidth={2} />
                                 }
                             </button>
-                            {reasoningExpanded && (
-                                <div style={{
-                                    marginTop: 6,
-                                    padding: '10px 12px',
-                                    borderRadius: 6,
-                                    background: 'var(--bg-2)',
-                                    border: '1px solid var(--rule-2)',
-                                    maxHeight: 260,
-                                    overflowY: 'auto',
-                                }}>
-                                    <p style={{
-                                        fontSize: 13, color: 'var(--ink-3)',
-                                        fontStyle: 'italic',
-                                        whiteSpace: 'pre-wrap',
-                                        lineHeight: 1.55,
-                                        margin: 0,
+                            {reasoningExpanded && (() => {
+                                const steps = splitReasoningIntoSteps(displayReasoning);
+                                const structured = steps.length >= 3;
+                                return (
+                                    <div style={{
+                                        marginTop: 6,
+                                        padding: '10px 12px',
+                                        borderRadius: 6,
+                                        background: 'var(--bg-2)',
+                                        border: '1px solid var(--rule-2)',
+                                        maxHeight: 320,
+                                        overflowY: 'auto',
                                     }}>
-                                        {displayReasoning}
-                                    </p>
-                                </div>
-                            )}
+                                        {structured ? (
+                                            <ol style={{
+                                                listStyle: 'none',
+                                                margin: 0,
+                                                padding: 0,
+                                                fontSize: 13,
+                                                color: 'var(--ink-3)',
+                                                fontStyle: 'italic',
+                                                lineHeight: 1.55,
+                                            }}>
+                                                {steps.map((step, i) => (
+                                                    <li key={i} style={{
+                                                        display: 'flex',
+                                                        gap: 10,
+                                                        padding: '6px 0',
+                                                        borderTop: i === 0 ? 0 : '1px dashed var(--rule-2)',
+                                                    }}>
+                                                        <span style={{
+                                                            flexShrink: 0,
+                                                            color: 'var(--ink-4)',
+                                                            fontStyle: 'normal',
+                                                            fontVariantNumeric: 'tabular-nums',
+                                                            fontSize: 11,
+                                                            minWidth: 18,
+                                                            paddingTop: 2,
+                                                        }}>{i + 1}.</span>
+                                                        <span style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{step}</span>
+                                                    </li>
+                                                ))}
+                                            </ol>
+                                        ) : (
+                                            <p style={{
+                                                fontSize: 13, color: 'var(--ink-3)',
+                                                fontStyle: 'italic',
+                                                whiteSpace: 'pre-wrap',
+                                                lineHeight: 1.55,
+                                                margin: 0,
+                                            }}>
+                                                {displayReasoning}
+                                            </p>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+
                         </div>
                     )}
 
