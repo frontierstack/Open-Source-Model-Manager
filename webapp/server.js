@@ -17196,21 +17196,53 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         // the same rate-limited backend.
                         const webSearchBlocked = call.function.name === 'web_search' &&
                             toolCallHistory.filter(h => h.toolName === 'web_search' && h.searchBlocked).length >= 2;
-                        if (webSearchBlocked) {
+                        // Search-engine scrapling loop-breaker. If the model is
+                        // pounding scrapling_fetch against duckduckgo / bing /
+                        // brave / google search pages, each URL looks unique to
+                        // the (name,args) fingerprint detector but the model is
+                        // burning calls on JS-only result pages instead of
+                        // fetching the actual artifact it claimed it would
+                        // fetch. After 2 such hits, refuse and hard-name the
+                        // pivot (registry tarball / source URL).
+                        const SEARCH_ENGINE_HOST_RE = /^(?:https?:\/\/)?(?:www\.|search\.)?(?:duckduckgo\.com\/html|bing\.com\/search|search\.brave\.com\/search|google\.com\/search|google\.[a-z.]+\/search|yandex\.com\/search|search\.yahoo\.com)/i;
+                        let scraplingSearchUrl = null;
+                        if (call.function.name === 'scrapling_fetch') {
+                            try {
+                                const u = String(JSON.parse(call.function.arguments || '{}').url || '');
+                                if (SEARCH_ENGINE_HOST_RE.test(u)) scraplingSearchUrl = u;
+                            } catch { /* */ }
+                        }
+                        const scraplingSearchLoop = !!scraplingSearchUrl &&
+                            toolCallHistory.filter(h => h.toolName === 'scrapling_fetch' && h.searchEngineHost).length >= 2;
+                        if (webSearchBlocked || scraplingSearchLoop) {
                             let q = '';
-                            try { q = String(JSON.parse(call.function.arguments || '{}').query || '').slice(0, 200); } catch { /* */ }
+                            try {
+                                if (call.function.name === 'web_search') {
+                                    q = String(JSON.parse(call.function.arguments || '{}').query || '').slice(0, 200);
+                                } else if (scraplingSearchUrl) {
+                                    const m = scraplingSearchUrl.match(/[?&]q=([^&#]+)/i);
+                                    if (m) q = decodeURIComponent(m[1].replace(/\+/g, ' ')).slice(0, 200);
+                                }
+                            } catch { /* */ }
                             const qEnc = encodeURIComponent(q || '');
+                            const leadLine = scraplingSearchLoop
+                                ? `STOP routing scrapling_fetch through search-engine pages — DuckDuckGo / Bing / Brave / Google all return JS-only result lists that have no real content for you to read. `
+                                : `STOP calling web_search — it has been rate-limited multiple times this turn and will keep failing for the rest of this turn. `;
                             const nudgeText =
-                                `STOP calling web_search — it has been rate-limited multiple times this turn and will keep failing for the rest of this turn. ` +
-                                `Call scrapling_fetch instead. Scrapling uses anti-bot bypass (StealthyFetcher / Playwright) and routinely succeeds where the search APIs are blocked. ` +
-                                `Example call: scrapling_fetch({"url":"https://duckduckgo.com/html/?q=${qEnc}"}). ` +
-                                `Other search-engine URLs that work with scrapling_fetch: ` +
-                                `https://www.bing.com/search?q=${qEnc} , https://search.brave.com/search?q=${qEnc} . ` +
-                                `If you already know the likely source domain (lyrics on genius.com, docs on a vendor site, etc.), call scrapling_fetch on the domain directly instead of routing through a search engine.`;
+                                leadLine +
+                                `Pivot to the ARTIFACT or KNOWN SOURCE instead of a search loop:\n` +
+                                `1. If you are investigating a named package, fetch the registry record directly with fetch_url, then download and extract the tarball:\n` +
+                                `   - npm: GET https://registry.npmjs.org/<pkg> (JSON metadata, find dist.tarball) → fetch_url that .tgz → tar_extract / extract_archive → read_file on the unpacked files.\n` +
+                                `   - PyPI: GET https://pypi.org/pypi/<pkg>/json → urls[*].url.\n` +
+                                `   - GitHub: fetch_url https://github.com/<owner>/<repo>/archive/refs/heads/<branch>.tar.gz (or use a specific commit/tag).\n` +
+                                `2. If you already know the likely source domain (vendor docs, advisory site, blog), call fetch_url or scrapling_fetch on THAT domain directly — never a search-engine URL.\n` +
+                                `3. Only if neither applies, retry scrapling_fetch on a search engine ONCE with a narrower query: scrapling_fetch({"url":"https://duckduckgo.com/html/?q=${qEnc}"}).\n` +
+                                `Do what you told the user you were going to do — if you said "let me fetch the tarball / package / file directly", do that next, not another search.`;
                             const nudge = {
-                                error: 'web_search_blocked_use_scrapling',
+                                error: scraplingSearchLoop ? 'scrapling_search_loop_pivot_to_artifact' : 'web_search_blocked_pivot_to_artifact',
                                 message: nudgeText,
                                 rate_limited_count: toolCallHistory.filter(h => h.toolName === 'web_search' && h.searchBlocked).length,
+                                search_engine_scrapes: toolCallHistory.filter(h => h.toolName === 'scrapling_fetch' && h.searchEngineHost).length,
                             };
                             resultMsg = {
                                 tool_call_id: call.id,
@@ -17218,7 +17250,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 name: call.function.name,
                                 content: JSON.stringify(nudge),
                             };
-                            console.warn(`[Chat Stream] web_search blocked after ${nudge.rate_limited_count} rate-limit failures; redirecting model to scrapling_fetch`);
+                            console.warn(`[Chat Stream] ${nudge.error}: ${nudge.rate_limited_count} web_search blocks, ${nudge.search_engine_scrapes} search-engine scrapes`);
                         } else if (targetRepeat || argRepeat) {
                             const fileTools = new Set(['read_file', 'tail_file', 'head_file']);
                             const webTools = new Set(['web_search', 'fetch_url']);
@@ -17318,11 +17350,22 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                                     parsed?.count === 0;
                                 } catch (_) { /* non-JSON content — treat as not blocked */ }
                             }
+                            // Flag scrapling_fetch calls whose URL is a search-
+                            // engine results page; the loop-breaker above keys
+                            // on this to refuse after 2 such hits.
+                            let searchEngineHost = false;
+                            if (call.function.name === 'scrapling_fetch') {
+                                try {
+                                    const u = String(JSON.parse(call.function.arguments || '{}').url || '');
+                                    searchEngineHost = SEARCH_ENGINE_HOST_RE.test(u);
+                                } catch (_) { /* */ }
+                            }
                             toolCallHistory.push({
                                 fp,
                                 resultHash: rh,
                                 toolName: call.function.name,
                                 searchBlocked,
+                                searchEngineHost,
                             });
                             // Cap history so a long session doesn't grow unbounded.
                             if (toolCallHistory.length > 40) toolCallHistory.shift();
