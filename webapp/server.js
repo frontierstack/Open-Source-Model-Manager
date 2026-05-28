@@ -20559,6 +20559,14 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 };
             }
 
+            // Abort the upstream generation if the client (Pi, OpenAI SDK,
+            // etc.) disconnects mid-stream. Without this the backend keeps
+            // decoding to max_tokens for a dead connection; on a single-slot
+            // llama.cpp that abandoned generation BLOCKS the next request,
+            // so the client's next turn sits "processing" while the model
+            // burns cycles on work nobody will read. Destroying the upstream
+            // socket makes llama.cpp/sglang cancel the slot immediately.
+            const upstreamAbort = new AbortController();
             const response = await axios({
                 method: req.method,
                 url: targetUrl,
@@ -20568,7 +20576,8 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 },
                 responseType: 'stream',
                 // Prevent axios from decompressing - let it pass through raw
-                decompress: false
+                decompress: false,
+                signal: upstreamAbort.signal,
             });
 
             // Set chunked transfer encoding for streaming
@@ -20599,6 +20608,21 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             // chunks (some backends emit them) don't double-count the key.
             let lineBuffer = '';
             let lastSeenTotalTokens = null;
+            let upstreamDone = false;
+            let clientAborted = false;
+
+            // Client gone before the stream finished → kill the upstream so
+            // the backend stops generating and frees the slot for the next
+            // turn. res 'close' fires on both normal end and disconnect, so
+            // gate on upstreamDone to avoid aborting an already-finished call.
+            res.on('close', () => {
+                if (upstreamDone) return;
+                clientAborted = true;
+                console.log(`[Proxy] Client disconnected mid-stream — aborting upstream for ${authName}`);
+                try { upstreamAbort.abort(); } catch (_) { /* ignore */ }
+                try { response.data.destroy(); } catch (_) { /* ignore */ }
+            });
+
             response.data.on('data', (chunk) => {
                 try { res.write(chunk); } catch (_) { /* client disconnected */ }
                 try {
@@ -20621,6 +20645,14 @@ app.all('/v1/*', requireAuth, async (req, res) => {
 
             // Handle stream errors
             response.data.on('error', (error) => {
+                upstreamDone = true;
+                // The abort/destroy we issue on client disconnect surfaces here
+                // as an AbortError/ECONNRESET — expected teardown, not a fault.
+                if (clientAborted) {
+                    console.log('[Proxy] Upstream stream closed after client disconnect');
+                    if (!res.writableEnded) res.end();
+                    return;
+                }
                 console.error('[Proxy] Stream error:', error.message);
                 if (!res.headersSent) {
                     res.status(500).json({ error: 'Stream error', details: error.message });
@@ -20633,6 +20665,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             // final chunk. This is the missing leg that left /v1/* streaming
             // requests recording 0 tokens against the API key.
             response.data.on('end', () => {
+                upstreamDone = true;
                 if (lastSeenTotalTokens != null && req.apiKeyData) {
                     const stats = apiKeyUsageStats.get(req.apiKeyData.id);
                     if (stats && stats.requests.length > 0) {
