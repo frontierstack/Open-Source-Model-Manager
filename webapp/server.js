@@ -209,7 +209,11 @@ if (fsSync.existsSync(SSL_KEY_PATH) && fsSync.existsSync(SSL_CERT_PATH)) {
     try {
         const sslOptions = {
             key: fsSync.readFileSync(SSL_KEY_PATH),
-            cert: fsSync.readFileSync(SSL_CERT_PATH)
+            cert: fsSync.readFileSync(SSL_CERT_PATH),
+            // Refuse TLS 1.0 / 1.1 — both deprecated (PCI-DSS, RFC 8996).
+            // Node 22+ defaults to TLSv1.2 but this makes the floor explicit
+            // and survives a Node downgrade.
+            minVersion: 'TLSv1.2',
         };
         server = https.createServer(sslOptions, app);
         useHttps = true;
