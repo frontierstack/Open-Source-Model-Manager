@@ -17155,7 +17155,39 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // transient system message after the tool results so the
                     // model's next turn sees per-tool behavior rules.
                     const pendingSkillPrompts = [];
-                    for (const call of finalizedCalls) {
+
+                    // PARALLEL DISPATCH (added 2026-05-27): when the model
+                    // emits multiple tool_calls in a single round (fetch_url
+                    // x 3 after a web_search, parallel web_search + fetch_url,
+                    // etc.), run them concurrently with a bounded pool
+                    // instead of awaiting each in turn. Loop-detection state
+                    // is snapshotted up front so all parallel calls see the
+                    // SAME prior history; same-round duplicates collapse to a
+                    // single execution shared between callers.
+                    const TOOL_PARALLELISM = 6;
+                    const historySnapshot = toolCallHistory.slice();
+                    const SEARCH_ENGINE_HOST_RE = /^(?:https?:\/\/)?(?:www\.|search\.)?(?:duckduckgo\.com\/html|bing\.com\/search|search\.brave\.com\/search|google\.com\/search|google\.[a-z.]+\/search|yandex\.com\/search|search\.yahoo\.com)/i;
+                    const MUTATING_TARGET_EXTRACTORS = {
+                        create_file:       a => a?.filePath || a?.path,
+                        update_file:       a => a?.filePath || a?.path,
+                        append_to_file:    a => a?.filePath || a?.path,
+                        delete_file:       a => a?.filePath || a?.path,
+                        move_file:         a => a?.destPath || a?.destination || a?.dest,
+                        copy_file:         a => a?.destPath || a?.destination || a?.dest,
+                        create_directory:  a => a?.dirPath || a?.path,
+                        create_pdf:        a => a?.filePath || a?.outputPath,
+                        create_xlsx:       a => a?.filePath || a?.outputPath,
+                        html_to_pdf:       a => a?.filePath || a?.outputPath,
+                        make_downloadable: a => a?.filePath || a?.path,
+                    };
+                    const webSearchBlockedCount = historySnapshot.filter(
+                        h => h.toolName === 'web_search' && h.searchBlocked).length;
+                    const scraplingSearchCount = historySnapshot.filter(
+                        h => h.toolName === 'scrapling_fetch' && h.searchEngineHost).length;
+
+                    // Pre-resolve per-call metadata (policy + fp + nudge
+                    // decisions) and emit tool_executing in original order.
+                    const perCall = finalizedCalls.map(call => {
                         const policy = toolPolicy(call.function.name);
                         if (clientConnected) {
                             try {
@@ -17170,37 +17202,6 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 })}\n\n`);
                             } catch (_) { clientConnected = false; }
                         }
-                        // Loop-detection short-circuit. If the model is
-                        // calling the same (name, args) that already
-                        // produced an identical result in this turn, the
-                        // odds of a different outcome on a third try are
-                        // ~zero and we've seen the model burn all 10
-                        // iterations on "find_patterns count:0" spins.
-                        // Intercept, return a nudge, and let the model
-                        // pick a different tool next round.
-                        //
-                        // For mutating write tools (create_file, etc.), the
-                        // model regenerates the file content one byte at a
-                        // time across rounds — narration changes, a comment
-                        // moves, JSON whitespace drifts — and the full-args
-                        // fingerprint never matches even though the model is
-                        // clearly stuck rewriting the same target. Dedupe
-                        // those by target path instead, and fire the nudge
-                        // on the SECOND call (one prior hit) rather than the
-                        // third.
-                        const MUTATING_TARGET_EXTRACTORS = {
-                            create_file:       a => a?.filePath || a?.path,
-                            update_file:       a => a?.filePath || a?.path,
-                            append_to_file:    a => a?.filePath || a?.path,
-                            delete_file:       a => a?.filePath || a?.path,
-                            move_file:         a => a?.destPath || a?.destination || a?.dest,
-                            copy_file:         a => a?.destPath || a?.destination || a?.dest,
-                            create_directory:  a => a?.dirPath || a?.path,
-                            create_pdf:        a => a?.filePath || a?.outputPath,
-                            create_xlsx:       a => a?.filePath || a?.outputPath,
-                            html_to_pdf:       a => a?.filePath || a?.outputPath,
-                            make_downloadable: a => a?.filePath || a?.path,
-                        };
                         let targetKey = null;
                         const targetExtractor = MUTATING_TARGET_EXTRACTORS[call.function.name];
                         if (targetExtractor) {
@@ -17211,33 +17212,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             } catch { /* malformed args — fall back to full-args fp */ }
                         }
                         const fp = targetKey || `${call.function.name}:${call.function.arguments || ''}`;
-                        const priorHits = toolCallHistory.filter(h => h.fp === fp);
-                        let resultMsg;
+                        const priorHits = historySnapshot.filter(h => h.fp === fp);
                         const targetRepeat = !!targetKey && priorHits.length >= 1;
                         const argRepeat = !targetKey && priorHits.length >= 2 &&
                             priorHits[priorHits.length - 1].resultHash === priorHits[priorHits.length - 2].resultHash;
 
-                        // Forced web_search → scrapling_fetch pivot. After 2
-                        // rate-limit / fallback-exhausted failures on
-                        // web_search this turn, short-circuit subsequent
-                        // web_search calls (any query) with a directive that
-                        // names scrapling_fetch and includes a constructed
-                        // URL the model can paste in. The existing error
-                        // message says "Consider calling scrapling_fetch" but
-                        // models routinely ignore it and burn 12+ rounds
-                        // retrying web_search with different queries against
-                        // the same rate-limited backend.
                         const webSearchBlocked = call.function.name === 'web_search' &&
-                            toolCallHistory.filter(h => h.toolName === 'web_search' && h.searchBlocked).length >= 2;
-                        // Search-engine scrapling loop-breaker. If the model is
-                        // pounding scrapling_fetch against duckduckgo / bing /
-                        // brave / google search pages, each URL looks unique to
-                        // the (name,args) fingerprint detector but the model is
-                        // burning calls on JS-only result pages instead of
-                        // fetching the actual artifact it claimed it would
-                        // fetch. After 2 such hits, refuse and hard-name the
-                        // pivot (registry tarball / source URL).
-                        const SEARCH_ENGINE_HOST_RE = /^(?:https?:\/\/)?(?:www\.|search\.)?(?:duckduckgo\.com\/html|bing\.com\/search|search\.brave\.com\/search|google\.com\/search|google\.[a-z.]+\/search|yandex\.com\/search|search\.yahoo\.com)/i;
+                            webSearchBlockedCount >= 2;
                         let scraplingSearchUrl = null;
                         if (call.function.name === 'scrapling_fetch') {
                             try {
@@ -17245,8 +17226,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 if (SEARCH_ENGINE_HOST_RE.test(u)) scraplingSearchUrl = u;
                             } catch { /* */ }
                         }
-                        const scraplingSearchLoop = !!scraplingSearchUrl &&
-                            toolCallHistory.filter(h => h.toolName === 'scrapling_fetch' && h.searchEngineHost).length >= 2;
+                        const scraplingSearchLoop = !!scraplingSearchUrl && scraplingSearchCount >= 2;
+
+                        let nudge = null;
                         if (webSearchBlocked || scraplingSearchLoop) {
                             let q = '';
                             try {
@@ -17271,17 +17253,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 `2. If you already know the likely source domain (vendor docs, advisory site, blog), call fetch_url or scrapling_fetch on THAT domain directly — never a search-engine URL.\n` +
                                 `3. Only if neither applies, retry scrapling_fetch on a search engine ONCE with a narrower query: scrapling_fetch({"url":"https://duckduckgo.com/html/?q=${qEnc}"}).\n` +
                                 `Do what you told the user you were going to do — if you said "let me fetch the tarball / package / file directly", do that next, not another search.`;
-                            const nudge = {
+                            nudge = {
                                 error: scraplingSearchLoop ? 'scrapling_search_loop_pivot_to_artifact' : 'web_search_blocked_pivot_to_artifact',
                                 message: nudgeText,
-                                rate_limited_count: toolCallHistory.filter(h => h.toolName === 'web_search' && h.searchBlocked).length,
-                                search_engine_scrapes: toolCallHistory.filter(h => h.toolName === 'scrapling_fetch' && h.searchEngineHost).length,
-                            };
-                            resultMsg = {
-                                tool_call_id: call.id,
-                                role: 'tool',
-                                name: call.function.name,
-                                content: JSON.stringify(nudge),
+                                rate_limited_count: webSearchBlockedCount,
+                                search_engine_scrapes: scraplingSearchCount,
                             };
                             console.warn(`[Chat Stream] ${nudge.error}: ${nudge.rate_limited_count} web_search blocks, ${nudge.search_engine_scrapes} search-engine scrapes`);
                         } else if (targetRepeat || argRepeat) {
@@ -17302,27 +17278,70 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             if (toolCallRound > 8) {
                                 nudgeText += ` You've used 8+ tool calls this turn. Wrap up and answer.`;
                             }
-                            const nudge = {
+                            nudge = {
                                 error: 'loop_detected',
                                 message: nudgeText,
                                 previous_call_count: priorHits.length,
                             };
-                            resultMsg = {
+                            console.warn(`[Chat Stream] Loop detected for ${call.function.name} (${targetRepeat ? 'target-repeat' : 'arg-repeat'}); short-circuited with nudge after ${priorHits.length} prior call(s)`);
+                        }
+                        return { call, policy, fp, nudge };
+                    });
+
+                    // Same-round dedupe: collapse identical (name, args)
+                    // calls so we only run the work once and share the result.
+                    const dispatchCache = new Map();
+                    const dispatchKey = (call) => `${call.function.name} ${call.function.arguments || ''}`;
+                    const runDispatchPool = async (items, n, work) => {
+                        const out = new Array(items.length);
+                        let next = 0;
+                        const workers = new Array(Math.min(n, items.length)).fill(0).map(async () => {
+                            while (true) {
+                                const i = next++;
+                                if (i >= items.length) return;
+                                out[i] = await work(items[i], i);
+                            }
+                        });
+                        await Promise.all(workers);
+                        return out;
+                    };
+
+                    const parallelStart = Date.now();
+                    const dispatched = await runDispatchPool(perCall, TOOL_PARALLELISM, async ({ call, nudge }) => {
+                        if (nudge) {
+                            return {
                                 tool_call_id: call.id,
                                 role: 'tool',
                                 name: call.function.name,
                                 content: JSON.stringify(nudge),
                             };
-                            console.warn(`[Chat Stream] Loop detected for ${call.function.name} (${targetRepeat ? 'target-repeat' : 'arg-repeat'}); short-circuited with nudge after ${priorHits.length} prior call(s)`);
-                        } else {
-                            resultMsg = await chatTools.executeToolCall(call, toolCtx);
                         }
+                        const k = dispatchKey(call);
+                        let p = dispatchCache.get(k);
+                        if (!p) {
+                            p = chatTools.executeToolCall(call, toolCtx);
+                            dispatchCache.set(k, p);
+                            return p;
+                        }
+                        // Duplicate call: await the original execution and
+                        // clone the result message with this call's id so the
+                        // backend matches it to the right tool_call.
+                        const shared = await p;
+                        return { ...shared, tool_call_id: call.id };
+                    });
+                    if (finalizedCalls.length > 1) {
+                        console.log(`[Chat Stream] Parallel dispatch: ${finalizedCalls.length} calls in ${Date.now() - parallelStart}ms`);
+                    }
 
-                        // Skill `systemPrompt` injection. If this tool is a
-                        // user-defined skill (not a static native) with a
-                        // non-empty Prompt field, queue it for emission as a
-                        // transient system message after the tool result.
-                        // Dedupe per turn — see `injectedSkillPrompts` above.
+                    // Per-call post-processing (sequential, order-preserved):
+                    // skill-prompt injection, size cap, history append,
+                    // toolResultMessages push, tool_result SSE emit.
+                    const TOOL_RESULT_CHAR_CAP = 24_000;
+                    for (let idx = 0; idx < perCall.length; idx++) {
+                        const { call, policy, fp } = perCall[idx];
+                        let resultMsg = dispatched[idx];
+
+                        // Skill `systemPrompt` injection.
                         const callName = call.function.name;
                         if (!chatTools.toolRegistry.has(callName) && !injectedSkillPrompts.has(callName)) {
                             try {
@@ -17343,18 +17362,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             }
                         }
 
-                        // Per-tool-result size cap. Without this a single
-                        // archive extraction or large file read can dump
-                        // hundreds of KB of text into currentMessages, which
-                        // then re-ships to the backend on the next round and
-                        // overflows the model's context (observed: 243k tokens
-                        // vs 131k context after a tar.gz upload). 24k chars ≈
-                        // 8k tokens — generous enough for normal tool output,
-                        // tight enough that 5+ rounds still fit. The model can
-                        // always re-call the tool with a narrower scope (a
-                        // specific archive entry, a single line range) if the
-                        // truncated tail mattered.
-                        const TOOL_RESULT_CHAR_CAP = 24_000;
+                        // Per-tool-result size cap.
                         if (typeof resultMsg.content === 'string' && resultMsg.content.length > TOOL_RESULT_CHAR_CAP) {
                             const original = resultMsg.content.length;
                             resultMsg = {
@@ -17367,8 +17375,6 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             console.warn(`[Chat Stream] Capped ${call.function.name} result: ${original} -> ${TOOL_RESULT_CHAR_CAP} chars`);
                         }
                         // Record fingerprint + result hash for future loop checks.
-                        // Also flag specific failure modes (web_search rate-
-                        // limit) that drive forced-redirect logic above.
                         try {
                             const rh = crypto.createHash('sha1')
                                 .update(String(resultMsg.content || ''))
@@ -17381,11 +17387,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     const errStr = String(parsed?.error || '');
                                     searchBlocked = /rate-limited|fallbacks also failed|blocked/i.test(errStr) ||
                                                     parsed?.count === 0;
-                                } catch (_) { /* non-JSON content — treat as not blocked */ }
+                                } catch (_) { /* */ }
                             }
-                            // Flag scrapling_fetch calls whose URL is a search-
-                            // engine results page; the loop-breaker above keys
-                            // on this to refuse after 2 such hits.
                             let searchEngineHost = false;
                             if (call.function.name === 'scrapling_fetch') {
                                 try {
@@ -17400,30 +17403,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 searchBlocked,
                                 searchEngineHost,
                             });
-                            // Cap history so a long session doesn't grow unbounded.
                             if (toolCallHistory.length > 40) toolCallHistory.shift();
-                        } catch (_) { /* ignore hash failures */ }
+                        } catch (_) { /* */ }
                         toolResultMessages.push(resultMsg);
                         if (clientConnected) {
                             try {
                                 const preview = String(resultMsg.content || '').slice(0, 240);
-                                // Parse the tool's JSON result once so the client
-                                // can render structured data (search sources,
-                                // URL snippets) — not just a truncated preview.
-                                // Safely no-op if the tool returned a non-JSON
-                                // string (rare; load_skill returns JSON, web_search
-                                // and fetch_url return JSON, etc.).
                                 let parsedResult = null;
                                 if (resultMsg.content && typeof resultMsg.content === 'string') {
-                                    try { parsedResult = JSON.parse(resultMsg.content); } catch { /* non-JSON */ }
+                                    try { parsedResult = JSON.parse(resultMsg.content); } catch { /* */ }
                                 }
-                                // Guard: don't ship a huge result down the SSE
-                                // stream. 32 KB is generous for search results
-                                // (5 hits × a few KB each) but much smaller than
-                                // typical skill bodies. render_chart is exempted
-                                // because its result IS the chart spec the UI
-                                // needs to render — dropping it leaves a chart
-                                // chip with no chart.
                                 const RESULT_SIZE_CAP = 32 * 1024;
                                 const isChartTool = call?.function?.name === 'render_chart';
                                 const resultPayload = parsedResult && (isChartTool || Buffer.byteLength(resultMsg.content) < RESULT_SIZE_CAP)
