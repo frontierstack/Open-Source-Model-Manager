@@ -818,7 +818,11 @@ async function runNode(node, scope, deps, ctx, inputs = []) {
             const MAX_ITEMS = 50;
             if (items.length > MAX_ITEMS) items = items.slice(0, MAX_ITEMS);
             const action = data.action || 'tool';
-            const conc = Math.max(1, Math.min(8, Number(data.maxConcurrency) || 3));
+            // Default concurrency raised 3 → 6 (2026-05-27) to match the
+            // chat-side TOOL_PARALLELISM pool. Map's per-item work is
+            // already independent (results array is index-keyed), so the
+            // higher default is a strict speedup on N≥3 fan-outs.
+            const conc = Math.max(1, Math.min(8, Number(data.maxConcurrency) || 6));
             const itemVar = (node.data && node.data.itemVar) || 'item';
             const rawArgs = node.data ? node.data.args : undefined;
             const rawPrompt = node.data ? node.data.prompt : '';
@@ -1794,4 +1798,5 @@ module.exports = {
     shouldRepair,
     summarizeIssues,
     findStatefulNodes,
+    runWithConcurrency,
 };
