@@ -232,7 +232,32 @@ if (fsSync.existsSync(SSL_KEY_PATH) && fsSync.existsSync(SSL_CERT_PATH)) {
     server = http.createServer(app);
 }
 
-const wss = new WebSocket.Server({ server });
+// WebSocket Origin check (CSWSH defense-in-depth, 2026-05-27). The
+// broadcast() guard already drops frames for sessionless clients, but the
+// upgrade itself was previously accepted from any Origin — so a
+// cross-origin attacker page could complete the handshake (and could try
+// to ride a victim's cookie if SameSite policy ever loosened). Reject the
+// upgrade unless: no Origin header (native CLIs / curl don't send one),
+// OR the Origin host matches the request Host. Allowlist additional
+// origins via WS_ALLOWED_ORIGINS=foo.example.com,bar.example.com if you
+// front the app with a different hostname.
+const WS_EXTRA_ORIGINS = new Set(
+    (process.env.WS_ALLOWED_ORIGINS || '')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+);
+function verifyWsOrigin(info) {
+    const origin = info.req.headers.origin;
+    if (!origin) return true; // CLI / native app — no browser context
+    let originHost;
+    try { originHost = new URL(origin).host.toLowerCase(); }
+    catch { return false; }
+    const reqHost = String(info.req.headers.host || '').toLowerCase();
+    if (originHost === reqHost) return true;
+    if (WS_EXTRA_ORIGINS.has(originHost)) return true;
+    console.warn(`[WS] rejecting cross-origin upgrade: origin=${origin} host=${reqHost}`);
+    return false;
+}
+const wss = new WebSocket.Server({ server, verifyClient: verifyWsOrigin });
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
 // Timing-safe string comparison to prevent timing attacks on API keys
