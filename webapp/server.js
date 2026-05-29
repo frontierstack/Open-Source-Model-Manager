@@ -18903,6 +18903,8 @@ async function addMissingDefaultSkills() {
                 }));
                 added.push(t.name);
             } else if ((existing.code || '') !== (t.code || '')
+                       || (existing.description || '') !== (t.description || '')
+                       || (t.systemPrompt !== undefined && (existing.systemPrompt || '') !== (t.systemPrompt || ''))
                        || (t.timeoutMs !== undefined && existing.timeoutMs !== t.timeoutMs)
                        || (t.memory !== undefined && existing.memory !== t.memory)
                        || (t.cpus !== undefined && existing.cpus !== t.cpus)) {

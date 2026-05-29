@@ -172,6 +172,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-extra \
     && rm -rf /var/lib/apt/lists/*
 
+# yt-dlp baked in so the download_video / convert_youtube_to_mp3 skills don't
+# pip-install it on first use (the cold install + dependency resolution was
+# what pushed those skills past their sandbox timeout). ffmpeg is already
+# installed above (whisper layer) — yt-dlp uses it to merge video+audio into
+# mp4 and to extract/transcode mp3. Pinned for reproducible builds, but this
+# is the one dep where "latest" is genuinely recommended: YouTube changes
+# routinely break older yt-dlp, so bump this when downloads start failing.
+# Added as a late layer so the heavy whisper/ctranslate2 layers above stay
+# cached on rebuild.
+RUN pip install --no-cache-dir yt-dlp==2026.03.17 \
+    && python3 -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
+
 # matplotlib headless default — prevents "no display name" errors when
 # snippets forget plt.switch_backend('Agg').
 ENV MPLBACKEND=Agg
