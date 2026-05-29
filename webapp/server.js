@@ -9870,7 +9870,20 @@ app.get('/api/agent-workspaces/file', requireAuth, async (req, res) => {
         }[ext] || 'application/octet-stream';
         res.setHeader('Content-Type', mime);
         res.setHeader('Content-Length', st.size);
-        res.end(await fs.readFile(target));
+        const base = require('path').basename(rel);
+        // RFC 5987 filename* so non-ASCII names (e.g. fullwidth ｜) survive.
+        res.setHeader('Content-Disposition',
+            `attachment; filename*=UTF-8''${encodeURIComponent(base)}`);
+        // Stream rather than fs.readFile — a single-buffer read throws
+        // ERR_FS_FILE_TOO_LARGE past ~2 GiB, so multi-GB downloads (e.g. a
+        // full video pulled by download_video) would otherwise 500.
+        const stream = fsSync.createReadStream(target);
+        stream.on('error', (err) => {
+            console.error('Agent workspace download stream failed:', err);
+            if (!res.headersSent) res.status(500).json({ error: 'Download failed' });
+            else res.destroy();
+        });
+        stream.pipe(res);
     } catch (e) {
         if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
         console.error('Agent workspace download failed:', e);
