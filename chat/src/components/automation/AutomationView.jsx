@@ -8,7 +8,7 @@ import '@xyflow/react/dist/style.css';
 import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
-    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Sparkles, Download, Braces, Menu as MenuIcon,
+    Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Download, Braces, Menu as MenuIcon,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -1272,15 +1272,14 @@ function FlowEditor({ showSnackbar, models }) {
                         <button className="auto-btn auto-btn--accent auto-btn--block" onClick={newAutomation}>
                             <Plus size={15} /> <span>New automation</span>
                         </button>
-                        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                            <button className={`auto-btn auto-btn--grow${buildOpen ? ' is-active' : ''}`} onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} title="Describe an automation and let the model assemble it">
-                                <Sparkles size={14} /> <span>Build</span>
+                        <div className="auto-rail__aihint">Create with AI</div>
+                        <div className="auto-rail__aibtns">
+                            <button className={`auto-btn auto-btn--grow${buildOpen ? ' is-active' : ''}`} onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} title="Describe an automation and let the model build it for you">
+                                <span>Build</span>
                             </button>
-                            {selected && (
-                                <button className={`auto-btn auto-btn--grow${editOpen ? ' is-active' : ''}`} onClick={() => { setEditOpen(o => !o); setEditResult(null); }} title="Describe a change to the open automation">
-                                    <Sparkles size={14} /> <span>Edit</span>
-                                </button>
-                            )}
+                            <button className={`auto-btn auto-btn--grow${editOpen ? ' is-active' : ''}`} onClick={() => { if (!selected) return; setEditOpen(o => !o); setEditResult(null); }} disabled={!selected} title={selected ? 'Describe a change to the open automation' : 'Open an automation first to edit it with AI'}>
+                                <span>Edit</span>
+                            </button>
                         </div>
                         {buildOpen && (
                             <div style={{ marginTop: 6 }}>

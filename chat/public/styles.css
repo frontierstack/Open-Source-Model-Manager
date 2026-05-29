@@ -6199,6 +6199,16 @@ svg.react-flow__connectionline {
 .auto-btn--ghost { color: var(--ink-3); }
 .auto-btn--ghost:hover:not(:disabled) { color: var(--ink); background: var(--bg); border-color: var(--rule-2, var(--rule)); }
 
+/* AI-assist cluster (Build / Edit) under "New automation" — a labelled, equal
+   two-up row so the buttons stay the same size whether or not an automation is
+   open (Edit just disables). Replaces the old sparkle-iconned toggle pair. */
+.auto-rail__aihint {
+    margin: 10px 2px 5px;
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+    color: var(--ink-4, var(--ink-3));
+}
+.auto-rail__aibtns { display: flex; gap: 6px; }
+
 /* ---- Modern toggle switch (replaces raw HTML checkboxes) ---- */
 .auto-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 11.5px; color: var(--ink-3, var(--ink-2)); -webkit-user-select: none; -moz-user-select: none; user-select: none; line-height: 1.35; }
 .auto-switch.is-disabled { opacity: 0.55; cursor: default; }

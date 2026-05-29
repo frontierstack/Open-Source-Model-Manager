@@ -8281,12 +8281,20 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
         if (!automationEngine.shouldRepair(assess, pass, MAX_REPAIR_PASSES, configError)) break;
 
         // Ask the model to repair against the ACTUAL failing outputs + guidance.
+        // Compact oversized field values to __KEEP_FIELD_N__ tokens first (same as
+        // the edit endpoint) so a big systemPrompt/template doesn't truncate the
+        // echoed workflow and silently abort the repair loop.
+        const currentForLLM = { name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) };
+        const { compacted: compactedWf, placeholders: repairPlaceholders, count: keepCount, prefix: repairPrefix } = automationEngine.compactWorkflowForLLM(currentForLLM);
+        const repairKeepNote = keepCount > 0
+            ? `\n\nNOTE: ${keepCount} long field value(s) were replaced with placeholder tokens like ${repairPrefix}0__. Keep each token EXACTLY as-is to leave that field unchanged; only replace a token if the fix requires editing that specific field.`
+            : '';
         const messages = [
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `This workflow was just run and did not yet succeed. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args, or a missing step needed to meet the goal). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.${goalPrompt ? `\n\nThe user's ORIGINAL goal (the run must actually achieve this):\n${String(goalPrompt).slice(0, 800)}` : ''}${goalFix ? `\n\nGoal not met — required change: ${goalFix}` : ''}\n\nDetected problems:\n${issuesLine}\n\nRun results (per node, ⚠ marks the flagged ones):\n${summarize(outcome, rec, badIds)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify({ name: wfObj.name, nodes: wfObj.nodes.map(n => ({ id: n.id, type: n.type, data: n.data })), edges: wfObj.edges.map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })) })}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
+            { role: 'user', content: `This workflow was just run and did not yet succeed. Fix the cause (wrong field paths, bad wiring, rate-limited searches, misconfigured map actions, missing required args, or a missing step needed to meet the goal). IGNORE failures from missing credentials/tokens or unreachable external sites — the user configures those.${goalPrompt ? `\n\nThe user's ORIGINAL goal (the run must actually achieve this):\n${String(goalPrompt).slice(0, 800)}` : ''}${goalFix ? `\n\nGoal not met — required change: ${goalFix}` : ''}\n\nDetected problems:\n${issuesLine}\n\nRun results (per node, ⚠ marks the flagged ones):\n${summarize(outcome, rec, badIds)}\n\n${REPAIR_GUIDANCE}\n\nCurrent workflow:\n${JSON.stringify(compactedWf)}${repairKeepNote}\n\nReturn the FULL revised workflow as one JSON object, keeping existing node ids. Respond with ONLY the JSON.` },
         ];
         try {
-            const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });
+            const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 8000 });
             let raw = String(text || '').trim();
             const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i); if (fence) raw = fence[1].trim();
             const lo = raw.indexOf('{'), hi = raw.lastIndexOf('}'); if (lo !== -1 && hi > lo) raw = raw.slice(lo, hi + 1);
@@ -8296,6 +8304,9 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
             // silently aborted the whole repair loop.
             const spec = parseBuilderSpec(raw);
             if (!spec || typeof spec !== 'object') throw new Error('repair reply was not valid JSON');
+            // Restore placeholder tokens BEFORE materializing so node-signature
+            // id-recovery operates on the real field values.
+            if (Array.isArray(spec.nodes)) for (const node of spec.nodes) { if (node && node.data) node.data = automationEngine.expandPlaceholders(node.data, repairPlaceholders); }
             const revised = automationEngine.materializeWorkflowEdit(spec, base);
             wfObj.nodes = revised.nodes; wfObj.edges = revised.edges;
             buildLog.push(`Pass ${pass}: applied a repair, re-running…`);
@@ -8356,7 +8367,10 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
             { role: 'user', content: `Build an automation for this request:\n\n${String(prompt).trim()}\n\nRespond with ONLY the JSON object.` },
         ];
-        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3000 });
+        // No compaction here (unlike edit/repair): build generates a workflow from
+        // scratch and never echoes an existing one back, so there's nothing large
+        // to round-trip. The wider maxTokens just gives a complex build more room.
+        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 6000 });
         // Robustly extract the JSON object from the model output.
         let raw = String(text || '').trim();
         const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -8423,11 +8437,20 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
             nodes: (wf.nodes || []).map(n => ({ id: n.id, type: n.type, data: n.data || {} })),
             edges: (wf.edges || []).map(e => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })),
         };
+        // Swap multi-KB field values (e.g. a model node's embedded HTML template)
+        // for short __KEEP_FIELD_N__ tokens so the whole workflow fits the model's
+        // output budget when it echoes it back; restored verbatim after parsing.
+        // Without this, a big systemPrompt truncates the JSON → "did not return a
+        // valid workflow" (the original Cybersecurity-Newspaper edit failure).
+        const { compacted, placeholders, count, prefix } = automationEngine.compactWorkflowForLLM(current);
+        const keepNote = count > 0
+            ? `\n\nNOTE: ${count} long field value(s) were replaced with placeholder tokens like ${prefix}0__. Keep each token EXACTLY as-is to leave that field unchanged; only replace a token with new text if THIS change requires editing that specific field.`
+            : '';
         const messages = [
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `Here is the current automation as JSON:\n${JSON.stringify(current)}\n\nApply this change: "${String(prompt).trim()}"\n\nReturn the FULL revised automation as one JSON object (same shape). KEEP each existing node's "id" for nodes you keep; invent new ids only for nodes you add; preserve nodes the change does not touch. Respond with ONLY the JSON.` },
+            { role: 'user', content: `Here is the current automation as JSON:\n${JSON.stringify(compacted)}\n\nApply this change: "${String(prompt).trim()}"\n\nReturn the FULL revised automation as one JSON object (same shape). KEEP each existing node's "id" for nodes you keep; invent new ids only for nodes you add; preserve nodes the change does not touch.${keepNote}\n\nRespond with ONLY the JSON.` },
         ];
-        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 3500 });
+        const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 8000 });
         let raw = String(text || '').trim();
         const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
         if (fence) raw = fence[1].trim();
@@ -8437,9 +8460,17 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
         if (!spec || typeof spec !== 'object') {
             return res.status(422).json({ error: 'The model did not return a valid workflow. Try rephrasing your change.' });
         }
+        // Restore the placeholder tokens to their original (large) field values
+        // BEFORE materializing, so id-recovery's node-signature matching sees real
+        // values — and the diff, the test-run, and the saved workflow all carry the
+        // real text.
+        if (Array.isArray(spec.nodes)) for (const node of spec.nodes) { if (node && node.data) node.data = automationEngine.expandPlaceholders(node.data, placeholders); }
         let proposed;
         try { proposed = automationEngine.materializeWorkflowEdit(spec, wf); }
         catch (e) { return res.status(422).json({ error: `Could not apply the change: ${e.message}` }); }
+        if (count > 0 && prefix && JSON.stringify(proposed.nodes || []).indexOf(prefix) !== -1) {
+            console.warn(`[automations/edit] ${wf.id}: model left an unresolved placeholder token — a long field may be incomplete in the proposed edit.`);
+        }
         let buildLog;
         if (req.body && req.body.test) {
             buildLog = [`Proposed ${proposed.nodes.length} node(s)`];

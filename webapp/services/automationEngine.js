@@ -1537,6 +1537,77 @@ function buildBuilderSystemPrompt() {
     ].join('\n');
 }
 
+// ── Edit/repair field-reference compaction ────────────────────────────────────
+// Edit-with-LLM (and the repair pass) round-trip the WHOLE workflow through the
+// model and ask it to re-emit it. A model node carrying a multi-KB systemPrompt /
+// HTML template (the "Cybersecurity Newspaper PDF" one is ~18 KB) makes that echo
+// blow past the output token cap → the JSON truncates → "did not return a valid
+// workflow". Compaction swaps each oversized STRING value for a short token before
+// the model sees the workflow; the model is told to keep the token verbatim for
+// any field it isn't changing. expandPlaceholders restores the originals after
+// parsing, so big fields survive byte-for-byte and the model only has to emit the
+// structure plus the bits it actually edited.
+const KEEP_TOKEN_BASE = '__KEEP_FIELD_';
+
+function compactWorkflowForLLM(current, threshold = 600) {
+    const placeholders = {};
+    // Choose a token prefix that does NOT already occur anywhere in the workflow,
+    // so a field whose own text happens to contain "__KEEP_FIELD_…" can never be
+    // mistaken for a placeholder on the way back. Deterministic, no randomness —
+    // keeps this module dependency-free. After this, placeholder VALUES (= the
+    // original strings) provably can't contain `prefix`, so expansion can neither
+    // misfire on user content nor re-substitute.
+    const serialized = (() => { try { return JSON.stringify(current); } catch (_) { return ''; } })() || '';
+    let prefix = KEEP_TOKEN_BASE;
+    while (serialized.indexOf(prefix) !== -1) prefix += 'X';
+    let n = 0;
+    const walk = (v) => {
+        if (typeof v === 'string') {
+            if (v.length > threshold) {
+                const token = `${prefix}${n++}__`;
+                placeholders[token] = v;
+                return token;
+            }
+            return v;
+        }
+        if (Array.isArray(v)) return v.map(walk);
+        if (v && typeof v === 'object') {
+            const o = {};
+            for (const k of Object.keys(v)) o[k] = walk(v[k]);
+            return o;
+        }
+        return v;
+    };
+    const compacted = walk(current);
+    return { compacted, placeholders, count: n, prefix };
+}
+
+// Restore the placeholder tokens anywhere in a value (deep). Replaces every minted
+// token wherever it appears in a string (exact value OR embedded) — keyed only on
+// the token text, so it's robust to the edit's id-recovery moving a field onto a
+// different (recovered) node id. Since placeholder values never contain a token
+// (see compactWorkflowForLLM), replace order is irrelevant and no re-substitution
+// can occur. Tokens not in the map (model hallucination) are left untouched.
+function expandPlaceholders(value, placeholders) {
+    const tokens = placeholders ? Object.keys(placeholders) : [];
+    if (!tokens.length) return value;
+    const walk = (v) => {
+        if (typeof v === 'string') {
+            let s = v;
+            for (const t of tokens) if (s.indexOf(t) !== -1) s = s.split(t).join(placeholders[t]);
+            return s;
+        }
+        if (Array.isArray(v)) return v.map(walk);
+        if (v && typeof v === 'object') {
+            const o = {};
+            for (const k of Object.keys(v)) o[k] = walk(v[k]);
+            return o;
+        }
+        return v;
+    };
+    return walk(value);
+}
+
 // Lay nodes out left→right by dependency depth (Kahn levels), stacking siblings.
 function layoutWorkflow(nodes, edges) {
     const adj = new Map(nodes.map(n => [n.id, []]));
@@ -1793,6 +1864,8 @@ module.exports = {
     buildBuilderSystemPrompt,
     materializeWorkflow,
     materializeWorkflowEdit,
+    compactWorkflowForLLM,
+    expandPlaceholders,
     diffWorkflows,
     assessRunHealth,
     shouldRepair,
