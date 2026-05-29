@@ -18707,6 +18707,9 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // download_html saves a page's raw HTML into /workspace so later tools
     // (read_file/grep_code/parse_html) can parse it — needs the workspace mount.
     'download_html',
+    // download_video writes the .mp4 into /workspace/artifacts/ (yt-dlp) — needs
+    // the workspace mount so the file persists and surfaces as a download chip.
+    'download_video',
     // archives — names match the actual entries in default-skills.json
     // (`tar_extract`/`tar_create`/`unzip_file`/`zip_files`). The previous
     // `create_archive`/`extract_archive` entries were dead names: no
@@ -18751,6 +18754,7 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
 const NETWORK_SANDBOX_DEFAULTS = {
     download_file:   { allowlist: ['*'], note: 'arbitrary URL download; tighten if policy allows' },
     download_html:   { allowlist: ['*'], note: 'fetches a page HTML into the workspace; user-supplied URLs' },
+    download_video:  { allowlist: ['*'], note: 'yt-dlp download of user-supplied video URLs (pip-installs yt-dlp on first use)' },
     parse_rss:       { allowlist: ['*'], note: 'fetches an RSS/Atom feed URL and parses it to items; user-supplied feed URLs' },
     send_file:       { allowlist: ['*'], note: 'uploads a workspace file to telegram/slack/user URL' },
     fetch_url:       { allowlist: ['*'], note: 'user-supplied URLs' },
