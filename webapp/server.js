@@ -18889,7 +18889,10 @@ async function addMissingDefaultSkills() {
                     updatedAt: new Date().toISOString(),
                 }));
                 added.push(t.name);
-            } else if ((existing.code || '') !== (t.code || '')) {
+            } else if ((existing.code || '') !== (t.code || '')
+                       || (t.timeoutMs !== undefined && existing.timeoutMs !== t.timeoutMs)
+                       || (t.memory !== undefined && existing.memory !== t.memory)
+                       || (t.cpus !== undefined && existing.cpus !== t.cpus)) {
                 // The managed default's definition changed in the template —
                 // refresh it in place (preserve id/createdAt/userId/enabled).
                 // Default (no-userId) skills are an app-managed catalog; this is
@@ -18899,6 +18902,12 @@ async function addMissingDefaultSkills() {
                 existing.parameters = t.parameters;
                 if (t.type !== undefined) existing.type = t.type;
                 if (t.systemPrompt !== undefined) existing.systemPrompt = t.systemPrompt;
+                // Resource overrides (e.g. download_video needs a longer
+                // timeoutMs for pip-install + a full video download). Synced
+                // here so shipped tweaks reach already-installed instances.
+                if (t.timeoutMs !== undefined) existing.timeoutMs = t.timeoutMs;
+                if (t.memory !== undefined) existing.memory = t.memory;
+                if (t.cpus !== undefined) existing.cpus = t.cpus;
                 existing.updatedAt = new Date().toISOString();
                 applyPolicy(existing);
                 updated.push(t.name);
