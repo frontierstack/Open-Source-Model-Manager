@@ -279,6 +279,7 @@ friendly_checkpoint() {
         *"cmake"*)             echo "Running CMake" ;;
         *"make -j"*)           echo "Compiling native code" ;;
         *"pip install"*)       echo "Installing Python packages" ;;
+        *"potion-retrieval"*)  echo "Caching Knowledge Base embedding model" ;;
         *"installing sglang"*)   echo "Installing sglang" ;;
         *"npm ci"*)            echo "Installing npm packages" ;;
         *"npm install"*)       echo "Installing npm packages" ;;
@@ -292,7 +293,7 @@ friendly_checkpoint() {
     esac
 }
 
-CHECKPOINT_PATTERNS='downloading cuda|installing cuda|compiling llama|cmake|make -j|pip install|installing sglang|npm install|npm run build|npm ci|webpack|apt-get install|apt-get update|exporting layers|exporting manifest'
+CHECKPOINT_PATTERNS='downloading cuda|installing cuda|compiling llama|cmake|make -j|pip install|potion-retrieval|installing sglang|npm install|npm run build|npm ci|webpack|apt-get install|apt-get update|exporting layers|exporting manifest'
 
 start_build_spinner() {
     local label="$1"
@@ -915,7 +916,7 @@ if [ "$BUILD_WEBAPP" = true ]; then
     section "Webapp Image"
 
     > "$BUILD_STATE_DIR/webapp.log" 2>/dev/null || true
-    start_build_spinner "Building webapp (~2–5 min)" "$BUILD_STATE_DIR/webapp.log"
+    start_build_spinner "Building webapp (~3–6 min)" "$BUILD_STATE_DIR/webapp.log"
     if build_image "webapp" "modelserver-webapp:latest"; then
         stop_build_spinner
         local_dur=$(cat "$BUILD_STATE_DIR/webapp.duration" 2>/dev/null || echo "?")

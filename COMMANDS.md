@@ -13,6 +13,7 @@ Complete command reference for Open Source Model Manager utilities and managemen
 - [Monitoring & Debugging](#monitoring--debugging)
 - [Chat UI Features](#chat-ui-features)
 - [Automation Engine](#automation-engine)
+- [Knowledge Base (RAG)](#knowledge-base-rag)
 - [Docker Commands](#docker-commands)
 - [Troubleshooting Commands](#troubleshooting-commands)
 - [Advanced Usage](#advanced-usage)
@@ -415,8 +416,10 @@ Every enabled skill is surfaced to the chat model as a native tool. The model de
 - `crawl_pages` — multi-page crawl with depth/limit controls
 - `playwright_fetch` / `playwright_interact` — JS-rendered pages and scripted interactions
 - `scrapling_fetch` — CAPTCHA-evading fetch via StealthyFetcher
+- `search_knowledge_base` — semantic retrieval over the user's uploaded knowledge base(s); surfaced only when the user has one (see [Knowledge Base (RAG)](#knowledge-base-rag))
 - `virustotal_lookup` — indicator / hash / URL reputation lookup
 - `base64_decode` — auto-invoked server-side on chat input and output; also callable as a tool in scan mode
+- `extract_strings` — extract printable ASCII + UTF-16LE strings from a binary file or inline blob (hex/base64/text), like the Unix `strings` utility
 
 ### File Attachments (Paperclip Icon)
 
@@ -592,6 +595,50 @@ curl -sk "$BASE/api/node-types" -H "$AUTH"
 curl -sk "$BASE/api/node-types/builtin" -H "$AUTH"
 curl -sk -X POST "$BASE/api/node-types" -H "$AUTH" -H "Content-Type: application/json" -d '{...}'
 ```
+
+---
+
+## Knowledge Base (RAG)
+
+Per-user document collections the chat model can reference. Retrieval is **semantic** — only the most relevant chunks are returned, so a large library never strains the context window. Manage knowledge bases in the webapp's **Knowledge Base** tab (each user sees their own; admins see all). The chat model queries them automatically through the `search_knowledge_base` native tool in the webapp/chat UI.
+
+Embeddings run on the CPU inside the webapp container via a resident `model2vec` engine (`potion-retrieval-32M`, 512-dim) — no GPU, no extra service. Each KB's chunks + vectors live in a per-KB SQLite file under `/models/.modelserver/knowledge-bases/`; metadata is in `knowledge-bases.json`.
+
+```bash
+BASE=https://localhost:3001
+# Any valid key works (Bearer, or X-API-Key + X-API-Secret); KBs are owner-scoped.
+AUTH="Authorization: Bearer your_bearer_token"
+
+# List your knowledge bases (admins get all, each tagged with ownerName)
+curl -sk "$BASE/api/knowledge-bases" -H "$AUTH"
+
+# Create one
+curl -sk -X POST "$BASE/api/knowledge-bases" -H "$AUTH" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Product Docs","description":"public manuals"}'
+
+# Details + documents + live stats / rename / delete
+curl -sk "$BASE/api/knowledge-bases/<id>" -H "$AUTH"
+curl -sk -X PATCH "$BASE/api/knowledge-bases/<id>" -H "$AUTH" \
+  -H "Content-Type: application/json" -d '{"name":"Renamed"}'
+curl -sk -X DELETE "$BASE/api/knowledge-bases/<id>" -H "$AUTH"
+
+# Upload + index a document (base64 body, like /api/chat/upload; pdf/docx/xlsx/text/csv/md/html)
+CONTENT=$(base64 -w0 ./handbook.pdf)
+curl -sk -X POST "$BASE/api/knowledge-bases/<id>/documents" -H "$AUTH" \
+  -H "Content-Type: application/json" \
+  -d "{\"filename\":\"handbook.pdf\",\"content\":\"$CONTENT\",\"mimeType\":\"application/pdf\"}"
+# (you can also send {"filename":"notes.txt","text":"raw text instead of base64"})
+
+# Remove a document
+curl -sk -X DELETE "$BASE/api/knowledge-bases/<id>/documents/<docId>" -H "$AUTH"
+
+# Query it directly (the UI test box; the chat tool calls this under the hood)
+curl -sk -X POST "$BASE/api/knowledge-bases/<id>/search" -H "$AUTH" \
+  -H "Content-Type: application/json" -d '{"query":"how do refunds work?","k":6}'
+```
+
+> Note: the `/v1/*` passthrough does **not** inject the server tool catalog, so KB retrieval happens automatically in the webapp/chat UI but **not** over raw `/v1` or Pi. Call `/api/knowledge-bases/:id/search` directly to retrieve from those clients.
 
 ---
 

@@ -40,6 +40,7 @@ Containerized platform for serving and managing LLMs with dual backend support, 
 - **Auto-Download Chips** — Any file a sandboxed skill writes to `/workspace/artifacts/` is auto-promoted into a download chip in the chat (mtime-filtered so prior turns don't re-surface); `make_downloadable` promotes existing workspace files explicitly
 - **Map-Reduce Chunking** — Automatically splits large content across multiple model calls and synthesizes results
 - **AIMem Memory Compression** — Compresses older conversation history to reduce token usage, speeding up inference and lowering VRAM consumption during long conversations
+- **Knowledge Base (RAG)** — Upload per-user document collections (PDF / DOCX / XLSX / text / CSV / Markdown); the chat model retrieves only the most relevant passages via the `search_knowledge_base` tool, so large libraries never strain the context window
 - **Background Streaming** — Responses continue server-side if you navigate away, saved on completion
 - **Auto-Continuation** — Automatically continues truncated responses up to 8 times
 
@@ -50,7 +51,7 @@ The chat model can invoke tools on its own via OpenAI-style function calls. Ever
 - **Catalog built from your skill registry** — toggling a skill off in Settings removes it from the tool catalog the model sees on the next turn
 - **Streamed tool chips** — `native_tool_call` events render live below the assistant message while the model works
 - **Multi-round reasoning** — the model can call several tools in sequence and see each result before responding
-- **Shipped tools include** — `web_search` (DuckDuckGo → Scrapling → Brave → Playwright fallback chain), `fetch_url` (direct file download for PDF/DOCX/XLSX then Scrapling/Playwright/axios for HTML), `crawl_pages`, `playwright_fetch` / `playwright_interact` for JS-rendered pages, `scrapling_fetch` for CAPTCHA-evading fetches, `dns_lookup`, `virustotal_lookup`, `base64_decode`, plus every built-in skill (file ops, git, system info, OCR, PDF, email parsing, and more)
+- **Shipped tools include** — `web_search` (DuckDuckGo → Scrapling → Brave → Playwright fallback chain), `fetch_url` (direct file download for PDF/DOCX/XLSX then Scrapling/Playwright/axios for HTML), `crawl_pages`, `playwright_fetch` / `playwright_interact` for JS-rendered pages, `scrapling_fetch` for CAPTCHA-evading fetches, `search_knowledge_base` (semantic retrieval over the user's uploaded documents), `dns_lookup`, `virustotal_lookup`, `base64_decode`, `extract_strings` (printable-string extraction from binaries), plus every built-in skill (file ops, git, system info, OCR, PDF, email parsing, and more)
 - **No silent dead-ends** — if the tool-iteration cap is reached, the model still returns a final user-visible message
 
 ### Web Scraping & Search
@@ -68,6 +69,16 @@ Long conversations consume increasing amounts of context window and VRAM. AIMem 
 - **Faster responses** — Fewer input tokens means faster time-to-first-token and lower VRAM pressure
 - **Transparent** — Enable per-model via the "Compress Memory" toggle in the model manager; all clients (Chat UI, API) respect the setting automatically
 - **Smart triggering** — Only activates when conversations have 6+ messages and input exceeds 60% of available context, keeping short conversations untouched
+
+### Knowledge Base — Retrieval-Augmented Generation
+
+Upload documents into per-user **knowledge bases** and the chat model references them on demand. Retrieval is **semantic** and only ever pulls the most relevant passages, so a multi-gigabyte library never blows the context window.
+
+- **Manage in the webapp** — a **Knowledge Base** tab (left nav) to create knowledge bases, upload/remove documents, and test retrieval. Each user sees their own; **admins see every user's** with an owner badge.
+- **Broad ingestion** — extracts text from PDF, DOCX, XLSX, Markdown, CSV, JSON, HTML and plain text, then splits it into overlapping chunks.
+- **Fast, local embeddings** — a resident CPU engine (`model2vec` `potion-retrieval-32M`, 512-dim, pure NumPy — no GPU, no PyTorch) embeds chunks once and answers warm queries in well under a millisecond; falls back to a lexical hashing index if the model is unavailable.
+- **The model retrieves automatically** — a `search_knowledge_base` native tool is surfaced only when the user has a knowledge base; the model calls it when an answer may live in your documents and cites the source filename. Top-k snippets keep it cheap to call repeatedly.
+- **No database service** — collection metadata lives in `knowledge-bases.json` and each KB's chunks + vectors in a per-KB SQLite file under `/models/.modelserver/knowledge-bases/`.
 
 ### Chat Interface
 
@@ -91,7 +102,7 @@ Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
 
 ### Pi (pi.dev) — Terminal UI
 
-The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`), a third-party minimal coding harness — we don't ship our own TUI, we wire Pi in. Install Pi once, drop in the bundled extension, and any model loaded in **My Models** becomes a Pi-driven coding agent backed by the 120+ skills the webapp already exposes.
+The terminal experience for this project is **[Pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`), a third-party minimal coding harness — we don't ship our own TUI, we wire Pi in. Install Pi once, drop in the bundled extension, and any model loaded in **My Models** becomes a Pi-driven coding agent backed by the 130+ skills the webapp already exposes.
 
 - **Pi handles the local FS** — read/write/bash/edit/grep run on the user's `$PWD` via Pi's built-ins, not on the server's `/workspace`
 - **Skills surface as Pi tools** — the bundled extension at `webapp/pi-extension/modelserver.ts` registers each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) and proxies execution to `/api/skills/:name/execute`
@@ -205,7 +216,10 @@ Mirrored mode requires Windows 11 build 22621+ and WSL 2.0.0+. On older Windows,
 3. **Discover** — Search and download models
 4. **My Models** — Launch and manage instances
 5. **API Keys** — Generate access tokens
-6. **Docs** — API code builder with 70+ endpoints in 4 languages
+6. **Knowledge Base** — Upload documents the model can reference (semantic RAG)
+7. **Docs** — API code builder with 70+ endpoints in 4 languages
+
+> Tip: drag the left-nav items to reorder them — your layout is saved per user.
 
 ### Pi (pi.dev) — terminal coding agent
 
@@ -225,7 +239,7 @@ curl -sk https://localhost:3001/api/pi/install | bash
 pi
 ```
 
-The extension auto-fetches the user's enabled skills on startup and registers each as a Pi tool, so the 120+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. Pi handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other.
+The extension auto-fetches the user's enabled skills on startup and registers each as a Pi tool, so the 130+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, email parsing, …) are available without further configuration. Pi handles the local FS via its built-in `read`/`bash`/`edit`/`write`; the modelserver tools target server-side concerns (web, attachments, sandbox runs) so the two don't shadow each other.
 
 ### API
 
@@ -288,7 +302,7 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
           │  │  React Frontend    │ │ React +  │ └───────┬───────┘     │
           │  │  Express API       │ │ Tailwind │         │             │
           │  │  WebSocket Server  │ │ 18 Themes│   :3001/api           │
-          │  │  120+ Skills Engine│ │ 6 Layouts│         │             │
+          │  │  130+ Skills Engine│ │ 6 Layouts│         │             │
           │  │  Native Tool Calls │ │Tool Chips│         │             │
           │  │  OpenAI Endpoints  │ │ OCR/File │         │             │
           │  │  Automation Engine │ │ Uploads  │         │             │
@@ -324,6 +338,8 @@ SESSION_SECRET=your-secret             # Auto-generated if not set
 **Sandbox image:** Skills that run user-provided code (or any of the new media skills — `transform_image`, `transcribe_audio`, `read_xlsx`, `query_sqlite`, `make_downloadable`) execute inside a ~2.6GB gVisor-isolated sandbox image with `faster-whisper`, `ffmpeg`, Pillow, openpyxl, and a bundled `small.en` Whisper model preloaded.
 
 **Automation Engine:** The visual workflow engine runs **in-process** inside the webapp — no extra service or container. It's a branch-pruning DAG executor (`webapp/services/automationEngine.js`) over a `{ nodes, edges }` graph with `{{...}}` data templating, reusing the same auth, sandboxed skills, and locally-served models. Triggers fire **manually, on a schedule** (one 5s `setInterval` tick, epoch-aligned intervals + cron), **by webhook, on a system event, or from a Telegram/Slack poll**; independent nodes at the same depth execute in parallel. Stateful nodes (`Database: Store`, `Track Changes`) keep per-workflow SQLite in a sandbox `automation-<id>` workspace for dedup/change-tracking across runs. An LLM **Build/Edit** path assembles workflows from a plain-language prompt and can **test-run and self-repair** them — running the graph, inspecting each node's output (and re-running to verify "only new/changed" logic) until the goal is met. Workflows, run history, and node types persist to `/models/.modelserver/` as JSON — no database service required.
+
+**Knowledge Base (RAG):** A resident CPU embedding engine (`webapp/services/kb_engine.py`, spawned and supervised by `webapp/services/knowledgeBaseService.js`) loads `model2vec`/`potion-retrieval-32M` once and answers semantic queries over a loopback HTTP port — no GPU, no PyTorch, no extra container. Uploaded documents are extracted and chunked in Node, embedded by the engine, and stored as per-KB SQLite (chunk text + normalized vectors) under `/models/.modelserver/knowledge-bases/`; collection metadata lives in `knowledge-bases.json`. The chat model retrieves on demand through the `search_knowledge_base` native tool, which returns only top-k snippets so context stays small regardless of library size. (Note: the `/v1/*` passthrough does not inject the server tool catalog, so KB retrieval is automatic in the webapp/chat UI but not over raw `/v1` or Pi.)
 
 ---
 
