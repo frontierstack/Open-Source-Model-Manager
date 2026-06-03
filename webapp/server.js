@@ -18772,8 +18772,12 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     // email generation (.eml) — needs workspace mount to attach files
     // the user/model already wrote into /workspace.
     'create_email',
-    // image manipulation (Pillow), spreadsheet read (openpyxl), SQL (sqlite3)
-    'transform_image', 'read_xlsx', 'query_sqlite',
+    // image manipulation (Pillow), spreadsheet read (openpyxl), SQL (sqlite3).
+    // create_xlsx accepts a `rowsFile` /workspace JSON path for large datasets,
+    // so it MUST mount /workspace for that file to be visible at render time
+    // (mirrors create_pdf/create_docx + contentFile). It already prefers
+    // /workspace/artifacts/ for output when the mount is present.
+    'transform_image', 'read_xlsx', 'create_xlsx', 'query_sqlite',
     // per-workflow change tracking — keeps snapshot history in a /workspace
     // SQLite db so it can diff a page/API against the previous run.
     'track_changes',

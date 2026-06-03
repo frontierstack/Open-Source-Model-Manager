@@ -311,6 +311,24 @@ function regexSalvageFields(input) {
     return out;
 }
 
+// Tools that accept a workspace FILE path as an alternative to a large inline
+// payload. When a tool call's arguments truncate at the model's output-token
+// cap, route the model to the hatch for THAT tool (param = the file arg name,
+// ext = suggested extension, noun = what the body is) instead of a generic hint.
+// Keep in sync with the skills' params + their /workspace sandbox mounts.
+const TRUNCATION_FILE_HATCH = {
+    create_pdf:       { param: 'contentFile', ext: 'md',   noun: 'markdown content' },
+    create_docx:      { param: 'contentFile', ext: 'md',   noun: 'markdown content' },
+    html_to_pdf:      { param: 'htmlPath',    ext: 'html', noun: 'HTML' },
+    markdown_to_html: { param: 'mdPath',      ext: 'md',   noun: 'markdown' },
+    run_python:       { param: 'codeFile',    ext: 'py',   noun: 'code' },
+    run_node:         { param: 'codeFile',    ext: 'js',   noun: 'code' },
+    create_xlsx:      { param: 'rowsFile',    ext: 'json', noun: 'rows (a JSON array of arrays, or {headers,rows})' },
+};
+// Tools whose large field IS the file body — recover by chunking the write
+// itself, not by pointing at a second file.
+const TRUNCATION_CHUNKABLE = new Set(['create_file', 'append_to_file', 'update_file', 'replace_lines']);
+
 async function executeToolCall(call, ctx) {
     const toolName = call.function.name;
     // Parse args once up-front — same error path whether we dispatch to
@@ -405,22 +423,31 @@ async function executeToolCall(call, ctx) {
                 `[chatTools] ${toolName} args appear truncated (raw length ${rawArgs.length}, ` +
                 `repair via ${argsRepairedVia}, no trailing brace) — refusing dispatch`
             );
-            // create_pdf / create_docx accept a `contentFile` workspace
-            // path that bypasses the arg-token cap entirely. Point the
-            // model at that pattern instead of the generic "split
-            // across calls" hint, which doesn't really apply to a
-            // single-output renderer.
-            const isDocRenderer = toolName === 'create_pdf' || toolName === 'create_docx';
-            const retryHint = isDocRenderer
-                ? `Build the markdown body in /workspace/<name>.md via create_file + ` +
-                  `append_to_file (one short call per section, no truncation risk), ` +
-                  `then re-call ${toolName} with contentFile='/workspace/<name>.md' ` +
-                  `and NO inline content. The file path bypasses the arg-token cap.`
-                : `Retry with a smaller payload: split large content across multiple ` +
-                  `calls (e.g. create the file with a short stub via create_file, then ` +
-                  `append the rest in chunks via replace_lines), or move the long ` +
-                  `content to a follow-up call. Do not retry the same call with the ` +
-                  `same large content — it will truncate again.`;
+            // Route the model to the right recovery for THIS tool: a file-path
+            // hatch when the tool has one, chunked writes for the file builders,
+            // else the generic "smaller payload / move to a file" hint. See
+            // TRUNCATION_FILE_HATCH / TRUNCATION_CHUNKABLE.
+            const hatch = TRUNCATION_FILE_HATCH[toolName];
+            let retryHint;
+            if (hatch) {
+                retryHint =
+                  `Write the ${hatch.noun} to /workspace/<name>.${hatch.ext} via create_file + ` +
+                  `append_to_file (one short call per chunk, no truncation risk), then re-call ` +
+                  `${toolName} with ${hatch.param}='/workspace/<name>.${hatch.ext}' and NO inline ` +
+                  `payload. The file path bypasses the arg-token cap. Do not retry the same call ` +
+                  `with the same large inline content — it will truncate again.`;
+            } else if (TRUNCATION_CHUNKABLE.has(toolName)) {
+                retryHint =
+                  `Split the write into smaller pieces: create the file with a short first chunk ` +
+                  `via create_file, then append the rest via append_to_file/replace_lines (one ` +
+                  `short call each). Do not retry with the same large content — it will truncate again.`;
+            } else {
+                retryHint =
+                  `Retry with a smaller payload: split the work across multiple calls, or write ` +
+                  `the long content to a /workspace file (create_file + chunked append_to_file) and ` +
+                  `have a file-aware tool read it by path. Do not retry the same call with the same ` +
+                  `large content — it will truncate again.`;
+            }
             return {
                 tool_call_id: call.id,
                 role: 'tool',

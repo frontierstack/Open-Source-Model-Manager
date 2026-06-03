@@ -646,6 +646,13 @@ const PATH_ARG_NAMES = [
     // very natural `/tmp/foo.tgz` never gets rewritten to `/workspace/foo.tgz`
     // and the file disappears between calls.
     'savePath', 'tarPath', 'zipPath', 'extractPath',
+    // run_python/run_node's large-script escape hatch: a /workspace .py/.js path
+    // passed instead of inline `code` (which truncates at the tool-call arg token
+    // cap). Rewriting it lets the model pass `script.py` or `/workspace/script.py`
+    // interchangeably and still have the runner find it inside the sandbox.
+    'codeFile',
+    // create_xlsx's large-dataset escape hatch: a /workspace JSON path of rows.
+    'rowsFile',
 ];
 
 /** Create (if needed) + chmod the per-(user, conversation) workspace.
