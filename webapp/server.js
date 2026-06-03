@@ -16494,6 +16494,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // loop we short-circuit with a nudge instead of burning iterations.
         // Cleared per user turn, not per conversation.
         const toolCallHistory = []; // { fp: 'name:args', resultHash: string }
+        // Chip-shaped record of every tool call dispatched this turn, mirroring
+        // the client's buildNativeChipEntries() output. Attached to the
+        // server-saved assistant message so a turn that completes in the
+        // BACKGROUND (user navigated away → clientConnected=false) keeps its
+        // tool chips on reload. The foreground path builds chips client-side
+        // from the SSE stream; this is the parity copy for the background save.
+        const persistedToolChips = [];
 
         // Skills can carry a `systemPrompt` (set in the Tool editor's
         // "Prompt" field) that the model should see when the tool is
@@ -17480,6 +17487,43 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             if (toolCallHistory.length > 40) toolCallHistory.shift();
                         } catch (_) { /* */ }
                         toolResultMessages.push(resultMsg);
+                        // Accumulate a chip record for the background-save path
+                        // (mirrors the client's buildNativeChipEntries). Runs
+                        // regardless of clientConnected so a turn that finishes
+                        // while the user is away keeps its tool chips on reload.
+                        try {
+                            let parsedForChip = null;
+                            if (typeof resultMsg.content === 'string') {
+                                try { parsedForChip = JSON.parse(resultMsg.content); } catch { /* non-JSON result */ }
+                            }
+                            let parsedArgsForChip = null, argPreview = '';
+                            try {
+                                parsedArgsForChip = JSON.parse(call.function.arguments || '{}');
+                                argPreview = Object.entries(parsedArgsForChip)
+                                    .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`).join(', ');
+                            } catch { argPreview = String(call.function.arguments || '').slice(0, 80); }
+                            const failedChip = !!(parsedForChip && (parsedForChip.error || parsedForChip.success === false));
+                            const chipArtifacts = (parsedForChip && Array.isArray(parsedForChip._artifacts))
+                                ? parsedForChip._artifacts
+                                    .filter(a => a && typeof a.url === 'string' && typeof a.name === 'string')
+                                    .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
+                                : null;
+                            persistedToolChips.push({
+                                type: 'native_tool_call',
+                                label: call.function.name || 'tool',
+                                query: argPreview,
+                                args: parsedArgsForChip,
+                                status: failedChip ? 'failed' : 'success',
+                                error: failedChip ? String(parsedForChip.error || 'failed').slice(0, 300) : undefined,
+                                preview: String(resultMsg.content || '').slice(0, 240),
+                                chartSpec: (parsedForChip && parsedForChip.chartSpec) || undefined,
+                                chartSummary: (parsedForChip && typeof parsedForChip.summary === 'string') ? parsedForChip.summary : undefined,
+                                artifacts: (chipArtifacts && chipArtifacts.length) ? chipArtifacts : undefined,
+                                sandboxed: policy.sandboxed,
+                                sandboxSource: policy.source,
+                                sandboxNetwork: policy.source === 'skill' ? policy.network : undefined,
+                            });
+                        } catch (_) { /* chip accumulation is best-effort */ }
                         if (clientConnected) {
                             try {
                                 const preview = String(resultMsg.content || '').slice(0, 240);
@@ -17888,6 +17932,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         timestamp: new Date().toISOString(),
                         responseTime: Date.now() - streamStartTime,
                         tokenCount: completionTokens,
+                        // Persist the tool chips so a background-completed turn
+                        // (user navigated away) shows them on reload — the
+                        // foreground commit does this client-side; this is the
+                        // parity for the server-side save.
+                        toolCalls: persistedToolChips.length ? persistedToolChips : undefined,
                         backgroundCompleted: !clientConnected
                     };
                     conversationMsgs.push(assistantMessage);
