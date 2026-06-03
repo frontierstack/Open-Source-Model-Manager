@@ -7389,6 +7389,11 @@ fetch('${baseUrl}/api/chips', {
         const draggedTabId = currentVisibleOrder[draggedTab];
         const targetTabId = currentVisibleOrder[index];
 
+        // Remember which panel is currently open (by tab ID, not index) so the
+        // active selection follows its tab as the order shuffles instead of the
+        // visible content jumping to whatever now sits at the old index.
+        const activeTabId = currentVisibleOrder[activeTab];
+
         // Find positions in the full tabOrder
         const draggedFullIndex = tabOrder.indexOf(draggedTabId);
         const targetFullIndex = tabOrder.indexOf(targetTabId);
@@ -7398,6 +7403,15 @@ fetch('${baseUrl}/api/chips', {
         newOrder.splice(targetFullIndex, 0, draggedTabId);
 
         setTabOrder(newOrder);
+
+        const newVisibleOrder = user?.role === 'admin'
+            ? newOrder
+            : newOrder.filter(tabId => !adminOnlyTabIds.includes(tabId));
+        const newActiveIndex = newVisibleOrder.indexOf(activeTabId);
+        if (newActiveIndex !== -1 && newActiveIndex !== activeTab) {
+            setActiveTab(newActiveIndex);
+        }
+
         setDraggedTab(index);
         localStorage.setItem('tabOrder', JSON.stringify(newOrder));
     };
@@ -8327,6 +8341,10 @@ fetch('${baseUrl}/api/chips', {
                     visibleOrder={visibleTabOrder}
                     activeIndex={activeTab}
                     onSelectIndex={(idx) => setActiveTab(idx)}
+                    onDragStart={handleDragStart}
+                    onDragOver={handleDragOver}
+                    onDragEnd={handleDragEnd}
+                    draggedIndex={draggedTab}
                 />
 
                 {/* Main Content */}

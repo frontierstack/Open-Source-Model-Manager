@@ -1,4 +1,5 @@
 import React from 'react';
+import { GripVertical } from 'lucide-react';
 import { useAuthStore } from '../stores/useAuthStore';
 
 // Phase 1b shell: chat-style left rail. Replaces the desktop MUI Tabs
@@ -12,12 +13,20 @@ import { useAuthStore } from '../stores/useAuthStore';
 //   activeIndex     current activeTab — index INTO visibleOrder
 //   onSelectIndex   fn(index) when a nav item is clicked
 //   appVersion      optional string shown in the footer
+//   onDragStart/onDragOver/onDragEnd  drag-reorder handlers, called with
+//                   (event, index-into-visibleOrder). Reordering + persistence
+//                   live in the parent (App.js handleDrag* / tabOrder).
+//   draggedIndex    index currently being dragged (for grab styling), or null
 export default function AppSidebar({
     tabs = [],
     visibleOrder = [],
     activeIndex = 0,
     onSelectIndex = () => {},
     appVersion,
+    onDragStart = () => {},
+    onDragOver = () => {},
+    onDragEnd = () => {},
+    draggedIndex = null,
 }) {
     const user = useAuthStore((s) => s.user);
 
@@ -74,22 +83,31 @@ export default function AppSidebar({
                     const tab = tabs.find((t) => t.id === tabId);
                     if (!tab) return null;
                     const active = idx === activeIndex;
+                    const dragging = draggedIndex === idx;
+                    const baseStyle = active
+                        ? {
+                              backgroundColor: 'var(--accent-muted)',
+                              color: 'var(--accent-primary)',
+                              boxShadow: 'inset 0 0 0 1px var(--border-focus)',
+                          }
+                        : {
+                              color: 'var(--text-secondary)',
+                          };
                     return (
                         <button
                             key={tabId}
                             type="button"
+                            draggable
                             onClick={() => onSelectIndex(idx)}
-                            className="group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition focus:outline-none focus:ring-2"
+                            onDragStart={(e) => onDragStart(e, idx)}
+                            onDragOver={(e) => onDragOver(e, idx)}
+                            onDragEnd={onDragEnd}
+                            onDrop={(e) => e.preventDefault()}
+                            className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition focus:outline-none focus:ring-2"
                             style={
-                                active
-                                    ? {
-                                          backgroundColor: 'var(--accent-muted)',
-                                          color: 'var(--accent-primary)',
-                                          boxShadow: 'inset 0 0 0 1px var(--border-focus)',
-                                      }
-                                    : {
-                                          color: 'var(--text-secondary)',
-                                      }
+                                dragging
+                                    ? { ...baseStyle, opacity: 0.5, cursor: 'grabbing' }
+                                    : { ...baseStyle, cursor: 'grab' }
                             }
                             onMouseEnter={(e) => {
                                 if (!active) {
@@ -105,6 +123,15 @@ export default function AppSidebar({
                             }}
                             aria-current={active ? 'page' : undefined}
                         >
+                            {/* Drag affordance — sits in the row's left padding so
+                                it reveals on hover without shifting the icon/label. */}
+                            <span
+                                aria-hidden="true"
+                                className="absolute inset-y-0 left-0 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-50"
+                                style={{ width: '12px', color: 'var(--text-muted)', pointerEvents: 'none' }}
+                            >
+                                <GripVertical size={12} strokeWidth={1.75} />
+                            </span>
                             <span
                                 className="flex h-5 w-5 items-center justify-center"
                                 style={{ opacity: active ? 1 : 0.75 }}
