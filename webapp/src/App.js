@@ -117,11 +117,13 @@ import {
     LayoutGrid as LucideLayoutGrid,
     Boxes as LucideBoxes,
     Workflow as LucideWorkflow,
+    Library as LucideLibrary,
 } from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
+import KnowledgeBasePanel from './components/KnowledgeBasePanel';
 import AppsPanel from './components/AppsPanel';
 import AutomationLibrary from './components/AutomationLibrary';
 import MyModelsPanel from './components/MyModelsPanel';
@@ -634,7 +636,7 @@ const App = () => {
 
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
-        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         try {
             const saved = localStorage.getItem('tabOrder');
             if (saved) {
@@ -7450,7 +7452,8 @@ fetch('${baseUrl}/api/chips', {
         { id: 5, icon: <LucideTerminal size={18} strokeWidth={1.75} />,  label: 'Logs' },
         { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
         { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' },
-        { id: 8, icon: <LucideWorkflow size={18} strokeWidth={1.75} />,   label: 'Automations' }
+        { id: 8, icon: <LucideWorkflow size={18} strokeWidth={1.75} />,   label: 'Automations' },
+        { id: 9, icon: <LucideLibrary size={18} strokeWidth={1.75} />,    label: 'Knowledge Base' }
     ];
 
     // Filter tabs based on user role - hide admin-only tabs for non-admin users
@@ -12779,6 +12782,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                         {/* Automations Tab — building-block library (user-visible) */}
                         {visibleTabOrder[activeTab] === 8 && (
                             <AutomationLibrary showSnackbar={showSnackbar} isAdmin={isAdmin} />
+                        )}
+                        {visibleTabOrder[activeTab] === 9 && (
+                            <KnowledgeBasePanel />
                         )}
                     </Box>
                 </Box>

@@ -93,6 +93,10 @@ const attachmentStore = require('./services/attachmentStore');
 const automationEngine = require('./services/automationEngine');
 const workflowRunStore = require('./services/workflowRunStore');
 
+// Knowledge Base (RAG): per-user document collections + a resident CPU
+// embedding engine for fast top-k retrieval that keeps chat context small.
+const knowledgeBaseService = require('./services/knowledgeBaseService');
+
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
 let scraplingEnabled = false;
@@ -20898,6 +20902,174 @@ app.all('/v1/*', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
+// KNOWLEDGE BASE (RAG) ROUTES
+// ============================================================================
+// Per-user document collections with semantic retrieval. Owners manage their
+// own KBs; admins see and manage all. Embedding + top-k search run in the
+// resident kb_engine subprocess (via knowledgeBaseService) so only a few
+// relevant snippets ever enter the chat context, regardless of KB size.
+
+// Attach the owner's username to each KB record (for the admin "all KBs" view).
+async function decorateKbOwners(list) {
+    const usersById = new Map();
+    try {
+        const users = await getAllUsers();
+        for (const u of users) usersById.set(String(u.id), u);
+    } catch (_) { /* fall back to raw owner id */ }
+    return list.map((kb) => ({
+        ...kb,
+        ownerName: kb.userId ? (usersById.get(String(kb.userId))?.username || 'unknown') : 'global',
+    }));
+}
+
+// Load a KB and enforce ownership (admins bypass). Sends the error + returns
+// null when access is denied so the caller can `if (!kb) return;`.
+async function loadOwnedKB(req, res) {
+    const kb = await knowledgeBaseService.getKB(req.params.id);
+    if (!kb) { res.status(404).json({ error: 'Knowledge base not found' }); return null; }
+    if (!callerIsAdmin(req) && !checkOwnership(kb, req.userId)) {
+        res.status(403).json({ error: 'Not authorized for this knowledge base' });
+        return null;
+    }
+    return kb;
+}
+
+// List KBs — own, or all for admins.
+app.get('/api/knowledge-bases', requireAuth, async (req, res) => {
+    try {
+        const isAdmin = callerIsAdmin(req);
+        const list = await knowledgeBaseService.listKBs(req.userId, { all: isAdmin });
+        res.json({ knowledgeBases: await decorateKbOwners(list), isAdmin });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Create a KB.
+app.post('/api/knowledge-bases', requireAuth, async (req, res) => {
+    try {
+        const { name, description } = req.body || {};
+        if (!name || !String(name).trim()) {
+            return res.status(400).json({ error: 'name is required' });
+        }
+        const kb = await knowledgeBaseService.createKB({
+            name: String(name).trim(), description, userId: req.userId,
+        });
+        res.status(201).json({ knowledgeBase: kb });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// KB details + documents + live engine stats.
+app.get('/api/knowledge-bases/:id', requireAuth, async (req, res) => {
+    try {
+        const kb = await loadOwnedKB(req, res); if (!kb) return;
+        let stats = null;
+        try { stats = await knowledgeBaseService.stats(kb); } catch (_) { /* engine may be warming */ }
+        res.json({ knowledgeBase: kb, documents: kb.documents || [], stats });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Rename / edit description.
+app.patch('/api/knowledge-bases/:id', requireAuth, async (req, res) => {
+    try {
+        const kb = await loadOwnedKB(req, res); if (!kb) return;
+        const patch = {};
+        if (req.body?.name != null) patch.name = String(req.body.name).slice(0, 200);
+        if (req.body?.description != null) patch.description = String(req.body.description).slice(0, 2000);
+        const updated = await knowledgeBaseService.updateKB(kb.id, patch);
+        res.json({ knowledgeBase: updated });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Delete a KB (removes its vectors + files).
+app.delete('/api/knowledge-bases/:id', requireAuth, async (req, res) => {
+    try {
+        const kb = await loadOwnedKB(req, res); if (!kb) return;
+        await knowledgeBaseService.deleteKB(kb.id);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Upload + index a document (base64 JSON body, mirrors /api/chat/upload).
+app.post('/api/knowledge-bases/:id/documents', requireAuth, async (req, res) => {
+    try {
+        const kb = await loadOwnedKB(req, res); if (!kb) return;
+        const { filename, content, mimeType, text } = req.body || {};
+        if (!content && !text) {
+            return res.status(400).json({ error: 'content (base64) or text is required' });
+        }
+        if (content && content.length > 50 * 1024 * 1024) {
+            return res.status(413).json({ error: 'File too large. Maximum size is 50MB.' });
+        }
+        const buffer = content ? Buffer.from(content, 'base64') : null;
+        const docId = crypto.randomBytes(12).toString('hex');
+        const safeName = String(filename || 'document.txt').slice(0, 255);
+        const result = await knowledgeBaseService.ingestDocument(kb, {
+            docId, filename: safeName, buffer, mimeType, text,
+        });
+        if (!result.chunkCount) {
+            return res.status(422).json({ error: 'No extractable text found in this document.', ...result });
+        }
+        const doc = {
+            docId,
+            filename: safeName,
+            mimeType: mimeType || '',
+            size: buffer ? buffer.length : (text ? Buffer.byteLength(text) : 0),
+            chunkCount: result.chunkCount,
+            chars: result.chars,
+            addedAt: new Date().toISOString(),
+        };
+        let stats = null; try { stats = await knowledgeBaseService.stats(kb); } catch (_) {}
+        const updated = await knowledgeBaseService.addDocumentMeta(kb.id, doc, {
+            chunkCount: stats ? stats.chunkCount : undefined,
+            embeddingModel: stats ? stats.model : undefined,
+        });
+        res.status(201).json({ document: doc, knowledgeBase: updated, stats });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Remove a document from a KB.
+app.delete('/api/knowledge-bases/:id/documents/:docId', requireAuth, async (req, res) => {
+    try {
+        const kb = await loadOwnedKB(req, res); if (!kb) return;
+        await knowledgeBaseService.deleteDocument(kb, req.params.docId);
+        let stats = null; try { stats = await knowledgeBaseService.stats(kb); } catch (_) {}
+        const updated = await knowledgeBaseService.removeDocumentMeta(kb.id, req.params.docId, {
+            chunkCount: stats ? stats.chunkCount : undefined,
+        });
+        res.json({ success: true, knowledgeBase: updated, stats });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Query a KB (UI test box; the chat tool calls the service directly).
+app.post('/api/knowledge-bases/:id/search', requireAuth, async (req, res) => {
+    try {
+        const kb = await loadOwnedKB(req, res); if (!kb) return;
+        const { query, k } = req.body || {};
+        if (!query || !String(query).trim()) {
+            return res.status(400).json({ error: 'query is required' });
+        }
+        const topK = Math.min(Math.max(parseInt(k) || 6, 1), 50);
+        const results = await knowledgeBaseService.search(kb, String(query), topK);
+        res.json({ results, query });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============================================================================
 // GLOBAL ERROR HANDLING MIDDLEWARE
 // ============================================================================
 
@@ -22150,6 +22322,81 @@ app.use((req, res) => {
     // `resolveSkillPolicy` and `isSkillBlocked` are module-scope — see the
     // helper near the auth destructure at the top of this file.
 
+    // ----- search_knowledge_base -------------------------------------------
+    // Semantic retrieval over the user's uploaded knowledge base(s). Surfaced
+    // only when the user actually has a KB. Returns short, source-cited
+    // snippets (top-k) — never whole documents — so it stays context-cheap and
+    // can be called repeatedly with refined queries.
+    tools.registerTool({
+        name: 'search_knowledge_base',
+        async build(ctx) {
+            let kbs = [];
+            try { kbs = await knowledgeBaseService.listKBs(ctx?.userId || null); } catch (_) { return null; }
+            if (!kbs.length) return null;
+            const names = kbs.map((k) => `"${k.name}"`).join(', ');
+            return {
+                type: 'function',
+                function: {
+                    name: 'search_knowledge_base',
+                    description:
+                        "Semantically search the user's uploaded knowledge base(s) and return the most relevant passages. " +
+                        "Call this whenever the answer may live in the user's own documents, notes, or files. " +
+                        'Returns short, source-cited snippets only (not whole documents), so it is cheap and safe to call repeatedly with refined queries. ' +
+                        `Available knowledge bases: ${names}.`,
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: 'Natural-language search query.' },
+                            knowledge_base: { type: 'string', description: "Optional KB name to restrict the search; omit to search all of the user's knowledge bases." },
+                            k: { type: 'number', description: 'Max passages to return (default 6, max 20).' },
+                        },
+                        required: ['query'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const query = String(args?.query || '').trim();
+            if (!query) return { error: 'query is required' };
+            const k = Math.min(Math.max(parseInt(args?.k) || 6, 1), 20);
+            let kbs = [];
+            try { kbs = await knowledgeBaseService.listKBs(ctx?.userId || null); }
+            catch (e) { return { error: 'knowledge base unavailable: ' + e.message }; }
+            if (!kbs.length) return { results: [], note: 'No knowledge bases available for this user.' };
+
+            let target = kbs;
+            if (args?.knowledge_base) {
+                const want = String(args.knowledge_base).toLowerCase();
+                const match = kbs.filter((k) => k.name.toLowerCase() === want || k.id === args.knowledge_base);
+                if (match.length) target = match;
+            }
+
+            const all = [];
+            for (const kb of target) {
+                try {
+                    const r = await knowledgeBaseService.search(kb, query, k);
+                    for (const item of r) all.push({ ...item, knowledgeBase: kb.name });
+                } catch (_) { /* skip a KB whose engine call failed */ }
+            }
+            all.sort((a, b) => b.score - a.score);
+            const top = all.slice(0, k);
+            return {
+                query,
+                count: top.length,
+                results: top.map((r) => ({
+                    source: r.filename || r.knowledgeBase,
+                    knowledgeBase: r.knowledgeBase,
+                    score: r.score,
+                    text: r.text,
+                })),
+                note: top.length
+                    ? 'Cite the source filename when you use these passages.'
+                    : 'No relevant passages found in the knowledge base.',
+            };
+        },
+    });
+
     tools.setDynamicToolProvider(async (ctx) => {
         try {
             const all = await loadSkills();
@@ -22428,6 +22675,14 @@ server.listen(PORT, async () => {
     } catch (e) {
         console.warn('[Startup] egressProxy failed to start:', e.message);
     }
+
+    // Warm up the Knowledge Base embedding engine in the background so the
+    // model is resident before the first query. Fire-and-forget — boot must
+    // not block on the model load, and KB calls lazily spawn it anyway.
+    knowledgeBaseService.ensureEngine()
+        .then(() => knowledgeBaseService.health())
+        .then((h) => console.log(`[kb] embedding engine ready (${h.model}, dim=${h.dim})`))
+        .catch((e) => console.warn('[kb] engine warm-up deferred:', e.message));
 
     // One-shot legacy-workspace migration: older installs kept per-user
     // files directly under /models/.modelserver/workspaces/<userId>/; the
