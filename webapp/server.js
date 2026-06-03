@@ -12461,13 +12461,37 @@ async function saveConversationMessages(userId, conversationId, messages) {
     const messagesPath = path.join(userDir, `${conversationId}.json`);
     await safeWriteFile(messagesPath, encodeConversationData(messages));
 
-    // Update messageCount in conversations index
+    // Update messageCount in conversations index — and CREATE the entry when
+    // it's missing. A brand-new conversation that completes in the BACKGROUND
+    // (user navigated away before the client created the index row) would
+    // otherwise write its message file with no index entry; loadConversationsIndex
+    // only rescans disk when index.json is absent, and GET /api/conversations/:id
+    // returns an empty stub for any id not in the index — so the on-disk
+    // response would be invisible / show as an empty "New Conversation".
     try {
         const conversations = await loadConversationsIndex(userId);
         const conv = conversations.find(c => c.id === conversationId);
         if (conv) {
             conv.messageCount = messages.length;
             conv.updatedAt = new Date().toISOString();
+            await saveConversationsIndex(userId, conversations);
+        } else {
+            // Derive a title from the first user message (same convention as
+            // rebuildConversationsIndexFromDisk); fall back to 'New Conversation'.
+            let title = 'New Conversation';
+            const firstUser = messages.find(msg => msg && msg.role === 'user');
+            if (firstUser) {
+                let txt = '';
+                if (typeof firstUser.content === 'string') txt = firstUser.content;
+                else if (Array.isArray(firstUser.content)) {
+                    const part = firstUser.content.find(p => p && p.type === 'text' && typeof p.text === 'string');
+                    txt = part ? part.text : '';
+                }
+                const cleaned = txt.replace(/\s+/g, ' ').trim();
+                if (cleaned) title = cleaned.length > 60 ? cleaned.slice(0, 57) + '...' : cleaned;
+            }
+            const now = new Date().toISOString();
+            conversations.unshift({ id: conversationId, title, createdAt: now, updatedAt: now, messageCount: messages.length });
             await saveConversationsIndex(userId, conversations);
         }
     } catch (e) {
@@ -12971,13 +12995,17 @@ app.get('/api/conversations/:id', requireAuth, async (req, res) => {
         const conversation = conversations.find(c => c.id === id);
 
         if (!conversation) {
-            // Return empty conversation instead of 404 - handles race conditions
-            // where frontend creates conversation ID before backend saves it
+            // Not in the index — but the message file may still exist (e.g. a
+            // brand-new chat that completed in the background before its index
+            // entry landed). Read it directly so an on-disk response is never
+            // invisible; fall back to an empty stub (race / no file / bad id).
+            let orphanMessages = [];
+            try { orphanMessages = await loadConversationMessages(userId, id); } catch (_) { /* invalid id or no file */ }
             return res.json({
                 id,
                 title: 'New Conversation',
                 createdAt: new Date().toISOString(),
-                messages: []
+                messages: orphanMessages
             });
         }
 
