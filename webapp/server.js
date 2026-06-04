@@ -22333,7 +22333,11 @@ app.use((req, res) => {
             let kbs = [];
             try { kbs = await knowledgeBaseService.listKBs(ctx?.userId || null); } catch (_) { return null; }
             if (!kbs.length) return null;
-            const names = kbs.map((k) => `"${k.name}"`).join(', ');
+            // Surface document counts so the model can answer "how many files do
+            // I have" directly, without guessing from search snippets.
+            const names = kbs
+                .map((k) => `"${k.name}" (${(k.documents || []).length} file${(k.documents || []).length === 1 ? '' : 's'})`)
+                .join(', ');
             return {
                 type: 'function',
                 function: {
@@ -22342,15 +22346,17 @@ app.use((req, res) => {
                         "Semantically search the user's uploaded knowledge base(s) and return the most relevant passages. " +
                         "Call this whenever the answer may live in the user's own documents, notes, or files. " +
                         'Returns short, source-cited snippets only (not whole documents), so it is cheap and safe to call repeatedly with refined queries. ' +
+                        'To list or count the files in a knowledge base (e.g. "how many files / which documents do I have"), call with list_documents=true instead of guessing from search results. ' +
                         `Available knowledge bases: ${names}.`,
                     parameters: {
                         type: 'object',
                         properties: {
-                            query: { type: 'string', description: 'Natural-language search query.' },
+                            query: { type: 'string', description: 'Natural-language search query. Required unless list_documents is true.' },
                             knowledge_base: { type: 'string', description: "Optional KB name to restrict the search; omit to search all of the user's knowledge bases." },
+                            list_documents: { type: 'boolean', description: 'Set true to return the inventory of files (filenames, types, counts) in the knowledge base(s) instead of doing a semantic search.' },
                             k: { type: 'number', description: 'Max passages to return (default 6, max 20).' },
                         },
-                        required: ['query'],
+                        required: [],
                         additionalProperties: false,
                     },
                 },
@@ -22358,7 +22364,8 @@ app.use((req, res) => {
         },
         async execute(args, ctx) {
             const query = String(args?.query || '').trim();
-            if (!query) return { error: 'query is required' };
+            const wantList = args?.list_documents === true || args?.list_documents === 'true';
+            if (!query && !wantList) return { error: 'query is required (or set list_documents=true to list files)' };
             const k = Math.min(Math.max(parseInt(args?.k) || 6, 1), 20);
             let kbs = [];
             try { kbs = await knowledgeBaseService.listKBs(ctx?.userId || null); }
@@ -22370,6 +22377,30 @@ app.use((req, res) => {
                 const want = String(args.knowledge_base).toLowerCase();
                 const match = kbs.filter((k) => k.name.toLowerCase() === want || k.id === args.knowledge_base);
                 if (match.length) target = match;
+            }
+
+            // Inventory mode: return the file manifest so the model can count /
+            // enumerate documents precisely instead of inferring from snippets.
+            if (wantList) {
+                const knowledgeBases = target.map((kb) => {
+                    const docs = kb.documents || [];
+                    return {
+                        knowledgeBase: kb.name,
+                        documentCount: docs.length,
+                        files: docs.map((d) => ({
+                            filename: d.filename,
+                            type: d.mimeType || (d.filename.includes('.') ? d.filename.split('.').pop() : 'unknown'),
+                            chunks: d.chunkCount,
+                            addedAt: d.addedAt,
+                        })),
+                    };
+                });
+                const totalFiles = knowledgeBases.reduce((n, kb) => n + kb.documentCount, 0);
+                return {
+                    totalFiles,
+                    knowledgeBases,
+                    note: `The user has ${totalFiles} file${totalFiles === 1 ? '' : 's'} across ${knowledgeBases.length} knowledge base${knowledgeBases.length === 1 ? '' : 's'}. Cite filenames exactly as shown.`,
+                };
             }
 
             const all = [];

@@ -19,7 +19,10 @@ const fsp = require('fs/promises');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const os = require('os');
+const { spawn, execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 
 const DATA_DIR = '/models/.modelserver';
 const KB_META_FILE = path.join(DATA_DIR, 'knowledge-bases.json');
@@ -270,6 +273,48 @@ function stripHtml(html) {
         .replace(/[ \t]+/g, ' ');
 }
 
+// Image formats we OCR rather than decode as text. Tesseract (via leptonica)
+// reads png/jpg/tiff/bmp/gif natively; webp and anything else we transcode to
+// PNG with Jimp first.
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tif', '.tiff', '.webp'];
+const TESSERACT_NATIVE = new Set(['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.gif']);
+
+/** OCR an image buffer to text via Tesseract. Returns '' if nothing legible. */
+async function extractImageText(buffer, ext) {
+    const tmpBase = path.join(os.tmpdir(), `kb_ocr_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`);
+    let ocrPath = `${tmpBase}${ext || '.png'}`;
+    const cleanup = [];
+    try {
+        // Transcode formats Tesseract can't read (e.g. webp) to PNG.
+        if (!TESSERACT_NATIVE.has(ext)) {
+            try {
+                const { Jimp } = require('jimp');
+                const img = await Jimp.read(buffer);
+                const png = await img.getBuffer('image/png');
+                ocrPath = `${tmpBase}.png`;
+                await fsp.writeFile(ocrPath, png);
+            } catch (convErr) {
+                log('image transcode failed, trying raw:', convErr.message);
+                ocrPath = `${tmpBase}${ext || '.png'}`;
+                await fsp.writeFile(ocrPath, buffer);
+            }
+        } else {
+            await fsp.writeFile(ocrPath, buffer);
+        }
+        cleanup.push(ocrPath);
+        const { stdout } = await execFileAsync('tesseract', [ocrPath, 'stdout', '--psm', '3'], {
+            timeout: 30000,
+            maxBuffer: 8 * 1024 * 1024,
+        });
+        return (stdout || '').trim();
+    } catch (e) {
+        log('OCR failed:', e.message);
+        return '';
+    } finally {
+        for (const p of cleanup) { try { await fsp.unlink(p); } catch (_) {} }
+    }
+}
+
 /** Extract plain text from a document buffer. Returns '' if unsupported. */
 async function extractText(buffer, filename = '', mimeType = '') {
     const ext = (path.extname(filename) || '').toLowerCase();
@@ -291,6 +336,16 @@ async function extractText(buffer, filename = '', mimeType = '') {
             return wb.SheetNames
                 .map((n) => `# ${n}\n` + XLSX.utils.sheet_to_csv(wb.Sheets[n]))
                 .join('\n\n');
+        }
+        if (IMAGE_EXTS.includes(ext) || mime.startsWith('image/')) {
+            const ocr = await extractImageText(buffer, ext || '.png');
+            // Always register the image even when OCR finds nothing legible, so
+            // it's still counted and retrievable by filename. The header line
+            // gives semantic search something to match on.
+            const base = path.basename(filename) || 'image';
+            return ocr
+                ? `[Image: ${base}]\n${ocr}`
+                : `[Image: ${base}] (no machine-readable text detected in this picture)`;
         }
         if (ext === '.html' || ext === '.htm' || mime.includes('html')) {
             return stripHtml(buffer.toString('utf8'));

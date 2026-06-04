@@ -309,7 +309,7 @@ export default function KnowledgeBasePanel() {
                                         <DeleteIcon size={16} />
                                     </button>
                                     <input ref={fileInputRef} type="file" multiple className="hidden"
-                                        accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.xlsx,.xls,.log,.tsv,.xml,.yml,.yaml,.py,.js,.ts" onChange={onPickFiles} />
+                                        accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.htm,.xlsx,.xls,.xlsm,.log,.tsv,.xml,.yml,.yaml,.py,.js,.ts,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp" onChange={onPickFiles} />
                                 </div>
                             </div>
 
