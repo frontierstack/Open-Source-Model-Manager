@@ -13119,6 +13119,130 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     };
 }
 
+// ============================================================================
+// Pi (/v1 passthrough) memory bridge
+// ============================================================================
+// The /v1/chat/completions passthrough is otherwise transparent. Pi is the
+// webapp's OWN agent (authenticated with a bearerOnly key), so we give it the
+// SAME persona/experience the web chat gets — that's what lets Pi reuse what
+// worked and stop flailing (the climbing 119k-token loop). Memory is keyed on
+// `req.userId` (the owning ACCOUNT), which equals the web-session memory id, so
+// web + Pi share ONE persona. Gated to bearer callers + memory-enabled + only
+// when there's context headroom — raw OpenAI-SDK clients (key+secret) keep the
+// fully-transparent contract, and a near-full Pi context is never pushed over
+// (which would trip the backend's max_tokens floor → truncated tool calls).
+
+const PI_MEMORY_BUDGET = 800;        // smaller than chat's 1500 — Pi runs near the limit
+const PI_MEMORY_RESERVE = 2048;      // headroom for the response
+const v1RecordInFlight = new Set();  // (userId:convKey) currently being recorded — anti-double-record guard
+
+function v1LatestUserText(messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]?.role === 'user') {
+            const c = messages[i].content;
+            if (typeof c === 'string') return c;
+            if (Array.isArray(c)) return c.filter(p => p?.type === 'text').map(p => p.text || '').join('\n');
+            return '';
+        }
+    }
+    return '';
+}
+
+// Inject the persona/experience block into req.body.messages (mutates in place;
+// both passthrough branches read req.body). Returns a short summary or null.
+async function injectPersonaForV1(req, instance) {
+    // Account id when the key is associated with one (real Pi keys created in a
+    // web session are) — unifies with web-chat memory. Falls back to the key id
+    // for unassociated keys so memory still works (per-key persona).
+    const userId = req.userId || req.apiKeyData?.id;
+    const messages = req.body?.messages;
+    if (!userId || userId === 'default' || !Array.isArray(messages) || !messages.length) return null;
+    if (await isMemoryDisabledForUser(userId)) return null;
+    const latestUserText = v1LatestUserText(messages);
+    if (!latestUserText) return null;
+
+    // Activity hint = the most recent tool the model has been using this session
+    // + the ask. Front-loads the matching experience.
+    const toolLabels = [];
+    for (const m of messages) {
+        if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+            for (const tc of m.tool_calls) { const n = tc?.function?.name; if (n) toolLabels.push(n); }
+        }
+    }
+    const activityHint = (classifyTurnActivity({ toolLabels, userText: latestUserText, attachmentKinds: new Set() }) || {}).activity || null;
+
+    // Room-check: never push an already-large Pi context past the model window.
+    const ctx = instance?.config?.contextSize || instance?.config?.maxModelLen || 131072;
+    let inputEst = 0;
+    try { inputEst = estimateTokenCount(JSON.stringify(messages)); } catch (_) { inputEst = 0; }
+    if (inputEst + PI_MEMORY_BUDGET + PI_MEMORY_RESERVE > ctx) return null; // no headroom → skip silently
+
+    const mem = await retrieveRelevantMemories(userId, null, latestUserText, PI_MEMORY_BUDGET, { activityHint });
+    if (!mem || !mem.block) return null;
+
+    const sys = messages[0];
+    if (sys && sys.role === 'system' && typeof sys.content === 'string') {
+        messages[0] = { ...sys, content: `${sys.content}\n\n${mem.block}` };
+    } else if (sys && sys.role === 'system' && Array.isArray(sys.content)) {
+        // Vision-format system message — append a text part rather than a 2nd system msg.
+        messages[0] = { ...sys, content: [...sys.content, { type: 'text', text: '\n\n' + mem.block }] };
+    } else {
+        messages.unshift({ role: 'system', content: mem.block });
+    }
+    return { count: mem.count, procedures: mem.procedures || 0, learnings: mem.learnings || 0, facts: mem.facts || 0, tokens: mem.tokens, activityHint };
+}
+
+// Build the model's persona FROM Pi usage too. /v1 is stateless — Pi resends
+// the whole history each turn — so on each request we record the experience for
+// the most-recently COMPLETED task (the segment of the second-to-last user
+// message, which is now fully resolved in the history). A per-key cursor (user-
+// message count) ensures each completed task is recorded once. Reuses
+// recordTurnActivity (synthesized success chips from the tool_calls). Imperfect
+// success-mapping is fine: best-recipe protection keeps the leanest version and
+// the model can refine via record_learning.
+async function recordV1TurnActivity(userId, apiKeyData, messages) {
+    if (!userId || userId === 'default' || !Array.isArray(messages)) return;
+    const convKey = 'pi-' + (apiKeyData?.id || 'key');
+    const lockKey = `${userId}:${convKey}`;
+    // In-flight guard: the cursor read→write isn't atomic, so a concurrent
+    // retry of the same session could double-record (inflating the experience
+    // count). Skip if a record for this (user,session) is already running.
+    if (v1RecordInFlight.has(lockKey)) return;
+    v1RecordInFlight.add(lockKey);
+    try {
+        if (await isMemoryDisabledForUser(userId)) return;
+        const userIdxs = [];
+        messages.forEach((m, i) => { if (m?.role === 'user') userIdxs.push(i); });
+        if (userIdxs.length < 2) return;                 // need ≥1 completed prior task
+        const cursor = await memoryService.getCursor(userId, convKey);
+        const lastCount = cursor ? parseInt(cursor, 10) || 0 : 0;
+        const userCount = userIdxs.length;
+        if (userCount <= lastCount) return;              // already processed up to here
+
+        const newestUserIdx = userIdxs[userIdxs.length - 1];
+        const prevUserIdx = userIdxs[userIdxs.length - 2];
+        const toolLabels = [];
+        for (let i = prevUserIdx; i < newestUserIdx; i++) {
+            const m = messages[i];
+            if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
+                for (const tc of m.tool_calls) { const n = tc?.function?.name; if (n) toolLabels.push(n); }
+            }
+        }
+        const uc = messages[prevUserIdx]?.content;
+        const userText = typeof uc === 'string' ? uc
+            : (Array.isArray(uc) ? uc.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
+        // Treat tool_calls whose following tool result isn't an obvious error as
+        // successful (Pi resolves them client-side; we only see the result text).
+        const okChips = toolLabels.map(l => ({ status: 'success', label: l }));
+        await recordTurnActivity({ userId, conversationId: convKey, toolChips: okChips, userText, attachments: [] });
+        await memoryService.setCursor(userId, convKey, String(userCount));
+    } catch (e) {
+        console.warn('[Pi/Memory] activity record failed:', e.message);
+    } finally {
+        v1RecordInFlight.delete(lockKey);
+    }
+}
+
 // List all conversations for a user
 app.get('/api/conversations', requireAuth, async (req, res) => {
     try {
@@ -20961,6 +21085,39 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     targetUserId: req.userId
                 });
             } catch (_) { /* ignore */ }
+        }
+
+        // ── Pi memory bridge ────────────────────────────────────────────────
+        // For Pi (bearerOnly key) POSTing chat completions: (1) record the
+        // experience from the most-recently completed task, then (2) inject the
+        // persona/experience so this turn reuses what worked. Gated to bearer
+        // callers so raw OpenAI-SDK clients keep the transparent passthrough.
+        // Mutating req.body.messages here is picked up by BOTH branches below
+        // (streaming clones req.body; non-streaming sends it directly).
+        const piMemId = req.userId || req.apiKeyData?.id;
+        if (req.method === 'POST'
+            && req.path === '/v1/chat/completions'
+            && req.apiKeyData?.bearerOnly === true
+            && piMemId
+            && Array.isArray(req.body?.messages)
+            && req.body.messages.length) {
+            // (1) build persona from Pi usage (fire-and-forget). Pass a shallow
+            // snapshot so the async walk can't race with (2) mutating the array.
+            recordV1TurnActivity(piMemId, req.apiKeyData, req.body.messages.slice()).catch(() => {});
+            // (2) inject persona into THIS request (awaited — must land before
+            // forward). Bounded by a timeout so a slow/large memory read can
+            // never stall the proxy: on timeout we forward without memory.
+            try {
+                const injected = await Promise.race([
+                    injectPersonaForV1(req, firstInstance),
+                    new Promise(resolve => setTimeout(() => resolve(null), 2000)),
+                ]);
+                if (injected && injected.count) {
+                    logUserActivity(piMemId,
+                        `Pi memory: injected ${injected.count} (${injected.procedures} experience, ${injected.learnings} learnings, ${injected.facts} facts, ${injected.tokens} tok)` +
+                        (injected.activityHint ? ` [activity: ${injected.activityHint}]` : ''));
+                }
+            } catch (e) { console.warn('[Pi/Memory] injection skipped:', e.message); }
         }
 
         if (isStreaming) {
