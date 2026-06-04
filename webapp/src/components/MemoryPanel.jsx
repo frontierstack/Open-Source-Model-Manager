@@ -305,7 +305,9 @@ export default function MemoryPanel() {
                                             </div>
                                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
                                                 <Chip tone={m.source === 'model' ? 'accent' : 'muted'}>{sm.label}</Chip>
-                                                {m.type && <Chip>{m.type}</Chip>}
+                                                {m.type === 'procedure'
+                                                    ? <Chip tone="accent">{`${m.activity || 'experience'} ·×${m.count || 1}`}</Chip>
+                                                    : (m.type && <Chip>{m.type}</Chip>)}
                                                 {m.impact && <Chip tone={IMPACT_TONE[m.impact] || 'muted'}>{m.impact}</Chip>}
                                                 <span>{relativeTime(m.updatedAt || m.createdAt)}</span>
                                                 {isAdmin && m.ownerName ? <span>· {m.ownerName}</span> : null}

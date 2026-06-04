@@ -51,8 +51,19 @@ const DEDUP_THRESHOLD = 0.75;
 const VALID_SOURCES = new Set(['auto', 'manual', 'model']);
 const VALID_TYPES = new Set([
     'feedback', 'issue', 'preference', 'workaround', 'correction', 'limitation', 'learning', 'fact',
+    // 'procedure' = an EXPERIENCE memory: how the model performed a high-level
+    // activity ("reading emails", "web research") and the approach that worked.
+    // Keyed by `activity`, reinforced (count++) and refined each time that
+    // activity recurs — these accumulate into the model's persona / skill set
+    // and front-load the efficient approach so repeat tasks need fewer tool calls.
+    'procedure',
 ]);
 const VALID_IMPACTS = new Set(['important', 'medium', 'low']);
+
+// Canonicalize a free-form activity label into a stable consolidation key.
+function normalizeActivity(a) {
+    return String(a || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+}
 
 function log(...a) { console.log('[memory]', ...a); }
 
@@ -167,6 +178,11 @@ function normalizeRecord(input) {
         source,
         type,
         impact,
+        // Experience/procedure memories: `activity` is the consolidation key,
+        // `count` is how many times that activity has been reinforced (depth of
+        // experience). Null/1 for ordinary memories.
+        activity: input.activity ? normalizeActivity(input.activity) : null,
+        count: Number.isFinite(input.count) ? input.count : 1,
         sourceRole: input.sourceRole || null,
         sourceConvId: input.sourceConvId || null,
         sourceTurnId: input.sourceTurnId || null,
@@ -196,6 +212,8 @@ async function updateMemory(id, patch) {
         if (Number.isFinite(patch.score)) m.score = patch.score;
         if (patch.type !== undefined) m.type = patch.type && VALID_TYPES.has(patch.type) ? patch.type : null;
         if (patch.impact !== undefined) m.impact = patch.impact && VALID_IMPACTS.has(patch.impact) ? patch.impact : null;
+        if (patch.activity !== undefined) m.activity = patch.activity ? normalizeActivity(patch.activity) : null;
+        if (Number.isFinite(patch.count)) m.count = patch.count;
         m.updatedAt = nowIso();
         return { ...m };
     });
@@ -228,9 +246,13 @@ function pruneUser(list, userId) {
     const mine = [];
     for (let i = 0; i < list.length; i++) if (list[i].userId === userId) mine.push(i);
     if (mine.length <= ACCOUNT_MEMORY_MAX) return;
-    const weight = (m) => (m.source === 'model' && m.impact === 'important')
-        ? 1000 + (m.score || 0)
-        : (m.score || 0);
+    const weight = (m) => {
+        // Procedure/experience memories ARE the persona — they must survive
+        // pruning, weighted by how reinforced they are (count).
+        if (m.type === 'procedure') return 2000 + (m.count || 1);
+        if (m.source === 'model' && m.impact === 'important') return 1000 + (m.score || 0);
+        return m.score || 0;
+    };
     // Sort the user's indices by keep-priority (high first); the tail is dropped.
     mine.sort((ia, ib) => {
         const wa = weight(list[ia]); const wb = weight(list[ib]);
@@ -378,6 +400,75 @@ async function upsertModelLearning(userId, input, opts = {}) {
         list.push(rec);
         pruneUser(list, userId);
         return { id: rec.id, updated: false, impact: rec.impact };
+    });
+}
+
+/**
+ * Record/refine an EXPERIENCE memory for a high-level ACTIVITY ("reading
+ * emails", "web research"). Consolidates by the `activity` key (not keyword
+ * overlap): the first time an activity happens a procedure memory is created;
+ * every recurrence REFINES the same record in place and increments `count`
+ * (depth of experience). These accumulate into the model's persona and, when
+ * injected, front-load the approach that worked so repeat tasks need fewer
+ * tool calls. Atomic inside mutateMeta. Returns { id, updated, count, impact }.
+ *
+ * `input`: { activity, text, keywords, impact?, tokens?, source?, sourceConvId? }
+ */
+async function upsertActivityMemory(userId, input) {
+    const activity = normalizeActivity(input.activity);
+    if (!activity) throw new Error('activity is required');
+    const text = String(input.text || '').slice(0, MEMORY_TEXT_MAX);
+    if (!text.trim()) throw new Error('experience text is required');
+    const keywords = Array.isArray(input.keywords) ? input.keywords.slice(0, 40) : [];
+    const reqImpact = VALID_IMPACTS.has(input.impact) ? input.impact : 'medium';
+    const tokens = Number.isFinite(input.tokens) ? input.tokens : estimateTokens(text);
+    const source = VALID_SOURCES.has(input.source) ? input.source : 'auto';
+    // Efficiency of THIS run (lower = better). Used to keep the BEST recipe.
+    const steps = Number.isFinite(input.steps) ? input.steps : null;
+
+    return mutateMeta((list) => {
+        const target = list.find((m) => m.userId === userId && m.type === 'procedure' && m.activity === activity) || null;
+        if (target) {
+            target.count = (target.count || 1) + 1;
+            let mergedImpact = (IMPACT_RANK[reqImpact] || 2) >= (IMPACT_RANK[target.impact] || 2) ? reqImpact : target.impact;
+            // A well-practiced activity (reinforced ≥3×) is a core skill — promote
+            // it to 'important' so it's almost always surfaced as persona.
+            if (target.count >= 3 && (IMPACT_RANK[mergedImpact] || 2) < IMPACT_RANK.important) mergedImpact = 'important';
+            target.impact = mergedImpact;
+            target.score = scoreForImpact(mergedImpact);
+            // Keep the BEST recipe — don't let a mediocre later run degrade it.
+            //  • A model-authored recipe (the model's own articulated lesson) is
+            //    authoritative and is only overwritten by another model write.
+            //  • An auto-observed recipe is replaced only by a strictly-or-equally
+            //    EFFICIENT later run (fewer/equal successful tool steps).
+            const existingFromModel = target.textSource === 'model';
+            let updateText = false;
+            if (source === 'model') updateText = true;
+            else if (!existingFromModel) {
+                updateText = (steps == null || target.bestSteps == null || steps <= target.bestSteps);
+            }
+            if (updateText && text.trim()) {
+                target.text = text;
+                if (keywords.length) target.keywords = keywords;
+                target.tokens = tokens;
+                target.textSource = source;
+            }
+            if (steps != null) target.bestSteps = (target.bestSteps == null) ? steps : Math.min(target.bestSteps, steps);
+            target.updatedAt = nowIso();
+            return { id: target.id, updated: true, count: target.count, impact: mergedImpact, keptRecipe: !updateText };
+        }
+        const rec = normalizeRecord({
+            userId, text, keywords, tokens,
+            score: scoreForImpact(reqImpact),
+            source, type: 'procedure', impact: reqImpact,
+            activity, count: 1,
+            sourceConvId: input.sourceConvId || null,
+        });
+        rec.textSource = source;
+        rec.bestSteps = steps;
+        list.push(rec);
+        pruneUser(list, userId);
+        return { id: rec.id, updated: false, count: 1, impact: rec.impact };
     });
 }
 
@@ -575,6 +666,8 @@ module.exports = {
     clearMemories,
     addAutoMemories,
     upsertModelLearning,
+    upsertActivityMemory,
+    normalizeActivity,
     countForUser,
     // cursors
     getCursor,

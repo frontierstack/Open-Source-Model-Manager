@@ -12861,6 +12861,118 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
     }
 }
 
+// ============================================================================
+// EXPERIENCE / PROCEDURE memories — the model's persona ("who you are")
+// ============================================================================
+// A turn is mapped to ONE high-level activity ("reading emails", "web
+// research") from the tools it used + the files it handled + the user's ask.
+// After the turn we record/refine an experience memory for that activity that
+// captures the SUCCESSFUL tool path (the lean recipe — failed/exploratory calls
+// are dropped). Injected back on the next similar task so the model front-loads
+// the approach that worked and skips the fumbling → fewer tool calls, faster.
+
+// Priority-ordered: the FIRST matching rule wins (most specific → most generic).
+// test(toolSet, attachmentKinds, userTextLower) → boolean.
+const ACTIVITY_RULES = [
+    { activity: 'reading-emails', label: 'Reading emails',
+      test: (t, a, q) => a.has('email') || /\bemails?\b|\.eml\b|\.msg\b|\binbox\b|\bsender\b/.test(q) },
+    { activity: 'spreadsheet-analysis', label: 'Spreadsheet & data analysis',
+      test: (t, a) => a.has('spreadsheet') || t.has('read_xlsx') || t.has('create_xlsx') || t.has('query_sqlite') },
+    { activity: 'binary-ctf-analysis', label: 'Binary / CTF analysis',
+      test: (t) => t.has('hex_dump') || t.has('extract_strings') || t.has('xor_bytes') || t.has('hex_convert') },
+    { activity: 'audio-transcription', label: 'Audio transcription',
+      test: (t, a) => a.has('audio') || t.has('transcribe_audio') },
+    { activity: 'image-analysis', label: 'Image analysis',
+      test: (t, a) => a.has('image') || t.has('transform_image') },
+    { activity: 'code-analysis', label: 'Reading & analyzing code',
+      test: (t, a) => a.has('archive') || a.has('code') || t.has('extract_archive') || t.has('tar_extract')
+          || t.has('grep_code') || t.has('outline_file') || t.has('read_file') || t.has('list_directory') || t.has('search_files') },
+    { activity: 'document-analysis', label: 'Reading documents',
+      test: (t, a, q) => a.has('pdf') || a.has('document') || t.has('read_pdf') || /\bpdf\b|\bdocx?\b/.test(q) },
+    { activity: 'web-research', label: 'Web research',
+      test: (t) => t.has('web_search') || t.has('fetch_url') || t.has('crawl_pages') || t.has('scrapling_fetch') || t.has('playwright_fetch') || t.has('playwright_interact') },
+    { activity: 'knowledge-base-lookup', label: 'Knowledge base lookup',
+      test: (t) => t.has('search_knowledge_base') },
+    { activity: 'data-visualization', label: 'Data visualization',
+      test: (t) => t.has('render_chart') || t.has('fetch_timeseries') },
+    { activity: 'coding', label: 'Writing & running code',
+      test: (t) => t.has('run_python') || t.has('run_node') || t.has('replace_lines') || t.has('create_file') },
+];
+
+function deriveAttachmentKinds(attachments) {
+    const kinds = new Set();
+    for (const a of (Array.isArray(attachments) ? attachments : [])) {
+        const name = String(a?.filename || a?.name || '').toLowerCase();
+        const mime = String(a?.mimeType || a?.type || '').toLowerCase();
+        if (/\.(eml|msg)$/.test(name) || mime.includes('message/')) kinds.add('email');
+        else if (/\.(xlsx|xls|csv|tsv)$/.test(name) || mime.includes('spreadsheet') || mime.includes('csv')) kinds.add('spreadsheet');
+        else if (/\.pdf$/.test(name) || mime.includes('pdf')) kinds.add('pdf');
+        else if (/\.(docx?|odt|rtf)$/.test(name) || mime.includes('word') || mime.includes('officedocument.wordprocessing')) kinds.add('document');
+        else if (/\.(png|jpe?g|gif|bmp|tiff?|webp)$/.test(name) || mime.startsWith('image/')) kinds.add('image');
+        else if (/\.(mp3|wav|m4a|flac|ogg|aac|mp4|mov|webm)$/.test(name) || mime.startsWith('audio/') || mime.startsWith('video/')) kinds.add('audio');
+        else if (/\.(zip|7z|rar|tar|tgz|gz|bz2|xz)$/.test(name)) kinds.add('archive');
+        else if (/\.(jsx?|tsx?|py|go|rs|java|c|cpp|h|hpp|rb|php|sh|json|ya?ml|toml)$/.test(name)) kinds.add('code');
+    }
+    return kinds;
+}
+
+function classifyTurnActivity({ toolLabels = [], userText = '', attachmentKinds = new Set() }) {
+    const t = new Set(toolLabels);
+    const q = String(userText || '').toLowerCase();
+    for (const rule of ACTIVITY_RULES) {
+        try { if (rule.test(t, attachmentKinds, q)) return { activity: rule.activity, label: rule.label }; }
+        catch (_) { /* a bad rule must not break the turn */ }
+    }
+    return null;
+}
+
+// Fire-and-forget after a turn: record/refine the experience memory for the
+// turn's activity from the SUCCESSFUL tool path. Failed/exploratory calls are
+// excluded, so even a fumbling cold run produces a CLEAN recipe the warm run
+// follows directly. Atomic + activity-keyed in the service.
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments }) {
+    try {
+        if (!userId || userId === 'default') return;
+        if (await isMemoryDisabledForUser(userId)) return;
+        const chips = Array.isArray(toolChips) ? toolChips : [];
+        const okChips = chips.filter(c => c && c.status === 'success' && c.label);
+        const attachmentKinds = deriveAttachmentKinds(attachments);
+        const toolLabels = okChips.map(c => c.label);
+        const act = classifyTurnActivity({ toolLabels, userText, attachmentKinds });
+        if (!act) return;
+        // Only record when the turn actually DID something procedural.
+        if (!okChips.length && !attachmentKinds.size) return;
+
+        // Lean successful path: unique tool labels in first-seen order. We do
+        // NOT enshrine repeat counts as "the approach" — a tool called many
+        // times is usually inefficient flailing (e.g. list_directory loops),
+        // which is exactly what the next run should AVOID. A heavily-repeated
+        // tool is flagged as a smell so the warm run goes direct instead.
+        const seq = [];
+        const counts = {};
+        for (const l of toolLabels) { counts[l] = (counts[l] || 0) + 1; if (!seq.includes(l)) seq.push(l); }
+        const pathStr = seq.join(' → ');
+        const flail = seq.filter(l => counts[l] >= 4);
+        const flailNote = flail.length ? ` Avoid over-calling ${flail.join(', ')} (it was repeated unnecessarily) — go straight to the file you need.` : '';
+        const fileNote = attachmentKinds.size ? ` Input: ${[...attachmentKinds].join('/')}.` : '';
+        const text = pathStr
+            ? `${act.label}: the tools that got it done — ${pathStr}.${fileNote}${flailNote} Reuse this path and go direct; only deviate if a step fails.`
+            : `${act.label}:${fileNote} answered directly from the message content without extra tool calls.`;
+        const keywords = extractQueryKeywords(
+            `${act.label} ${act.activity.replace(/-/g, ' ')} ${seq.join(' ')} ${[...attachmentKinds].join(' ')}`);
+
+        const res = await memoryService.upsertActivityMemory(userId, {
+            activity: act.activity, text, keywords,
+            impact: 'medium', source: 'auto', sourceConvId: conversationId,
+            steps: okChips.length, // efficiency of this run — keeps the leanest recipe
+        });
+        logUserActivity(userId,
+            `Memory: ${res.updated ? (res.keptRecipe ? 'reinforced' : 'refined') : 'recorded'} experience [${act.activity}] (×${res.count}, ${res.impact}, ${okChips.length} steps) — ${pathStr || 'inline'}`);
+    } catch (e) {
+        console.warn('[Memory] activity record failed:', e.message);
+    }
+}
+
 // Pre-turn retrieval: score the user's ENTIRE account memory against the
 // incoming query and pack the top matches into a token budget. Memory is now
 // account-scoped, so this surfaces relevant facts/learnings from ANY past
@@ -12869,7 +12981,7 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
 // context on top. Model-recorded learnings are floored so the evolving persona
 // persists even when keyword overlap is weak. Returns an injectable block or
 // null. `currentConvId` is optional (used only for the continuity boost).
-async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET) {
+async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { activityHint = null } = {}) {
     if (!query || typeof query !== 'string') return null;
     let all;
     try { all = await memoryService.listMemories(userId); } catch { return null; }
@@ -12885,8 +12997,12 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // inject on a strong keyword match. Without this split, at scale a flood of
     // auto-facts sharing common words crowds out the handful of memories that
     // actually matter.
-    const isDirective = (m) => m.source === 'manual' || m.source === 'model'
-        || m.impact === 'important' || (m.type && m.type !== 'fact');
+    // PROCEDURES are EXPERIENCE memories (how the model did an activity + the
+    // approach that worked) — the persona. DIRECTIVES are user-authored/model
+    // learnings/preferences. FACTS are noisy auto-extractions (keyword-gated).
+    const isProcedure = (m) => m.type === 'procedure';
+    const isDirective = (m) => !isProcedure(m) && (m.source === 'manual' || m.source === 'model'
+        || m.impact === 'important' || (m.type && m.type !== 'fact'));
 
     const relOf = (m) => jaccardSimilarity(m.keywords || [], queryKeywords);
     const scoreOf = (m) => {
@@ -12897,20 +13013,39 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         const impactBoost = m.impact === 'important' ? 0.5 : (m.impact === 'low' ? -0.05 : 0);
         return relOf(m) + recencyBoost + convBoost + impactBoost;
     };
+    // Procedure score: keyword relevance + a strong boost when the procedure's
+    // activity matches THIS turn's likely activity (so the right experience
+    // leads), + experience depth (count) so well-practiced skills surface.
+    const procScoreOf = (m) => {
+        const activityMatch = (activityHint && m.activity === activityHint) ? 1.5 : 0;
+        const depthBoost = Math.min(0.4, 0.1 * ((m.count || 1) - 1));
+        return relOf(m) + activityMatch + depthBoost + scoreOf(m);
+    };
 
-    const DIRECTIVE_MAX = 18, FACT_MAX = 8, FACT_THRESHOLD = 0.2;
-    const directiveBudget = Math.floor(tokenBudget * 0.7);
+    const PROC_MAX = 8, DIRECTIVE_MAX = 18, FACT_MAX = 8, FACT_THRESHOLD = 0.2;
+    const procBudget = Math.floor(tokenBudget * 0.4);
+    const directiveBudget = Math.floor(tokenBudget * 0.85);
     const tokOf = (m) => m.tokens || Math.ceil((m.text || '').length / 3);
 
+    const procCands = all.filter(isProcedure).map(m => ({ m, s: procScoreOf(m) })).sort((a, b) => b.s - a.s);
     const directives = all.filter(isDirective).map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
-    const factCands = all.filter(m => !isDirective(m)).map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
+    const factCands = all.filter(m => !isDirective(m) && !isProcedure(m)).map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
 
     const picked = [];
     let usedTokens = 0;
-    // Pass 1 — directives: persona always applies. Capped by count + a 70%
-    // sub-budget so a huge preference set can't starve relevant facts entirely.
+    // Pass 0 — experience/procedures: the persona always applies, capped by a
+    // 40% sub-budget. The activity-matched one (if any) leads.
+    let procCount = 0;
+    for (const p of procCands) {
+        if (procCount >= PROC_MAX) break;
+        const tk = tokOf(p.m);
+        if (usedTokens + tk > procBudget && picked.length) continue;
+        if (usedTokens + tk > tokenBudget) continue;
+        picked.push(p.m); usedTokens += tk; procCount++;
+    }
+    // Pass 1 — directives: persona always applies.
     for (const d of directives) {
-        if (picked.length >= DIRECTIVE_MAX) break;
+        if (picked.filter(isDirective).length >= DIRECTIVE_MAX) break;
         const tk = tokOf(d.m);
         if (usedTokens + tk > directiveBudget && picked.length) continue;
         if (usedTokens + tk > tokenBudget) continue;
@@ -12926,14 +13061,29 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     }
     if (picked.length === 0) return null;
 
-    // Render in two sections: directives (binding instructions) then facts.
+    // Render: experience (persona) FIRST, then directives, then facts.
     const impactRank = { important: 0, medium: 1, low: 2 };
+    const procedures = picked.filter(isProcedure)
+        .sort((a, b) => (b.count || 1) - (a.count || 1));
     const learnings = picked.filter(isDirective)
         .sort((a, b) => (impactRank[a.impact] ?? 1) - (impactRank[b.impact] ?? 1));
-    const facts = picked.filter(m => !isDirective(m))
+    const facts = picked.filter(m => !isDirective(m) && !isProcedure(m))
         .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
 
+    const handleOf = (m) => `#${String(m.id).replace(/-/g, '').slice(0, 6)}`;
     const parts = [];
+    if (procedures.length) {
+        // Persona lead-in: the model's accumulated experience. Each line is an
+        // activity + the approach that worked; reuse it to skip re-exploration.
+        const lines = procedures.map(m =>
+            `- [${handleOf(m)}] (${m.activity}, done ${m.count || 1}×) ${m.text}`).join('\n');
+        parts.push(
+            'WHO YOU ARE — YOUR EXPERIENCE (skills built from past work for this user). ' +
+            'When the current task matches one of these activities, REUSE the approach that worked — go straight to it instead of re-exploring, and only deviate if a step fails. ' +
+            'As you find a better way, refine the matching one via record_learning with replaces:"<#handle>". Handles are internal — never show them:\n' +
+            lines
+        );
+    }
     if (learnings.length) {
         // Each line carries a short [#handle] (first 6 hex of the id) so the
         // model can REFINE a specific learning via record_learning(replaces).
@@ -12957,10 +13107,11 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         const lines = facts.map(m => `- ${m.text}`).join('\n');
         parts.push(`WHAT YOU KNOW ABOUT THIS USER (from past conversations) — use it to avoid asking again and to work faster:\n${lines}`);
     }
-    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${learnings.length} learnings, ${facts.length} facts) conv=${currentConvId || '-'}`);
+    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${procedures.length} experience, ${learnings.length} learnings, ${facts.length} facts) conv=${currentConvId || '-'}`);
     return {
         block: parts.join('\n\n'),
         count: picked.length,
+        procedures: procedures.length,
         learnings: learnings.length,
         facts: facts.length,
         tokens: usedTokens,
@@ -15141,8 +15292,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     }
                 }
                 if (latestUserText) {
+                    // Predict THIS turn's activity (from the ask + any attachments,
+                    // before any tools run) so the matching experience memory is
+                    // surfaced first — that's what front-loads the proven approach.
+                    const activityHint = (classifyTurnActivity({
+                        toolLabels: [],
+                        userText: latestUserText,
+                        attachmentKinds: deriveAttachmentKinds(req.body?.attachments),
+                    }) || {}).activity || null;
                     const memoryResult = await retrieveRelevantMemories(
-                        chatUserId, chatConvId, latestUserText, MEMORY_RETRIEVAL_TOKEN_BUDGET
+                        chatUserId, chatConvId, latestUserText, MEMORY_RETRIEVAL_TOKEN_BUDGET, { activityHint }
                     );
                     if (memoryResult && memoryResult.count) {
                         // Process-log which memories were pulled into THIS turn so
@@ -15151,8 +15310,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                             .map(p => `“${p.slice(0, 70)}”`).join('; ');
                         logUserActivity(chatUserId,
                             `Memory: referenced ${memoryResult.count} memor${memoryResult.count === 1 ? 'y' : 'ies'} ` +
-                            `(${memoryResult.learnings} learning${memoryResult.learnings === 1 ? '' : 's'}, ` +
+                            `(${memoryResult.procedures} experience, ${memoryResult.learnings} learning${memoryResult.learnings === 1 ? '' : 's'}, ` +
                             `${memoryResult.facts} fact${memoryResult.facts === 1 ? '' : 's'}, ${memoryResult.tokens} tok)` +
+                            (activityHint ? ` [activity: ${activityHint}]` : '') +
                             (preview ? ` — ${preview}` : '')
                         );
                     }
@@ -18080,6 +18240,20 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             } catch (saveErr) {
                 console.error(`[Chat Stream] Failed to save response:`, saveErr);
             }
+        }
+
+        // Record/refine the EXPERIENCE memory for THIS turn's activity (the
+        // model's persona). Fire-and-forget — must never block the response.
+        // Captures the successful tool path so the next similar task front-loads
+        // what worked and skips re-exploration → fewer tool calls, faster.
+        if (streamingConversationId && !streamAbortController.signal.aborted) {
+            recordTurnActivity({
+                userId,
+                conversationId: streamingConversationId,
+                toolChips: persistedToolChips,
+                userText: latestUserText,
+                attachments: req.body?.attachments,
+            }).catch(() => {});
         }
 
         // Clean up the streaming job
@@ -22736,7 +22910,9 @@ app.use((req, res) => {
                         'Capture the OUTCOME and the better next move — e.g. "Searched site A first, results were thin; broadening to A+B+C worked better — start broad next time, keep searching if weak." ' +
                         'Phrase lessons as ADAPTIVE HEURISTICS, never rigid absolutes: prefer "start with X, then try a few alternatives and keep going if results are weak" over "only ever use X". ' +
                         'CONSOLIDATE rather than pile up near-duplicates: if a related lesson already exists (you may see it tagged like [#a1b2c3] in your context), pass that handle as `replaces` to UPDATE/improve it in place. If you omit `replaces`, a close existing lesson is refined automatically. ' +
-                        'Record generalizable lessons, not one-off task facts (those are captured automatically). Runs silently — do not announce it, ask permission, or mention the [#handles] to the user.',
+                        'Record generalizable lessons, not one-off task facts (those are captured automatically). ' +
+                        'If the lesson is about HOW you performed a kind of task (reading emails, web research, analyzing a file), set `activity` to that high-level label — it consolidates into your EXPERIENCE for that activity (your persona) and is reused to do it faster next time. ' +
+                        'Runs silently — do not announce it, ask permission, or mention the [#handles] to the user.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -22753,6 +22929,7 @@ app.use((req, res) => {
                             },
                             context: { type: 'string', description: 'Optional: when/why it matters, so future-you applies it correctly.' },
                             replaces: { type: 'string', description: 'Optional: the [#handle] of an existing learning shown in your context to UPDATE/replace instead of creating a new one. Use this to keep memory consolidated.' },
+                            activity: { type: 'string', description: 'Optional: a high-level ACTIVITY label (e.g. "reading emails", "web research", "binary analysis") if this lesson is about HOW you performed that kind of task. Consolidates into your experience for that activity (your persona) and is reused to go faster next time.' },
                         },
                         required: ['lesson', 'impact'],
                         additionalProperties: false,
@@ -22775,6 +22952,24 @@ app.use((req, res) => {
             const text = context ? `${lesson} — context: ${context}` : lesson;
             const keywords = extractQueryKeywords(text);
             try {
+                // Experience path: when the model labels an ACTIVITY, this lesson
+                // is about HOW it did that kind of task — store it as a procedure
+                // (persona), consolidated by activity key and reused to go faster.
+                const activityLabel = String(args?.activity || '').trim();
+                if (activityLabel) {
+                    const ar = await memoryService.upsertActivityMemory(userId, {
+                        activity: activityLabel, text, keywords, impact,
+                        tokens: Math.ceil(text.length / 3), source: 'model',
+                        sourceConvId: ctx.conversationId || null,
+                    });
+                    logUserActivity(userId,
+                        `Memory: ${ar.updated ? 'refined' : 'recorded'} experience [${memoryService.normalizeActivity(activityLabel)}] (reinforced ${ar.count}×, ${ar.impact}) — “${lesson.slice(0, 70)}”`);
+                    return {
+                        success: true, id: ar.id, updated: ar.updated,
+                        recorded: { activity: memoryService.normalizeActivity(activityLabel), impact: ar.impact, count: ar.count },
+                        note: ar.updated ? 'Refined your experience for this activity.' : 'Recorded experience for this activity; it will guide similar tasks.',
+                    };
+                }
                 // CONSOLIDATION lives in the service (race-safe, atomic): refine an
                 // existing learning instead of appending a near-duplicate, so the
                 // store self-improves rather than sprawls. An explicit [#handle]
