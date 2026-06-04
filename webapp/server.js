@@ -12858,14 +12858,21 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
 
     const parts = [];
     if (learnings.length) {
-        const lines = learnings.map(m => `- ${m.text}`).join('\n');
+        // Each line carries a short [#handle] (first 6 hex of the id) so the
+        // model can REFINE a specific learning via record_learning(replaces).
+        // This is what turns memory from append-only into continual learning:
+        // as it discovers what works best, it updates the lesson in place
+        // instead of stacking near-duplicates.
+        const lines = learnings.map(m => `- [#${String(m.id).replace(/-/g, '').slice(0, 6)}] ${m.text}`).join('\n');
         // Framed as binding instructions — weak "things you've learned" phrasing
         // was injected but ignored by smaller models. This wording makes the
         // model treat preferences/corrections as rules without overriding an
         // explicit in-turn user request.
         parts.push(
             'PERSISTENT USER INSTRUCTIONS & PREFERENCES (learned from past conversations). ' +
-            'Follow EVERY one of these in your response unless the user overrides it in their latest message:\n' +
+            'Follow EVERY one of these in your response unless the user overrides it in their latest message. ' +
+            'As you learn what works best, REFINE these rather than repeating them: call record_learning with replaces:"<#handle>" to update one in place. ' +
+            'The [#handles] are internal — never show them to the user:\n' +
             lines
         );
     }
@@ -16552,6 +16559,51 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let reasoningLoopAborted = false;
         const reasoningLoopDetector = makeReasoningLoopDetector();
 
+        // Floor on the per-request output budget. Below this, tool calls
+        // reliably truncate mid-JSON. Shared by streamOneRequest's last-resort
+        // fit and the outer tool-loop budget math.
+        const MIN_OUTPUT_BUDGET = 1024;
+
+        // Last-resort fit: truncate the largest message CONTENTS (head+tail)
+        // until `messages` + `tools` leaves at least `reserve` output tokens
+        // under contextSize. Operates on a COPY — never mutates the caller's
+        // array or the saved conversation. Preserves the system message (idx 0),
+        // the last message, vision/array content, and tool_calls structure.
+        // This is the authoritative guard because it uses the SAME estimate the
+        // request actually sends (stringified messages + tool catalog), so even
+        // if the loop's content-only budgeting undercounts structural overhead,
+        // the model still gets a usable output budget instead of a 64-token cap.
+        const fitMessagesToContext = (messages, toolsTokens, reserve) => {
+            const estOf = (msgs) => estimateTokens(JSON.stringify(msgs)) + toolsTokens;
+            if (contextSize - estOf(messages) - 200 >= reserve) return { messages, truncated: 0 };
+            let copy = messages.slice();
+            let truncated = 0;
+            const sizable = copy
+                .map((m, i) => ({ i, t: estimateTokens(m.content) }))
+                .filter(x => x.i !== 0 && x.i !== copy.length - 1
+                    && typeof copy[x.i].content === 'string' && x.t > 300)
+                .sort((a, b) => b.t - a.t);
+            for (const c of sizable) {
+                if (contextSize - estOf(copy) - 200 >= reserve) break;
+                const m = copy[c.i];
+                const text = m.content;
+                const over = reserve - (contextSize - estOf(copy) - 200); // tokens to shed
+                const targetTokens = Math.max(150, c.t - over - 50);
+                // Invert estimateTokens proportionally from the ACTUAL text so the
+                // char target matches whatever ratio/margin estimateTokens uses.
+                // (A fixed `targetTokens * 3` over-counts by the safety margin and
+                // can exceed text.length, skipping the message and leaving the
+                // request over budget — defeating the whole guard.)
+                const targetChars = Math.floor(text.length * (targetTokens / c.t));
+                if (targetChars >= text.length) continue;
+                const head = Math.floor(targetChars * 0.5);
+                const tail = targetChars - head;
+                copy[c.i] = { ...m, content: text.slice(0, head) + '\n…[trimmed to fit context window]…\n' + text.slice(text.length - tail) };
+                truncated++;
+            }
+            return { messages: copy, truncated };
+        };
+
         // Helper: stream one request to the model and return the finish_reason.
         // roundContentStart / roundReasoningStart let the loop detector measure
         // "progress within this round" instead of cumulative fullResponse
@@ -16568,6 +16620,27 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 let lastFinishReason = 'stop';
 
                 try {
+                    // Authoritative last-resort fit: before clamping max_tokens,
+                    // shed the largest message CONTENTS until the request leaves
+                    // room for at least MIN_OUTPUT_BUDGET output tokens. The
+                    // pre-clamp below would otherwise drop max_tokens to its
+                    // 64-token floor whenever the history + tool catalog already
+                    // fill the context (e.g. a session of large binary file
+                    // reads), and every tool call then truncates mid-JSON →
+                    // refused → loop. fitMessagesToContext uses the SAME estimate
+                    // the request actually sends (stringified messages + catalog)
+                    // so it is the final guarantee even if the outer loop's
+                    // content-only budgeting undercounts structural overhead.
+                    const toolsTokensForFit = toolCatalog.length ? estimateTokens(JSON.stringify(toolCatalog)) : 0;
+                    let sendMessages = requestMessages;
+                    {
+                        const fitted = fitMessagesToContext(requestMessages, toolsTokensForFit, Math.min(maxTokens, MIN_OUTPUT_BUDGET));
+                        if (fitted.truncated > 0) {
+                            sendMessages = fitted.messages;
+                            console.log(`[Chat Stream] Last-resort fit: truncated ${fitted.truncated} oversized message(s) to guarantee a usable output budget`);
+                        }
+                    }
+
                     // Final-pass clamp: input == messages + tool catalog. The
                     // upstream responseReserve only counts message tokens, so a
                     // large tool catalog (often ~7k actual sglang tokens on the
@@ -16581,7 +16654,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     // from the actual input_tokens sglang reports.
                     let actualMaxTokens = maxTokens;
                     try {
-                        const messagesJson = JSON.stringify(requestMessages);
+                        const messagesJson = JSON.stringify(sendMessages);
                         const toolsJson = toolCatalog.length ? JSON.stringify(toolCatalog) : '';
                         const inputTokenEstimate = estimateTokens(messagesJson + toolsJson);
                         const headroom = contextSize - inputTokenEstimate - 200;
@@ -16594,7 +16667,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
                     const requestBody = {
                         model: targetModel,
-                        messages: requestMessages,
+                        messages: sendMessages,
                         temperature: temperature || 0.7,
                         top_p: effectiveTopP,
                         stream: true,
@@ -16892,6 +16965,16 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // could equal contextSize and make sglang reject the request with
             // "0 input tokens" SglangValidationError.
             const initialMaxTokens = responseReserve;
+            // The tool catalog ships with EVERY request but is NOT part of the
+            // message list, so the per-round budget math must reserve room for
+            // it. Without this, the loop's content-only token count thinks the
+            // input fits, but streamOneRequest's accurate estimate (which adds
+            // the catalog) then clamps max_tokens to the 64-token floor and
+            // every tool call truncates mid-argument. A big skill catalog
+            // (100+ tools) is easily 10-15k tokens.
+            const toolCatalogTokens = toolCatalog.length ? estimateTokens(JSON.stringify(toolCatalog)) : 0;
+            // MIN_OUTPUT_BUDGET (1024) is declared once in the handler scope
+            // above and shared with streamOneRequest's last-resort fit.
             updateJobPhase('generating');
             pushJobEvent({
                 icon: 'sparkles',
@@ -16926,7 +17009,9 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             // original user message, and the most recent tool-call round.
             const trimToolHistoryToFit = (messages, budget) => {
                 const total = (msgs) => msgs.reduce((s, m) => s + estimateTokens(m.content), 0);
-                let dropped = 0;
+                let dropped = 0, truncated = 0;
+                // Phase 1 — drop oldest COMPLETE tool-call rounds (cleanest: keeps
+                // message coherence). Always keeps the most recent round.
                 while (total(messages) > budget) {
                     const idxs = [];
                     for (let i = 0; i < messages.length; i++) {
@@ -16941,7 +17026,40 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     messages = [...messages.slice(0, dropStart), ...messages.slice(dropEnd + 1)];
                     dropped++;
                 }
-                return { messages, dropped };
+                // Phase 2 — if STILL over budget (one giant tool result, or a
+                // history bloated with large non-tool messages that can't be
+                // dropped), truncate the largest message CONTENTS head+tail.
+                // Never touches the system message (idx 0), the last message
+                // (the live turn), array/vision content, or the tool_calls
+                // array — only string `content`. A truncated result beats a
+                // 64-token output budget that mangles every later tool call.
+                if (total(messages) > budget) {
+                    messages = messages.slice();
+                    const over = () => total(messages) - budget;
+                    const sizable = messages
+                        .map((m, i) => ({ i, t: estimateTokens(m.content) }))
+                        .filter(x => x.i !== 0 && x.i !== messages.length - 1
+                            && typeof messages[x.i].content === 'string' && x.t > 400)
+                        .sort((a, b) => b.t - a.t);
+                    for (const c of sizable) {
+                        if (over() <= 0) break;
+                        const m = messages[c.i];
+                        const text = m.content;
+                        const targetTokens = Math.max(200, c.t - over() - 50);
+                        // Proportional inverse of estimateTokens (see fitMessagesToContext)
+                        // — a fixed `* 3` over-counts by the safety margin and skips.
+                        const targetChars = Math.floor(text.length * (targetTokens / c.t));
+                        if (targetChars >= text.length) continue;
+                        const head = Math.floor(targetChars * 0.5);
+                        const tail = targetChars - head;
+                        messages[c.i] = {
+                            ...m,
+                            content: text.slice(0, head) + '\n…[trimmed to fit context window]…\n' + text.slice(text.length - tail),
+                        };
+                        truncated++;
+                    }
+                }
+                return { messages, dropped, truncated };
             };
 
             // One-shot retry latch for the false-completion detector below
@@ -16997,32 +17115,46 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                 accumulatedToolCalls = [];
                 const roundStart = fullResponse.length;
 
-                if (toolCallRound > 0) {
-                    const trimResult = trimToolHistoryToFit(currentMessages, availableContextForInput);
-                    if (trimResult.dropped > 0) {
+                // Trim every round (NOT just round > 0): the conversation
+                // HISTORY loaded from disk can already exceed the context window
+                // on a long session (e.g. many large file reads in a binary
+                // analysis), so round 0 needs trimming too. Budget leaves room
+                // for the tool catalog + a usable output budget; without the
+                // catalog term the loop under-counts input and the next request
+                // gets max_tokens clamped to 64 → truncated tool args → loop.
+                {
+                    const trimBudget = Math.max(
+                        2048,
+                        contextSize - toolCatalogTokens - MIN_OUTPUT_BUDGET - 200
+                    );
+                    const trimResult = trimToolHistoryToFit(currentMessages, trimBudget);
+                    if (trimResult.dropped > 0 || trimResult.truncated > 0) {
                         currentMessages = trimResult.messages;
-                        console.log(`[Chat Stream] Trimmed ${trimResult.dropped} oldest tool-call round(s) to fit context (round ${toolCallRound + 1})`);
+                        const parts = [];
+                        if (trimResult.dropped) parts.push(`${trimResult.dropped} older tool round(s)`);
+                        if (trimResult.truncated) parts.push(`${trimResult.truncated} oversized message(s) truncated`);
+                        console.log(`[Chat Stream] Trimmed to fit context (round ${toolCallRound + 1}): ${parts.join(', ')}`);
                         broadcast({
                             type: 'log',
                             level: 'info',
-                            message: `Dropped ${trimResult.dropped} older tool result round(s) to fit context window`
+                            message: `Trimmed conversation to fit context window: ${parts.join(', ')}`
                         }, userId);
                     }
                 }
 
                 // Recompute the per-round max_tokens budget from the *current*
-                // message list. initialMaxTokens was sized for the first
-                // round's input; after a chain of tool calls, currentMessages
-                // grows by up to TOOL_RESULT_CHAR_CAP per round (plus the
-                // assistant turn's content). Without this recomputation,
-                // currentInputTokens + initialMaxTokens eventually overshoots
-                // contextSize and llama.cpp rejects with HTTP 400.
+                // message list AND the tool catalog. initialMaxTokens was sized
+                // for the first round's input; after a chain of tool calls,
+                // currentMessages grows by up to TOOL_RESULT_CHAR_CAP per round.
+                // Subtracting toolCatalogTokens keeps this in sync with
+                // streamOneRequest's accurate pre-clamp so the model always gets
+                // at least MIN_OUTPUT_BUDGET to emit a complete tool call.
                 const roundInputTokens = currentMessages.reduce(
                     (sum, m) => sum + estimateTokens(m.content), 0
                 );
                 const roundMaxTokens = Math.max(
-                    512,
-                    Math.min(initialMaxTokens, contextSize - roundInputTokens - 200)
+                    MIN_OUTPUT_BUDGET,
+                    Math.min(initialMaxTokens, contextSize - roundInputTokens - toolCatalogTokens - 200)
                 );
 
                 finishReason = await streamOneRequest(currentMessages, roundMaxTokens);
@@ -22497,15 +22629,16 @@ app.use((req, res) => {
                 function: {
                     name: 'record_learning',
                     description:
-                        'Save a durable lesson to your long-term memory of THIS user so future answers are better and faster. ' +
-                        'Call this WHENEVER you discover something worth remembering across conversations: the user corrects you, states a preference, ' +
-                        'you hit (and work around) a mistake or limitation, or you learn how this user likes things done. ' +
-                        'Record the generalizable lesson, not one-off task facts (those are captured automatically). Be concise and specific. ' +
-                        'This runs silently — do not announce it or ask permission; just record and continue.',
+                        'Save OR refine a durable, experience-based lesson in your long-term memory of THIS user, so your answers get better over time (continual learning). ' +
+                        'Use it when an approach worked well (or poorly) and you found a better one, when the user corrects you or states a preference, or when you hit and worked around a limitation. ' +
+                        'Capture the OUTCOME and the better next move — e.g. "Searched site A first, results were thin; broadening to A+B+C worked better — start broad next time, keep searching if weak." ' +
+                        'Phrase lessons as ADAPTIVE HEURISTICS, never rigid absolutes: prefer "start with X, then try a few alternatives and keep going if results are weak" over "only ever use X". ' +
+                        'CONSOLIDATE rather than pile up near-duplicates: if a related lesson already exists (you may see it tagged like [#a1b2c3] in your context), pass that handle as `replaces` to UPDATE/improve it in place. If you omit `replaces`, a close existing lesson is refined automatically. ' +
+                        'Record generalizable lessons, not one-off task facts (those are captured automatically). Runs silently — do not announce it, ask permission, or mention the [#handles] to the user.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            lesson: { type: 'string', description: 'The concrete, generalizable lesson to remember (one or two sentences).' },
+                            lesson: { type: 'string', description: 'The concrete, generalizable, outcome-aware lesson (one or two sentences). State what worked best and what to try next time.' },
                             type: {
                                 type: 'string',
                                 enum: ['feedback', 'preference', 'correction', 'workaround', 'issue', 'limitation'],
@@ -22514,11 +22647,12 @@ app.use((req, res) => {
                             impact: {
                                 type: 'string',
                                 enum: ['important', 'medium', 'low'],
-                                description: 'How strongly this should shape future behavior (important learnings are almost always surfaced).',
+                                description: 'How strongly this should shape future behavior. Set it deliberately: "important" = almost always surface (core preference/correction); "low" = minor/situational. Required.',
                             },
                             context: { type: 'string', description: 'Optional: when/why it matters, so future-you applies it correctly.' },
+                            replaces: { type: 'string', description: 'Optional: the [#handle] of an existing learning shown in your context to UPDATE/replace instead of creating a new one. Use this to keep memory consolidated.' },
                         },
-                        required: ['lesson'],
+                        required: ['lesson', 'impact'],
                         additionalProperties: false,
                     },
                 },
@@ -22538,15 +22672,26 @@ app.use((req, res) => {
             const context = String(args?.context || '').trim();
             const text = context ? `${lesson} — context: ${context}` : lesson;
             const keywords = extractQueryKeywords(text);
-            const score = impact === 'important' ? 7 : (impact === 'low' ? 3 : 5);
             try {
-                const mem = await memoryService.createMemory({
-                    userId, text, keywords,
+                // CONSOLIDATION lives in the service (race-safe, atomic): refine an
+                // existing learning instead of appending a near-duplicate, so the
+                // store self-improves rather than sprawls. An explicit [#handle]
+                // (replaces) can refine ANY of the user's memories; otherwise the
+                // closest prior MODEL learning is merged automatically.
+                const res = await memoryService.upsertModelLearning(userId, {
+                    text, keywords, type, impact,
                     tokens: Math.ceil(text.length / 3),
-                    score, source: 'model', type, impact,
                     sourceConvId: ctx.conversationId || null,
-                });
-                return { success: true, id: mem.id, recorded: { type, impact }, note: 'Learning recorded; it will inform future responses.' };
+                }, { replaces: args?.replaces || null });
+                return {
+                    success: true,
+                    id: res.id,
+                    updated: res.updated,
+                    recorded: { type, impact: res.impact },
+                    note: res.updated
+                        ? 'Refined an existing learning (consolidated, not duplicated).'
+                        : 'Learning recorded; it will inform future responses.',
+                };
             } catch (e) {
                 return { success: false, error: e.message };
             }

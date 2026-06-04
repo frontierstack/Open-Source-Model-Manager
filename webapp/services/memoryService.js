@@ -70,6 +70,24 @@ function jaccardSimilarity(aKeywords, bKeywords) {
     return union === 0 ? 0 : inter / union;
 }
 
+// Overlap (Szymkiewicz–Simpson) coefficient: intersection / size of the SMALLER
+// set, plus the raw intersection count. Jaccard is wrong for matching a refined
+// learning to its original — a refinement is much longer, so length asymmetry
+// tanks Jaccard even when the new lesson is plainly about the same topic
+// ("Yahoo only" vs "Yahoo, then Stooq + others, keep searching"). Overlap is
+// length-insensitive: if the shorter memory's keywords are mostly contained in
+// the new one, it's the same topic. The intersection count guards against
+// coincidental 1–2 shared-word merges on tiny keyword sets.
+function topicOverlap(aKeywords, bKeywords) {
+    if (!aKeywords?.length || !bKeywords?.length) return { ratio: 0, inter: 0 };
+    const a = new Set(aKeywords);
+    const b = new Set(bKeywords);
+    let inter = 0;
+    for (const k of a) if (b.has(k)) inter++;
+    const denom = Math.min(a.size, b.size);
+    return { ratio: denom === 0 ? 0 : inter / denom, inter };
+}
+
 // Decode a possibly base64-wrapped JSON blob (legacy .mem files) — mirrors
 // server.js decodeConversationData so migration can read old memories.
 function decodeMaybeBase64(raw, fallback = null) {
@@ -269,6 +287,93 @@ async function countForUser(userId) {
     return list.reduce((n, m) => n + (m.userId === userId ? 1 : 0), 0);
 }
 
+const IMPACT_RANK = { important: 3, medium: 2, low: 1 };
+function scoreForImpact(impact) {
+    return impact === 'important' ? 7 : (impact === 'low' ? 3 : 5);
+}
+
+/**
+ * Record a MODEL learning, but CONSOLIDATE instead of blindly appending — this
+ * is what makes account memory a continual-learning store rather than an
+ * ever-growing pile of near-duplicates. The whole read-modify-write runs inside
+ * mutateMeta so the find-target + update/create is atomic (no lost-update race).
+ *
+ * Target selection (a memory to REFINE in place):
+ *   1. `opts.replaces` — an explicit [#handle] the model surfaced from its
+ *      injected context. May target ANY of THIS user's memories (incl. ones the
+ *      user authored manually) — a deliberate, model-driven edit.
+ *   2. otherwise auto-detect the closest existing MODEL learning by keyword
+ *      Jaccard ≥ autoMergeThreshold. Auto-merge NEVER touches a manual memory —
+ *      only an explicit handle can — so the model can't silently overwrite what
+ *      the user wrote.
+ *
+ * When refining, the STRONGER impact wins (an experience that proved important
+ * isn't demoted by a casual re-record). Returns { id, updated, impact }.
+ *
+ * `input`: { text, keywords, type, impact, tokens?, sourceConvId? }
+ */
+async function upsertModelLearning(userId, input, opts = {}) {
+    // autoMergeThreshold is an OVERLAP-coefficient floor (not Jaccard);
+    // minSharedKeywords guards tiny keyword sets from coincidental merges.
+    const { replaces = null, autoMergeThreshold = 0.6, minSharedKeywords = 3 } = opts;
+    const text = String(input.text || '').slice(0, MEMORY_TEXT_MAX);
+    if (!text.trim()) throw new Error('learning text is required');
+    const keywords = Array.isArray(input.keywords) ? input.keywords.slice(0, 40) : [];
+    const reqImpact = VALID_IMPACTS.has(input.impact) ? input.impact : 'medium';
+    const reqType = input.type && VALID_TYPES.has(input.type) ? input.type : 'learning';
+    const tokens = Number.isFinite(input.tokens) ? input.tokens : estimateTokens(text);
+
+    return mutateMeta((list) => {
+        const mine = list.filter((m) => m.userId === userId);
+        let target = null;
+        const handle = String(replaces || '').replace(/^#/, '').trim().toLowerCase();
+        if (handle) {
+            target = mine.find((m) => {
+                const id = String(m.id).toLowerCase();
+                return id === handle || id.startsWith(handle) || id.replace(/-/g, '').startsWith(handle);
+            }) || null;
+        }
+        if (!target) {
+            // Auto-detect the closest prior MODEL learning by TOPIC overlap (not
+            // Jaccard — see topicOverlap). Merge when the smaller keyword set is
+            // mostly contained in the new lesson AND they share enough concrete
+            // terms (≥ minSharedKeywords) to be confidently the same topic.
+            let best = null, bestRatio = 0;
+            for (const m of mine) {
+                if (m.source !== 'model') continue; // never auto-clobber manual/auto entries
+                const { ratio, inter } = topicOverlap(m.keywords || [], keywords);
+                if (inter >= minSharedKeywords && ratio >= autoMergeThreshold && ratio > bestRatio) {
+                    bestRatio = ratio; best = m;
+                }
+            }
+            if (best) target = best;
+        }
+
+        if (target) {
+            const mergedImpact = (IMPACT_RANK[reqImpact] || 2) >= (IMPACT_RANK[target.impact] || 2)
+                ? reqImpact : target.impact;
+            target.text = text;
+            if (keywords.length) target.keywords = keywords;
+            target.type = reqType;
+            target.impact = mergedImpact;
+            target.score = scoreForImpact(mergedImpact);
+            target.tokens = tokens;
+            target.updatedAt = nowIso();
+            return { id: target.id, updated: true, impact: mergedImpact };
+        }
+
+        const rec = normalizeRecord({
+            userId, text, keywords, tokens,
+            score: scoreForImpact(reqImpact),
+            source: 'model', type: reqType, impact: reqImpact,
+            sourceConvId: input.sourceConvId || null,
+        });
+        list.push(rec);
+        pruneUser(list, userId);
+        return { id: rec.id, updated: false, impact: rec.impact };
+    });
+}
+
 // --------------------------------------------------------------------------
 // Per-conversation extraction cursors (memory-cursors.json)
 // --------------------------------------------------------------------------
@@ -316,22 +421,47 @@ async function readMigrated() {
     }
 }
 
-async function markMigrated(userId) {
-    const all = await readMigrated();
-    all[userId] = nowIso();
-    await fsp.mkdir(DATA_DIR, { recursive: true });
-    await fsp.writeFile(MIGRATED_FILE, JSON.stringify(all, null, 2));
+// Serialize the migrated-marker read-modify-write (mirrors cursorChain) so two
+// users' markMigrated calls — or a retry — can't clobber each other's marker.
+let migratedChain = Promise.resolve();
+function markMigrated(userId) {
+    const next = migratedChain.then(async () => {
+        const all = await readMigrated();
+        all[userId] = nowIso();
+        await fsp.mkdir(DATA_DIR, { recursive: true });
+        await fsp.writeFile(MIGRATED_FILE, JSON.stringify(all, null, 2));
+    });
+    migratedChain = next.catch(() => {});
+    return next;
 }
+
+// Per-user in-process lock: extractNewMemoriesFromSave fire-and-forgets
+// migrateLegacyForUser on EVERY save, so two near-simultaneous saves would both
+// see no marker and both run the migration (double work; racing cursor seeds).
+// Collapse concurrent calls for the same user onto one shared promise.
+const migrationInFlight = new Map();
 
 /**
  * Migrate one user's legacy per-conversation memories into the account store.
- * Idempotent: a per-user marker in memory-migrated.json prevents re-import.
+ * Idempotent: a per-user marker in memory-migrated.json prevents re-import, and
+ * concurrent calls for the same user share one run (migrationInFlight lock).
  * Walks CONVERSATIONS_DIR/<userId>/memory/<convId>/{index.json,<id>.mem},
  * decodes each entry, dedups account-wide, and seeds extraction cursors so the
  * extractor won't re-process already-extracted turns. Legacy dirs are left in
  * place (rollback safety). Returns { migrated, imported }.
  */
-async function migrateLegacyForUser(userId) {
+function migrateLegacyForUser(userId) {
+    const existing = migrationInFlight.get(userId);
+    if (existing) return existing;
+    const run = (async () => {
+        try { return await migrateLegacyForUserImpl(userId); }
+        finally { migrationInFlight.delete(userId); }
+    })();
+    migrationInFlight.set(userId, run);
+    return run;
+}
+
+async function migrateLegacyForUserImpl(userId) {
     const migrated = await readMigrated();
     if (migrated[userId]) return { migrated: false, imported: 0 };
 
@@ -414,9 +544,14 @@ async function migrateLegacyForUser(userId) {
             if (imported) pruneUser(list, userId);
         });
     }
-    // Seed cursors so the extractor skips already-processed turns.
+    // Seed cursors so the extractor skips already-processed turns. Best-effort:
+    // a transient cursor-write failure must NOT abort the migration before
+    // markMigrated, or the next save re-runs the whole import (deduped, but
+    // wasteful). Worst case of a missed seed is the extractor re-checking a few
+    // old turns, which dedup absorbs.
     for (const [convId, msgId] of Object.entries(cursorSeeds)) {
-        await setCursor(userId, convId, msgId);
+        try { await setCursor(userId, convId, msgId); }
+        catch (e) { log(`cursor seed failed for ${userId}/${convId}: ${e.message}`); }
     }
     await markMigrated(userId);
     if (imported) log(`migrated ${imported} legacy memories for user ${userId} (${convDirs.length} conversations)`);
@@ -432,6 +567,7 @@ module.exports = {
     deleteMemory,
     clearMemories,
     addAutoMemories,
+    upsertModelLearning,
     countForUser,
     // cursors
     getCursor,
