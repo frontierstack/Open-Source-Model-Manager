@@ -329,6 +329,18 @@ const TRUNCATION_FILE_HATCH = {
 // itself, not by pointing at a second file.
 const TRUNCATION_CHUNKABLE = new Set(['create_file', 'append_to_file', 'update_file', 'replace_lines']);
 
+// Disk-read tools whose target file may actually be a Knowledge Base document
+// (which lives only in the vector store, not on the sandbox filesystem). Maps
+// each tool to its path argument. When one of these 404s on a basename that
+// matches a KB doc, executeToolCall serves the KB text instead. See the
+// fallback block in executeToolCall.
+const KB_READABLE_TOOLS = {
+    read_pdf: 'filePath', read_file: 'filePath', head_file: 'filePath',
+    tail_file: 'filePath', get_file_metadata: 'filePath', outline_file: 'filePath',
+    pdf_page_count: 'filePath', pdf_to_images: 'filePath', hash_file: 'filePath',
+    read_email_file: 'email_path',
+};
+
 async function executeToolCall(call, ctx) {
     const toolName = call.function.name;
     // Parse args once up-front — same error path whether we dispatch to
@@ -515,6 +527,58 @@ async function executeToolCall(call, ctx) {
     try {
         const result = await dispatch(args, ctx);
         let serialized = typeof result === 'string' ? result : JSON.stringify(result);
+
+        // KB-file read fallback: a document that lives only in a Knowledge
+        // Base is never on the sandbox filesystem, so read_pdf/read_file/etc.
+        // 404 when the model points them at a guessed /workspace path. When
+        // such a read FAILS and the path's basename matches a KB document for
+        // this user, transparently serve the document's stored text instead of
+        // surfacing a dead-end error. Done on failure (not pre-emptively) so a
+        // real workspace file that happens to share a name is never hijacked.
+        // This is the deterministic backstop to the up-front KB pre-flight
+        // note — it guarantees the user never sees a failed read on a KB file,
+        // regardless of whether the model heeded the note.
+        const kbReadArg = KB_READABLE_TOOLS[toolName];
+        if (kbReadArg && ctx && 'userId' in ctx) {
+            let failed = false;
+            try {
+                const parsed = JSON.parse(serialized);
+                failed = parsed && typeof parsed === 'object'
+                    && (parsed.success === false || parsed.error)
+                    && /not found|no such file|does not exist/i.test(String(parsed.error || parsed.message || ''));
+            } catch { /* non-JSON success output — not a failure */ }
+            const rawPath = args?.[kbReadArg] || args?.filePath || args?.path;
+            if (failed && typeof rawPath === 'string' && rawPath) {
+                const base = rawPath.split(/[\\/]/).pop().toLowerCase();
+                try {
+                    const kbService = require('./knowledgeBaseService');
+                    const kbs = await kbService.listKBs(ctx.userId || null);
+                    let mKb = null, mDoc = null;
+                    for (const kb of kbs) {
+                        const d = (kb.documents || []).find(x => (x.filename || '').toLowerCase() === base);
+                        if (d) { mKb = kb; mDoc = d; break; }
+                    }
+                    if (mKb && mDoc) {
+                        const doc = await kbService.getDocumentText(mKb, { docId: mDoc.docId, maxChars: 200000 });
+                        if (doc && doc.found) {
+                            serialized = JSON.stringify({
+                                success: true,
+                                source: 'knowledge_base',
+                                knowledgeBase: mKb.name,
+                                filename: doc.filename,
+                                note: `"${doc.filename}" is not on the sandbox filesystem — it lives in the knowledge base "${mKb.name}". Its stored text (reassembled from ${doc.chunkCount} indexed chunk(s)) is returned below.`,
+                                text: doc.text,
+                                charCount: doc.charCount,
+                                truncated: doc.truncated,
+                            });
+                            console.warn(`[chatTools] ${toolName} 404 on "${base}" served from knowledge base "${mKb.name}"`);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[chatTools] KB read fallback failed:', e.message);
+                }
+            }
+        }
 
         // Smart-dependency: scan the tool output for known install failures
         // (pip, npm, apt, ModuleNotFoundError) and attach an `_advice` field

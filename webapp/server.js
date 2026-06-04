@@ -16658,6 +16658,71 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
+        // --- Knowledge-base file pre-flight ----------------------------------
+        // A document added to a Knowledge Base lives ONLY as embedded chunks in
+        // the vector store — it is never written to the sandbox filesystem. So
+        // when the user says "read I-Health_Receipt.pdf", the model guesses a
+        // /workspace path and wastes a read_pdf/read_file call (which 404s)
+        // before recovering via search_knowledge_base. A buried tool-description
+        // warning isn't reliably obeyed by smaller models, so we deterministically
+        // detect KB filenames named in the user's message and inject an explicit
+        // up-front note steering the model straight to search_knowledge_base.
+        // Skipped silently when the tool isn't in the catalog or no KB filename
+        // is referenced.
+        if (toolCatalog.some(t => t?.function?.name === 'search_knowledge_base')) {
+            try {
+                let userText = '';
+                let userMsgIdx = -1;
+                for (let i = chatMessages.length - 1; i >= 0; i--) {
+                    if (chatMessages[i].role === 'user') {
+                        userText = base64Detector.extractTextFromContent(chatMessages[i].content);
+                        userMsgIdx = i;
+                        break;
+                    }
+                }
+                if (userMsgIdx >= 0 && userText) {
+                    const lcText = userText.toLowerCase();
+                    const kbs = await knowledgeBaseService.listKBs(req.userId || userId);
+                    const hits = [];
+                    const seen = new Set();
+                    for (const kb of kbs) {
+                        for (const d of (kb.documents || [])) {
+                            const fn = d.filename;
+                            if (!fn || seen.has(fn.toLowerCase())) continue;
+                            // Match the full filename (with extension) verbatim —
+                            // specific enough to avoid false positives on common words.
+                            if (lcText.includes(fn.toLowerCase())) {
+                                seen.add(fn.toLowerCase());
+                                hits.push({ filename: fn, kb: kb.name });
+                            }
+                        }
+                    }
+                    if (hits.length) {
+                        const lines = hits.map(h => `- "${h.filename}" is in the knowledge base "${h.kb}".`);
+                        const note = [
+                            '[SERVER NOTE: The file(s) named below live ONLY in the knowledge base, NOT on the sandbox filesystem. To read their contents call search_knowledge_base (optionally with the knowledge_base name); do NOT call read_pdf / read_file / list_directory on a /workspace path for them — that will fail.]',
+                            ...lines,
+                            '',
+                        ].join('\n');
+                        const msg = chatMessages[userMsgIdx];
+                        if (typeof msg.content === 'string') {
+                            msg.content = `${note}\n${msg.content}`;
+                        } else if (Array.isArray(msg.content)) {
+                            const textIdx = msg.content.findIndex(p => p?.type === 'text');
+                            if (textIdx >= 0) {
+                                msg.content[textIdx].text = `${note}\n${msg.content[textIdx].text || ''}`;
+                            } else {
+                                msg.content.unshift({ type: 'text', text: note });
+                            }
+                        }
+                        logChatActivity(`KB pre-flight: steered ${hits.length} named file(s) to search_knowledge_base`);
+                    }
+                }
+            } catch (e) {
+                console.warn('[Chat Stream] KB pre-flight failed:', e.message);
+            }
+        }
+
         // Job was registered at the top of the handler so refresh / switch-back
         // can see prep-phase work. Update the existing record with the live
         // inputMessages snapshot and flip phase to 'waiting' (model about to
@@ -22333,11 +22398,21 @@ app.use((req, res) => {
             let kbs = [];
             try { kbs = await knowledgeBaseService.listKBs(ctx?.userId || null); } catch (_) { return null; }
             if (!kbs.length) return null;
-            // Surface document counts so the model can answer "how many files do
-            // I have" directly, without guessing from search snippets.
-            const names = kbs
-                .map((k) => `"${k.name}" (${(k.documents || []).length} file${(k.documents || []).length === 1 ? '' : 's'})`)
-                .join(', ');
+            // Surface document counts AND the actual filenames so the model
+            // (a) can answer "how many files do I have" without guessing from
+            // snippets, and (b) recognizes that a file the user names by hand
+            // lives in the KB — not on the sandbox disk — so it reaches for
+            // this tool instead of wasting a read_pdf/read_file on a guessed
+            // /workspace path. Filenames are capped per-KB to keep the catalog
+            // small on large collections.
+            const FN_CAP = 15;
+            const names = kbs.map((k) => {
+                const docs = k.documents || [];
+                const shown = docs.slice(0, FN_CAP).map((d) => d.filename).join(', ');
+                const more = docs.length > FN_CAP ? `, …+${docs.length - FN_CAP} more` : '';
+                const fileList = docs.length ? `: ${shown}${more}` : '';
+                return `"${k.name}" (${docs.length} file${docs.length === 1 ? '' : 's'}${fileList})`;
+            }).join('; ');
             return {
                 type: 'function',
                 function: {
@@ -22347,6 +22422,7 @@ app.use((req, res) => {
                         "Call this whenever the answer may live in the user's own documents, notes, or files. " +
                         'Returns short, source-cited snippets only (not whole documents), so it is cheap and safe to call repeatedly with refined queries. ' +
                         'To list or count the files in a knowledge base (e.g. "how many files / which documents do I have"), call with list_documents=true instead of guessing from search results. ' +
+                        'IMPORTANT: the files listed below live ONLY in the knowledge base, NOT on the sandbox filesystem — if the user names one of them, use THIS tool to read it; do NOT call read_pdf/read_file/list_directory on a /workspace path (those will fail). ' +
                         `Available knowledge bases: ${names}.`,
                     parameters: {
                         type: 'object',

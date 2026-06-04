@@ -420,6 +420,11 @@ async function deleteDocument(kb, docId) {
     return call('/delete_doc', { kbDir: kbDirFor(kb), docId });
 }
 
+/** Reassemble a document's full text from its stored chunks (ordered). */
+async function getDocumentText(kb, { docId, filename, maxChars } = {}) {
+    return call('/get_doc', { kbDir: kbDirFor(kb), docId, filename, maxChars });
+}
+
 async function stats(kb) {
     return call('/stats', { kbDir: kbDirFor(kb) });
 }
@@ -440,5 +445,6 @@ module.exports = {
     ingestDocument,
     search,
     deleteDocument,
+    getDocumentText,
     stats,
 };

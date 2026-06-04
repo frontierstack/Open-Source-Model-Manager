@@ -232,7 +232,43 @@ def op_stats(body):
             'dim': _dim, 'model': _mode, 'mode': _mode}
 
 
-OPS = {'/ingest': op_ingest, '/search': op_search, '/delete_doc': op_delete_doc, '/stats': op_stats}
+def op_get_doc(body):
+    """Return a single document's chunks reassembled in order (no embedding,
+    pure SQLite read). Used to serve a KB file's full text when the model /
+    server asks to 'read' it by name. Selects by docId or by exact filename."""
+    kb_dir = body['kbDir']
+    doc_id = body.get('docId')
+    filename = body.get('filename')
+    max_chars = int(body.get('maxChars') or 0)
+    if not os.path.exists(_db_path(kb_dir)):
+        return {'ok': True, 'found': False}
+    conn = _connect(kb_dir)
+    try:
+        if doc_id:
+            cur = conn.execute(
+                'SELECT filename, ord, text FROM chunks WHERE doc_id = ? ORDER BY ord', (str(doc_id),))
+        elif filename:
+            cur = conn.execute(
+                'SELECT filename, ord, text FROM chunks WHERE filename = ? ORDER BY ord', (str(filename),))
+        else:
+            return {'ok': False, 'error': 'docId or filename required'}
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return {'ok': True, 'found': False}
+    fn = rows[0][0]
+    text = '\n'.join(r[2] for r in rows)
+    truncated = False
+    if max_chars and len(text) > max_chars:
+        text = text[:max_chars]
+        truncated = True
+    return {'ok': True, 'found': True, 'filename': fn, 'chunkCount': len(rows),
+            'charCount': len(text), 'truncated': truncated, 'text': text}
+
+
+OPS = {'/ingest': op_ingest, '/search': op_search, '/delete_doc': op_delete_doc,
+       '/stats': op_stats, '/get_doc': op_get_doc}
 
 
 # ---------------------------------------------------------------------------
