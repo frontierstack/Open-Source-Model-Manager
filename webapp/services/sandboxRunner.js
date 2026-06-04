@@ -894,11 +894,18 @@ function resolveInWorkspace(input, mount = CONTAINER_MOUNT) {
     let trimmed = input;
     if (trimmed.startsWith(mount + '/')) trimmed = trimmed.slice(mount.length + 1);
     else if (trimmed === mount) trimmed = '';
-    // Reject absolute paths pointing outside the workspace.
+    // An absolute path that points outside /workspace — typically one the model
+    // invented (a stale extract dir, a bare /tmp/pkg/index.js, a host path that
+    // doesn't exist here). PRESERVE the directory structure under /workspace
+    // (strip only the leading slash) instead of collapsing to the basename.
+    // Collapsing throws away the very segments a skill's not-found recovery
+    // needs to disambiguate a common filename — a package tree has dozens of
+    // index.js / package.json, so a basename-only path is unrecoverable and the
+    // model burns extra tool calls guessing. The real workspace-relative path is
+    // a suffix of what we keep, so read_file's trailing-segment matcher can
+    // still locate (and auto-read) the file. Traversal is still rejected below.
     if (trimmed.startsWith('/')) {
-        // Give the caller's basename a home under /workspace rather than
-        // silently losing the directory structure they typed.
-        trimmed = path.posix.basename(trimmed);
+        trimmed = trimmed.replace(/^\/+/, '');
     }
     // Normalize and reject traversal.
     const joined = path.posix.normalize(path.posix.join(mount, trimmed));
