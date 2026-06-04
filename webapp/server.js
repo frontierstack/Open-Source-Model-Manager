@@ -2842,6 +2842,27 @@ const broadcast = (data, targetUserId = null) => {
     }
 };
 
+// Emit a user-visible process-log line (Logs tab) from ANYWHERE — the chat
+// stream has its own scoped `logChatActivity`, but post-response work
+// (memory extraction) and bottom-of-file tool executes (record_learning,
+// search_knowledge_base) run outside that closure and still need to surface
+// what they did. Same `[Chat]` prefix + per-user targeting so it lands in the
+// same stream the user already watches.
+const logUserActivity = (userId, message, level = 'info') => {
+    if (!userId) return;
+    // Mirror to the server console too — memory/KB events are low-volume and
+    // server-side visibility helps debugging when no client WS is attached.
+    console.log(`[Chat] ${message}`);
+    try { broadcast({ type: 'log', message: `[Chat] ${message}`, level, targetUserId: userId }); }
+    catch (_) { /* best-effort */ }
+};
+
+// Uploaded-archive retention. The store lives in /tmp and is swept on each new
+// upload; the default was 1 hour, which could expire an archive mid-task on a
+// long analysis. 24h (env-overridable) keeps it available for the whole
+// session without letting /tmp grow unbounded across days.
+const ARCHIVE_TTL_MS = parseInt(process.env.ARCHIVE_TTL_MS || String(24 * 60 * 60 * 1000), 10);
+
 // ============================================================================
 // AUTHENTICATION ENDPOINTS
 // ============================================================================
@@ -12818,10 +12839,12 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
     }
 
     let added = 0;
+    let addedItems = [];
     if (candidates.length) {
         // Dedup is account-wide and prune-to-cap happens inside the service.
         const res = await memoryService.addAutoMemories(userId, candidates, { sourceConvId: conversationId });
         added = res.added;
+        addedItems = res.items || [];
     }
     if (newestCursor && newestCursor !== cursor) {
         await memoryService.setCursor(userId, conversationId, newestCursor);
@@ -12829,6 +12852,12 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
     if (added > 0) {
         const total = await memoryService.countForUser(userId).catch(() => -1);
         console.log(`[Memory] Extracted ${added} account memories from conversation ${conversationId} (account total: ${total})`);
+        // Surface it in the user's process log too (not just server console),
+        // with a brief preview of what was learned this turn.
+        const preview = addedItems.slice(0, 3)
+            .map(it => `${it.type}/${it.impact || 'low'}: “${(it.text || '').slice(0, 60)}”`).join('; ');
+        logUserActivity(userId,
+            `Memory: created ${added} memor${added === 1 ? 'y' : 'ies'} from this turn${preview ? ` — ${preview}` : ''}`);
     }
 }
 
@@ -12932,6 +12961,8 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     return {
         block: parts.join('\n\n'),
         count: picked.length,
+        learnings: learnings.length,
+        facts: facts.length,
         tokens: usedTokens,
         previews: picked.slice(0, 5).map(m => (m.text || '').slice(0, 120)),
     };
@@ -14227,15 +14258,16 @@ app.post('/api/chat/upload', requireAuth, async (req, res) => {
                 const userArchiveDir = `${archiveRootDir}/${userDir}`;
                 await require('fs').promises.mkdir(userArchiveDir, { recursive: true, mode: 0o700 });
 
-                // TTL sweep: delete archive dirs older than 1 hour. Cheap,
-                // keeps /tmp from growing without bound.
+                // TTL sweep: delete archive dirs older than ARCHIVE_TTL_MS
+                // (default 24h). Cheap, keeps /tmp from growing without bound
+                // while not expiring an archive in the middle of a task.
                 try {
                     const entries = await require('fs').promises.readdir(userArchiveDir);
                     const now = Date.now();
                     for (const e of entries) {
                         const p = `${userArchiveDir}/${e}`;
                         const st = await require('fs').promises.stat(p).catch(() => null);
-                        if (st && (now - st.mtimeMs) > 60 * 60 * 1000) {
+                        if (st && (now - st.mtimeMs) > ARCHIVE_TTL_MS) {
                             await require('fs').promises.rm(p, { recursive: true, force: true }).catch(() => {});
                         }
                     }
@@ -15112,6 +15144,18 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                     const memoryResult = await retrieveRelevantMemories(
                         chatUserId, chatConvId, latestUserText, MEMORY_RETRIEVAL_TOKEN_BUDGET
                     );
+                    if (memoryResult && memoryResult.count) {
+                        // Process-log which memories were pulled into THIS turn so
+                        // the user can see what's shaping the response.
+                        const preview = (memoryResult.previews || []).slice(0, 3)
+                            .map(p => `“${p.slice(0, 70)}”`).join('; ');
+                        logUserActivity(chatUserId,
+                            `Memory: referenced ${memoryResult.count} memor${memoryResult.count === 1 ? 'y' : 'ies'} ` +
+                            `(${memoryResult.learnings} learning${memoryResult.learnings === 1 ? '' : 's'}, ` +
+                            `${memoryResult.facts} fact${memoryResult.facts === 1 ? '' : 's'}, ${memoryResult.tokens} tok)` +
+                            (preview ? ` — ${preview}` : '')
+                        );
+                    }
                     if (memoryResult && memoryResult.block) {
                         const memoryBlock = memoryResult.block;
                         // Append to existing system message if one exists,
@@ -22326,7 +22370,7 @@ app.use((req, res) => {
     const archiveExtractor = require('./services/archiveExtractor');
     const ARCHIVE_STORE_ROOT = '/tmp/modelserver-archives';
 
-    // List archive ids currently on disk for this user (1-hour TTL, see
+    // List archive ids currently on disk for this user (ARCHIVE_TTL_MS, see
     // /api/chat/upload's sweep). Used both for auto-select when the model
     // calls extract_archive without an id and to produce a helpful error
     // listing valid ids when it passes a wrong/missing one.
@@ -22358,7 +22402,7 @@ app.use((req, res) => {
         }
         const entries = await fsp.readdir(dir).catch(() => null);
         if (!entries || !entries.length) {
-            throw new Error(`No archive found for id ${archiveId}. It may have expired (1-hour TTL) or the id is wrong.`);
+            throw new Error(`No archive found for id ${archiveId}. It may have expired (${Math.round(ARCHIVE_TTL_MS / 3600000)}h TTL) or the id is wrong.`);
         }
         const filename = entries[0];
         const diskPath = `${dir}/${filename}`;
@@ -22412,7 +22456,7 @@ app.use((req, res) => {
                 if (available.length === 1) {
                     archiveId = available[0].archiveId;
                 } else if (available.length === 0) {
-                    return { error: 'No uploaded archives are available for this user. The user must upload the archive again (1-hour TTL).' };
+                    return { error: `No uploaded archives are available for this user. The user must upload the archive again (${Math.round(ARCHIVE_TTL_MS / 3600000)}h TTL).` };
                 } else {
                     const list = available.map(a => `${a.archiveId} (${a.filename})`).join('; ');
                     return { error: `archiveId is missing or malformed. Pass one of: ${list}` };
@@ -22626,6 +22670,8 @@ app.use((req, res) => {
                     };
                 });
                 const totalFiles = knowledgeBases.reduce((n, kb) => n + kb.documentCount, 0);
+                logUserActivity(ctx?.userId,
+                    `KB: listed inventory — ${totalFiles} file${totalFiles === 1 ? '' : 's'} across ${knowledgeBases.length} knowledge base${knowledgeBases.length === 1 ? '' : 's'} (${target.map(kb => kb.name).join(', ')})`);
                 return {
                     totalFiles,
                     knowledgeBases,
@@ -22642,6 +22688,14 @@ app.use((req, res) => {
             }
             all.sort((a, b) => b.score - a.score);
             const top = all.slice(0, k);
+            // Process-log which KB documents this search referenced so the user
+            // can see the knowledge base being used to answer.
+            const refDocs = [...new Set(top.map(r => r.filename).filter(Boolean))];
+            const refKbs = [...new Set(top.map(r => r.knowledgeBase).filter(Boolean))];
+            logUserActivity(ctx?.userId,
+                `KB: searched “${String(query).slice(0, 50)}” — ${top.length === 0 ? 'no matches' : `${top.length} passage${top.length === 1 ? '' : 's'}`}` +
+                (refDocs.length ? ` from ${refDocs.length} file${refDocs.length === 1 ? '' : 's'} (${refDocs.slice(0, 3).join(', ')}${refDocs.length > 3 ? ', …' : ''})` : '') +
+                (refKbs.length ? ` in ${refKbs.join(', ')}` : ''));
             return {
                 query,
                 count: top.length,
@@ -22731,6 +22785,10 @@ app.use((req, res) => {
                     tokens: Math.ceil(text.length / 3),
                     sourceConvId: ctx.conversationId || null,
                 }, { replaces: args?.replaces || null });
+                // Process-log the model-recorded learning so the user sees the
+                // assistant's self-improvement happening, not just a silent tool call.
+                logUserActivity(userId,
+                    `Memory: ${res.updated ? 'refined' : 'recorded'} learning [${type}/${res.impact}] — “${lesson.slice(0, 80)}”`);
                 return {
                     success: true,
                     id: res.id,

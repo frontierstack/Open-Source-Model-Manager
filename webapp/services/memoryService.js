@@ -248,11 +248,13 @@ function pruneUser(list, userId) {
  * Bulk-add auto-extracted memory candidates for a user, deduping account-wide
  * against existing entries (and within the batch) by keyword overlap. Each
  * candidate: { text, keywords, tokens, score, sourceRole, sourceTurnId,
- * sourceConvId }. Returns { added }.
+ * sourceConvId }. Returns { added, items } where items briefly describes each
+ * created record (for process-logging what was learned this turn).
  */
 async function addAutoMemories(userId, candidates, { sourceConvId = null } = {}) {
-    if (!Array.isArray(candidates) || !candidates.length) return { added: 0 };
+    if (!Array.isArray(candidates) || !candidates.length) return { added: 0, items: [] };
     let added = 0;
+    const items = [];
     await mutateMeta((list) => {
         const mine = list.filter((m) => m.userId === userId);
         const acceptedKeywords = mine.map((m) => m.keywords || []);
@@ -279,11 +281,12 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
             });
             list.push(rec);
             acceptedKeywords.push(kw);
+            items.push({ text: rec.text, type: rec.type, impact: rec.impact });
             added++;
         }
         if (added) pruneUser(list, userId);
     });
-    return { added };
+    return { added, items };
 }
 
 async function countForUser(userId) {
