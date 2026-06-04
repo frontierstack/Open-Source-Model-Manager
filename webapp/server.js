@@ -12640,6 +12640,36 @@ function splitIntoSentences(text) {
 // Extract up to `maxKeep` memory-worthy sentences from a user→assistant pair.
 // Returns an array of { text, keywords, tokens, sourceRole }. Runs entirely
 // in-process, no subprocess spawn, safe to call on every save.
+// Heuristic type/impact classifier for AUTO-extracted memories. Extraction is
+// model-free (runs on every save), so this is cue-based and deliberately
+// CONSERVATIVE — it only assigns a non-'fact' type on a clear signal. Without
+// it every auto memory is a typeless, importance-less 'fact', so the Memory tab
+// shows a wall of untyped rows and it looks like nothing classifies them. A
+// user-stated preference/correction becomes a directive (always injected); a
+// plain fact's importance scales with its factuality score but never outranks
+// an explicit directive.
+function classifyMemoryHeuristic(sentence, role, factScore) {
+    const s = String(sentence).toLowerCase();
+    const isUser = role === 'user';
+    // Order matters: correction/limitation cues take precedence over a generic
+    // preference cue when a sentence trips more than one.
+    if (/\b(actually|that'?s (wrong|incorrect|not right)|not correct|i meant|i didn'?t mean|instead of|should (be|have been)|don'?t say|stop (doing|saying)|you (misunderstood|got .* wrong))\b/.test(s)) {
+        return { type: 'correction', impact: isUser ? 'important' : 'medium' };
+    }
+    if (/\b(doesn'?t work|not work(ing)?|cannot|can'?t|fail(s|ed)?|not supported|unsupported|no longer|deprecated|broke(n)?|not available|throws? (an )?error|errors? out)\b/.test(s)) {
+        return { type: 'limitation', impact: 'medium' };
+    }
+    if (/\b(i (prefer|like|love|want|use|always|never|usually|typically)|i'?d (prefer|rather)|please (always|use|don'?t|make sure|ensure)|from now on|going forward|by default|my (preferred|favou?rite|go-to))\b/.test(s)) {
+        return { type: 'preference', impact: isUser ? 'important' : 'medium' };
+    }
+    if (isUser && /\b(thanks?,? that (worked|helped)|that'?s (better|great|exactly|perfect)|good (job|call)|nailed it|works? (great|now|perfectly))\b/.test(s)) {
+        return { type: 'feedback', impact: 'low' };
+    }
+    // Plain fact — importance scales with factuality so the strongest facts
+    // still surface, but they never outrank explicit directives.
+    return { type: 'fact', impact: factScore >= 6 ? 'medium' : 'low' };
+}
+
 function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
     const memories = [];
 
@@ -12657,16 +12687,32 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
         const sentences = splitIntoSentences(clean);
         for (const sentence of sentences) {
             const score = scoreFactuality(sentence);
-            if (score < MEMORY_MIN_SCORE) continue;
+            const { type, impact } = classifyMemoryHeuristic(sentence, role, score);
+            // Keep fact-like sentences (factuality gate) OR any sentence with a
+            // clear preference/correction/limitation/feedback cue. The latter
+            // are the durable BEHAVIORAL memories — and they routinely score ~0
+            // on factuality (a bare "I prefer dark mode" / "actually, use tabs"
+            // has no URLs/paths/numbers/code), so the score gate would drop them
+            // before they could ever be classified. Those are exactly what the
+            // user wants remembered, so a directive cue overrides the gate.
+            const isDirectiveType = type !== 'fact';
+            if (score < MEMORY_MIN_SCORE && !isDirectiveType) continue;
             const compressed = shorthandCompress(sentence);
             const keywords = extractQueryKeywords(compressed);
             if (keywords.length === 0) continue;
+            // Floor a directive's score so it survives the per-turn top-N keep
+            // and outranks incidental facts.
+            const effScore = isDirectiveType
+                ? Math.max(score, impact === 'important' ? 6 : 4)
+                : score;
             memories.push({
                 text: compressed,
                 keywords,
                 tokens: Math.ceil(compressed.length / 3),
                 sourceRole: role,
-                score,
+                score: effScore,
+                type,
+                impact,
             });
         }
     };
@@ -12761,6 +12807,8 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
                 keywords: mem.keywords,
                 tokens: mem.tokens,
                 score: mem.score,
+                type: mem.type,
+                impact: mem.impact,
                 sourceRole: mem.sourceRole,
                 sourceTurnId: msg.id || null,
                 sourceConvId: conversationId,

@@ -51,6 +51,10 @@ function relativeTime(iso) {
     return new Date(t).toLocaleDateString();
 }
 
+// Impact → chip tone, so importance is visible at every level (not just
+// "important"): low is quiet, medium is accented, important stands out.
+const IMPACT_TONE = { important: 'warn', medium: 'accent', low: 'muted' };
+
 function Chip({ children, tone = 'muted' }) {
     const tones = {
         muted: { backgroundColor: 'var(--bg-hover)', color: 'var(--text-tertiary)' },
@@ -301,8 +305,8 @@ export default function MemoryPanel() {
                                             </div>
                                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
                                                 <Chip tone={m.source === 'model' ? 'accent' : 'muted'}>{sm.label}</Chip>
-                                                {m.type && m.type !== 'fact' && <Chip>{m.type}</Chip>}
-                                                {m.impact === 'important' && <Chip tone="warn">important</Chip>}
+                                                {m.type && <Chip>{m.type}</Chip>}
+                                                {m.impact && <Chip tone={IMPACT_TONE[m.impact] || 'muted'}>{m.impact}</Chip>}
                                                 <span>{relativeTime(m.updatedAt || m.createdAt)}</span>
                                                 {isAdmin && m.ownerName ? <span>· {m.ownerName}</span> : null}
                                             </div>

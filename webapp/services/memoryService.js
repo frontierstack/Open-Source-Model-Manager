@@ -268,7 +268,11 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
                 tokens: c.tokens,
                 score: c.score,
                 source: 'auto',
-                type: 'fact',
+                // Heuristic classification from the extractor (server.js
+                // classifyMemoryHeuristic). Falls back to a plain fact so a
+                // caller that doesn't classify still works.
+                type: c.type || 'fact',
+                impact: c.impact || null,
                 sourceRole: c.sourceRole || null,
                 sourceConvId: c.sourceConvId || sourceConvId,
                 sourceTurnId: c.sourceTurnId || null,
