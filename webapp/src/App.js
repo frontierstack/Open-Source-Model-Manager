@@ -118,12 +118,14 @@ import {
     Boxes as LucideBoxes,
     Workflow as LucideWorkflow,
     Library as LucideLibrary,
+    Brain as LucideBrain,
 } from 'lucide-react';
 import ThemePicker from './components/ThemePicker';
 import AppSidebar from './components/AppSidebar';
 import LogsPanel from './components/LogsPanel';
 import UsersPanel from './components/UsersPanel';
 import KnowledgeBasePanel from './components/KnowledgeBasePanel';
+import MemoryPanel from './components/MemoryPanel';
 import AppsPanel from './components/AppsPanel';
 import AutomationLibrary from './components/AutomationLibrary';
 import MyModelsPanel from './components/MyModelsPanel';
@@ -636,7 +638,7 @@ const App = () => {
 
     // Tab order state
     const [tabOrder, setTabOrder] = useState(() => {
-        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        const defaultOrder = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         try {
             const saved = localStorage.getItem('tabOrder');
             if (saved) {
@@ -7453,7 +7455,8 @@ fetch('${baseUrl}/api/chips', {
         { id: 6, icon: <LucideLayoutGrid size={18} strokeWidth={1.75} />, label: 'Apps', adminOnly: true },
         { id: 7, icon: <LucideBoxes size={18} strokeWidth={1.75} />,      label: 'Sandbox Workspace' },
         { id: 8, icon: <LucideWorkflow size={18} strokeWidth={1.75} />,   label: 'Automations' },
-        { id: 9, icon: <LucideLibrary size={18} strokeWidth={1.75} />,    label: 'Knowledge Base' }
+        { id: 9, icon: <LucideLibrary size={18} strokeWidth={1.75} />,    label: 'Knowledge Base' },
+        { id: 10, icon: <LucideBrain size={18} strokeWidth={1.75} />,     label: 'Memory' }
     ];
 
     // Filter tabs based on user role - hide admin-only tabs for non-admin users
@@ -12785,6 +12788,9 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                         )}
                         {visibleTabOrder[activeTab] === 9 && (
                             <KnowledgeBasePanel />
+                        )}
+                        {visibleTabOrder[activeTab] === 10 && (
+                            <MemoryPanel />
                         )}
                     </Box>
                 </Box>

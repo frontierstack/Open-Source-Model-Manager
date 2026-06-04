@@ -19,7 +19,6 @@ import {
     PanelLeft,
     Rows3,
     Type,
-    BookMarked,
     RefreshCw,
 } from 'lucide-react';
 import { useConfirm } from '../ConfirmDialog';
@@ -52,326 +51,6 @@ export default function ChatSettings({
     const [fontSearch, setFontSearch] = useState('');
     const fontDropdownRef = useRef(null);
     const confirm = useConfirm();
-
-    // Memories tab state.
-    const [memories, setMemories] = useState([]);
-    const [memoriesLoading, setMemoriesLoading] = useState(false);
-    const [memoriesError, setMemoriesError] = useState(null);
-    const [editingMemoryId, setEditingMemoryId] = useState(null);
-    const [editingMemoryText, setEditingMemoryText] = useState('');
-    // Collapse state per turn group id. Default-expanded on first view;
-    // the user can collapse groups they've already seen. Using an object
-    // instead of a Set so react's shallow compare catches updates.
-    const [collapsedGroups, setCollapsedGroups] = useState({});
-    // Pull the active conversation's messages so we can show each turn's
-    // user prompt as a group header. The chat store already holds them
-    // for the conversation the user is currently viewing.
-    const storeMessages = useChatStore((state) => state.messages);
-
-    const fetchMemories = useCallback(async () => {
-        if (!activeConversationId) {
-            setMemories([]);
-            setMemoriesError(null);
-            return;
-        }
-        setMemoriesLoading(true);
-        setMemoriesError(null);
-        try {
-            const res = await fetch(`/api/conversations/${activeConversationId}/memories`, {
-                credentials: 'include',
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            setMemories(Array.isArray(data.memories) ? data.memories : []);
-        } catch (e) {
-            setMemoriesError(e.message || 'Failed to load memories');
-            setMemories([]);
-        } finally {
-            setMemoriesLoading(false);
-        }
-    }, [activeConversationId]);
-
-    // Fetch memories eagerly whenever the active conversation changes,
-    // regardless of whether the settings modal is open or which tab is
-    // active. This prevents a stale-empty render on refresh: previously
-    // the effect only ran when the modal+tab were both "memories", which
-    // meant if the user switched conversations while the modal was shut,
-    // the next open would see empty state. A GET is cheap (one round-trip,
-    // no server-side side effects) and the result is immediately ready
-    // when the user does click through to the tab. The refresh button
-    // still calls fetchMemories directly for a manual re-pull.
-    useEffect(() => {
-        if (!open) return;
-        if (activeConversationId) {
-            fetchMemories();
-        } else {
-            setMemories([]);
-            setMemoriesError(null);
-        }
-    }, [open, activeConversationId, fetchMemories]);
-
-    // Collapse all groups by default when memories first populate.
-    // Preserve existing collapse state so a user's manual expand survives refetches.
-    useEffect(() => {
-        if (!memories.length) return;
-        setCollapsedGroups(prev => {
-            const byTurn = new Map();
-            for (const m of memories) {
-                const key = m.sourceTurnId || '__unlinked__';
-                if (!byTurn.has(key)) byTurn.set(key, true);
-            }
-            const next = { ...prev };
-            let changed = false;
-            for (const key of byTurn.keys()) {
-                if (!(key in next)) {
-                    next[key] = true;
-                    changed = true;
-                }
-            }
-            return changed ? next : prev;
-        });
-    }, [memories]);
-
-    const handleDeleteMemory = async (memId) => {
-        const confirmed = await confirm({
-            title: 'Delete Memory',
-            message: 'Delete this memory? The assistant will no longer use it as context on future turns in this conversation.',
-            confirmText: 'Delete',
-            cancelText: 'Cancel',
-            variant: 'danger',
-        });
-        if (!confirmed) return;
-        try {
-            const res = await fetch(`/api/conversations/${activeConversationId}/memories/${memId}`, {
-                method: 'DELETE',
-                credentials: 'include',
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            setMemories(prev => prev.filter(m => m.id !== memId));
-        } catch (e) {
-            setMemoriesError(e.message || 'Failed to delete memory');
-        }
-    };
-
-    const handleClearAllMemories = async () => {
-        const confirmed = await confirm({
-            title: 'Clear All Memories',
-            message: `Delete all ${memories.length} memories for this conversation? They will be regenerated automatically as the conversation continues.`,
-            confirmText: 'Clear All',
-            cancelText: 'Cancel',
-            variant: 'danger',
-        });
-        if (!confirmed) return;
-        try {
-            const res = await fetch(`/api/conversations/${activeConversationId}/memories`, {
-                method: 'DELETE',
-                credentials: 'include',
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            setMemories([]);
-        } catch (e) {
-            setMemoriesError(e.message || 'Failed to clear memories');
-        }
-    };
-
-    const handleStartEditMemory = (mem) => {
-        setEditingMemoryId(mem.id);
-        setEditingMemoryText(mem.text);
-    };
-
-    const handleCancelEditMemory = () => {
-        setEditingMemoryId(null);
-        setEditingMemoryText('');
-    };
-
-    const handleSaveMemoryEdit = async () => {
-        if (!editingMemoryId || !editingMemoryText.trim()) return;
-        try {
-            const res = await fetch(`/api/conversations/${activeConversationId}/memories/${editingMemoryId}`, {
-                method: 'PUT',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: editingMemoryText.trim() }),
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            setMemories(prev => prev.map(m =>
-                m.id === editingMemoryId
-                    ? { ...m, ...data.memory, id: editingMemoryId }
-                    : m
-            ));
-            handleCancelEditMemory();
-        } catch (e) {
-            setMemoriesError(e.message || 'Failed to save memory edit');
-        }
-    };
-
-    // Group memories by the turn (assistant message id) that produced them.
-    // Each group gets a header showing the user prompt that triggered it,
-    // looked up from the chat store's messages for the active conversation.
-    // Memories without a sourceTurnId (older or externally-created entries)
-    // fall into an "Unlinked" bucket rendered last.
-    const getMessageText = (msg) => {
-        if (!msg) return '';
-        const c = msg.content;
-        if (typeof c === 'string') return c;
-        if (Array.isArray(c)) {
-            return c.filter(p => p.type === 'text').map(p => p.text || '').join(' ');
-        }
-        return '';
-    };
-    const groupedMemories = (() => {
-        if (!memories.length) return [];
-        const byTurn = new Map();
-        for (const m of memories) {
-            const key = m.sourceTurnId || '__unlinked__';
-            if (!byTurn.has(key)) byTurn.set(key, []);
-            byTurn.get(key).push(m);
-        }
-        // Build a lookup of assistant id → index so we can derive a
-        // 1-based turn number and grab the preceding user prompt.
-        const assistantIds = new Map();
-        let turnCounter = 0;
-        for (let i = 0; i < storeMessages.length; i++) {
-            if (storeMessages[i].role === 'assistant') {
-                turnCounter++;
-                if (storeMessages[i].id) assistantIds.set(storeMessages[i].id, { index: i, turnNumber: turnCounter });
-            }
-        }
-        const groups = [];
-        for (const [turnId, items] of byTurn.entries()) {
-            let promptText = '';
-            let turnNumber = null;
-            let turnTs = null;
-            if (turnId !== '__unlinked__' && assistantIds.has(turnId)) {
-                const { index, turnNumber: tn } = assistantIds.get(turnId);
-                turnNumber = tn;
-                turnTs = storeMessages[index].timestamp || null;
-                for (let j = index - 1; j >= 0; j--) {
-                    if (storeMessages[j].role === 'user') {
-                        promptText = getMessageText(storeMessages[j]);
-                        break;
-                    }
-                    if (storeMessages[j].role === 'assistant') break;
-                }
-            }
-            // Earliest ts inside the group, so groups sort consistently even
-            // when the message text isn't reachable via the store.
-            const groupTs = items
-                .map(m => m.ts)
-                .filter(Boolean)
-                .sort()[0] || turnTs;
-            groups.push({
-                turnId,
-                turnNumber,
-                promptText,
-                groupTs,
-                tokens: items.reduce((s, m) => s + (m.tokens || 0), 0),
-                memories: items,
-            });
-        }
-        // Newest turn first. Unlinked group sinks to the bottom.
-        groups.sort((a, b) => {
-            if (a.turnId === '__unlinked__') return 1;
-            if (b.turnId === '__unlinked__') return -1;
-            return (b.groupTs || '').localeCompare(a.groupTs || '');
-        });
-        return groups;
-    })();
-
-    const formatTurnTime = (ts) => {
-        if (!ts) return '';
-        try {
-            return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-        } catch { return ''; }
-    };
-    const truncate = (text, n) => {
-        if (!text) return '';
-        const single = text.replace(/\s+/g, ' ').trim();
-        return single.length > n ? single.slice(0, n - 1) + '…' : single;
-    };
-
-    // Reusable memory card render — same shape as before, just factored
-    // out so the grouped layout can render it without nested JSX sprawl.
-    const renderMemoryCard = (mem) => {
-        const isEditing = editingMemoryId === mem.id;
-        return (
-            <div
-                key={mem.id}
-                className="group p-2.5 rounded-lg bg-dark-800/50 border border-white/5 hover:border-white/10 transition-colors"
-            >
-                {isEditing ? (
-                    <>
-                        <textarea
-                            value={editingMemoryText}
-                            onChange={(e) => setEditingMemoryText(e.target.value)}
-                            rows={3}
-                            className="w-full px-2 py-1.5 bg-dark-900 border border-white/10 rounded-md text-[12px] text-dark-100 resize-none focus:border-primary-500/50 focus:outline-none"
-                            autoFocus
-                        />
-                        <div className="flex items-center justify-end gap-1.5 mt-1.5">
-                            <button
-                                type="button"
-                                onClick={handleCancelEditMemory}
-                                className="px-2 py-1 rounded text-[10px] font-medium text-dark-300 hover:bg-white/5 transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleSaveMemoryEdit}
-                                disabled={!editingMemoryText.trim()}
-                                className="px-2 py-1 rounded text-[10px] font-medium bg-primary-500/20 hover:bg-primary-500/30 text-primary-300 border border-primary-500/30 transition-colors disabled:opacity-40"
-                            >
-                                Save
-                            </button>
-                        </div>
-                    </>
-                ) : (
-                    <>
-                        <div className="flex items-start gap-2">
-                            <p className="flex-1 text-[12px] text-dark-200 leading-relaxed break-words">
-                                {mem.text}
-                            </p>
-                            <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
-                                <button
-                                    type="button"
-                                    onClick={() => handleStartEditMemory(mem)}
-                                    className="p-2 sm:p-1 rounded hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                                    title="Edit"
-                                >
-                                    <Edit3 className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => handleDeleteMemory(mem.id)}
-                                    className="p-2 sm:p-1 rounded hover:bg-red-500/20 text-dark-400 hover:text-red-300 transition-colors min-w-[32px] min-h-[32px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                                    title="Delete"
-                                >
-                                    <Trash2 className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
-                                </button>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1.5 text-[9px] text-dark-500">
-                            <span className={`px-1.5 py-0.5 rounded font-medium ${
-                                mem.sourceRole === 'user'
-                                    ? 'bg-blue-500/10 text-blue-300'
-                                    : 'bg-emerald-500/10 text-emerald-300'
-                            }`}>
-                                {mem.sourceRole}
-                            </span>
-                            <span>{mem.tokens || 0} tokens</span>
-                            {mem.keywords?.length > 0 && (
-                                <span className="truncate">
-                                    {mem.keywords.slice(0, 4).join(' · ')}
-                                </span>
-                            )}
-                        </div>
-                    </>
-                )}
-            </div>
-        );
-    };
 
     const {
         temperature = 0.7,
@@ -589,7 +268,6 @@ export default function ChatSettings({
     const tabs = [
         { id: 'chat', label: 'Chat Settings', icon: Settings },
         { id: 'prompts', label: 'System Prompts', icon: MessageSquare },
-        { id: 'memories', label: 'Memories', icon: BookMarked },
         { id: 'appearance', label: 'Appearance', icon: Palette },
     ];
 
@@ -816,6 +494,32 @@ export default function ChatSettings({
                                     </button>
                                 </label>
                             </div>
+
+                            {/* Account memory — on by default. Management lives in the
+                                webapp Memory tab; here we only offer the on/off switch. */}
+                            <div className="pt-2 mt-2 border-t border-white/5">
+                                <label className="flex items-start justify-between gap-3 cursor-pointer">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-xs font-medium text-dark-200 flex items-center gap-1.5">
+                                            Account memory
+                                        </div>
+                                        <div className="text-[10px] text-dark-500 mt-0.5 leading-relaxed">
+                                            Lets the assistant remember preferences, facts, and lessons across all your chats and pull the most relevant into each reply. Manage what's stored from the Memory tab in the main app. Turn off to stop using, extracting, and recording memories.
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        role="switch"
+                                        aria-checked={!settings?.memoryDisabled}
+                                        onClick={() => onUpdateSettings({ memoryDisabled: !settings?.memoryDisabled })}
+                                        className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors mt-0.5 ${!settings?.memoryDisabled ? 'bg-primary-500' : 'bg-dark-700'}`}
+                                    >
+                                        <span
+                                            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${!settings?.memoryDisabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`}
+                                        />
+                                    </button>
+                                </label>
+                            </div>
                         </>
                     )}
 
@@ -947,162 +651,6 @@ export default function ChatSettings({
                                         ))
                                     )}
                                 </div>
-                            )}
-                        </>
-                    )}
-
-                    {/* Memories Tab */}
-                    {activeTab === 'memories' && (
-                        <>
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                    <h3 className="text-xs font-semibold text-dark-200 mb-1 truncate">
-                                        Memories{activeConversationTitle ? ` — ${activeConversationTitle}` : ''}
-                                    </h3>
-                                    <p className="text-[11px] text-dark-400 leading-relaxed">
-                                        Facts automatically extracted from this conversation.
-                                        They're injected as context on future turns so details
-                                        survive even after older messages roll off the context window.
-                                    </p>
-                                </div>
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                    <button
-                                        type="button"
-                                        onClick={fetchMemories}
-                                        disabled={!activeConversationId || memoriesLoading}
-                                        className="p-1.5 rounded-md hover:bg-white/10 text-dark-400 hover:text-dark-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                        title="Refresh"
-                                    >
-                                        <RefreshCw className={`w-3.5 h-3.5 ${memoriesLoading ? 'animate-spin' : ''}`} />
-                                    </button>
-                                    {memories.length > 0 && (
-                                        <button
-                                            type="button"
-                                            onClick={handleClearAllMemories}
-                                            className="px-2 py-1 rounded-md text-[10px] font-medium bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-colors"
-                                        >
-                                            Clear All
-                                        </button>
-                                    )}
-                                </div>
-                            </div>
-
-                            {memoriesError && (
-                                <div className="p-2 rounded-md bg-red-500/10 border border-red-500/20 text-red-300 text-[11px]">
-                                    {memoriesError}
-                                </div>
-                            )}
-
-                            {!activeConversationId ? (
-                                <div className="text-center py-8">
-                                    <BookMarked className="w-8 h-8 text-dark-500 mx-auto mb-2" />
-                                    <p className="text-xs text-dark-400">
-                                        Select a conversation to view its memories.
-                                    </p>
-                                </div>
-                            ) : memoriesLoading && memories.length === 0 ? (
-                                <div className="text-center py-8">
-                                    <RefreshCw className="w-5 h-5 text-dark-500 mx-auto mb-2 animate-spin" />
-                                    <p className="text-xs text-dark-400">Loading memories…</p>
-                                </div>
-                            ) : memories.length === 0 ? (
-                                <div className="text-center py-8">
-                                    <BookMarked className="w-8 h-8 text-dark-500 mx-auto mb-2" />
-                                    <p className="text-xs text-dark-400 mb-1">
-                                        No memories yet for this conversation.
-                                    </p>
-                                    <p className="text-[10px] text-dark-500">
-                                        Memories are extracted automatically as you chat.
-                                    </p>
-                                </div>
-                            ) : (
-                                <>
-                                    <div className="flex items-center justify-between -mt-1">
-                                        <div className="text-[10px] text-dark-500">
-                                            {memories.length} {memories.length === 1 ? 'memory' : 'memories'} across {groupedMemories.length} {groupedMemories.length === 1 ? 'turn' : 'turns'}
-                                        </div>
-                                        {groupedMemories.length > 1 && (
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const next = {};
-                                                        for (const g of groupedMemories) next[g.turnId] = true;
-                                                        setCollapsedGroups(next);
-                                                    }}
-                                                    className="text-[10px] text-dark-400 hover:text-dark-200 transition-colors"
-                                                >
-                                                    Collapse all
-                                                </button>
-                                                <span className="text-dark-600">·</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setCollapsedGroups({})}
-                                                    className="text-[10px] text-dark-400 hover:text-dark-200 transition-colors"
-                                                >
-                                                    Expand all
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                    <div className="space-y-3">
-                                        {groupedMemories.map((group, groupIdx) => {
-                                            const isCollapsed = !!collapsedGroups[group.turnId];
-                                            // Fallback label: if the source turn isn't in the current messages
-                                            // store (e.g. conversation partially loaded, or turn deleted),
-                                            // derive a description from the first memory's own text so the
-                                            // row isn't "Turn " / "?" — which is what the user was seeing.
-                                            const fallbackPreview = group.memories[0]?.text
-                                                ? truncate(group.memories[0].text, 60)
-                                                : 'Memories';
-                                            const headerLabel = group.turnId === '__unlinked__'
-                                                ? 'Unlinked memories'
-                                                : group.promptText
-                                                    ? truncate(group.promptText, 60)
-                                                    : fallbackPreview;
-                                            // Badge shows the real turn number when we have one,
-                                            // otherwise a 1-based position in the group list.
-                                            const badgeLabel = group.turnId === '__unlinked__'
-                                                ? '·'
-                                                : (group.turnNumber ?? (groupIdx + 1));
-                                            return (
-                                                <div key={group.turnId} className="space-y-1.5">
-                                                    {/* Turn header (click to toggle collapse) */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setCollapsedGroups(prev => ({
-                                                            ...prev,
-                                                            [group.turnId]: !prev[group.turnId],
-                                                        }))}
-                                                        className="w-full flex items-center gap-2 px-1 py-1 rounded hover:bg-white/5 transition-colors text-left"
-                                                    >
-                                                        {isCollapsed
-                                                            ? <ChevronRight className="w-3 h-3 text-dark-400 shrink-0" />
-                                                            : <ChevronDown className="w-3 h-3 text-dark-400 shrink-0" />
-                                                        }
-                                                        <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-500/15 border border-primary-500/30 text-[9px] font-bold text-primary-300">
-                                                            {badgeLabel}
-                                                        </span>
-                                                        <span className="text-[11px] font-medium text-dark-200 truncate flex-1">
-                                                            {headerLabel}
-                                                        </span>
-                                                        <div className="flex items-center gap-2 text-[9px] text-dark-500 shrink-0">
-                                                            {group.groupTs && <span>{formatTurnTime(group.groupTs)}</span>}
-                                                            <span>{group.memories.length} {group.memories.length === 1 ? 'memory' : 'memories'}</span>
-                                                            <span>{group.tokens} tok</span>
-                                                        </div>
-                                                    </button>
-                                                    {/* Group body */}
-                                                    {!isCollapsed && (
-                                                        <div className="border-l-2 border-primary-500/20 pl-3 ml-[13px] space-y-2">
-                                                            {group.memories.map(renderMemoryCard)}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </>
                             )}
                         </>
                     )}

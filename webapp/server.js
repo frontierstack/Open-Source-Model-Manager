@@ -97,6 +97,11 @@ const workflowRunStore = require('./services/workflowRunStore');
 // embedding engine for fast top-k retrieval that keeps chat context small.
 const knowledgeBaseService = require('./services/knowledgeBaseService');
 
+// Account-scoped memory: persona/fact memories that follow the user across all
+// conversations (replaces the old per-conversation store). Storage only — the
+// extraction heuristics live in this file.
+const memoryService = require('./services/memoryService');
+
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
 let scraplingEnabled = false;
@@ -3157,6 +3162,7 @@ const PREF_FIELDS = new Set([
     'fontSize',      // small | medium | large
     'layout',        // default | centered | timeline | bubbles | slack | minimal
     'codePreviewEnabled', // boolean — controls code-block preview rendering in chat
+    'memoryDisabled', // boolean — chat: turn off account memory (inject + extract + record_learning)
     'compactSidebar', // boolean — webapp left rail collapsed
     'folders',       // chat sidebar folders: [{ id, name, order, createdAt }]
     'conversationFolderMap', // chat: { [conversationId]: folderId }
@@ -12407,11 +12413,9 @@ async function rebuildConversationsIndexFromDisk(userId, userDir) {
             const cleaned = txt.replace(/\s+/g, ' ').trim();
             if (cleaned) title = cleaned.length > 60 ? cleaned.slice(0, 57) + '...' : cleaned;
         }
-        let memoryCount = 0;
-        try {
-            const memIndex = await loadMemoryIndex(userId, id);
-            memoryCount = Array.isArray(memIndex.entries) ? memIndex.entries.length : 0;
-        } catch {}
+        // Memory is account-scoped now (managed in the webapp Memory tab), so
+        // per-conversation memory counts are retired.
+        const memoryCount = 0;
         const created = (stat.birthtime && stat.birthtime.getTime() > 0 ? stat.birthtime : stat.ctime).toISOString();
         entries.push({
             id,
@@ -12511,104 +12515,21 @@ async function saveConversationMessages(userId, conversationId, messages) {
 }
 
 // ============================================================================
-// PER-CONVERSATION MEMORY STORE
+// ACCOUNT MEMORY — extraction heuristics
 // ============================================================================
-// Each conversation gets a memory directory that holds short, heuristically-
-// compressed facts extracted from user↔assistant turns. On follow-up messages
-// the chat stream handler scores these against the new query, packs the top
-// matches into a system message, and injects them before the model call so
-// relevant context survives even after AIMem compression or context rollover.
-// All memory files are base64-wrapped via the same encode/decode helpers as
-// conversations.
+// Memory is ACCOUNT-scoped (see services/memoryService.js for storage). The
+// chat stream extracts short, heuristically-compressed facts from user↔assistant
+// turns and hands them to the memory service, which dedups account-wide and
+// keeps them bounded. On follow-up messages the stream scores the user's whole
+// memory against the new query and injects the top matches as a system message.
+// The functions below (scoring / shorthand / sentence splitting) PRODUCE the
+// candidate facts; persistence lives in the service.
 
-// Maximum total memories retained per conversation; oldest low-score entries
-// are pruned once this is exceeded.
-const MEMORY_MAX_ENTRIES = 200;
 // Target token budget for injected memories on a single turn.
 const MEMORY_RETRIEVAL_TOKEN_BUDGET = 1500;
 // Minimum factuality score to keep a sentence as a memory.
 const MEMORY_MIN_SCORE = 2;
 
-async function ensureMemoryDir(userId, conversationId) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) {
-        throw new Error('Invalid conversation ID format');
-    }
-    const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId);
-    await fs.mkdir(dir, { recursive: true });
-    return dir;
-}
-
-async function loadMemoryIndex(userId, conversationId) {
-    // Reads only — do NOT call ensureMemoryDir here. A GET that finds
-    // no memories should not leave an empty directory behind on disk.
-    // Writes go through saveMemoryIndex / saveMemoryEntry which create
-    // the directory lazily.
-    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) {
-        throw new Error('Invalid conversation ID format');
-    }
-    const indexPath = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId, 'index.json');
-    try {
-        const data = await fs.readFile(indexPath, 'utf8');
-        const parsed = decodeConversationData(data, null);
-        if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
-            return parsed;
-        }
-        return { cursor: null, entries: [] };
-    } catch (err) {
-        if (err.code === 'ENOENT') return { cursor: null, entries: [] };
-        throw err;
-    }
-}
-
-async function saveMemoryIndex(userId, conversationId, index) {
-    const dir = await ensureMemoryDir(userId, conversationId);
-    const indexPath = path.join(dir, 'index.json');
-    await safeWriteFile(indexPath, encodeConversationData(index));
-}
-
-async function loadMemoryEntry(userId, conversationId, memoryId) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(memoryId)) return null;
-    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) return null;
-    // Pure read — do not create the memory directory as a side effect.
-    const entryPath = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId, `${memoryId}.mem`);
-    try {
-        const data = await fs.readFile(entryPath, 'utf8');
-        const parsed = decodeConversationData(data, null);
-        return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch (err) {
-        if (err.code === 'ENOENT') return null;
-        throw err;
-    }
-}
-
-async function saveMemoryEntry(userId, conversationId, memoryId, entry) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(memoryId)) {
-        throw new Error('Invalid memory ID format');
-    }
-    const dir = await ensureMemoryDir(userId, conversationId);
-    const entryPath = path.join(dir, `${memoryId}.mem`);
-    await safeWriteFile(entryPath, encodeConversationData(entry));
-}
-
-async function deleteMemoryDir(userId, conversationId) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) return;
-    const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId);
-    try {
-        await fs.rm(dir, { recursive: true, force: true });
-    } catch (err) {
-        if (err.code !== 'ENOENT') {
-            console.warn(`[Memory] Failed to delete memory dir for ${conversationId}: ${err.message}`);
-        }
-    }
-}
-
-async function updateConversationMemoryCount(userId, conversationId, count) {
-    const conversations = await loadConversationsIndex(userId);
-    const conv = conversations.find(c => c.id === conversationId);
-    if (!conv) return;
-    conv.memoryCount = count;
-    await saveConversationsIndex(userId, conversations);
-}
 
 // Score a sentence for how "fact-like" it is. Facts are what we want to
 // remember; filler phrases and meta-commentary are what we want to drop.
@@ -12786,24 +12707,42 @@ function messageText(msg) {
     return '';
 }
 
-// After a saveConversationMessages call, walk any user→assistant pairs that
-// are newer than the memory cursor and extract memories from each. Updates
-// the cursor to the last processed assistant message id so we don't
-// re-process on the next save. Swallows all errors — memory is advisory.
+// Account-scoped memory disable check (chat-app preference). Best-effort: a
+// failed lookup defaults to ENABLED so memory never silently turns off on a
+// transient read error. Honored at extraction, retrieval, and record_learning.
+async function isMemoryDisabledForUser(userId) {
+    try {
+        if (!userId) return false;
+        const user = await getUserById(userId);
+        const prefs = user?.preferences;
+        if (!prefs) return false;
+        const scoped = (prefs.byApp && prefs.byApp.chat) ? prefs.byApp.chat : prefs;
+        return scoped?.memoryDisabled === true;
+    } catch { return false; }
+}
+
+// After a saveConversationMessages call, walk any user→assistant pairs newer
+// than the per-conversation extraction cursor and extract ACCOUNT-scoped
+// memories from each. Memories now belong to the user (not the conversation),
+// so they're deduped account-wide and follow the user everywhere. The cursor
+// (which assistant msg we last processed for THIS conversation) lives in the
+// memory service so re-saves don't re-extract. Fire-and-forget; errors swallow.
 async function extractNewMemoriesFromSave(userId, conversationId, messages) {
     if (!Array.isArray(messages) || messages.length < 2) return;
-    const index = await loadMemoryIndex(userId, conversationId);
+    if (await isMemoryDisabledForUser(userId)) return;
+    // Import any legacy per-conversation memories first (idempotent) so we
+    // don't re-extract turns that already produced memories before the move.
+    try { await memoryService.migrateLegacyForUser(userId); } catch (_) { /* best-effort */ }
 
-    // Find the position after the cursor (or start from 0 if no cursor).
+    const cursor = await memoryService.getCursor(userId, conversationId);
     let startIdx = 0;
-    if (index.cursor) {
-        const cursorIdx = messages.findIndex(m => m.id === index.cursor);
+    if (cursor) {
+        const cursorIdx = messages.findIndex(m => m.id === cursor);
         if (cursorIdx >= 0) startIdx = cursorIdx + 1;
     }
 
-    let newestCursor = index.cursor;
-    let addedCount = 0;
-
+    let newestCursor = cursor;
+    const candidates = [];
     for (let i = startIdx; i < messages.length; i++) {
         const msg = messages[i];
         if (msg.role !== 'assistant') continue;
@@ -12817,103 +12756,126 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
 
         const extracted = extractMemoriesFromTurn(messageText(userMsg), messageText(msg));
         for (const mem of extracted) {
-            // Dedup against existing memories in the index by keyword overlap.
-            const dup = index.entries.some(e =>
-                jaccardSimilarity(e.keywords, mem.keywords) >= 0.75
-            );
-            if (dup) continue;
-            const memId = crypto.randomUUID();
-            await saveMemoryEntry(userId, conversationId, memId, {
-                id: memId,
+            candidates.push({
                 text: mem.text,
                 keywords: mem.keywords,
                 tokens: mem.tokens,
+                score: mem.score,
                 sourceRole: mem.sourceRole,
                 sourceTurnId: msg.id || null,
-                ts: new Date().toISOString(),
+                sourceConvId: conversationId,
             });
-            index.entries.push({
-                id: memId,
-                keywords: mem.keywords,
-                tokens: mem.tokens,
-                score: mem.score,
-                ts: new Date().toISOString(),
-            });
-            addedCount++;
         }
         if (msg.id) newestCursor = msg.id;
     }
 
-    // Prune if we've exceeded the cap — drop lowest-score oldest entries first.
-    if (index.entries.length > MEMORY_MAX_ENTRIES) {
-        index.entries.sort((a, b) => (a.score || 0) - (b.score || 0));
-        const overflow = index.entries.length - MEMORY_MAX_ENTRIES;
-        const dropped = index.entries.splice(0, overflow);
-        for (const d of dropped) {
-            const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', conversationId);
-            await fs.unlink(path.join(dir, `${d.id}.mem`)).catch(() => {});
-        }
+    let added = 0;
+    if (candidates.length) {
+        // Dedup is account-wide and prune-to-cap happens inside the service.
+        const res = await memoryService.addAutoMemories(userId, candidates, { sourceConvId: conversationId });
+        added = res.added;
     }
-
-    index.cursor = newestCursor;
-    if (addedCount > 0 || index.cursor !== null) {
-        await saveMemoryIndex(userId, conversationId, index);
+    if (newestCursor && newestCursor !== cursor) {
+        await memoryService.setCursor(userId, conversationId, newestCursor);
     }
-    if (addedCount > 0) {
-        console.log(`[Memory] Extracted ${addedCount} memories for conversation ${conversationId} (total: ${index.entries.length})`);
-        try {
-            await updateConversationMemoryCount(userId, conversationId, index.entries.length);
-        } catch (err) {
-            console.warn(`[Memory] Failed to sync memoryCount for ${conversationId}: ${err.message}`);
-        }
+    if (added > 0) {
+        const total = await memoryService.countForUser(userId).catch(() => -1);
+        console.log(`[Memory] Extracted ${added} account memories from conversation ${conversationId} (account total: ${total})`);
     }
 }
 
-// Pre-turn retrieval: score all memories for this conversation against the
-// incoming query and pack the top matches into a token budget. Returns a
-// single concatenated string ready to inject as a system message, or null
-// if nothing meets the bar.
-async function retrieveRelevantMemories(userId, conversationId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET) {
+// Pre-turn retrieval: score the user's ENTIRE account memory against the
+// incoming query and pack the top matches into a token budget. Memory is now
+// account-scoped, so this surfaces relevant facts/learnings from ANY past
+// conversation ("I worked on a similar thing before — here's what works"),
+// while a recency boost and a same-conversation boost keep the current thread's
+// context on top. Model-recorded learnings are floored so the evolving persona
+// persists even when keyword overlap is weak. Returns an injectable block or
+// null. `currentConvId` is optional (used only for the continuity boost).
+async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET) {
     if (!query || typeof query !== 'string') return null;
-    let index;
-    try {
-        index = await loadMemoryIndex(userId, conversationId);
-    } catch {
-        return null;
-    }
-    if (!index.entries.length) return null;
+    let all;
+    try { all = await memoryService.listMemories(userId); } catch { return null; }
+    if (!all || !all.length) return null;
 
     const queryKeywords = extractQueryKeywords(query);
-    if (queryKeywords.length === 0) return null;
+    const now = Date.now();
+    // DIRECTIVES are curated, persona-shaping memories — anything you authored
+    // (manual), the model recorded (model learnings), or that's flagged
+    // important, or carries a non-'fact' type (preference/correction/…). These
+    // shape behavior and must inject regardless of keyword overlap. FACTS are
+    // plain auto-extracted statements; they're numerous and noisy, so they only
+    // inject on a strong keyword match. Without this split, at scale a flood of
+    // auto-facts sharing common words crowds out the handful of memories that
+    // actually matter.
+    const isDirective = (m) => m.source === 'manual' || m.source === 'model'
+        || m.impact === 'important' || (m.type && m.type !== 'fact');
 
-    // Score each index entry by keyword overlap. Cheap and local — no disk
-    // read for non-matching entries.
-    const scored = index.entries.map(e => ({
-        entry: e,
-        relevance: jaccardSimilarity(e.keywords, queryKeywords),
-    }));
-    scored.sort((a, b) => b.relevance - a.relevance);
+    const relOf = (m) => jaccardSimilarity(m.keywords || [], queryKeywords);
+    const scoreOf = (m) => {
+        const ts = Date.parse(m.updatedAt || m.createdAt || '') || now;
+        const ageDays = Math.max(0, (now - ts) / 86400000);
+        const recencyBoost = 0.15 * (1 - Math.min(ageDays, 90) / 90);        // up to +0.15 when fresh
+        const convBoost = (currentConvId && m.sourceConvId === currentConvId) ? 0.2 : 0;
+        const impactBoost = m.impact === 'important' ? 0.5 : (m.impact === 'low' ? -0.05 : 0);
+        return relOf(m) + recencyBoost + convBoost + impactBoost;
+    };
 
-    // Keep top entries with any overlap at all, within the token budget.
+    const DIRECTIVE_MAX = 18, FACT_MAX = 8, FACT_THRESHOLD = 0.2;
+    const directiveBudget = Math.floor(tokenBudget * 0.7);
+    const tokOf = (m) => m.tokens || Math.ceil((m.text || '').length / 3);
+
+    const directives = all.filter(isDirective).map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
+    const factCands = all.filter(m => !isDirective(m)).map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
+
     const picked = [];
     let usedTokens = 0;
-    for (const s of scored) {
-        if (s.relevance <= 0) break;
-        if (usedTokens + s.entry.tokens > tokenBudget) continue;
-        const full = await loadMemoryEntry(userId, conversationId, s.entry.id);
-        if (!full) continue;
-        picked.push(full);
-        usedTokens += s.entry.tokens;
-        if (picked.length >= 25) break;
+    // Pass 1 — directives: persona always applies. Capped by count + a 70%
+    // sub-budget so a huge preference set can't starve relevant facts entirely.
+    for (const d of directives) {
+        if (picked.length >= DIRECTIVE_MAX) break;
+        const tk = tokOf(d.m);
+        if (usedTokens + tk > directiveBudget && picked.length) continue;
+        if (usedTokens + tk > tokenBudget) continue;
+        picked.push(d.m); usedTokens += tk;
+    }
+    // Pass 2 — facts: only strongly query-relevant ones fill the remainder.
+    let factCount = 0;
+    for (const f of factCands) {
+        if (factCount >= FACT_MAX || f.r < FACT_THRESHOLD) break;  // sorted desc → stop at first miss
+        const tk = tokOf(f.m);
+        if (usedTokens + tk > tokenBudget) continue;
+        picked.push(f.m); usedTokens += tk; factCount++;
     }
     if (picked.length === 0) return null;
 
-    // Order by timestamp so injected memories read as a chronological digest.
-    picked.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-    const lines = picked.map(m => `- ${m.text}`).join('\n');
-    console.log(`[Memory] Injecting ${picked.length} memories (${usedTokens} tokens) for conversation ${conversationId}`);
+    // Render in two sections: directives (binding instructions) then facts.
+    const impactRank = { important: 0, medium: 1, low: 2 };
+    const learnings = picked.filter(isDirective)
+        .sort((a, b) => (impactRank[a.impact] ?? 1) - (impactRank[b.impact] ?? 1));
+    const facts = picked.filter(m => !isDirective(m))
+        .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+
+    const parts = [];
+    if (learnings.length) {
+        const lines = learnings.map(m => `- ${m.text}`).join('\n');
+        // Framed as binding instructions — weak "things you've learned" phrasing
+        // was injected but ignored by smaller models. This wording makes the
+        // model treat preferences/corrections as rules without overriding an
+        // explicit in-turn user request.
+        parts.push(
+            'PERSISTENT USER INSTRUCTIONS & PREFERENCES (learned from past conversations). ' +
+            'Follow EVERY one of these in your response unless the user overrides it in their latest message:\n' +
+            lines
+        );
+    }
+    if (facts.length) {
+        const lines = facts.map(m => `- ${m.text}`).join('\n');
+        parts.push(`WHAT YOU KNOW ABOUT THIS USER (from past conversations) — use it to avoid asking again and to work faster:\n${lines}`);
+    }
+    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${learnings.length} learnings, ${facts.length} facts) conv=${currentConvId || '-'}`);
     return {
-        block: `Relevant context from earlier in this conversation:\n${lines}`,
+        block: parts.join('\n\n'),
         count: picked.length,
         tokens: usedTokens,
         previews: picked.slice(0, 5).map(m => (m.text || '').slice(0, 120)),
@@ -12941,15 +12903,7 @@ app.get('/api/conversations', requireAuth, async (req, res) => {
                     conv.messageCount = 0;
                 }
             }
-            if (conv.memoryCount === undefined) {
-                try {
-                    const memIndex = await loadMemoryIndex(userId, conv.id);
-                    conv.memoryCount = memIndex.entries.length;
-                } catch {
-                    conv.memoryCount = 0;
-                }
-                needsSave = true;
-            }
+            // memoryCount is retired (account-scoped memory) — no backfill.
         }));
         if (needsSave) {
             await saveConversationsIndex(userId, conversations).catch(() => {});
@@ -13131,10 +13085,11 @@ app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
             console.warn('[Attachments] wipe on conv delete failed:', e.message);
         }
 
-        // Delete per-conversation memory directory alongside the messages
-        // file — leaving memories around for a deleted conversation would
-        // accumulate dead state and leak content across reused ids.
-        await deleteMemoryDir(userId, id);
+        // Memory is now ACCOUNT-scoped, so it deliberately SURVIVES deleting a
+        // single conversation — a learning or fact the model picked up should
+        // not vanish because the thread it came from was cleaned up. Users
+        // prune memories explicitly from the webapp Memory tab. (Nothing to do
+        // here; the stale extraction cursor is harmless — conv ids aren't reused.)
 
         // Wipe the per-conversation sandbox workspace — git clones, files
         // written by run_python / create_file, chart PNGs, anything else
@@ -13225,165 +13180,11 @@ async function ownsConversation(userId, conversationId) {
     return list.find(c => c.id === conversationId) || null;
 }
 
-// GET /api/conversations/:id/memories — list all memories for a conversation
-app.get('/api/conversations/:id/memories', requireAuth, async (req, res) => {
-    try {
-        if (!checkPermission(req.apiKeyData, 'query')) {
-            return res.status(403).json({ error: 'Query permission required for memory access' });
-        }
-        const userId = req.user?.id || req.apiKeyData?.id || 'default';
-        const { id } = req.params;
-        if (!(await ownsConversation(userId, id))) {
-            return res.status(404).json({ error: 'Conversation not found' });
-        }
-        const index = await loadMemoryIndex(userId, id);
-        // Hydrate each index entry with its full text. We return full entries
-        // (not just metadata) so the UI can render without a second round-trip.
-        const entries = [];
-        for (const meta of index.entries) {
-            const full = await loadMemoryEntry(userId, id, meta.id);
-            if (full) {
-                entries.push({
-                    id: meta.id,
-                    text: full.text,
-                    keywords: full.keywords || meta.keywords || [],
-                    tokens: full.tokens || meta.tokens || 0,
-                    sourceRole: full.sourceRole || 'assistant',
-                    sourceTurnId: full.sourceTurnId || null,
-                    ts: full.ts || meta.ts || null,
-                    score: meta.score ?? null,
-                });
-            }
-        }
-        // Newest first for a more useful default sort in the UI.
-        entries.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
-        res.json({
-            conversationId: id,
-            cursor: index.cursor,
-            count: entries.length,
-            memories: entries,
-        });
-    } catch (error) {
-        console.error('Error listing memories:', error);
-        res.status(500).json({ error: 'Failed to list memories' });
-    }
-});
-
-// DELETE /api/conversations/:id/memories — clear all memories for a conversation
-app.delete('/api/conversations/:id/memories', requireAuth, async (req, res) => {
-    try {
-        if (!checkPermission(req.apiKeyData, 'query')) {
-            return res.status(403).json({ error: 'Query permission required for memory access' });
-        }
-        const userId = req.user?.id || req.apiKeyData?.id || 'default';
-        const { id } = req.params;
-        if (!(await ownsConversation(userId, id))) {
-            return res.status(404).json({ error: 'Conversation not found' });
-        }
-        await deleteMemoryDir(userId, id);
-        try {
-            await updateConversationMemoryCount(userId, id, 0);
-        } catch (err) {
-            console.warn(`[Memory] Failed to sync memoryCount for ${id}: ${err.message}`);
-        }
-        res.json({ success: true });
-    } catch (error) {
-        console.error('Error clearing memories:', error);
-        res.status(500).json({ error: 'Failed to clear memories' });
-    }
-});
-
-// DELETE /api/conversations/:id/memories/:memId — delete one memory
-app.delete('/api/conversations/:id/memories/:memId', requireAuth, async (req, res) => {
-    try {
-        if (!checkPermission(req.apiKeyData, 'query')) {
-            return res.status(403).json({ error: 'Query permission required for memory access' });
-        }
-        const userId = req.user?.id || req.apiKeyData?.id || 'default';
-        const { id, memId } = req.params;
-        if (!/^[a-zA-Z0-9_-]+$/.test(memId)) {
-            return res.status(400).json({ error: 'Invalid memory id' });
-        }
-        if (!(await ownsConversation(userId, id))) {
-            return res.status(404).json({ error: 'Conversation not found' });
-        }
-        const index = await loadMemoryIndex(userId, id);
-        const before = index.entries.length;
-        index.entries = index.entries.filter(e => e.id !== memId);
-        if (index.entries.length === before) {
-            return res.status(404).json({ error: 'Memory not found' });
-        }
-        await saveMemoryIndex(userId, id, index);
-        // Remove the .mem file — best-effort, index is source of truth.
-        const dir = path.join(CONVERSATIONS_DIR, userId, 'memory', id);
-        await fs.unlink(path.join(dir, `${memId}.mem`)).catch(() => {});
-        try {
-            await updateConversationMemoryCount(userId, id, index.entries.length);
-        } catch (err) {
-            console.warn(`[Memory] Failed to sync memoryCount for ${id}: ${err.message}`);
-        }
-        res.json({ success: true });
-    } catch (error) {
-        console.error('Error deleting memory:', error);
-        res.status(500).json({ error: 'Failed to delete memory' });
-    }
-});
-
-// PUT /api/conversations/:id/memories/:memId — edit a memory's text
-app.put('/api/conversations/:id/memories/:memId', requireAuth, async (req, res) => {
-    try {
-        if (!checkPermission(req.apiKeyData, 'query')) {
-            return res.status(403).json({ error: 'Query permission required for memory access' });
-        }
-        const userId = req.user?.id || req.apiKeyData?.id || 'default';
-        const { id, memId } = req.params;
-        const { text } = req.body;
-        if (!/^[a-zA-Z0-9_-]+$/.test(memId)) {
-            return res.status(400).json({ error: 'Invalid memory id' });
-        }
-        if (typeof text !== 'string' || !text.trim()) {
-            return res.status(400).json({ error: 'Memory text must be a non-empty string' });
-        }
-        if (text.length > 2000) {
-            return res.status(400).json({ error: 'Memory text too long (max 2000 chars)' });
-        }
-        if (!(await ownsConversation(userId, id))) {
-            return res.status(404).json({ error: 'Conversation not found' });
-        }
-        const entry = await loadMemoryEntry(userId, id, memId);
-        if (!entry) {
-            return res.status(404).json({ error: 'Memory not found' });
-        }
-        const trimmed = text.trim();
-        // Re-derive keywords and token count from the edited text so retrieval
-        // scoring stays consistent with extractor output.
-        const keywords = extractQueryKeywords(trimmed);
-        const tokens = Math.ceil(trimmed.length / 3);
-        const updated = {
-            ...entry,
-            text: trimmed,
-            keywords,
-            tokens,
-            editedAt: new Date().toISOString(),
-        };
-        await saveMemoryEntry(userId, id, memId, updated);
-
-        // Update the corresponding index entry so retrieval scoring uses the
-        // new keyword set without a second disk read.
-        const index = await loadMemoryIndex(userId, id);
-        const idxEntry = index.entries.find(e => e.id === memId);
-        if (idxEntry) {
-            idxEntry.keywords = keywords;
-            idxEntry.tokens = tokens;
-            await saveMemoryIndex(userId, id, index);
-        }
-
-        res.json({ success: true, memory: { id: memId, ...updated } });
-    } catch (error) {
-        console.error('Error editing memory:', error);
-        res.status(500).json({ error: 'Failed to edit memory' });
-    }
-});
+// NOTE: the old per-CONVERSATION memory routes (GET/DELETE/DELETE/PUT
+// /api/conversations/:id/memories[/:memId]) were removed when memory became
+// ACCOUNT-scoped. Management now lives at /api/memories/* (see below) and the
+// webapp Memory tab. Legacy on-disk per-conversation memories are migrated
+// into the account store on first use (memoryService.migrateLegacyForUser).
 
 // Check streaming status for a conversation
 app.get('/api/conversations/:id/streaming', requireAuth, async (req, res) => {
@@ -15217,13 +15018,13 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             chatMessages.push({ role: 'user', content: userContent });
         }
 
-        // Inject per-conversation memories before counting tokens. We score
-        // memories against the latest user message, pack the top matches
-        // into a small token budget, and prepend them as a system message.
-        // Anything injected here is part of the normal token accounting —
-        // it flows through AIMem compression and the chunking gate just
-        // like any other system context, so injection can't blow up the
-        // context budget.
+        // Inject ACCOUNT memories before counting tokens. We score the user's
+        // whole memory (across every conversation) against the latest user
+        // message, pack the top matches into a small token budget, and prepend
+        // them as a system message. Anything injected here is part of the
+        // normal token accounting — it flows through AIMem compression and the
+        // chunking gate just like any other system context, so injection can't
+        // blow up the context budget. Honors the chat "disable memory" toggle.
         let pendingMemoryNotice = null;
         // Held until SSE headers are flushed below; emits a chunking_progress
         // event so the UI knows the agentic flow took over.
@@ -15235,8 +15036,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         let pendingPrimedToolEvents = null;
         try {
             const chatUserId = req.user?.id || req.apiKeyData?.id || 'default';
-            const chatConvId = conversationId || req.body.conversationId;
-            if (chatConvId && /^[a-zA-Z0-9_-]+$/.test(chatConvId)) {
+            const rawConvId = conversationId || req.body.conversationId;
+            // Same-conversation continuity boost only — retrieval itself is
+            // account-wide and runs even for a brand-new conversation.
+            const chatConvId = (rawConvId && /^[a-zA-Z0-9_-]+$/.test(rawConvId)) ? rawConvId : null;
+            const memoryOff = await isMemoryDisabledForUser(chatUserId);
+            if (!memoryOff) {
                 // Find latest user message text for scoring
                 let latestUserText = '';
                 for (let i = chatMessages.length - 1; i >= 0; i--) {
@@ -16497,11 +16302,19 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             }
         }
 
+        // Account id memory is keyed by — same resolution the routes and the
+        // chat retrieval/extraction use, so record_learning writes land where
+        // the model later recalls them. When the user has disabled memory, hide
+        // record_learning from the catalog so the model can't write either.
+        const memUserId = req.user?.id || req.apiKeyData?.id || 'default';
+        const toolMemoryDisabled = await isMemoryDisabledForUser(memUserId);
         const toolCtx = {
             userId: req.userId,
             apiKeyData: req.apiKeyData,
             agentId: req.body?.agentId || null,
             conversationId: conversationId || null,
+            memoryUserId: memUserId,
+            memoryDisabled: toolMemoryDisabled,
             latestUserText,
             // Document indexed for THIS turn (large user content stashed via
             // documentIndex). query_document / read_document_chunk force their
@@ -21135,6 +20948,167 @@ app.post('/api/knowledge-bases/:id/search', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
+// ACCOUNT MEMORY — CRUD for the webapp Memory tab
+// ============================================================================
+// Memories are account-scoped (one set per user), managed here and surfaced to
+// the chat model via injection + the record_learning tool. Auth + ownership
+// only (no special permission, like knowledge bases); admins see/manage all and
+// the list is decorated with ownerName. Routes sit BEFORE the 404/error
+// middleware (same placement rule as the knowledge-base routes).
+
+// Account id that memory is keyed by. MUST match the id the chat stream uses
+// for retrieval/extraction (`req.user?.id || req.apiKeyData?.id`) so the Memory
+// tab manages exactly the memories the model recalls. This is the same id
+// conversations are stored under, so memory aligns with the conversation space.
+function memAccountId(req) {
+    return req.user?.id || req.apiKeyData?.id || 'default';
+}
+
+// Attach ownerName to each memory for the admin view (mirrors decorateKbOwners).
+async function decorateMemoryOwners(list) {
+    const usersById = new Map();
+    try {
+        const users = await getAllUsers();
+        for (const u of users) usersById.set(String(u.id), u);
+    } catch (_) { /* fall back to raw owner id */ }
+    return list.map((m) => ({
+        ...m,
+        ownerName: m.userId ? (usersById.get(String(m.userId))?.username || 'unknown') : 'global',
+    }));
+}
+
+// Load a memory and enforce ownership (admins bypass). Sends the error +
+// returns null on denial so the caller can `if (!mem) return;`.
+async function loadOwnedMemory(req, res) {
+    const mem = await memoryService.getMemory(req.params.id);
+    if (!mem) { res.status(404).json({ error: 'Memory not found' }); return null; }
+    if (!callerIsAdmin(req) && mem.userId !== memAccountId(req)) {
+        res.status(403).json({ error: 'Not authorized for this memory' });
+        return null;
+    }
+    return mem;
+}
+
+// List memories — own, or all for admins. Triggers legacy migration first so
+// the tab shows imported per-conversation memories immediately.
+app.get('/api/memories', requireAuth, async (req, res) => {
+    try {
+        try { await memoryService.migrateLegacyForUser(memAccountId(req)); } catch (_) { /* best-effort */ }
+        const isAdmin = callerIsAdmin(req);
+        const list = await memoryService.listMemories(memAccountId(req), { all: isAdmin });
+        // Newest-updated first for a useful default order in the UI.
+        list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+        res.json({ memories: await decorateMemoryOwners(list), isAdmin });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Create a memory by hand (source 'manual').
+app.post('/api/memories', requireAuth, async (req, res) => {
+    try {
+        const text = String(req.body?.text || '').trim();
+        if (!text) return res.status(400).json({ error: 'text is required' });
+        if (text.length > memoryService.MEMORY_TEXT_MAX) {
+            return res.status(400).json({ error: `text too long (max ${memoryService.MEMORY_TEXT_MAX} chars)` });
+        }
+        const type = req.body?.type && memoryService.VALID_TYPES.has(req.body.type) ? req.body.type : null;
+        const impact = req.body?.impact && memoryService.VALID_IMPACTS.has(req.body.impact) ? req.body.impact : null;
+        const keywords = extractQueryKeywords(text);
+        const mem = await memoryService.createMemory({
+            userId: memAccountId(req),
+            text,
+            keywords,
+            tokens: Math.ceil(text.length / 3),
+            score: 5,                 // manual entries are deliberately high-value
+            source: 'manual',
+            type,
+            impact,
+        });
+        res.status(201).json({ memory: mem });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Get one memory.
+app.get('/api/memories/:id', requireAuth, async (req, res) => {
+    try {
+        const mem = await loadOwnedMemory(req, res); if (!mem) return;
+        res.json({ memory: mem });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Edit a memory's text / type / impact. Re-derives keywords + tokens on text
+// change so retrieval scoring stays consistent with the extractor.
+app.patch('/api/memories/:id', requireAuth, async (req, res) => {
+    try {
+        const mem = await loadOwnedMemory(req, res); if (!mem) return;
+        const patch = {};
+        if (req.body?.text != null) {
+            const text = String(req.body.text).trim();
+            if (!text) return res.status(400).json({ error: 'text cannot be empty' });
+            if (text.length > memoryService.MEMORY_TEXT_MAX) {
+                return res.status(400).json({ error: `text too long (max ${memoryService.MEMORY_TEXT_MAX} chars)` });
+            }
+            patch.text = text;
+            patch.keywords = extractQueryKeywords(text);
+            patch.tokens = Math.ceil(text.length / 3);
+        }
+        if (req.body?.type !== undefined) patch.type = req.body.type;
+        if (req.body?.impact !== undefined) patch.impact = req.body.impact;
+        const updated = await memoryService.updateMemory(mem.id, patch);
+        res.json({ memory: updated });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Delete one memory.
+app.delete('/api/memories/:id', requireAuth, async (req, res) => {
+    try {
+        const mem = await loadOwnedMemory(req, res); if (!mem) return;
+        await memoryService.deleteMemory(mem.id);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Clear ALL of the caller's own memories (the tab's "clear all" action).
+app.delete('/api/memories', requireAuth, async (req, res) => {
+    try {
+        const removed = await memoryService.clearMemories(memAccountId(req));
+        res.json({ success: true, removed });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Search/test box: score the caller's memories against a query (same scoring
+// the chat injector uses, minus the boosts) and return the top matches.
+app.post('/api/memories/search', requireAuth, async (req, res) => {
+    try {
+        const query = String(req.body?.query || '').trim();
+        if (!query) return res.status(400).json({ error: 'query is required' });
+        const k = Math.min(Math.max(parseInt(req.body?.k) || 10, 1), 50);
+        const all = await memoryService.listMemories(memAccountId(req), { all: callerIsAdmin(req) });
+        const qk = extractQueryKeywords(query);
+        const scored = all.map((m) => ({
+            ...m,
+            score: memoryService.jaccardSimilarity(m.keywords || [], qk),
+        }));
+        scored.sort((a, b) => b.score - a.score);
+        const results = scored.filter((m) => m.score > 0).slice(0, k);
+        res.json({ query, count: results.length, results });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============================================================================
 // GLOBAL ERROR HANDLING MIDDLEWARE
 // ============================================================================
 
@@ -22501,6 +22475,81 @@ app.use((req, res) => {
                     ? 'Cite the source filename when you use these passages.'
                     : 'No relevant passages found in the knowledge base.',
             };
+        },
+    });
+
+    // ----- record_learning -------------------------------------------------
+    // Lets the model proactively persist a durable LEARNING into the user's
+    // account memory — a correction, a stated preference, a mistake to avoid,
+    // a workaround, or an environment limitation it discovered. These are
+    // account-scoped and injected into future turns, so the assistant keeps
+    // getting better and avoids repeating the same misstep ("continuous
+    // improvement"). Recording is autonomous and silent (no confirmation).
+    // Hidden when the user has disabled memory.
+    tools.registerTool({
+        name: 'record_learning',
+        async build(ctx) {
+            const uid = ctx?.memoryUserId || ctx?.userId;
+            if (!uid || uid === 'default') return null;
+            if (ctx?.memoryDisabled) return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'record_learning',
+                    description:
+                        'Save a durable lesson to your long-term memory of THIS user so future answers are better and faster. ' +
+                        'Call this WHENEVER you discover something worth remembering across conversations: the user corrects you, states a preference, ' +
+                        'you hit (and work around) a mistake or limitation, or you learn how this user likes things done. ' +
+                        'Record the generalizable lesson, not one-off task facts (those are captured automatically). Be concise and specific. ' +
+                        'This runs silently — do not announce it or ask permission; just record and continue.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            lesson: { type: 'string', description: 'The concrete, generalizable lesson to remember (one or two sentences).' },
+                            type: {
+                                type: 'string',
+                                enum: ['feedback', 'preference', 'correction', 'workaround', 'issue', 'limitation'],
+                                description: 'What kind of learning this is.',
+                            },
+                            impact: {
+                                type: 'string',
+                                enum: ['important', 'medium', 'low'],
+                                description: 'How strongly this should shape future behavior (important learnings are almost always surfaced).',
+                            },
+                            context: { type: 'string', description: 'Optional: when/why it matters, so future-you applies it correctly.' },
+                        },
+                        required: ['lesson'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const userId = ctx?.memoryUserId || ctx?.userId;
+            if (!userId || userId === 'default') return { success: false, error: 'no account context for memory' };
+            if (ctx?.memoryDisabled) return { success: false, note: 'memory is disabled for this user' };
+            const lesson = String(args?.lesson || '').trim();
+            if (!lesson) return { success: false, error: 'lesson is required' };
+            // Soft per-turn cap so a misbehaving loop can't flood the store.
+            ctx._learningCalls = (ctx._learningCalls || 0) + 1;
+            if (ctx._learningCalls > 6) return { success: false, note: 'learning limit reached for this turn' };
+            const type = memoryService.VALID_TYPES.has(args?.type) ? args.type : 'learning';
+            const impact = memoryService.VALID_IMPACTS.has(args?.impact) ? args.impact : 'medium';
+            const context = String(args?.context || '').trim();
+            const text = context ? `${lesson} — context: ${context}` : lesson;
+            const keywords = extractQueryKeywords(text);
+            const score = impact === 'important' ? 7 : (impact === 'low' ? 3 : 5);
+            try {
+                const mem = await memoryService.createMemory({
+                    userId, text, keywords,
+                    tokens: Math.ceil(text.length / 3),
+                    score, source: 'model', type, impact,
+                    sourceConvId: ctx.conversationId || null,
+                });
+                return { success: true, id: mem.id, recorded: { type, impact }, note: 'Learning recorded; it will inform future responses.' };
+            } catch (e) {
+                return { success: false, error: e.message };
+            }
         },
     });
 
