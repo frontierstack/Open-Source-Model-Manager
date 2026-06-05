@@ -12930,7 +12930,7 @@ function classifyTurnActivity({ toolLabels = [], userText = '', attachmentKinds 
 // turn's activity from the SUCCESSFUL tool path. Failed/exploratory calls are
 // excluded, so even a fumbling cold run produces a CLEAN recipe the warm run
 // follows directly. Atomic + activity-keyed in the service.
-async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments }) {
+async function recordTurnActivity({ userId, conversationId, toolChips, userText, attachments, steps }) {
     try {
         if (!userId || userId === 'default') return;
         if (await isMemoryDisabledForUser(userId)) return;
@@ -12964,7 +12964,10 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         const res = await memoryService.upsertActivityMemory(userId, {
             activity: act.activity, text, keywords,
             impact: 'medium', source: 'auto', sourceConvId: conversationId,
-            steps: okChips.length, // efficiency of this run — keeps the leanest recipe
+            // efficiency of this run — keeps the leanest recipe. Callers may pass
+            // steps:null (e.g. /v1 in-progress recording) to reinforce + refresh
+            // the recipe without the bestSteps comparison.
+            steps: (steps === undefined ? okChips.length : steps),
         });
         logUserActivity(userId,
             `Memory: ${res.updated ? (res.keptRecipe ? 'reinforced' : 'refined') : 'recorded'} experience [${act.activity}] (×${res.count}, ${res.impact}, ${okChips.length} steps) — ${pathStr || 'inline'}`);
@@ -13193,10 +13196,10 @@ async function injectPersonaForV1(req, instance) {
 }
 
 // Build the model's persona FROM Pi usage too. /v1 is stateless — Pi resends
-// the whole history each turn — so on each request we record the experience for
-// the most-recently COMPLETED task (the segment of the second-to-last user
-// message, which is now fully resolved in the history). A per-key cursor (user-
-// message count) ensures each completed task is recorded once. Reuses
+// the whole history each turn — and a single agentic task spans many requests
+// (tool rounds) without a new user message, so we record the CURRENT in-progress
+// task (tools after the latest user message) and re-reinforce it as it accrues
+// tools, throttled by a per-key "taskId:toolCount" cursor. Reuses
 // recordTurnActivity (synthesized success chips from the tool_calls). Imperfect
 // success-mapping is fine: best-recipe protection keeps the leanest version and
 // the model can refine via record_learning.
@@ -13213,29 +13216,44 @@ async function recordV1TurnActivity(userId, apiKeyData, messages) {
         if (await isMemoryDisabledForUser(userId)) return;
         const userIdxs = [];
         messages.forEach((m, i) => { if (m?.role === 'user') userIdxs.push(i); });
-        if (userIdxs.length < 2) return;                 // need ≥1 completed prior task
-        const cursor = await memoryService.getCursor(userId, convKey);
-        const lastCount = cursor ? parseInt(cursor, 10) || 0 : 0;
-        const userCount = userIdxs.length;
-        if (userCount <= lastCount) return;              // already processed up to here
-
-        const newestUserIdx = userIdxs[userIdxs.length - 1];
-        const prevUserIdx = userIdxs[userIdxs.length - 2];
+        if (!userIdxs.length) return;                    // no task has started yet
+        // Record the CURRENT (in-progress) task — everything after the latest
+        // user message. /v1 is stateless and a single agentic task spans MANY
+        // requests (tool rounds) WITHOUT a new user message, so recording only on
+        // task *completion* (the next user message) never fires for a long task —
+        // the persona would never grow while the agent works. Instead we capture
+        // the in-progress task and re-reinforce it as it accrues tools.
+        const taskStart = userIdxs[userIdxs.length - 1];
         const toolLabels = [];
-        for (let i = prevUserIdx; i < newestUserIdx; i++) {
+        for (let i = taskStart + 1; i < messages.length; i++) {
             const m = messages[i];
             if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {
                 for (const tc of m.tool_calls) { const n = tc?.function?.name; if (n) toolLabels.push(n); }
             }
         }
-        const uc = messages[prevUserIdx]?.content;
+        if (!toolLabels.length) return;                  // task hasn't used tools yet
+        const taskId = userIdxs.length;                  // bumps with each new user message (≈ each task)
+        const toolCount = toolLabels.length;
+        // Cursor = "taskId:toolCountAtLastRecord". Record when it's a NEW task, or
+        // the current task's tool usage grew enough to re-reinforce — a geometric
+        // throttle so a 100-tool-round task records ~7×, not 100× (visible growth
+        // without runaway count inflation).
+        const cursor = await memoryService.getCursor(userId, convKey);
+        let lastTask = 0, lastTools = 0;
+        if (cursor) { const p = String(cursor).split(':'); lastTask = parseInt(p[0], 10) || 0; lastTools = parseInt(p[1], 10) || 0; }
+        const isNewTask = taskId !== lastTask;
+        const grewEnough = toolCount >= lastTools + 4 && toolCount >= Math.ceil(lastTools * 1.5);
+        if (!isNewTask && !grewEnough) return;
+        const uc = messages[taskStart]?.content;
         const userText = typeof uc === 'string' ? uc
             : (Array.isArray(uc) ? uc.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
-        // Treat tool_calls whose following tool result isn't an obvious error as
-        // successful (Pi resolves them client-side; we only see the result text).
+        // Pi resolves tools client-side; we only see results, so treat them as
+        // successful. steps:null → reinforce + refresh the recipe to the current
+        // (fuller) task path WITHOUT the bestSteps comparison (an in-progress
+        // snapshot must not masquerade as a leaner "best" recipe and clobber one).
         const okChips = toolLabels.map(l => ({ status: 'success', label: l }));
-        await recordTurnActivity({ userId, conversationId: convKey, toolChips: okChips, userText, attachments: [] });
-        await memoryService.setCursor(userId, convKey, String(userCount));
+        await recordTurnActivity({ userId, conversationId: convKey, toolChips: okChips, userText, attachments: [], steps: null });
+        await memoryService.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
         console.warn('[Pi/Memory] activity record failed:', e.message);
     } finally {
