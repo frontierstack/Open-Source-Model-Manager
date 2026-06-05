@@ -5687,42 +5687,38 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}/messages\`, {
             // ============================================================================
             // CONVERSATION MEMORIES
             // ============================================================================
-            '/api/conversations/:id/memories': {
-                curl: `# List all memories for a conversation
-curl -k -X GET "${baseUrl}/api/conversations/conv-abc123/memories" \\
+            '/api/memories': {
+                curl: `# List ACCOUNT memory (persona): preferences, learnings, and per-activity
+# EXPERIENCE. Account-scoped, so it's shared across the web chat and Pi.
+curl -k -X GET "${baseUrl}/api/memories" \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -k -X GET "${baseUrl}/api/conversations/conv-abc123/memories" \\
+curl -k -X GET "${baseUrl}/api/memories" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"
 
-# Response:
-# {
-#   "conversationId": "conv-abc123",
-#   "cursor": 0,
-#   "count": 2,
-#   "memories": [
-#     { "id": "mem-xyz789", "text": "The webapp listens on port 3001.",
-#       "keywords": ["webapp", "port"], "tokens": 9,
-#       "sourceRole": "assistant", "sourceTurnId": "turn-1",
-#       "ts": 1712345678000, "score": 0.87 }
-#   ]
-# }`,
+# Response (array):
+# [
+#   { "id": "mem-xyz789", "type": "procedure", "activity": "web-research",
+#     "text": "Web research: start broad (web_search + fetch_url), keep going if weak.",
+#     "impact": "important", "count": 4, "source": "auto",
+#     "keywords": ["web","search","research"], "updatedAt": "2026-06-04T..." },
+#   { "id": "mem-abc123", "type": "preference", "impact": "important",
+#     "text": "Prefer concise, bullet-point answers.", "source": "auto" }
+# ]`,
                 python: `import requests
-
-conversation_id = "conv-abc123"
 
 # Bearer Token Authentication
 response = requests.get(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    f'${baseUrl}/api/memories',
     headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
 
 # OR API Key + Secret Authentication
 response = requests.get(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    f'${baseUrl}/api/memories',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret'
@@ -5730,10 +5726,11 @@ response = requests.get(
     verify=False
 )
 
-data = response.json()
-print(f"Memories ({data['count']}) for {data['conversationId']}:")
-for mem in data['memories']:
-    print(f"- [{mem['id']}] {mem['text']}")`,
+memories = response.json()
+print(f"Account memories: {len(memories)}")
+for m in memories:
+    tag = m.get('activity') or m.get('type')
+    print(f"- [{tag}/{m.get('impact')}] {m['text']}")`,
                 powershell: `# Bearer Token Authentication
 $headers = @{
     "Authorization" = "Bearer your_bearer_token"
@@ -5745,51 +5742,46 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-$conversationId = "conv-abc123"
-
-$data = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories" -Headers $headers
-Write-Output "Memories ($($data.count)) for $($data.conversationId):"
-$data.memories | ForEach-Object {
-    Write-Output "- [$($_.id)] $($_.text)"
+$memories = Invoke-RestMethod -Uri "${baseUrl}/api/memories" -Headers $headers
+Write-Output "Account memories: $($memories.Count)"
+$memories | ForEach-Object {
+    $tag = if ($_.activity) { $_.activity } else { $_.type }
+    Write-Output "- [$tag/$($_.impact)] $($_.text)"
 }`,
-                javascript: `const conversationId = 'conv-abc123';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories\`, {
+                javascript: `// Bearer Token Authentication
+fetch(\`${baseUrl}/api/memories\`, {
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
-.then(data => {
-  console.log(\`Memories (\${data.count}) for \${data.conversationId}:\`);
-  data.memories.forEach(m => console.log(\`- [\${m.id}] \${m.text}\`));
+.then(memories => {
+  console.log(\`Account memories: \${memories.length}\`);
+  memories.forEach(m => console.log(\`- [\${m.activity || m.type}/\${m.impact}] \${m.text}\`));
 })
 .catch(err => console.error(err));`
             },
-            '/api/conversations/:id/memories/clear': {
-                curl: `# Clear all memories for a conversation
-curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories" \\
+            '/api/memories/clear': {
+                curl: `# Clear ALL account memory (wipes the persona — cannot be undone)
+curl -k -X DELETE "${baseUrl}/api/memories" \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories" \\
+curl -k -X DELETE "${baseUrl}/api/memories" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"
 
-# Response: { "success": true }`,
+# Response: { "success": true, "removed": 12 }`,
                 python: `import requests
-
-conversation_id = "conv-abc123"
 
 # Bearer Token Authentication
 response = requests.delete(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    f'${baseUrl}/api/memories',
     headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
 
 # OR API Key + Secret Authentication
 response = requests.delete(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories',
+    f'${baseUrl}/api/memories',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret'
@@ -5809,28 +5801,24 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-$conversationId = "conv-abc123"
-
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories" -Method Delete -Headers $headers
-Write-Output "Memories cleared"`,
-                javascript: `const conversationId = 'conv-abc123';
-
-// Bearer Token Authentication
-fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories\`, {
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/memories" -Method Delete -Headers $headers
+Write-Output "Memories cleared ($($response.removed) removed)"`,
+                javascript: `// Bearer Token Authentication
+fetch(\`${baseUrl}/api/memories\`, {
   method: 'DELETE',
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
 .then(res => res.json())
-.then(() => console.log('Memories cleared'))
+.then(r => console.log('Memories cleared:', r.removed))
 .catch(err => console.error(err));`
             },
-            '/api/conversations/:id/memories/:memId': {
-                curl: `# Delete a single memory
-curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+            '/api/memories/:id': {
+                curl: `# Delete a single memory by id
+curl -k -X DELETE "${baseUrl}/api/memories/mem-xyz789" \\
   -H "Authorization: Bearer your_bearer_token"
 
 # OR API Key + Secret Authentication
-curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+curl -k -X DELETE "${baseUrl}/api/memories/mem-xyz789" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret"
 
@@ -5838,19 +5826,18 @@ curl -k -X DELETE "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789"
 # 404 if memory not found`,
                 python: `import requests
 
-conversation_id = "conv-abc123"
 memory_id = "mem-xyz789"
 
 # Bearer Token Authentication
 response = requests.delete(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+    f'${baseUrl}/api/memories/{memory_id}',
     headers={'Authorization': 'Bearer your_bearer_token'},
     verify=False
 )
 
 # OR API Key + Secret Authentication
 response = requests.delete(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+    f'${baseUrl}/api/memories/{memory_id}',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret'
@@ -5870,16 +5857,14 @@ $headers = @{
     "X-API-Secret" = "your_api_secret"
 }
 
-$conversationId = "conv-abc123"
 $memoryId = "mem-xyz789"
 
-$response = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories/$memoryId" -Method Delete -Headers $headers
+$response = Invoke-RestMethod -Uri "${baseUrl}/api/memories/$memoryId" -Method Delete -Headers $headers
 Write-Output "Memory deleted"`,
-                javascript: `const conversationId = 'conv-abc123';
-const memoryId = 'mem-xyz789';
+                javascript: `const memoryId = 'mem-xyz789';
 
 // Bearer Token Authentication
-fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories/\${memoryId}\`, {
+fetch(\`${baseUrl}/api/memories/\${memoryId}\`, {
   method: 'DELETE',
   headers: { 'Authorization': 'Bearer your_bearer_token' }
 })
@@ -5887,102 +5872,83 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories/\${memoryId}\`,
 .then(() => console.log('Memory deleted'))
 .catch(err => console.error(err));`
             },
-            '/api/conversations/:id/memories/:memId/update': {
-                curl: `# Edit a memory's text
-curl -k -X PUT "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+            '/api/memories/:id/update': {
+                curl: `# Edit a memory (text / impact / type). PATCH the fields you want to change.
+curl -k -X PATCH "${baseUrl}/api/memories/mem-xyz789" \\
   -H "Authorization: Bearer your_bearer_token" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "text": "The webapp listens on port 3001."
+    "text": "Prefer concise, bullet-point answers.",
+    "impact": "important"
   }'
 
 # OR API Key + Secret Authentication
-curl -k -X PUT "${baseUrl}/api/conversations/conv-abc123/memories/mem-xyz789" \\
+curl -k -X PATCH "${baseUrl}/api/memories/mem-xyz789" \\
   -H "X-API-Key: your_api_key" \\
   -H "X-API-Secret: your_api_secret" \\
   -H "Content-Type: application/json" \\
-  -d '{
-    "text": "The webapp listens on port 3001."
-  }'
+  -d '{ "text": "Prefer concise, bullet-point answers.", "impact": "important" }'
 
-# Response:
-# {
-#   "success": true,
-#   "memory": {
-#     "id": "mem-xyz789",
-#     "text": "The webapp listens on port 3001.",
-#     "keywords": ["webapp", "port"],
-#     "tokens": 9,
-#     "sourceRole": "assistant",
-#     "sourceTurnId": "turn-1",
-#     "ts": 1712345678000,
-#     "editedAt": 1712999999000
-#   }
-# }`,
+# Response: the updated memory object
+# { "id": "mem-xyz789", "text": "Prefer concise, bullet-point answers.",
+#   "impact": "important", "type": "preference", "updatedAt": "2026-06-04T..." }`,
                 python: `import requests
 
-conversation_id = "conv-abc123"
 memory_id = "mem-xyz789"
 
 # Bearer Token Authentication
-response = requests.put(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+response = requests.patch(
+    f'${baseUrl}/api/memories/{memory_id}',
     headers={
         'Authorization': 'Bearer your_bearer_token',
         'Content-Type': 'application/json'
     },
     json={
-        'text': 'The webapp listens on port 3001.'
+        'text': 'Prefer concise, bullet-point answers.',
+        'impact': 'important'
     },
     verify=False
 )
 
 # OR API Key + Secret Authentication
-response = requests.put(
-    f'${baseUrl}/api/conversations/{conversation_id}/memories/{memory_id}',
+response = requests.patch(
+    f'${baseUrl}/api/memories/{memory_id}',
     headers={
         'X-API-Key': 'your_api_key',
         'X-API-Secret': 'your_api_secret',
         'Content-Type': 'application/json'
     },
-    json={
-        'text': 'The webapp listens on port 3001.'
-    },
+    json={'text': 'Prefer concise, bullet-point answers.', 'impact': 'important'},
     verify=False
 )
 
-result = response.json()
-if result.get('success'):
-    print(f"Updated memory: {result['memory']['text']}")
-else:
-    print(f"Error: {result}")`,
+print("Updated memory:", response.json().get('text'))`,
                 powershell: `$headers = @{
     "Authorization" = "Bearer your_bearer_token"
     "Content-Type" = "application/json"
 }
-$conversationId = "conv-abc123"
 $memoryId = "mem-xyz789"
 
 $body = @{
-    text = "The webapp listens on port 3001."
+    text = "Prefer concise, bullet-point answers."
+    impact = "important"
 } | ConvertTo-Json
 
-$result = Invoke-RestMethod -Uri "${baseUrl}/api/conversations/$conversationId/memories/$memoryId" -Method Put -Headers $headers -Body $body
-Write-Output "Updated memory: $($result.memory.text)"`,
-                javascript: `const conversationId = 'conv-abc123';
-const memoryId = 'mem-xyz789';
+$result = Invoke-RestMethod -Uri "${baseUrl}/api/memories/$memoryId" -Method Patch -Headers $headers -Body $body
+Write-Output "Updated memory: $($result.text)"`,
+                javascript: `const memoryId = 'mem-xyz789';
 
 // Bearer Token Authentication
-fetch(\`${baseUrl}/api/conversations/\${conversationId}/memories/\${memoryId}\`, {
-  method: 'PUT',
+fetch(\`${baseUrl}/api/memories/\${memoryId}\`, {
+  method: 'PATCH',
   headers: {
     'Authorization': 'Bearer your_bearer_token',
     'Content-Type': 'application/json'
   },
-  body: JSON.stringify({ text: 'The webapp listens on port 3001.' })
+  body: JSON.stringify({ text: 'Prefer concise, bullet-point answers.', impact: 'important' })
 })
 .then(res => res.json())
-.then(result => console.log('Updated memory:', result.memory.text))
+.then(result => console.log('Updated memory:', result.text))
 .catch(err => console.error(err));`
             },
             // ============================================================================
@@ -10657,6 +10623,14 @@ fetch('${baseUrl}/api/chips', {
                                             </TableContainer>
                                         </Box>
 
+                                        {/* Memory / persona */}
+                                        <Box sx={{ mt: 2, p: 1.75, bgcolor: 'rgba(56, 189, 248, 0.06)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
+                                            <Typography sx={{ fontWeight: 600, fontSize: '0.82rem', mb: 0.5 }}>It remembers and gets faster ✨</Typography>
+                                            <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+                                                As you chat (web <em>or</em> Pi), the assistant builds an account <strong style={{ color: 'var(--text-primary)' }}>persona</strong>: your preferences, plus <strong style={{ color: 'var(--text-primary)' }}>experience</strong> for each kind of task (&ldquo;reading emails&rdquo;, &ldquo;web research&rdquo;, &ldquo;code analysis&rdquo;) — the approach that worked. Next time a similar task comes up, it reuses that approach instead of re-exploring, so repeat work needs fewer tool calls and finishes faster. Browse, edit, or clear it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab. Turn it off per-chat with the memory toggle. See the <strong style={{ color: 'var(--text-primary)' }}>Pi setup</strong> section for how Pi shares the same persona.
+                                            </Typography>
+                                        </Box>
+
                                     </Box>
                                 </Box>
                                 )}
@@ -10752,10 +10726,10 @@ fetch('${baseUrl}/api/chips', {
                                                             <MenuItem value="/api/conversations/:id/update">PUT /api/conversations/:id - Update Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/delete">DELETE /api/conversations/:id - Delete Conversation</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/messages">POST /api/conversations/:id/messages - Add Message</MenuItem>
-                                                            <MenuItem value="/api/conversations/:id/memories">GET /api/conversations/:id/memories - List Memories</MenuItem>
-                                                            <MenuItem value="/api/conversations/:id/memories/clear">DELETE /api/conversations/:id/memories - Clear Memories</MenuItem>
-                                                            <MenuItem value="/api/conversations/:id/memories/:memId">DELETE /api/conversations/:id/memories/:memId - Delete Memory</MenuItem>
-                                                            <MenuItem value="/api/conversations/:id/memories/:memId/update">PUT /api/conversations/:id/memories/:memId - Edit Memory</MenuItem>
+                                                            <MenuItem value="/api/memories">GET /api/memories - List Account Memory (persona)</MenuItem>
+                                                            <MenuItem value="/api/memories/clear">DELETE /api/memories - Clear All Memory</MenuItem>
+                                                            <MenuItem value="/api/memories/:id">DELETE /api/memories/:id - Delete Memory</MenuItem>
+                                                            <MenuItem value="/api/memories/:id/update">PATCH /api/memories/:id - Edit Memory</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming/cancel">DELETE /api/conversations/:id/streaming - Cancel Stream</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>
@@ -11027,8 +11001,14 @@ fetch('${baseUrl}/api/chips', {
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>auth</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>memory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pi shares your account&apos;s <strong style={{ color: 'var(--text-primary)' }}>persona &amp; experience memory</strong> — the server injects what worked on similar past tasks into each turn and records new experience from Pi&apos;s tool use, so repeat work gets faster. Raw OpenAI-SDK clients (key+secret) stay fully transparent.</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
+                                            <Box sx={{ mt: 1.25, p: 1.25, bgcolor: 'rgba(56, 189, 248, 0.06)', borderRadius: 1, border: '1px solid var(--accent-muted)' }}>
+                                                <Typography sx={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                                                    <strong style={{ color: 'var(--text-primary)' }}>One persona across web + Pi:</strong> create the bearer key while signed in to the web UI so it&apos;s tied to your account — then Pi and the web chat share the <em>same</em> memory/persona (manage it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab). A key created without a session falls back to its own isolated memory. Don&apos;t share one bearer token across people — a shared token is a shared identity and a shared memory bucket.
+                                                </Typography>
+                                            </Box>
                                         </Box>
 
                                         <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
@@ -11633,8 +11613,13 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Manage conversation</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/messages</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Append a message</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/streaming</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Background-stream status / cancel</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Per-conversation memory entries</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/conversations/:id/memories/:memId</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>PUT/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Edit / delete a single memory</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Account memory &amp; persona — list / add / clear all (account-scoped, shared across web + Pi)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get / edit / delete one memory</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/memories/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Relevance-ranked memory search</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>List / create knowledge bases (RAG)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/PATCH/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Get / rename / delete a knowledge base</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/documents</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Add a document (base64 upload, auto-chunked + embedded)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/knowledge-bases/:id/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Semantic top-k search over a knowledge base</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/chat/continuation/:id</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET/DEL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Chunked-content queue status</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/search</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Web search with content fetch</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)' }}>/api/url/fetch</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Fetch URLs for chat context</TableCell></TableRow>
