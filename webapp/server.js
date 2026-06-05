@@ -12481,7 +12481,7 @@ async function loadConversationMessages(userId, conversationId) {
 }
 
 // Save messages for a conversation
-async function saveConversationMessages(userId, conversationId, messages) {
+async function saveConversationMessages(userId, conversationId, messages, { memoryUserId = userId } = {}) {
     // Validate conversationId format to prevent path traversal
     if (!/^[a-zA-Z0-9_-]+$/.test(conversationId)) {
         throw new Error('Invalid conversation ID format');
@@ -12530,7 +12530,11 @@ async function saveConversationMessages(userId, conversationId, messages) {
     // Fire-and-forget memory extraction from any new user→assistant pairs
     // since the last save. Memory work must never block the save or leak
     // errors back to the caller — user turns always succeed to disk.
-    extractNewMemoriesFromSave(userId, conversationId, messages).catch(err => {
+    // `memoryUserId` (defaults to the conversation owner) lets the chat stream
+    // route extraction to the ACCOUNT memory bucket even when the conversation
+    // itself is owned by an API key — so an API-key chat's memories land where
+    // retrieval (memAccountId) later reads them.
+    extractNewMemoriesFromSave(memoryUserId, conversationId, messages).catch(err => {
         console.warn(`[Memory] Extraction failed for ${conversationId}: ${err.message}`);
     });
 }
@@ -12718,6 +12722,12 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
             // user wants remembered, so a directive cue overrides the gate.
             const isDirectiveType = type !== 'fact';
             if (score < MEMORY_MIN_SCORE && !isDirectiveType) continue;
+            // Drop time-bound / live-news facts: their truth is anchored to this
+            // moment, so persisting them poisons future turns (a cached "today
+            // is …" date, yesterday's headlines). Directive-typed sentences
+            // (preferences/corrections) are kept even if they mention a day —
+            // their behavioral intent is durable.
+            if (!isDirectiveType && isEphemeralFact(sentence)) continue;
             const compressed = shorthandCompress(sentence);
             const keywords = extractQueryKeywords(compressed);
             if (keywords.length === 0) continue;
@@ -12761,6 +12771,69 @@ function jaccardSimilarity(aKeywords, bKeywords) {
     for (const k of a) if (b.has(k)) inter++;
     const union = a.size + b.size - inter;
     return union === 0 ? 0 : inter / union;
+}
+
+// A sentence whose truth is anchored to the MOMENT it was captured — a current
+// date/time ("Today is Thursday, June 4, 2026"), a relative timestamp ("21 hours
+// ago"), or live news ("breaking headlines right now"). These must never become
+// durable memories: stored once and re-injected on a later turn, they actively
+// corrupt accuracy (the model parrots a stale date / yesterday's news as if it
+// were current). Deliberately CONSERVATIVE — only strong temporal-deixis /
+// relative-time / live-news cues fire, so durable facts that merely contain a
+// number, a date-like id (CVE-2026-…), or the bare word "now" are kept.
+const EPHEMERAL_PATTERNS = [
+    /\b(today|yesterday|tomorrow|tonight)\b/i,
+    /\bthis (morning|afternoon|evening|week|month|year|quarter)\b/i,
+    /\b(last|next|past|coming) (night|week|month|year|quarter|few days|couple (of )?days)\b/i,
+    /\bright now\b/i,
+    /\bas of (now|today|writing|this)\b/i,
+    /\bat (the moment|present|this time)\b/i,
+    /\b(these days|nowadays|currently|at present)\b/i,
+    /\b(\d+|a|an|few|several|couple|many)\s+(second|minute|hour|day|week|month|year|sec|min|hr|yr)s?\s+ago\b/i,
+    /\b(just|moments?|recently)\s+(now|ago|announced|released|published|reported|launched|happened)\b/i,
+    /\b(breaking|latest|top|recent)\s+(news|stories|headlines?)\b/i,
+    /\bheadlines?\b/i,
+    /\bnews (right now|today|this (week|morning))\b/i,
+    /\bin the news\b/i,
+];
+function isEphemeralFact(sentence) {
+    const s = String(sentence || '');
+    return EPHEMERAL_PATTERNS.some((re) => re.test(s));
+}
+
+// A keyword distinctive enough that a SINGLE shared one is a confident match:
+// an identifier (digit / underscore / camelCase), a path/URL token, or a
+// hyphen-compound (cve-2026-…, kv-cache). Common domain words ("security",
+// "running", "download") are NOT specific — they're long but collide constantly,
+// and keywords are lowercased at extraction so a raw-length rule can't tell an
+// identifier from an ordinary word. A plain word therefore needs a SECOND shared
+// keyword to match (see factKeywordMatch).
+function isSpecificKeyword(k) {
+    if (!k) return false;
+    if (/\d/.test(k)) return true;                        // versions, CVE ids, ports, dates
+    if (/_/.test(k)) return true;                         // snake_case
+    if (/[a-z][A-Z]/.test(k)) return true;                // camelCase (pre-lowercase safety)
+    if (/[/.~]/.test(k)) return true;                     // path / url-ish
+    if (k.includes('-') && k.length >= 6) return true;    // hyphen-compound
+    return false;
+}
+
+// Decide whether an auto-extracted FACT is relevant enough to the query to
+// inject. Replaces the old bare `jaccard >= 0.2` gate, which let a single
+// common shared word ("today", "news", "security") trigger a false-positive —
+// the root of memories corrupting accuracy. Rule: >=2 shared keywords (real
+// topical overlap), OR exactly one shared keyword that is highly specific
+// (an identifier). No jaccard floor — it rejected legitimate 2-keyword matches
+// between a long fact and a short query (2/12 = 0.16 < 0.2).
+function factKeywordMatch(factKeywords, queryKeywords) {
+    const fk = factKeywords || [];
+    if (!fk.length || !queryKeywords.length) return false;
+    const qs = new Set(queryKeywords);
+    let inter = 0, lastShared = null;
+    for (const k of fk) if (qs.has(k)) { inter++; lastShared = k; }
+    if (inter >= 2) return true;
+    if (inter === 1 && isSpecificKeyword(lastShared)) return true;
+    return false;
 }
 
 // Get text content from a chat message, handling both string and vision-array
@@ -13025,14 +13098,22 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         return relOf(m) + activityMatch + depthBoost + scoreOf(m);
     };
 
-    const PROC_MAX = 8, DIRECTIVE_MAX = 18, FACT_MAX = 8, FACT_THRESHOLD = 0.2;
+    const PROC_MAX = 8, DIRECTIVE_MAX = 18, FACT_MAX = 8;
     const procBudget = Math.floor(tokenBudget * 0.4);
     const directiveBudget = Math.floor(tokenBudget * 0.85);
     const tokOf = (m) => m.tokens || Math.ceil((m.text || '').length / 3);
 
     const procCands = all.filter(isProcedure).map(m => ({ m, s: procScoreOf(m) })).sort((a, b) => b.s - a.s);
     const directives = all.filter(isDirective).map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
-    const factCands = all.filter(m => !isDirective(m) && !isProcedure(m)).map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
+    // Facts inject only on a substantive query match (factKeywordMatch: >=2
+    // shared keywords or one specific identifier) AND only if not ephemeral —
+    // the ephemeral skip is defense-in-depth for any time-bound fact stored
+    // before extraction-time filtering existed. Ordered by raw overlap so the
+    // strongest matches fill the remaining budget first.
+    const factCands = all
+        .filter(m => !isDirective(m) && !isProcedure(m))
+        .filter(m => !isEphemeralFact(m.text) && factKeywordMatch(m.keywords || [], queryKeywords))
+        .map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
 
     const picked = [];
     let usedTokens = 0;
@@ -13054,10 +13135,11 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         if (usedTokens + tk > tokenBudget) continue;
         picked.push(d.m); usedTokens += tk;
     }
-    // Pass 2 — facts: only strongly query-relevant ones fill the remainder.
+    // Pass 2 — facts: already filtered to substantive, non-ephemeral matches;
+    // fill the remainder by overlap strength.
     let factCount = 0;
     for (const f of factCands) {
-        if (factCount >= FACT_MAX || f.r < FACT_THRESHOLD) break;  // sorted desc → stop at first miss
+        if (factCount >= FACT_MAX) break;
         const tk = tokOf(f.m);
         if (usedTokens + tk > tokenBudget) continue;
         picked.push(f.m); usedTokens += tk; factCount++;
@@ -13530,8 +13612,11 @@ app.post('/api/conversations/:id/messages', requireAuth, async (req, res) => {
             return res.status(404).json({ error: 'Conversation not found' });
         }
 
-        // saveConversationMessages also updates messageCount and updatedAt in the index
-        await saveConversationMessages(userId, id, messages);
+        // saveConversationMessages also updates messageCount and updatedAt in the index.
+        // Memory extraction is routed to the ACCOUNT bucket (memAccountId) so a
+        // full user→assistant pair persisted by an API-key caller lands where
+        // chat retrieval later reads it — same decoupling as the chat stream.
+        await saveConversationMessages(userId, id, messages, { memoryUserId: memAccountId(req) });
 
         res.json({ success: true, messageCount: messages.length });
     } catch (error) {
@@ -13621,7 +13706,7 @@ app.delete('/api/conversations/:id/streaming', requireAuth, async (req, res) => 
                     stoppedByUser: true
                 };
                 conversationMsgs.push(assistantMessage);
-                await saveConversationMessages(job.userId, id, conversationMsgs);
+                await saveConversationMessages(job.userId, id, conversationMsgs, { memoryUserId: job.memoryUserId || job.userId });
                 console.log(`[Chat Stream] Cancelled stream for conversation ${id}, partial response saved (${job.content.length} chars)`);
             } catch (saveErr) {
                 console.error(`[Chat Stream] Failed to save partial response on cancel:`, saveErr);
@@ -15228,6 +15313,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // so without this the UI shows an empty bubble during those phases.
         // The job's `phase` field is updated at each transition below.
         const userId = req.user?.id || req.apiKeyData?.id || 'default';
+        // Memory identity is the ACCOUNT (memAccountId), decoupled from the
+        // conversation owner above. All memory ops this turn — retrieval,
+        // record_learning, experience recording, and extraction-on-save — use
+        // this so an API-key chat shares the account persona and reads/writes
+        // never split across two buckets.
+        const chatMemId = memAccountId(req);
         const streamingConversationId = conversationId || req.body.conversationId;
         const streamStartTime = Date.now();
         const streamAbortController = new AbortController();
@@ -15246,6 +15337,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
             };
             activeStreamingJobs.set(streamingConversationId, {
                 userId,
+                memoryUserId: chatMemId,
                 content: '',
                 reasoning: '',
                 startTime: streamStartTime,
@@ -15420,7 +15512,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // appearing to materialize from nowhere.
         let pendingPrimedToolEvents = null;
         try {
-            const chatUserId = req.user?.id || req.apiKeyData?.id || 'default';
+            const chatUserId = chatMemId;
             const rawConvId = conversationId || req.body.conversationId;
             // Same-conversation continuity boost only — retrieval itself is
             // account-wide and runs even for a brand-new conversation.
@@ -16542,7 +16634,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                 responseTime: Date.now() - streamStartTime,
                                 backgroundCompleted: true,
                             });
-                            await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
+                            await saveConversationMessages(userId, streamingConversationId, conversationMsgs, { memoryUserId: chatMemId });
                             console.log(`[Chat Stream] Map-reduce background response saved to conversation ${streamingConversationId}`);
                         } catch (saveErr) {
                             console.error(`[Chat Stream] Failed to save map-reduce background response:`, saveErr);
@@ -16712,7 +16804,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // chat retrieval/extraction use, so record_learning writes land where
         // the model later recalls them. When the user has disabled memory, hide
         // record_learning from the catalog so the model can't write either.
-        const memUserId = req.user?.id || req.apiKeyData?.id || 'default';
+        const memUserId = chatMemId;
         const toolMemoryDisabled = await isMemoryDisabledForUser(memUserId);
         const toolCtx = {
             userId: req.userId,
@@ -18381,7 +18473,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         backgroundCompleted: !clientConnected
                     };
                     conversationMsgs.push(assistantMessage);
-                    await saveConversationMessages(userId, streamingConversationId, conversationMsgs);
+                    await saveConversationMessages(userId, streamingConversationId, conversationMsgs, { memoryUserId: chatMemId });
                     console.log(`[Chat Stream] Response saved to ${streamingConversationId} (clientConnected=${clientConnected})`);
                 }
             } catch (saveErr) {
@@ -18395,7 +18487,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         // what worked and skips re-exploration → fewer tool calls, faster.
         if (streamingConversationId && !streamAbortController.signal.aborted) {
             recordTurnActivity({
-                userId,
+                userId: chatMemId,
                 conversationId: streamingConversationId,
                 toolChips: persistedToolChips,
                 userText: latestUserText,
@@ -21539,12 +21631,20 @@ app.post('/api/knowledge-bases/:id/search', requireAuth, async (req, res) => {
 // the list is decorated with ownerName. Routes sit BEFORE the 404/error
 // middleware (same placement rule as the knowledge-base routes).
 
-// Account id that memory is keyed by. MUST match the id the chat stream uses
-// for retrieval/extraction (`req.user?.id || req.apiKeyData?.id`) so the Memory
-// tab manages exactly the memories the model recalls. This is the same id
-// conversations are stored under, so memory aligns with the conversation space.
+// Account id that memory is keyed by. Resolves to the owning ACCOUNT in every
+// auth mode: a web session uses `req.user.id`; an API-key/Bearer caller uses
+// `req.userId` (= `keyData.userId`, the account that created the key). Only an
+// UNASSOCIATED key (no `userId`) falls back to its own key id, preserving
+// isolation. This mirrors the `/v1` persona bridge (`injectPersonaForV1`), so a
+// key minted in a web session shares ONE persona with the web chat instead of a
+// blank per-key bucket. The chat stream, Memory-tab routes, `record_learning`,
+// and experience recording all resolve memory identity through this helper, so
+// reads and writes never diverge. NOTE: this is deliberately DECOUPLED from
+// conversation ownership (conversations stay keyed by the chat stream's own
+// `userId`) — switching memory to the account must not move or hide an API
+// caller's existing conversations.
 function memAccountId(req) {
-    return req.user?.id || req.apiKeyData?.id || 'default';
+    return req.user?.id || req.userId || req.apiKeyData?.id || 'default';
 }
 
 // Attach ownerName to each memory for the admin view (mirrors decorateKbOwners).
