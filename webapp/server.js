@@ -14976,19 +14976,24 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         // Check for specific error types
         const errorMessage = error.response?.data?.error?.message || error.message || '';
 
-        // Context window exceeded
-        if (errorMessage.includes('context') || errorMessage.includes('too long') || errorMessage.includes('exceeds')) {
+        // Context window exceeded. "too many tokens" / "maximum context" are the
+        // backend's phrasings for "the request doesn't fit the window" — that's a
+        // CONTEXT overflow, NOT a rate limit. They used to fall through to the 429
+        // branch below and surface as a misleading "rate limit exceeded" (e.g.
+        // when an agent's tool catalog + history outgrew the model's window).
+        if (/context|too long|exceed|too many tokens|maximum context|n_ctx|too large|doesn'?t fit|won'?t fit/i.test(errorMessage)) {
             return res.status(400).json({
                 success: false,
-                error: 'Not enough context window: Your prompt is too large for the model\'s context window. Please reduce the input size or increase the context size in model settings.'
+                error: 'Context window exceeded: the request (messages + tools) is larger than the model\'s context window. Reduce the input — shorten the conversation, send fewer tools/skills, or load the model with a larger context size.'
             });
         }
 
-        // Token rate limit
-        if (errorMessage.includes('rate limit') || errorMessage.includes('too many tokens')) {
+        // Genuine rate limit (a per-key limit or an upstream throttle) — distinct
+        // from a context overflow, which is handled above.
+        if (/rate limit|too many requests/i.test(errorMessage)) {
             return res.status(429).json({
                 success: false,
-                error: 'Token rate limit exceeded: You have exceeded your token rate limit. Please wait or increase your rate limit.'
+                error: 'Rate limit exceeded: too many requests in a short window. Wait and retry, or raise the key\'s rate limit.'
             });
         }
 
@@ -18761,19 +18766,24 @@ app.post('/api/complete', requireAuth, async (req, res) => {
         // Check for specific error types
         const errorMessage = error.response?.data?.error?.message || error.message || '';
 
-        // Context window exceeded
-        if (errorMessage.includes('context') || errorMessage.includes('too long') || errorMessage.includes('exceeds')) {
+        // Context window exceeded. "too many tokens" / "maximum context" are the
+        // backend's phrasings for "the request doesn't fit the window" — that's a
+        // CONTEXT overflow, NOT a rate limit. They used to fall through to the 429
+        // branch below and surface as a misleading "rate limit exceeded" (e.g.
+        // when an agent's tool catalog + history outgrew the model's window).
+        if (/context|too long|exceed|too many tokens|maximum context|n_ctx|too large|doesn'?t fit|won'?t fit/i.test(errorMessage)) {
             return res.status(400).json({
                 success: false,
-                error: 'Not enough context window: Your prompt is too large for the model\'s context window. Please reduce the input size or increase the context size in model settings.'
+                error: 'Context window exceeded: the request (messages + tools) is larger than the model\'s context window. Reduce the input — shorten the conversation, send fewer tools/skills, or load the model with a larger context size.'
             });
         }
 
-        // Token rate limit
-        if (errorMessage.includes('rate limit') || errorMessage.includes('too many tokens')) {
+        // Genuine rate limit (a per-key limit or an upstream throttle) — distinct
+        // from a context overflow, which is handled above.
+        if (/rate limit|too many requests/i.test(errorMessage)) {
             return res.status(429).json({
                 success: false,
-                error: 'Token rate limit exceeded: You have exceeded your token rate limit. Please wait or increase your rate limit.'
+                error: 'Rate limit exceeded: too many requests in a short window. Wait and retry, or raise the key\'s rate limit.'
             });
         }
 
