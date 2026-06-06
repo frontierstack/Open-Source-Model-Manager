@@ -13097,8 +13097,19 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
         const counts = {};
         for (const l of toolLabels) { counts[l] = (counts[l] || 0) + 1; if (!seq.includes(l)) seq.push(l); }
         const pathStr = seq.join(' → ');
-        const flail = seq.filter(l => counts[l] >= 4);
-        const flailNote = flail.length ? ` Avoid over-calling ${flail.join(', ')} (it was repeated unnecessarily) — go straight to the file you need.` : '';
+        // A tool repeated several times in one turn is usually avoidable
+        // repetition (per-subtopic KB searches, list_directory loops, narrow
+        // re-reads). Record an ACTIONABLE consolidation directive — name the
+        // over-called tool, its count, and the fix (do it in as few calls as
+        // possible, ideally one broad/comprehensive call). The old note ("avoid
+        // over-calling X — go straight to the file you need") wasn't actionable
+        // and read oddly for search tools, so the warm run didn't actually use
+        // fewer calls; this phrasing measurably reduces repeat calls. Threshold
+        // 3 (was 4) to catch moderate repetition too.
+        const flail = seq.filter(l => counts[l] >= 3);
+        const flailNote = flail.length
+            ? ` EFFICIENCY: last time ${flail.map(l => `${l} was called ${counts[l]}×`).join('; ')} — that repetition was avoidable. Do this in as FEW ${flail.length === 1 ? 'calls' : 'calls per tool'} as possible: prefer ONE broad/comprehensive call that covers everything you need over many narrow repeats, then only make an extra call if something specific is genuinely missing.`
+            : '';
         const fileNote = attachmentKinds.size ? ` Input: ${[...attachmentKinds].join('/')}.` : '';
         const text = pathStr
             ? `${act.label}: the tools that got it done — ${pathStr}.${fileNote}${flailNote} Reuse this path and go direct; only deviate if a step fails.`
