@@ -5,6 +5,7 @@ import {
     Trash2 as DeleteIcon,
     Search as SearchIcon,
     Save as SaveIcon,
+    RefreshCw as RefreshIcon,
     Loader2 as SpinnerIcon,
     Sparkles as SparklesIcon,
     User as UserIcon,
@@ -91,20 +92,42 @@ export default function MemoryPanel() {
     const [searching, setSearching] = React.useState(false);
     const [results, setResults] = React.useState(null);
 
-    const loadMemories = React.useCallback(async () => {
-        setLoading(true); setError(null);
+    // `silent` refetches in the background without flashing the loading spinner
+    // or clearing the list — used by the auto-refresh so the view doesn't flicker
+    // every poll.
+    const loadMemories = React.useCallback(async ({ silent = false } = {}) => {
+        if (!silent) setLoading(true);
+        setError(null);
         try {
             const data = await jsonFetch('/api/memories');
             setMemories(data.memories || []);
             setIsAdmin(!!data.isAdmin);
         } catch (e) {
-            setError(e.message);
+            if (!silent) setError(e.message);
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     }, []);
 
     React.useEffect(() => { loadMemories(); }, [loadMemories]);
+
+    // Auto-refresh: memories are created OUT OF BAND (during a chat turn, by the
+    // model's record_learning, by background extraction), so a mount-only load
+    // makes the tab look empty/stale — the user creates a memory in chat and it
+    // never appears here. Silently refetch when the tab/window regains focus and
+    // on a gentle poll while visible. Selection + in-progress edits are keyed on
+    // selectedId, which a refetch never changes, so editing is undisturbed.
+    React.useEffect(() => {
+        const refresh = () => { if (document.visibilityState === 'visible') loadMemories({ silent: true }); };
+        window.addEventListener('focus', refresh);
+        document.addEventListener('visibilitychange', refresh);
+        const id = setInterval(refresh, 15000);
+        return () => {
+            window.removeEventListener('focus', refresh);
+            document.removeEventListener('visibilitychange', refresh);
+            clearInterval(id);
+        };
+    }, [loadMemories]);
 
     const selected = memories.find((m) => m.id === selectedId) || null;
 
@@ -199,6 +222,13 @@ export default function MemoryPanel() {
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
+                    <button
+                        type="button" onClick={() => loadMemories()} title="Refresh memories"
+                        className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium"
+                        style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-primary)' }}
+                    >
+                        <RefreshIcon size={15} className={loading ? 'animate-spin' : ''} /> Refresh
+                    </button>
                     {memories.length > 0 && (
                         <button
                             type="button" onClick={clearAll} title="Delete all memories"
