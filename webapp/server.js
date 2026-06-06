@@ -12736,9 +12736,11 @@ function isJunkMemoryLine(sentence) {
     if (/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{0,}:?\s*)*\|?$/.test(t)) return true;
     // A bare markdown heading with no following prose ("## Findings").
     if (/^#{1,6}\s+\S+$/.test(t)) return true;
-    // Mostly non-alphabetic (hex/byte dumps, separators) — no real words.
+    // Almost no letters (separator rules "---"/"===", pure number/symbol lines)
+    // — not a real fact. Kept low (<4) so genuine short facts ("Pi is 3.14",
+    // "IP 1.2.3.4") survive; the scoreFactuality length gate backstops the rest.
     const letters = (t.match(/[a-zA-Z]/g) || []).length;
-    if (letters < 6) return true;
+    if (letters < 4) return true;
     return false;
 }
 
@@ -13174,7 +13176,13 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         if (m.type !== 'preference' && m.type !== 'correction') return false;
         const t = String(m.text || '').toLowerCase();
         if (/\?|\bcan you\b|\bcould you\b|\bplease (check|find|make sure|look|verify|confirm|see)\b/.test(t)) return false;
-        return /\b(from now on|going forward|by default|always|never|prefer|don'?t|do not|stop)\b/.test(t);
+        // Require an explicit STANDING-RULE marker, NOT a bare "I prefer X" /
+        // "I like X" — those are usually topical or one-off ("I prefer Python",
+        // "I like Sonify") and would otherwise inject on every unrelated turn.
+        // A genuine global style pref that lacks such a marker still surfaces
+        // once the model records it (record_learning → curated) or the user adds
+        // it by hand (manual → curated); both bypass relevance unconditionally.
+        return /\b(from now on|going forward|by default|always|never|whenever|every time)\b/.test(t);
     };
     const scoreOf = (m) => {
         const ts = Date.parse(m.updatedAt || m.createdAt || '') || now;
