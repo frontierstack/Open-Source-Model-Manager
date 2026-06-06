@@ -65,6 +65,59 @@ function normalizeActivity(a) {
     return String(a || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
 }
 
+// --------------------------------------------------------------------------
+// Title derivation — every memory carries a short, human-readable title of the
+// form "<Category> — <summary>" (procedures: "Experience — <activity>"). The
+// old UI rendered the raw memory text as its own title, so a captured markdown
+// table row ("| `P` | Pause / Resume |") became the visible title. Titles are
+// always auto-derived (not user-editable) so the Memory tab reads cleanly
+// regardless of how noisy the underlying text is.
+const TYPE_LABEL = {
+    fact: 'Fact', preference: 'Preference', correction: 'Correction',
+    limitation: 'Limitation', workaround: 'Workaround', issue: 'Issue',
+    feedback: 'Feedback', learning: 'Learning', procedure: 'Experience',
+};
+
+function titleCaseWords(s) {
+    return String(s || '').replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+// Condense a memory's body into a short noun-phrase summary: strip markdown /
+// table / tag syntax, take the first clause, cap length on a word boundary.
+function summarizeMemoryText(text, maxLen = 56) {
+    let s = String(text || '')
+        .replace(/<[^>]+>/g, ' ')          // html / think tags
+        .replace(/`{1,3}/g, ' ')           // code fences / inline code ticks
+        .replace(/[*_#>~]+/g, ' ')         // markdown emphasis / headings / quotes
+        .replace(/\|/g, ' ')               // table pipes
+        .replace(/^\s*[-*+]\s+/, '')       // leading list marker
+        .replace(/^\s*\d+\.\s+/, '')       // leading ordinal marker
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!s) return '';
+    // First clause — split on sentence/clause boundaries but keep it meaningful.
+    const firstClause = s.split(/\s+[—–-]\s+|[:;.]\s+/)[0].trim() || s;
+    let out = firstClause.length > maxLen
+        ? firstClause.slice(0, maxLen).replace(/\s+\S*$/, '').trim() + '…'
+        : firstClause;
+    return out;
+}
+
+// Build the "<Category> — <summary>" title for a record. Procedures lead their
+// text with the activity label ("Reading emails: …"); reuse that nice label.
+function deriveMemoryTitle(rec) {
+    if (rec.type === 'procedure') {
+        const lead = String(rec.text || '').split(':')[0].trim();
+        const label = (lead && lead.length <= 42)
+            ? lead
+            : titleCaseWords(String(rec.activity || 'experience').replace(/-/g, ' '));
+        return `Experience — ${label}`;
+    }
+    const typeLabel = TYPE_LABEL[rec.type] || 'Note';
+    const summary = summarizeMemoryText(rec.text);
+    return summary ? `${typeLabel} — ${summary}` : typeLabel;
+}
+
 function log(...a) { console.log('[memory]', ...a); }
 
 // --------------------------------------------------------------------------
@@ -168,9 +221,14 @@ function normalizeRecord(input) {
     const source = VALID_SOURCES.has(input.source) ? input.source : 'manual';
     const type = input.type && VALID_TYPES.has(input.type) ? input.type : null;
     const impact = input.impact && VALID_IMPACTS.has(input.impact) ? input.impact : null;
+    const activity = input.activity ? normalizeActivity(input.activity) : null;
     return {
         id: input.id || crypto.randomUUID(),
         userId: input.userId ?? null,
+        // Short, auto-derived "<Category> — <summary>" title for the Memory tab
+        // (never the raw text). Always recomputed from text/type/activity so a
+        // noisy body can't become the visible title.
+        title: deriveMemoryTitle({ type, activity, text }),
         text,
         keywords: Array.isArray(input.keywords) ? input.keywords.slice(0, 40) : [],
         tokens: Number.isFinite(input.tokens) ? input.tokens : estimateTokens(text),
@@ -181,7 +239,7 @@ function normalizeRecord(input) {
         // Experience/procedure memories: `activity` is the consolidation key,
         // `count` is how many times that activity has been reinforced (depth of
         // experience). Null/1 for ordinary memories.
-        activity: input.activity ? normalizeActivity(input.activity) : null,
+        activity,
         count: Number.isFinite(input.count) ? input.count : 1,
         sourceRole: input.sourceRole || null,
         sourceConvId: input.sourceConvId || null,
@@ -214,6 +272,9 @@ async function updateMemory(id, patch) {
         if (patch.impact !== undefined) m.impact = patch.impact && VALID_IMPACTS.has(patch.impact) ? patch.impact : null;
         if (patch.activity !== undefined) m.activity = patch.activity ? normalizeActivity(patch.activity) : null;
         if (Number.isFinite(patch.count)) m.count = patch.count;
+        // Title is always derived — recompute whenever the body/type/activity
+        // that feeds it may have changed.
+        m.title = deriveMemoryTitle(m);
         m.updatedAt = nowIso();
         return { ...m };
     });
@@ -387,6 +448,7 @@ async function upsertModelLearning(userId, input, opts = {}) {
             target.impact = mergedImpact;
             target.score = scoreForImpact(mergedImpact);
             target.tokens = tokens;
+            target.title = deriveMemoryTitle(target);
             target.updatedAt = nowIso();
             return { id: target.id, updated: true, impact: mergedImpact };
         }
@@ -452,6 +514,7 @@ async function upsertActivityMemory(userId, input) {
                 if (keywords.length) target.keywords = keywords;
                 target.tokens = tokens;
                 target.textSource = source;
+                target.title = deriveMemoryTitle(target);
             }
             if (steps != null) target.bestSteps = (target.bestSteps == null) ? steps : Math.min(target.bestSteps, steps);
             target.updatedAt = nowIso();
@@ -668,6 +731,7 @@ module.exports = {
     upsertModelLearning,
     upsertActivityMemory,
     normalizeActivity,
+    deriveMemoryTitle,
     countForUser,
     // cursors
     getCursor,

@@ -1019,6 +1019,31 @@ function buildChatRuntimePrelude() {
     return text;
 }
 
+// Build a concise system nudge telling the model it has searchable knowledge
+// base(s) and SHOULD consult them for on-topic questions. Without this, the
+// model answers on-topic questions from general knowledge and never calls
+// search_knowledge_base, so the user's uploaded documents look unused and
+// nothing about the KB ever appears in the process logs. Kept short and
+// filename-capped so it costs little even with large collections. Returns null
+// when there are no KBs (so it never injects noise for users without one).
+function buildKbNudge(kbs) {
+    if (!Array.isArray(kbs) || !kbs.length) return null;
+    const KB_CAP = 5, FN_CAP = 6;
+    const listed = kbs.slice(0, KB_CAP).map((kb) => {
+        const docs = kb.documents || [];
+        const files = docs.slice(0, FN_CAP).map((d) => d.filename).filter(Boolean).join(', ');
+        const more = docs.length > FN_CAP ? `, +${docs.length - FN_CAP} more` : '';
+        return `"${kb.name}" (${docs.length} file${docs.length === 1 ? '' : 's'}${files ? `: ${files}${more}` : ''})`;
+    }).join('; ');
+    return (
+        'KNOWLEDGE BASE AVAILABLE — this user has uploaded reference documents you can search with the search_knowledge_base tool: ' +
+        `${listed}. ` +
+        "When the user's question relates to the topics or files in these knowledge base(s), you MUST call search_knowledge_base FIRST — before answering — and base your answer on the retrieved passages, citing the source filename. " +
+        "These documents are the user's own preferred, authoritative sources: for topics they cover, this OVERRIDES the general 'answer from your own knowledge first' guidance above — search the knowledge base instead of replying from general knowledge. " +
+        'Only skip the search when the question is clearly unrelated to every listed document.'
+    );
+}
+
 /**
  * Estimate token count from content (string or vision array)
  * @param {string|Array} content - The content to estimate tokens for
@@ -12695,6 +12720,28 @@ function classifyMemoryHeuristic(sentence, role, factScore) {
     return { type: 'fact', impact: factScore >= 6 ? 'medium' : 'low' };
 }
 
+// Reject lines that are structural markdown noise, not durable facts. The
+// auto-extractor used to capture email-field dumps and report fragments verbatim
+// ("| Subject | Add Love to Your Story |", "| Body Links | https://… |") which
+// then became their own memory AND their own (garbage) title. These are never
+// worth remembering: they're transient analysis artifacts, not facts about the
+// user or their work. Conservative — only fires on clear table/separator/heading
+// structure so ordinary prose containing a single pipe or asterisk is kept.
+function isJunkMemoryLine(sentence) {
+    const t = String(sentence || '').trim();
+    if (!t) return true;
+    // Markdown table row or multi-cell line (≥2 pipes) — the biggest offender.
+    if ((t.match(/\|/g) || []).length >= 2) return true;
+    // Table separator / alignment row ( |---|:--:| ).
+    if (/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{0,}:?\s*)*\|?$/.test(t)) return true;
+    // A bare markdown heading with no following prose ("## Findings").
+    if (/^#{1,6}\s+\S+$/.test(t)) return true;
+    // Mostly non-alphabetic (hex/byte dumps, separators) — no real words.
+    const letters = (t.match(/[a-zA-Z]/g) || []).length;
+    if (letters < 6) return true;
+    return false;
+}
+
 function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
     const memories = [];
 
@@ -12711,6 +12758,10 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
         if (looksLikeCode(clean)) return;
         const sentences = splitIntoSentences(clean);
         for (const sentence of sentences) {
+            // Drop structural markdown noise (table rows / separators / bare
+            // headings) before any scoring — these are transient artifacts, not
+            // memories, and used to pollute both the store and the titles.
+            if (isJunkMemoryLine(sentence)) continue;
             const score = scoreFactuality(sentence);
             const { type, impact } = classifyMemoryHeuristic(sentence, role, score);
             // Keep fact-like sentences (factuality gate) OR any sentence with a
@@ -12946,30 +12997,49 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
 
 // Priority-ordered: the FIRST matching rule wins (most specific → most generic).
 // test(toolSet, attachmentKinds, userTextLower) → boolean.
+//
+// Each rule matches on the tools the turn USED and/or the attachment kinds —
+// AND, crucially, on TEXT cues from the user's ask. The text cues exist because
+// the activity hint is computed PRE-turn (before any tool runs), so a tool-only
+// rule (coding, data-viz, …) could never fire pre-turn and the matching
+// experience memory would never lead. That's what made memory injection drop
+// the relevant experience and look irrelevant: a coding question got no
+// activity hint, so its coding experience was indistinguishable from the
+// (irrelevant) email/web experiences. The text cues let the right experience
+// be identified from the question alone.
 const ACTIVITY_RULES = [
     { activity: 'reading-emails', label: 'Reading emails',
       test: (t, a, q) => a.has('email') || /\bemails?\b|\.eml\b|\.msg\b|\binbox\b|\bsender\b/.test(q) },
     { activity: 'spreadsheet-analysis', label: 'Spreadsheet & data analysis',
-      test: (t, a) => a.has('spreadsheet') || t.has('read_xlsx') || t.has('create_xlsx') || t.has('query_sqlite') },
+      test: (t, a, q) => a.has('spreadsheet') || t.has('read_xlsx') || t.has('create_xlsx') || t.has('query_sqlite')
+          || /\b(spreadsheet|excel|csv|tsv|xlsx?|pivot table|google sheets?)\b/.test(q) },
     { activity: 'binary-ctf-analysis', label: 'Binary / CTF analysis',
-      test: (t) => t.has('hex_dump') || t.has('extract_strings') || t.has('xor_bytes') || t.has('hex_convert') },
+      test: (t, a, q) => t.has('hex_dump') || t.has('extract_strings') || t.has('xor_bytes') || t.has('hex_convert')
+          || /\b(ctf|reverse[- ]?engineer\w*|disassembl\w+|shellcode|hex dump|\bxor\b|crackme|buffer overflow|capture the flag)\b/.test(q) },
     { activity: 'audio-transcription', label: 'Audio transcription',
-      test: (t, a) => a.has('audio') || t.has('transcribe_audio') },
+      test: (t, a, q) => a.has('audio') || t.has('transcribe_audio') || /\b(transcribe|transcription|audio file|voice memo)\b/.test(q) },
     { activity: 'image-analysis', label: 'Image analysis',
-      test: (t, a) => a.has('image') || t.has('transform_image') },
+      test: (t, a, q) => a.has('image') || t.has('transform_image') || /\b(this image|the image|screenshot|photo|picture|resize|crop|rotate)\b/.test(q) },
     { activity: 'code-analysis', label: 'Reading & analyzing code',
-      test: (t, a) => a.has('archive') || a.has('code') || t.has('extract_archive') || t.has('tar_extract')
-          || t.has('grep_code') || t.has('outline_file') || t.has('read_file') || t.has('list_directory') || t.has('search_files') },
+      test: (t, a, q) => a.has('archive') || a.has('code') || t.has('extract_archive') || t.has('tar_extract')
+          || t.has('grep_code') || t.has('outline_file') || t.has('read_file') || t.has('list_directory') || t.has('search_files')
+          || /\b(analy[sz]e|review|explain|understand|trace|debug|audit|walk through)\b[^.]{0,40}\b(code|codebase|repo(sitory)?|stack ?trace|traceback|this (file|function|script|error|bug))\b/.test(q) },
     { activity: 'document-analysis', label: 'Reading documents',
       test: (t, a, q) => a.has('pdf') || a.has('document') || t.has('read_pdf') || /\bpdf\b|\bdocx?\b/.test(q) },
     { activity: 'web-research', label: 'Web research',
-      test: (t) => t.has('web_search') || t.has('fetch_url') || t.has('crawl_pages') || t.has('scrapling_fetch') || t.has('playwright_fetch') || t.has('playwright_interact') },
+      test: (t, a, q) => t.has('web_search') || t.has('fetch_url') || t.has('crawl_pages') || t.has('scrapling_fetch') || t.has('playwright_fetch') || t.has('playwright_interact')
+          || /\b(search the web|look ?up online|latest|current|news|who is|what is the (price|stock)|google)\b/.test(q) },
     { activity: 'knowledge-base-lookup', label: 'Knowledge base lookup',
-      test: (t) => t.has('search_knowledge_base') },
+      test: (t, a, q) => t.has('search_knowledge_base') || /\b(knowledge ?base|my (docs|documents|files|notes|library|pdfs?|books?)|in my (kb|knowledge))\b/.test(q) },
     { activity: 'data-visualization', label: 'Data visualization',
-      test: (t) => t.has('render_chart') || t.has('fetch_timeseries') },
+      test: (t, a, q) => t.has('render_chart') || t.has('fetch_timeseries')
+          || /\b(chart|graph|plot|visuali[sz]e|bar chart|line chart|pie chart|dashboard|histogram|scatter ?plot)\b/.test(q) },
     { activity: 'coding', label: 'Writing & running code',
-      test: (t) => t.has('run_python') || t.has('run_node') || t.has('replace_lines') || t.has('create_file') },
+      test: (t, a, q) => t.has('run_python') || t.has('run_node') || t.has('replace_lines') || t.has('create_file')
+          // Technical nouns only — 'app'/'website' were dropped because they
+          // false-matched non-coding asks like "write a story about a website".
+          || /\b(write|implement|create|generate|build|fix|refactor|optimi[sz]e|debug)\b[^.]{0,40}\b(function|code|script|class|method|program|algorithm|api|endpoint|component|query|regex|for ?loop)\b/.test(q)
+          || /\b(python|javascript|typescript|c\+\+|golang|\brust\b|\bsql\b|bash script|react|node\.?js)\b/.test(q) },
 ];
 
 function deriveAttachmentKinds(attachments) {
@@ -13077,10 +13147,35 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // approach that worked) — the persona. DIRECTIVES are user-authored/model
     // learnings/preferences. FACTS are noisy auto-extractions (keyword-gated).
     const isProcedure = (m) => m.type === 'procedure';
-    const isDirective = (m) => !isProcedure(m) && (m.source === 'manual' || m.source === 'model'
+    // CURATED = the user (manual) or the model (record_learning) deliberately
+    // saved it. Curated memories are the persona's backbone and inject
+    // regardless of keyword overlap. AUTO-extracted memories are heuristic
+    // guesses, so they must EARN injection by being topically relevant (see the
+    // candidate filters below). Without this, an unrelated auto "preference" or
+    // "limitation" — a one-off task request, or a stray sentence misclassified
+    // as a limitation — injected on EVERY turn. That's the "coding question, but
+    // it surfaces a memory about buses" failure the relevance gate fixes.
+    const isCurated = (m) => m.source === 'manual' || m.source === 'model';
+    const isDirective = (m) => !isProcedure(m) && (isCurated(m)
         || m.impact === 'important' || (m.type && m.type !== 'fact'));
 
     const relOf = (m) => jaccardSimilarity(m.keywords || [], queryKeywords);
+    // Topical-relevance gate for AUTO memories (≥2 shared keywords, or one
+    // specific identifier). Curated memories bypass it.
+    const isRelevant = (m) => factKeywordMatch(m.keywords || [], queryKeywords);
+    // A GLOBAL behavioral directive — a durable, cross-topic rule about HOW to
+    // respond ("from now on, be concise", "always use type hints"). These apply
+    // to every turn, so an AUTO-extracted one still injects unconditionally even
+    // though other auto memories are relevance-gated. Excludes one-off TASK
+    // requests that merely start with "I like/prefer" ("I like Sonify, can you
+    // check …") — those name a thing to act on now, not a standing rule, and are
+    // what the relevance gate is meant to suppress.
+    const isGlobalBehavioralDirective = (m) => {
+        if (m.type !== 'preference' && m.type !== 'correction') return false;
+        const t = String(m.text || '').toLowerCase();
+        if (/\?|\bcan you\b|\bcould you\b|\bplease (check|find|make sure|look|verify|confirm|see)\b/.test(t)) return false;
+        return /\b(from now on|going forward|by default|always|never|prefer|don'?t|do not|stop)\b/.test(t);
+    };
     const scoreOf = (m) => {
         const ts = Date.parse(m.updatedAt || m.createdAt || '') || now;
         const ageDays = Math.max(0, (now - ts) / 86400000);
@@ -13103,8 +13198,24 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     const directiveBudget = Math.floor(tokenBudget * 0.85);
     const tokOf = (m) => m.tokens || Math.ceil((m.text || '').length / 3);
 
-    const procCands = all.filter(isProcedure).map(m => ({ m, s: procScoreOf(m) })).sort((a, b) => b.s - a.s);
-    const directives = all.filter(isDirective).map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
+    // Procedures (experience) inject when they're the RIGHT experience for THIS
+    // turn: the predicted activity matches OR there's genuine keyword overlap.
+    // Procedures are inherently ACTIVITY-specific (a coding recipe, an email
+    // recipe), so they are ALWAYS activity/topic-gated — even a model-curated
+    // one — so a procedure for an unrelated activity (the "reading-emails"
+    // experience during a coding task) never leads. That irrelevant-persona
+    // leakage was the worst offender of the "buses" problem.
+    const procCands = all.filter(isProcedure)
+        .filter(m => (activityHint && m.activity === activityHint) || isRelevant(m))
+        .map(m => ({ m, s: procScoreOf(m) })).sort((a, b) => b.s - a.s);
+    // Directives: curated ones (manual / model learnings) always apply — they
+    // shape behavior across topics. AUTO-extracted directives (a heuristically
+    // typed preference/limitation/correction) must be topically relevant AND
+    // non-ephemeral, exactly like facts, so a stray one-off doesn't inject
+    // everywhere.
+    const directives = all.filter(isDirective)
+        .filter(m => isCurated(m) || isGlobalBehavioralDirective(m) || (!isEphemeralFact(m.text) && isRelevant(m)))
+        .map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
     // Facts inject only on a substantive query match (factKeywordMatch: >=2
     // shared keywords or one specific identifier) AND only if not ephemeral —
     // the ephemeral skip is defense-in-depth for any time-bound fact stored
@@ -15566,6 +15677,14 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                                     ...chatMessages[0],
                                     content: `${existing}\n\n${memoryBlock}`,
                                 };
+                            } else if (Array.isArray(existing)) {
+                                // Vision-format system message — append a text part
+                                // rather than dropping the memory block (mirrors
+                                // injectPersonaForV1 / the KB nudge).
+                                chatMessages[0] = {
+                                    ...chatMessages[0],
+                                    content: [...existing, { type: 'text', text: `\n\n${memoryBlock}` }],
+                                };
                             }
                         } else {
                             chatMessages.unshift({ role: 'system', content: memoryBlock });
@@ -15601,12 +15720,44 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         ...chatMessages[0],
                         content: `${prelude}\n\n${existing}`,
                     };
+                } else if (Array.isArray(existing)) {
+                    // Vision-format system message — prepend the prelude as a text
+                    // part rather than dropping it.
+                    chatMessages[0] = {
+                        ...chatMessages[0],
+                        content: [{ type: 'text', text: `${prelude}\n\n` }, ...existing],
+                    };
                 }
             } else {
                 chatMessages.unshift({ role: 'system', content: prelude });
             }
         } catch (preludeErr) {
             console.warn(`[Chat] Runtime prelude injection failed: ${preludeErr.message}`);
+        }
+
+        // KB proactivity nudge — when the user has knowledge base(s), tell the
+        // model to consult them for on-topic questions instead of answering only
+        // from general knowledge. This is what makes the KB actually get used
+        // (and visibly logged). Scoped to req.userId so it matches exactly which
+        // KBs the search_knowledge_base tool can see. Best-effort.
+        try {
+            const kbList = await knowledgeBaseService.listKBs(req.userId || null).catch(() => []);
+            const kbNudge = buildKbNudge(kbList);
+            if (kbNudge) {
+                if (chatMessages.length > 0 && chatMessages[0].role === 'system') {
+                    const existing = chatMessages[0].content;
+                    if (typeof existing === 'string') {
+                        chatMessages[0] = { ...chatMessages[0], content: `${existing}\n\n${kbNudge}` };
+                    } else if (Array.isArray(existing)) {
+                        // Vision-format system message — append a text part.
+                        chatMessages[0] = { ...chatMessages[0], content: [...existing, { type: 'text', text: `\n\n${kbNudge}` }] };
+                    }
+                } else {
+                    chatMessages.unshift({ role: 'system', content: kbNudge });
+                }
+            }
+        } catch (kbNudgeErr) {
+            console.warn(`[Chat] KB nudge injection failed: ${kbNudgeErr.message}`);
         }
 
         // Calculate total tokens from all messages
@@ -23240,8 +23391,19 @@ app.use((req, res) => {
                 // Experience path: when the model labels an ACTIVITY, this lesson
                 // is about HOW it did that kind of task — store it as a procedure
                 // (persona), consolidated by activity key and reused to go faster.
+                // BUT a behavioral preference/correction is NOT a tool-path: the
+                // model sometimes tags one with an activity ("activity:coding,
+                // always use type hints"), which would OVERWRITE the activity's
+                // lean tool-recipe with a style rule. Route those to the learning
+                // store instead, where they become a curated directive that
+                // applies across every activity (and always injects).
+                // Note: type 'learning'/'workaround'/'issue' WITH an activity is
+                // genuinely procedural (how a task was done) and correctly takes
+                // the experience path; only preference/correction/feedback bypass
+                // it to become cross-topic directives.
                 const activityLabel = String(args?.activity || '').trim();
-                if (activityLabel) {
+                const isBehavioralLesson = type === 'preference' || type === 'correction' || type === 'feedback';
+                if (activityLabel && !isBehavioralLesson) {
                     const ar = await memoryService.upsertActivityMemory(userId, {
                         activity: activityLabel, text, keywords, impact,
                         tokens: Math.ceil(text.length / 3), source: 'model',

@@ -300,7 +300,10 @@ export default function MemoryPanel() {
                                     >
                                         <SIcon size={15} style={{ marginTop: 2, color: active ? 'var(--accent-primary)' : 'var(--text-tertiary)' }} />
                                         <div className="min-w-0 flex-1">
-                                            <div className="line-clamp-2 text-sm" style={{ color: active ? 'var(--accent-primary)' : 'var(--text-primary)' }}>
+                                            <div className="truncate text-sm font-medium" style={{ color: active ? 'var(--accent-primary)' : 'var(--text-primary)' }}>
+                                                {m.title || m.text}
+                                            </div>
+                                            <div className="line-clamp-2 text-xs" style={{ color: 'var(--text-tertiary)' }}>
                                                 {m.text}
                                             </div>
                                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
@@ -334,7 +337,7 @@ export default function MemoryPanel() {
                         <>
                             <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                    <div className="text-base font-semibold">Edit memory</div>
+                                    <div className="truncate text-base font-semibold" title={selected.title || ''}>{selected.title || 'Edit memory'}</div>
                                     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
                                         <Chip tone={selected.source === 'model' ? 'accent' : 'muted'}>
                                             {(SOURCE_META[selected.source] || SOURCE_META.auto).label}
@@ -426,9 +429,9 @@ function RecallTest({ query, setQuery, runSearch, searching, results }) {
                         <div className="text-sm" style={{ color: 'var(--text-tertiary)' }}>No matching memories.</div>
                     ) : results.map((r) => (
                         <div key={r.id} className="rounded-md p-3" style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-primary)' }}>
-                            <div className="mb-1 flex items-center justify-between text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
-                                <span className="truncate">{r.type || r.source}</span>
-                                <span>score {Number(r.score).toFixed(3)}</span>
+                            <div className="mb-1 flex items-center justify-between gap-2 text-[0.7rem]" style={{ color: 'var(--text-tertiary)' }}>
+                                <span className="truncate">{r.title || r.type || r.source}</span>
+                                <span className="shrink-0">score {Number(r.score).toFixed(3)}</span>
                             </div>
                             <div className="text-sm" style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
                                 {r.text.length > 600 ? r.text.slice(0, 600) + '…' : r.text}
