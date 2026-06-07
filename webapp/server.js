@@ -181,13 +181,24 @@ const authRateLimiter = rateLimit({
     skipSuccessfulRequests: false, // Count all requests
 });
 
-// Security: General API rate limiting
+// Security: General API rate limiting. Mounted on /api/* (see the global gate
+// after the CSRF middleware). Real-time endpoints are exempted so the limit
+// never breaks live updates: the chat background-streaming status poll fires
+// every ~100ms (≈600 req/min for a single stream) and the automation SSE event
+// stream is one long-lived connection — throttling either would regress
+// streaming UX (the foreground/background streaming behavior CLAUDE.md flags).
 const apiRateLimiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
     max: 100, // 100 requests per minute
     message: { error: 'Too many requests, please slow down' },
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => {
+        const p = req.path; // full path — the limiter runs from a global gate
+        if (/^\/api\/conversations\/[^/]+\/streaming$/.test(p)) return true; // ~100ms poll
+        if (p === '/api/automations/events') return true; // long-lived SSE
+        return false;
+    },
 });
 
 // Security: dedicated limiter for the unauthenticated bootstrap probe
@@ -199,6 +210,18 @@ const hasUsersRateLimiter = rateLimit({
     windowMs: 5 * 60 * 1000, // 5 minutes
     max: 30,
     message: { error: 'Too many requests, please slow down' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Security: stricter limiter for the unauthenticated public webhook. A webhook
+// hit runs an ENTIRE workflow (model completions, scraping, tool calls) as the
+// owner, so even with a 192-bit token the endpoint must not be usable to
+// amplify load if a token leaks. Per-IP; sits on top of the general /api limit.
+const webhookRateLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 20, // 20 webhook triggers per minute per IP
+    message: { error: 'Too many webhook requests, please slow down' },
     standardHeaders: true,
     legacyHeaders: false,
 });
@@ -2706,6 +2729,15 @@ app.use((req, res, next) => {
     // Cookie-authenticated state change: require the custom header.
     if ((req.headers['x-requested-with'] || '').toLowerCase() === 'xmlhttprequest') return next();
     return res.status(403).json({ error: 'Missing required request header' });
+});
+
+// General API rate limit (CLAUDE.md "API 60s/100"). Gated to /api/* so static
+// assets and the rendered index are unaffected; the limiter's own `skip` exempts
+// the high-frequency streaming poll + SSE stream. Auth routes keep their own
+// stricter limiter on top. Placed after CSRF so it fronts every API route.
+app.use((req, res, next) => {
+    if (req.path.startsWith('/api/')) return apiRateLimiter(req, res, next);
+    return next();
 });
 
 // index.html is rendered (not statically served) so we can stamp the
@@ -9167,7 +9199,7 @@ app.post('/api/automations/:id/webhook-token', requireAuth, async (req, res) => 
 // the workflow owner. No requireAuth (external services call this); the global
 // CSRF check is cookie-auth-only so token callers are exempt. Fires in the
 // background and returns 202 so the caller isn't blocked on the run.
-app.post('/api/automations/webhook/:token', async (req, res) => {
+app.post('/api/automations/webhook/:token', webhookRateLimiter, async (req, res) => {
     const token = req.params.token;
     if (!token || token.length < 24) return res.status(404).json({ error: 'Not found' });
     try {
