@@ -22,6 +22,7 @@ cd "$PROJECT_DIR"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 DIM='\033[2m'
 BOLD='\033[1m'
@@ -29,9 +30,11 @@ NC='\033[0m'
 
 SYM_OK="${GREEN}✓${NC}"
 SYM_ARROW="${CYAN}→${NC}"
+SYM_WARN="${YELLOW}!${NC}"
 
 log_success() { echo -e "  ${SYM_OK}  $1"; }
 log_step()    { echo -e "  ${SYM_ARROW}  $1"; }
+log_warn()    { echo -e "  ${SYM_WARN}  ${YELLOW}$1${NC}"; }
 
 section() {
     echo ""
@@ -70,42 +73,94 @@ echo -e "  ${BOLD}Model Server Stop${NC}"
 
 section "Model Instances"
 
-# Count both running and exited containers. Crashed/OOM-killed instances
-# stay in "Exited" state and would otherwise be skipped, leaving their
-# container name reserved so the next load fails with a 409 conflict.
-cleanup_instances() {
-    local label="$1"
-    local filter="$2"
-    local running_count exited_count total_count
-    running_count=$(docker ps --filter "$filter" -q 2>/dev/null | wc -l)
-    exited_count=$(docker ps -a --filter "$filter" --filter "status=exited" --filter "status=created" --filter "status=dead" -q 2>/dev/null | wc -l)
-    total_count=$((running_count + exited_count))
-    if [ "$total_count" -eq 0 ]; then
-        return
-    fi
-    if [ "$running_count" -gt 0 ]; then
-        start_spinner "Stopping $running_count running $label instance(s)"
-        docker ps --filter "$filter" -q | xargs -r docker stop 2>/dev/null || true
-        stop_spinner
-    fi
-    start_spinner "Removing $total_count $label container(s)"
-    docker ps -a --filter "$filter" -q | xargs -r docker rm -f 2>/dev/null || true
-    stop_spinner
-    if [ "$exited_count" -gt 0 ] && [ "$running_count" -eq 0 ]; then
-        log_success "Cleaned $exited_count stale $label container(s)"
-    else
-        log_success "Stopped $total_count $label instance(s)"
-    fi
+# Model inference containers are auto-created via dockerode (NOT docker-compose),
+# so `docker compose down` never touches them — they keep the GPU busy after a
+# naive stop. They are always built from the modelserver-llamacpp /
+# modelserver-sglang base images and named llamacpp-* / sglang-* (sglang HF
+# loads are sglang-hf-*). We match on BOTH name prefix AND image (ancestor) so a
+# renamed, half-created, or otherwise-named instance can't slip through and leave
+# a job running on the GPU. Includes Exited/Created/Dead containers — crashed or
+# OOM-killed instances keep their name reserved, causing a 409 on the next load.
+collect_model_containers() {
+    {
+        docker ps -a --filter "name=llamacpp-" -q
+        docker ps -a --filter "name=sglang-" -q
+        docker ps -a --filter "ancestor=modelserver-llamacpp:latest" -q
+        docker ps -a --filter "ancestor=modelserver-sglang:latest" -q
+    } 2>/dev/null | sort -u
 }
 
-cleanup_instances "llama.cpp" "name=llamacpp-"
-cleanup_instances "sglang" "name=sglang-"
+# Deeper safety net: any OTHER running container still holding an NVIDIA GPU is,
+# in this project, a model job (the only GPU consumers are inference instances).
+# We deliberately EXCLUDE the compose infra (webapp/chat) — those request the GPU
+# only for nvidia-smi monitoring and are stopped by `docker compose down` below.
+collect_stray_gpu_containers() {
+    local id img reqs
+    for id in $(docker ps -q 2>/dev/null); do
+        img=$(docker inspect -f '{{.Config.Image}}' "$id" 2>/dev/null)
+        case "$img" in
+            modelserver-webapp*|modelserver-chat*|*sandbox*) continue ;;
+        esac
+        reqs=$(docker inspect -f '{{json .HostConfig.DeviceRequests}}' "$id" 2>/dev/null)
+        if echo "$reqs" | grep -qi nvidia; then
+            echo "$id"
+        fi
+    done
+}
 
-# Combined check across both backends for the "nothing to do" message.
-LLAMACPP_REMAINING=$(docker ps -a --filter "name=llamacpp-" -q 2>/dev/null | wc -l)
-SGLANG_REMAINING=$(docker ps -a --filter "name=sglang-" -q 2>/dev/null | wc -l)
-if [ "$((LLAMACPP_REMAINING + SGLANG_REMAINING))" -eq 0 ]; then
+# Union of all model + stray-GPU containers, deduped to short IDs.
+ALL_IDS=$( { collect_model_containers; collect_stray_gpu_containers; } | sort -u )
+
+if [ -z "$ALL_IDS" ]; then
     log_success "No model instances present"
+else
+    # Partition into running vs. not-running (exited/created/dead) so we can
+    # report accurately and only `stop` the live ones.
+    RUNNING_SET=$(docker ps -q 2>/dev/null)
+    RUNNING_IDS=""
+    for id in $ALL_IDS; do
+        if echo "$RUNNING_SET" | grep -qx "$id"; then
+            RUNNING_IDS="$RUNNING_IDS $id"
+        fi
+    done
+    RUNNING_COUNT=$(echo $RUNNING_IDS | wc -w)
+    TOTAL_COUNT=$(echo "$ALL_IDS" | wc -l)
+
+    if [ "$RUNNING_COUNT" -gt 0 ]; then
+        start_spinner "Stopping $RUNNING_COUNT running model instance(s) — freeing GPU"
+        # Short grace period (5s) then SIGKILL: inference servers rarely flush
+        # cleanly and we want the GPU released promptly.
+        echo $RUNNING_IDS | xargs -r docker stop -t 5 2>/dev/null || true
+        stop_spinner
+        log_success "Stopped $RUNNING_COUNT running model instance(s)"
+    fi
+
+    start_spinner "Removing $TOTAL_COUNT model container(s)"
+    echo "$ALL_IDS" | xargs -r docker rm -f 2>/dev/null || true
+    stop_spinner
+    log_success "Removed $TOTAL_COUNT model container(s)"
+fi
+
+# Verify the GPU is actually idle. If a compute process survives container
+# removal it's a true orphan (stuck driver handle) — surface its PID so the
+# operator can kill it; the GPU won't free on its own.
+if command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_APPS=""
+    for _ in 1 2 3; do
+        GPU_APPS=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null)
+        [ -z "$GPU_APPS" ] && break
+        sleep 1
+    done
+    if [ -z "$GPU_APPS" ]; then
+        log_success "GPU is idle — no compute processes remain"
+    else
+        log_warn "GPU still has active compute process(es) after container cleanup:"
+        echo "$GPU_APPS" | while IFS= read -r line; do
+            [ -n "$line" ] && echo -e "       ${DIM}${line}${NC}"
+        done
+        ORPHAN_PIDS=$(echo "$GPU_APPS" | awk -F', *' '{print $1}' | tr '\n' ' ')
+        log_warn "These are orphaned (no owning container). Kill manually:  sudo kill -9${ORPHAN_PIDS:+ }${ORPHAN_PIDS}"
+    fi
 fi
 
 section "Services"
