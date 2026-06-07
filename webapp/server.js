@@ -21641,17 +21641,45 @@ app.all('/v1/*', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('[Proxy] Error:', error.message);
         if (error.response) {
-            console.error('[Proxy] Response status:', error.response.status);
-            console.error('[Proxy] Response data:', JSON.stringify(error.response.data));
-            res.status(error.response.status).json(error.response.data || {
-                error: 'Proxy error',
-                details: error.message
-            });
-        } else {
+            const status = error.response.status;
+            console.error('[Proxy] Response status:', status);
+            // Streaming proxy requests use responseType:'stream', so an upstream
+            // error body arrives as a Node stream (IncomingMessage), NOT parsed
+            // JSON. JSON.stringify-ing it throws "Converting circular structure"
+            // (socket → _httpMessage → ClientRequest → socket) and, since we're
+            // already in the catch, surfaces as an unhandledRejection. Drain the
+            // stream to text first; parse as JSON when possible.
+            let data = error.response.data;
+            if (data && typeof data.pipe === 'function') {
+                data = await new Promise((resolve) => {
+                    let buf = '';
+                    data.on('data', (c) => { if (buf.length < 64 * 1024) buf += c.toString('utf8'); });
+                    data.on('end', () => resolve(buf));
+                    data.on('error', () => resolve(buf));
+                });
+                try { data = JSON.parse(data); } catch (_) { /* keep as raw text */ }
+            }
+            try {
+                console.error('[Proxy] Response data:', typeof data === 'string' ? data : JSON.stringify(data));
+            } catch (_) { /* never let logging crash the handler */ }
+            if (!res.headersSent) {
+                if (data && typeof data === 'object') {
+                    res.status(status).json(data);
+                } else if (typeof data === 'string' && data) {
+                    res.status(status).json({ error: 'Proxy error', details: data });
+                } else {
+                    res.status(status).json({ error: 'Proxy error', details: error.message });
+                }
+            } else if (!res.writableEnded) {
+                res.end();
+            }
+        } else if (!res.headersSent) {
             res.status(500).json({
                 error: 'Failed to proxy request to sglang',
                 details: error.message
             });
+        } else if (!res.writableEnded) {
+            res.end();
         }
     }
 });
