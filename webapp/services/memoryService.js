@@ -1,61 +1,81 @@
 /**
  * Memory service — account-scoped persona/fact memory for the chat model.
  *
- * This replaces the old per-CONVERSATION memory store: memories now belong to
- * the ACCOUNT (userId) so they follow the user across every conversation. The
- * design intentionally mirrors knowledgeBaseService.js — a single owner-tagged
- * metadata file plus a write-serializer — so ownership/admin routing and the
- * webapp Memory tab can reuse the exact Knowledge Base patterns.
+ * This is the model's CONTINUAL-LEARNING store: it accumulates experience the
+ * way a person does — facts about the user, corrections and preferences
+ * (directives), and EXPERIENCE memories (procedures: how a kind of task was
+ * done and what worked). Records are consolidated/refined in place rather than
+ * piled up, so the store self-improves instead of sprawling.
  *
- * Responsibilities (STORAGE only — the heuristics that PRODUCE memories, i.e.
- * factuality scoring / shorthand / sentence splitting / keyword extraction,
- * stay in server.js where they already live):
- *   - own memories.json: list / get / create / update / delete records, each
- *     tagged with its owner userId.
- *   - account-wide dedup + prune so a user's set stays bounded.
- *   - per-conversation extraction cursors (which assistant message we last
- *     processed) so re-saves don't re-extract the same turns.
- *   - one-time migration of the legacy per-conversation memory directories
- *     into the account store.
+ * Storage (v2 — sharded): one file PER USER at memory/<userIdSafe>.json,
+ * base64-wrapped compact JSON (same obfuscation level as conversations — the
+ * distilled-personal-data store shouldn't be the only plaintext one). The old
+ * single memories.json is split into shards once at startup (then renamed
+ * *.migrated-bak). Sharding means a turn-save rewrites ONE user's records,
+ * not every user's, and writes are serialized per user instead of globally.
+ *
+ * Semantic index: every create/update/delete mirrors into memoryIndex.js
+ * (kb_engine embeddings, docId = memory id) BEST-EFFORT — embedding failures
+ * never block a write; retrieval falls back to keyword matching.
+ *
+ * Responsibilities (STORAGE only — the heuristics that PRODUCE memories live
+ * in server.js):
+ *   - own the per-user memory shards: list / get / create / update / delete.
+ *   - account-wide dedup + supersedence + prune so a user's set stays bounded.
+ *   - per-conversation extraction cursors.
+ *   - one-time migrations (per-conversation dirs → account store; flat
+ *     memories.json → per-user shards).
  *
  * Records (one per memory):
- *   { id, userId, text, keywords[], tokens, score,
+ *   { id, userId, title, text, keywords[], tokens, score,
  *     source: 'auto'|'manual'|'model',
- *     type:  null|'feedback'|'issue'|'preference'|'workaround'|'correction'|'limitation'|'learning'|'fact',
- *     impact: null|'important'|'medium'|'low',     // model learnings
- *     sourceRole: 'user'|'assistant'|null,
- *     sourceConvId, sourceTurnId,
- *     createdAt, updatedAt }
+ *     type:  null|'feedback'|'issue'|'preference'|'workaround'|'correction'|'limitation'|'learning'|'fact'|'procedure',
+ *     impact: null|'important'|'medium'|'low',
+ *     pinned: bool,   // user-flagged: never pruned
+ *     muted: bool,    // user-flagged: kept but never injected
+ *     activity, count, bestSteps, textSource,   // procedure/experience fields
+ *     sourceRole, sourceConvId, sourceTurnId, createdAt, updatedAt }
  */
 
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const memoryIndex = require('./memoryIndex');
 
 const DATA_DIR = '/models/.modelserver';
-const MEMORY_META_FILE = path.join(DATA_DIR, 'memories.json');
+const LEGACY_META_FILE = path.join(DATA_DIR, 'memories.json');
+const MEMORY_DIR = path.join(DATA_DIR, 'memory');
 const CURSOR_FILE = path.join(DATA_DIR, 'memory-cursors.json');
 const MIGRATED_FILE = path.join(DATA_DIR, 'memory-migrated.json');
 const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations');
 
-// Per-account cap. The old store capped at 200 PER CONVERSATION; an account
-// spans many conversations, so the budget is larger. When exceeded we drop the
-// lowest-score, oldest entries first (model 'important' learnings are floored
-// so they survive pruning — they shape the persona).
+// Per-account cap. When exceeded we drop the lowest-score, oldest entries
+// first (pinned entries and the persona — procedures + important model
+// learnings — are floored so they survive pruning).
 const ACCOUNT_MEMORY_MAX = 2000;
 const MEMORY_TEXT_MAX = 2000;
-// Account-wide dedup threshold on keyword Jaccard overlap.
+// Account-wide dedup threshold on keyword Jaccard overlap (near-identical).
 const DEDUP_THRESHOLD = 0.75;
+// Supersedence: same TOPIC but different content → the new fact replaces the
+// old one in place (a changed fact must not coexist with its stale version).
+const SUPERSEDE_RATIO = 0.6;
+const SUPERSEDE_MIN_SHARED = 3;
+// Experience variants: how many distinct recipes one activity may hold, and
+// how close a new recipe must be (topic overlap) to refine an existing one
+// instead of becoming a new variant. Practice specializes: "coding" on a React
+// app and "coding" on a CUDA build deserve separate recipes.
+const MAX_ACTIVITY_VARIANTS = 3;
+const VARIANT_MATCH_RATIO = 0.5;
 
 const VALID_SOURCES = new Set(['auto', 'manual', 'model']);
 const VALID_TYPES = new Set([
     'feedback', 'issue', 'preference', 'workaround', 'correction', 'limitation', 'learning', 'fact',
     // 'procedure' = an EXPERIENCE memory: how the model performed a high-level
     // activity ("reading emails", "web research") and the approach that worked.
-    // Keyed by `activity`, reinforced (count++) and refined each time that
-    // activity recurs — these accumulate into the model's persona / skill set
-    // and front-load the efficient approach so repeat tasks need fewer tool calls.
+    // Keyed by `activity` (up to MAX_ACTIVITY_VARIANTS variants per activity),
+    // reinforced (count++) and refined each time that activity recurs — these
+    // accumulate into the model's persona / skill set.
     'procedure',
 ]);
 const VALID_IMPACTS = new Set(['important', 'medium', 'low']);
@@ -152,8 +172,8 @@ function topicOverlap(aKeywords, bKeywords) {
     return { ratio: denom === 0 ? 0 : inter / denom, inter };
 }
 
-// Decode a possibly base64-wrapped JSON blob (legacy .mem files) — mirrors
-// server.js decodeConversationData so migration can read old memories.
+// Decode a possibly base64-wrapped JSON blob — both the v2 shard files and the
+// legacy .mem files use this (mirrors server.js decodeConversationData).
 function decodeMaybeBase64(raw, fallback = null) {
     if (!raw || !raw.trim()) return fallback;
     const trimmed = raw.trim();
@@ -173,32 +193,113 @@ function nowIso() { return new Date().toISOString(); }
 function estimateTokens(text) { return Math.ceil(String(text || '').length / 3); }
 
 // --------------------------------------------------------------------------
-// Metadata file (memories.json) — serialized read-modify-write
+// Sharded per-user store (memory/<userIdSafe>.json, base64-wrapped JSON)
 // --------------------------------------------------------------------------
 
-let writeChain = Promise.resolve();
+// In-process cache: userIdSafe → list. Safe because this process is the only
+// writer; invalidated implicitly by being updated inside every mutate.
+const userCache = new Map();
+// Per-user write serializers so concurrent saves for one user don't clobber,
+// while different users' writes proceed independently.
+const userChains = new Map();
 
-async function readMeta() {
+function shardPath(userId) {
+    return path.join(MEMORY_DIR, `${userIdSafe(userId)}.json`);
+}
+
+async function readUserList(userId) {
+    const key = userIdSafe(userId);
+    if (userCache.has(key)) return userCache.get(key);
+    let list = [];
     try {
-        const parsed = JSON.parse(await fsp.readFile(MEMORY_META_FILE, 'utf8'));
-        return Array.isArray(parsed) ? parsed : [];
+        const raw = await fsp.readFile(shardPath(userId), 'utf8');
+        const parsed = decodeMaybeBase64(raw, []);
+        list = Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+    }
+    userCache.set(key, list);
+    return list;
+}
+
+async function writeUserList(userId, list) {
+    await fsp.mkdir(MEMORY_DIR, { recursive: true });
+    const encoded = Buffer.from(JSON.stringify(list)).toString('base64');
+    await fsp.writeFile(shardPath(userId), encoded);
+    userCache.set(userIdSafe(userId), list);
+}
+
+/** Serialize read-modify-write PER USER. `fn(list)` mutates in place. */
+function mutateUser(userId, fn) {
+    const key = userIdSafe(userId);
+    const prev = userChains.get(key) || Promise.resolve();
+    const next = prev.then(async () => {
+        await ensureStore();
+        const list = await readUserList(userId);
+        const result = await fn(list);
+        await writeUserList(userId, list);
+        return result;
+    });
+    userChains.set(key, next.catch(() => {}));
+    return next;
+}
+
+// One-time store-format migration: split the flat all-users memories.json into
+// per-user shards. Runs lazily before the first operation; the legacy file is
+// renamed (not deleted) for rollback safety. Each migrated user's semantic
+// index is built in the background.
+let storeReadyPromise = null;
+function ensureStore() {
+    if (storeReadyPromise) return storeReadyPromise;
+    storeReadyPromise = (async () => {
+        let legacy = null;
+        try {
+            legacy = JSON.parse(await fsp.readFile(LEGACY_META_FILE, 'utf8'));
+        } catch (e) {
+            if (e.code !== 'ENOENT') log(`legacy store unreadable (${e.message}); starting sharded store fresh`);
+            return;
+        }
+        if (!Array.isArray(legacy)) legacy = [];
+        const byUser = new Map();
+        for (const rec of legacy) {
+            const key = rec.userId ?? null;
+            if (!byUser.has(key)) byUser.set(key, []);
+            byUser.get(key).push(normalizeRecord(rec));
+        }
+        await fsp.mkdir(MEMORY_DIR, { recursive: true });
+        for (const [uid, list] of byUser) {
+            await writeUserList(uid, list);
+        }
+        await fsp.rename(LEGACY_META_FILE, `${LEGACY_META_FILE}.migrated-bak`);
+        log(`split legacy memories.json into ${byUser.size} per-user shard(s)`);
+        // Backfill semantic indexes in the background (best-effort).
+        for (const [uid, list] of byUser) {
+            memoryIndex.reindexUser(uid, list).catch(() => {});
+        }
+    })().catch((e) => { log(`store migration failed: ${e.message}`); });
+    return storeReadyPromise;
+}
+
+/** Every user shard on disk (admin list-all). */
+async function readAllLists() {
+    await ensureStore();
+    let files = [];
+    try {
+        files = (await fsp.readdir(MEMORY_DIR)).filter((f) => f.endsWith('.json'));
     } catch (e) {
         if (e.code === 'ENOENT') return [];
         throw e;
     }
-}
-
-/** Serialize read-modify-write so concurrent saves don't clobber the file. */
-function mutateMeta(fn) {
-    const next = writeChain.then(async () => {
-        const list = await readMeta();
-        const result = await fn(list);
-        await fsp.mkdir(DATA_DIR, { recursive: true });
-        await fsp.writeFile(MEMORY_META_FILE, JSON.stringify(list, null, 2));
-        return result;
-    });
-    writeChain = next.catch(() => {});
-    return next;
+    const out = [];
+    for (const f of files) {
+        const key = f.slice(0, -5);
+        if (userCache.has(key)) { out.push(...userCache.get(key)); continue; }
+        try {
+            const parsed = decodeMaybeBase64(await fsp.readFile(path.join(MEMORY_DIR, f), 'utf8'), []);
+            if (Array.isArray(parsed)) { userCache.set(key, parsed); out.push(...parsed); }
+        } catch (_) { /* unreadable shard — skip */ }
+    }
+    return out;
 }
 
 // --------------------------------------------------------------------------
@@ -206,14 +307,16 @@ function mutateMeta(fn) {
 // --------------------------------------------------------------------------
 
 async function listMemories(userId, { all = false } = {}) {
-    const list = await readMeta();
-    if (all) return list;
+    await ensureStore();
+    if (all) return readAllLists();
+    const list = await readUserList(userId);
+    // Filter defensively: distinct raw ids could sanitize to the same shard.
     return list.filter((m) => m.userId === userId);
 }
 
 async function getMemory(id) {
-    const list = await readMeta();
-    return list.find((m) => m.id === id) || null;
+    const all = await readAllLists();
+    return all.find((m) => m.id === id) || null;
 }
 
 function normalizeRecord(input) {
@@ -222,7 +325,7 @@ function normalizeRecord(input) {
     const type = input.type && VALID_TYPES.has(input.type) ? input.type : null;
     const impact = input.impact && VALID_IMPACTS.has(input.impact) ? input.impact : null;
     const activity = input.activity ? normalizeActivity(input.activity) : null;
-    return {
+    const rec = {
         id: input.id || crypto.randomUUID(),
         userId: input.userId ?? null,
         // Short, auto-derived "<Category> — <summary>" title for the Memory tab
@@ -236,6 +339,10 @@ function normalizeRecord(input) {
         source,
         type,
         impact,
+        // User-controlled flags: pinned = never pruned; muted = stored but
+        // never injected. Together they give an escape hatch short of delete.
+        pinned: input.pinned === true,
+        muted: input.muted === true,
         // Experience/procedure memories: `activity` is the consolidation key,
         // `count` is how many times that activity has been reinforced (depth of
         // experience). Null/1 for ordinary memories.
@@ -247,21 +354,30 @@ function normalizeRecord(input) {
         createdAt: input.createdAt || nowIso(),
         updatedAt: input.updatedAt || nowIso(),
     };
+    if (input.textSource) rec.textSource = input.textSource;
+    if (Number.isFinite(input.bestSteps)) rec.bestSteps = input.bestSteps;
+    return rec;
 }
 
 /** Create one memory (manual add or a model learning). Returns the record. */
 async function createMemory(input) {
     const rec = normalizeRecord(input);
     if (!rec.text.trim()) throw new Error('memory text is required');
-    await mutateMeta((list) => {
+    let dropped = [];
+    await mutateUser(rec.userId, (list) => {
         list.push(rec);
-        pruneUser(list, rec.userId);
+        dropped = pruneUser(list, rec.userId);
     });
+    memoryIndex.upsert(rec.userId, rec).catch(() => {});
+    if (dropped.length) memoryIndex.removeMany(rec.userId, dropped).catch(() => {});
     return rec;
 }
 
+/** Patch one memory by id (scans shards to find the owner). */
 async function updateMemory(id, patch) {
-    return mutateMeta((list) => {
+    const existing = await getMemory(id);
+    if (!existing) return null;
+    const result = await mutateUser(existing.userId, (list) => {
         const m = list.find((x) => x.id === id);
         if (!m) return null;
         if (patch.text != null) m.text = String(patch.text).slice(0, MEMORY_TEXT_MAX);
@@ -272,80 +388,141 @@ async function updateMemory(id, patch) {
         if (patch.impact !== undefined) m.impact = patch.impact && VALID_IMPACTS.has(patch.impact) ? patch.impact : null;
         if (patch.activity !== undefined) m.activity = patch.activity ? normalizeActivity(patch.activity) : null;
         if (Number.isFinite(patch.count)) m.count = patch.count;
+        if (patch.pinned !== undefined) m.pinned = patch.pinned === true;
+        if (patch.muted !== undefined) m.muted = patch.muted === true;
         // Title is always derived — recompute whenever the body/type/activity
         // that feeds it may have changed.
         m.title = deriveMemoryTitle(m);
         m.updatedAt = nowIso();
         return { ...m };
     });
+    if (result && patch.text != null) {
+        memoryIndex.upsert(existing.userId, result).catch(() => {});
+    }
+    return result;
 }
 
 async function deleteMemory(id) {
-    return mutateMeta((list) => {
+    const existing = await getMemory(id);
+    if (!existing) return false;
+    const removed = await mutateUser(existing.userId, (list) => {
         const i = list.findIndex((m) => m.id === id);
         if (i < 0) return false;
         list.splice(i, 1);
         return true;
     });
+    if (removed) memoryIndex.remove(existing.userId, id).catch(() => {});
+    return removed;
 }
 
 /** Remove all memories for a user (used by the "clear all" route). */
 async function clearMemories(userId) {
-    return mutateMeta((list) => {
-        let removed = 0;
-        for (let i = list.length - 1; i >= 0; i--) {
-            if (list[i].userId === userId) { list.splice(i, 1); removed++; }
-        }
-        return removed;
+    const removed = await mutateUser(userId, (list) => {
+        const n = list.length;
+        list.length = 0;
+        return n;
     });
+    memoryIndex.clearUser(userId).catch(() => {});
+    return removed;
+}
+
+/** Rebuild a user's semantic index from their current records (self-heal /
+ * backfill). Fire-and-forget friendly. */
+async function reindexUser(userId) {
+    const list = await listMemories(userId);
+    return memoryIndex.reindexUser(userId, list);
 }
 
 // In-place prune of one user's entries down to the cap. Drops lowest-score,
-// oldest first; model 'important' learnings get a high synthetic score so they
-// survive. Mutates `list` (called inside mutateMeta).
+// oldest first. Pinned entries and the persona (procedures, important model
+// learnings) are floored so they survive. Mutates `list` (called inside
+// mutateUser). Returns the DROPPED record ids so callers can clean the
+// semantic index.
 function pruneUser(list, userId) {
-    const mine = [];
-    for (let i = 0; i < list.length; i++) if (list[i].userId === userId) mine.push(i);
-    if (mine.length <= ACCOUNT_MEMORY_MAX) return;
+    if (list.length <= ACCOUNT_MEMORY_MAX) return [];
     const weight = (m) => {
+        if (m.pinned) return Infinity;                 // user said: never forget
         // Procedure/experience memories ARE the persona — they must survive
         // pruning, weighted by how reinforced they are (count).
         if (m.type === 'procedure') return 2000 + (m.count || 1);
         if (m.source === 'model' && m.impact === 'important') return 1000 + (m.score || 0);
         return m.score || 0;
     };
-    // Sort the user's indices by keep-priority (high first); the tail is dropped.
-    mine.sort((ia, ib) => {
+    const idx = list.map((_, i) => i);
+    idx.sort((ia, ib) => {
         const wa = weight(list[ia]); const wb = weight(list[ib]);
         if (wb !== wa) return wb - wa;
         // tie-break: newer kept over older
         return (list[ib].updatedAt || '').localeCompare(list[ia].updatedAt || '');
     });
-    const dropIdx = new Set(mine.slice(ACCOUNT_MEMORY_MAX));
-    // Rebuild list excluding dropped indices (descending splice to keep indices valid).
+    const dropIdx = new Set(idx.slice(ACCOUNT_MEMORY_MAX));
+    const droppedIds = [...dropIdx].map((i) => list[i].id);
     const toDrop = [...dropIdx].sort((a, b) => b - a);
     for (const i of toDrop) list.splice(i, 1);
+    return droppedIds;
 }
 
 /**
- * Bulk-add auto-extracted memory candidates for a user, deduping account-wide
- * against existing entries (and within the batch) by keyword overlap. Each
- * candidate: { text, keywords, tokens, score, sourceRole, sourceTurnId,
- * sourceConvId }. Returns { added, items } where items briefly describes each
- * created record (for process-logging what was learned this turn).
+ * Bulk-add auto-extracted memory candidates for a user. Three outcomes per
+ * candidate, checked in order:
+ *   1. NEAR-DUPLICATE (keyword Jaccard ≥ DEDUP_THRESHOLD of any existing or
+ *      already-accepted entry) → skipped.
+ *   2. SUPERSEDES an existing AUTO fact (same topic by overlap coefficient —
+ *      SUPERSEDE_RATIO/_MIN_SHARED — but different content): the old record is
+ *      UPDATED IN PLACE (id/createdAt kept). A fact that changed ("uses
+ *      Windows" → "switched to Linux") must replace its stale version, not
+ *      coexist with it — recency boosts are too weak to arbitrate at
+ *      retrieval. Pinned / manual / model / procedure records are never
+ *      auto-superseded.
+ *   3. Otherwise CREATED as a new record.
+ * Returns { added, superseded, items } where items briefly describes each
+ * created/updated record (for process-logging what was learned this turn).
  */
 async function addAutoMemories(userId, candidates, { sourceConvId = null } = {}) {
-    if (!Array.isArray(candidates) || !candidates.length) return { added: 0, items: [] };
+    if (!Array.isArray(candidates) || !candidates.length) return { added: 0, superseded: 0, items: [] };
     let added = 0;
+    let superseded = 0;
     const items = [];
-    await mutateMeta((list) => {
-        const mine = list.filter((m) => m.userId === userId);
-        const acceptedKeywords = mine.map((m) => m.keywords || []);
+    const touched = []; // records to (re-)embed after the mutate commits
+    let dropped = [];
+    await mutateUser(userId, (list) => {
+        const acceptedKeywords = list.map((m) => m.keywords || []);
         for (const c of candidates) {
             const kw = Array.isArray(c.keywords) ? c.keywords : [];
             if (!kw.length) continue;
             const dup = acceptedKeywords.some((k) => jaccardSimilarity(k, kw) >= DEDUP_THRESHOLD);
             if (dup) continue;
+
+            // Supersedence pass — same topic, different content → refine the
+            // old auto fact in place instead of stacking a contradiction.
+            const cType = (c.type && VALID_TYPES.has(c.type)) ? c.type : 'fact';
+            let target = null, bestRatio = 0;
+            for (const m of list) {
+                if (m.source !== 'auto' || m.pinned || m.type === 'procedure') continue;
+                if ((m.type || 'fact') !== cType) continue;
+                const { ratio, inter } = topicOverlap(m.keywords || [], kw);
+                if (inter >= SUPERSEDE_MIN_SHARED && ratio >= SUPERSEDE_RATIO && ratio > bestRatio) {
+                    bestRatio = ratio; target = m;
+                }
+            }
+            if (target) {
+                target.text = String(c.text || '').slice(0, MEMORY_TEXT_MAX);
+                target.keywords = kw.slice(0, 40);
+                target.tokens = Number.isFinite(c.tokens) ? c.tokens : estimateTokens(target.text);
+                if (Number.isFinite(c.score)) target.score = c.score;
+                if (c.impact && VALID_IMPACTS.has(c.impact)) target.impact = c.impact;
+                target.sourceRole = c.sourceRole || target.sourceRole;
+                target.sourceConvId = c.sourceConvId || sourceConvId || target.sourceConvId;
+                target.sourceTurnId = c.sourceTurnId || target.sourceTurnId;
+                target.title = deriveMemoryTitle(target);
+                target.updatedAt = nowIso();
+                acceptedKeywords.push(kw);
+                touched.push({ ...target });
+                items.push({ text: target.text, type: target.type, impact: target.impact, superseded: true });
+                superseded++;
+                continue;
+            }
+
             const rec = normalizeRecord({
                 userId,
                 text: c.text,
@@ -353,10 +530,9 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
                 tokens: c.tokens,
                 score: c.score,
                 source: 'auto',
-                // Heuristic classification from the extractor (server.js
-                // classifyMemoryHeuristic). Falls back to a plain fact so a
-                // caller that doesn't classify still works.
-                type: c.type || 'fact',
+                // Classification from the extractor (LLM or heuristic). Falls
+                // back to a plain fact so a caller that doesn't classify works.
+                type: cType,
                 impact: c.impact || null,
                 sourceRole: c.sourceRole || null,
                 sourceConvId: c.sourceConvId || sourceConvId,
@@ -364,17 +540,20 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
             });
             list.push(rec);
             acceptedKeywords.push(kw);
+            touched.push(rec);
             items.push({ text: rec.text, type: rec.type, impact: rec.impact });
             added++;
         }
-        if (added) pruneUser(list, userId);
+        if (added) dropped = pruneUser(list, userId);
     });
-    return { added, items };
+    for (const rec of touched) memoryIndex.upsert(userId, rec).catch(() => {});
+    if (dropped.length) memoryIndex.removeMany(userId, dropped).catch(() => {});
+    return { added, superseded, items };
 }
 
 async function countForUser(userId) {
-    const list = await readMeta();
-    return list.reduce((n, m) => n + (m.userId === userId ? 1 : 0), 0);
+    const list = await listMemories(userId);
+    return list.length;
 }
 
 const IMPACT_RANK = { important: 3, medium: 2, low: 1 };
@@ -386,14 +565,14 @@ function scoreForImpact(impact) {
  * Record a MODEL learning, but CONSOLIDATE instead of blindly appending — this
  * is what makes account memory a continual-learning store rather than an
  * ever-growing pile of near-duplicates. The whole read-modify-write runs inside
- * mutateMeta so the find-target + update/create is atomic (no lost-update race).
+ * mutateUser so the find-target + update/create is atomic (no lost-update race).
  *
  * Target selection (a memory to REFINE in place):
  *   1. `opts.replaces` — an explicit [#handle] the model surfaced from its
  *      injected context. May target ANY of THIS user's memories (incl. ones the
  *      user authored manually) — a deliberate, model-driven edit.
- *   2. otherwise auto-detect the closest existing MODEL learning by keyword
- *      Jaccard ≥ autoMergeThreshold. Auto-merge NEVER touches a manual memory —
+ *   2. otherwise auto-detect the closest existing MODEL learning by topic
+ *      overlap ≥ autoMergeThreshold. Auto-merge NEVER touches a manual memory —
  *      only an explicit handle can — so the model can't silently overwrite what
  *      the user wrote.
  *
@@ -413,12 +592,13 @@ async function upsertModelLearning(userId, input, opts = {}) {
     const reqType = input.type && VALID_TYPES.has(input.type) ? input.type : 'learning';
     const tokens = Number.isFinite(input.tokens) ? input.tokens : estimateTokens(text);
 
-    return mutateMeta((list) => {
-        const mine = list.filter((m) => m.userId === userId);
+    let embedRec = null;
+    let dropped = [];
+    const result = await mutateUser(userId, (list) => {
         let target = null;
         const handle = String(replaces || '').replace(/^#/, '').trim().toLowerCase();
         if (handle) {
-            target = mine.find((m) => {
+            target = list.find((m) => {
                 const id = String(m.id).toLowerCase();
                 return id === handle || id.startsWith(handle) || id.replace(/-/g, '').startsWith(handle);
             }) || null;
@@ -429,7 +609,7 @@ async function upsertModelLearning(userId, input, opts = {}) {
             // mostly contained in the new lesson AND they share enough concrete
             // terms (≥ minSharedKeywords) to be confidently the same topic.
             let best = null, bestRatio = 0;
-            for (const m of mine) {
+            for (const m of list) {
                 if (m.source !== 'model') continue; // never auto-clobber manual/auto entries
                 const { ratio, inter } = topicOverlap(m.keywords || [], keywords);
                 if (inter >= minSharedKeywords && ratio >= autoMergeThreshold && ratio > bestRatio) {
@@ -450,6 +630,7 @@ async function upsertModelLearning(userId, input, opts = {}) {
             target.tokens = tokens;
             target.title = deriveMemoryTitle(target);
             target.updatedAt = nowIso();
+            embedRec = { ...target };
             return { id: target.id, updated: true, impact: mergedImpact };
         }
 
@@ -460,21 +641,29 @@ async function upsertModelLearning(userId, input, opts = {}) {
             sourceConvId: input.sourceConvId || null,
         });
         list.push(rec);
-        pruneUser(list, userId);
+        dropped = pruneUser(list, userId);
+        embedRec = rec;
         return { id: rec.id, updated: false, impact: rec.impact };
     });
+    if (embedRec) memoryIndex.upsert(userId, embedRec).catch(() => {});
+    if (dropped.length) memoryIndex.removeMany(userId, dropped).catch(() => {});
+    return result;
 }
 
 /**
  * Record/refine an EXPERIENCE memory for a high-level ACTIVITY ("reading
- * emails", "web research"). Consolidates by the `activity` key (not keyword
- * overlap): the first time an activity happens a procedure memory is created;
- * every recurrence REFINES the same record in place and increments `count`
- * (depth of experience). These accumulate into the model's persona and, when
- * injected, front-load the approach that worked so repeat tasks need fewer
- * tool calls. Atomic inside mutateMeta. Returns { id, updated, count, impact }.
+ * emails", "web research"). Consolidates by the `activity` key, with up to
+ * MAX_ACTIVITY_VARIANTS distinct recipes per activity — practice SPECIALIZES:
+ * "coding" on a React app and "coding" on a CUDA build are different skills,
+ * and one generic recipe degrades both. Variant selection: the closest
+ * existing recipe by topic overlap (≥ VARIANT_MATCH_RATIO) is refined in
+ * place; a genuinely different recipe becomes a NEW variant until the cap,
+ * after which the closest one is refined regardless. Each refinement
+ * increments `count` (depth of experience) and promotes well-practiced skills
+ * to 'important'. Atomic inside mutateUser.
+ * Returns { id, updated, count, impact, variant }.
  *
- * `input`: { activity, text, keywords, impact?, tokens?, source?, sourceConvId? }
+ * `input`: { activity, text, keywords, impact?, tokens?, source?, steps?, sourceConvId? }
  */
 async function upsertActivityMemory(userId, input) {
     const activity = normalizeActivity(input.activity);
@@ -488,9 +677,20 @@ async function upsertActivityMemory(userId, input) {
     // Efficiency of THIS run (lower = better). Used to keep the BEST recipe.
     const steps = Number.isFinite(input.steps) ? input.steps : null;
 
-    return mutateMeta((list) => {
-        const target = list.find((m) => m.userId === userId && m.type === 'procedure' && m.activity === activity) || null;
-        if (target) {
+    let embedRec = null;
+    let dropped = [];
+    const result = await mutateUser(userId, (list) => {
+        const variants = list.filter((m) => m.userId === userId && m.type === 'procedure' && m.activity === activity);
+        // Pick the variant this recipe belongs to: closest by topic overlap.
+        let target = null, bestRatio = -1;
+        for (const v of variants) {
+            const { ratio, inter } = topicOverlap(v.keywords || [], keywords);
+            const effective = (inter >= 2) ? ratio : 0;
+            if (effective > bestRatio) { bestRatio = effective; target = v; }
+        }
+        const isNewVariant = !target
+            || (bestRatio < VARIANT_MATCH_RATIO && variants.length < MAX_ACTIVITY_VARIANTS);
+        if (!isNewVariant && target) {
             target.count = (target.count || 1) + 1;
             let mergedImpact = (IMPACT_RANK[reqImpact] || 2) >= (IMPACT_RANK[target.impact] || 2) ? reqImpact : target.impact;
             // A well-practiced activity (reinforced ≥3×) is a core skill — promote
@@ -518,7 +718,8 @@ async function upsertActivityMemory(userId, input) {
             }
             if (steps != null) target.bestSteps = (target.bestSteps == null) ? steps : Math.min(target.bestSteps, steps);
             target.updatedAt = nowIso();
-            return { id: target.id, updated: true, count: target.count, impact: mergedImpact, keptRecipe: !updateText };
+            if (updateText) embedRec = { ...target };
+            return { id: target.id, updated: true, count: target.count, impact: mergedImpact, keptRecipe: !updateText, variant: variants.indexOf(target) };
         }
         const rec = normalizeRecord({
             userId, text, keywords, tokens,
@@ -530,9 +731,13 @@ async function upsertActivityMemory(userId, input) {
         rec.textSource = source;
         rec.bestSteps = steps;
         list.push(rec);
-        pruneUser(list, userId);
-        return { id: rec.id, updated: false, count: 1, impact: rec.impact };
+        dropped = pruneUser(list, userId);
+        embedRec = rec;
+        return { id: rec.id, updated: false, count: 1, impact: rec.impact, variant: variants.length };
     });
+    if (embedRec) memoryIndex.upsert(userId, embedRec).catch(() => {});
+    if (dropped.length) memoryIndex.removeMany(userId, dropped).catch(() => {});
+    return result;
 }
 
 // --------------------------------------------------------------------------
@@ -677,9 +882,10 @@ async function migrateLegacyForUserImpl(userId) {
 
     // Import deduped (account-wide), preserving original createdAt.
     let imported = 0;
+    const importedRecs = [];
     if (candidates.length) {
-        await mutateMeta((list) => {
-            const acceptedKeywords = list.filter((m) => m.userId === userId).map((m) => m.keywords || []);
+        await mutateUser(userId, (list) => {
+            const acceptedKeywords = list.map((m) => m.keywords || []);
             for (const c of candidates) {
                 const kw = Array.isArray(c.keywords) ? c.keywords : [];
                 const dup = kw.length && acceptedKeywords.some((k) => jaccardSimilarity(k, kw) >= DEDUP_THRESHOLD);
@@ -700,11 +906,13 @@ async function migrateLegacyForUserImpl(userId) {
                 });
                 list.push(rec);
                 acceptedKeywords.push(kw);
+                importedRecs.push(rec);
                 imported++;
             }
             if (imported) pruneUser(list, userId);
         });
     }
+    for (const rec of importedRecs) memoryIndex.upsert(userId, rec).catch(() => {});
     // Seed cursors so the extractor skips already-processed turns. Best-effort:
     // a transient cursor-write failure must NOT abort the migration before
     // markMigrated, or the next save re-runs the whole import (deduped, but
@@ -733,6 +941,7 @@ module.exports = {
     normalizeActivity,
     deriveMemoryTitle,
     countForUser,
+    reindexUser,
     // cursors
     getCursor,
     setCursor,
@@ -740,6 +949,7 @@ module.exports = {
     migrateLegacyForUser,
     // helpers / constants exposed for callers/tests
     jaccardSimilarity,
+    topicOverlap,
     userIdSafe,
     estimateTokens,
     ACCOUNT_MEMORY_MAX,

@@ -101,6 +101,7 @@ const knowledgeBaseService = require('./services/knowledgeBaseService');
 // conversations (replaces the old per-conversation store). Storage only — the
 // extraction heuristics live in this file.
 const memoryService = require('./services/memoryService');
+const memoryIndex = require('./services/memoryIndex');
 
 // Scrapling service for captcha-evading web scraping
 let scraplingService = null;
@@ -12642,10 +12643,23 @@ async function saveConversationMessages(userId, conversationId, messages, { memo
 // The functions below (scoring / shorthand / sentence splitting) PRODUCE the
 // candidate facts; persistence lives in the service.
 
-// Target token budget for injected memories on a single turn.
+// Target token budget for injected memories on a single turn (fallback when
+// the model's context size is unknown — see memoryBudgetForCtx).
 const MEMORY_RETRIEVAL_TOKEN_BUDGET = 1500;
 // Minimum factuality score to keep a sentence as a memory.
 const MEMORY_MIN_SCORE = 2;
+// Cosine threshold for the SEMANTIC relevance gate (memoryIndex embeddings).
+// potion-retrieval cosines: related content ~0.4-0.7, unrelated ~0.1-0.25.
+// Tunable without a rebuild via env.
+const MEMORY_SEM_THRESHOLD = parseFloat(process.env.MEMORY_SEM_THRESHOLD || '') || 0.35;
+
+// Scale the memory/persona injection budget with the model's context window —
+// a 4k-ctx model can't afford the same block a 131k one shrugs off. ~4% of
+// ctx, clamped: 4-8k → min, 32k → ~1.3k, 64k+ → capped.
+function memoryBudgetForCtx(ctx, { base = MEMORY_RETRIEVAL_TOKEN_BUDGET, min = 400, max = 2500 } = {}) {
+    if (!Number.isFinite(ctx) || ctx <= 0) return base;
+    return Math.max(min, Math.min(max, Math.floor(ctx * 0.04)));
+}
 
 
 // Score a sentence for how "fact-like" it is. Facts are what we want to
@@ -12809,6 +12823,123 @@ function isJunkMemoryLine(sentence) {
     const letters = (t.match(/[a-zA-Z]/g) || []).length;
     if (letters < 4) return true;
     return false;
+}
+
+// ----------------------------------------------------------------------------
+// LLM-assisted extraction — the quality upgrade over the regex heuristics.
+// Every save runs right after a LOCAL model finished generating on the user's
+// own GPU, so a small post-save completion is free; it understands "my
+// daughter is 7" and "that approach failed, X worked" where scoreFactuality
+// (biased toward URLs/paths/code) scores them near zero. Fire-and-forget from
+// the save path, bounded in-flight, hard-timeout, and ALWAYS falls back to the
+// heuristic extractor on any failure — extraction can never regress below the
+// regex baseline. Returns:
+//   null  → LLM unavailable/failed (caller runs the heuristics)
+//   []    → LLM ran and judged nothing durable (VALID — do not fall back,
+//           that would re-add exactly the noise the model filtered out)
+//   [...] → candidates shaped like extractMemoriesFromTurn's output
+// ----------------------------------------------------------------------------
+let llmExtractInFlight = 0;
+const LLM_EXTRACT_MAX_INFLIGHT = 2;
+const LLM_EXTRACT_TIMEOUT_MS = 30000;
+
+const LLM_EXTRACT_SYSTEM_PROMPT =
+    'You extract long-term memories from one chat exchange so an assistant can serve this user better in FUTURE, unrelated conversations. ' +
+    'Return ONLY a JSON array, no prose. Each item: {"text": string, "type": string, "impact": "important"|"medium"|"low"}.\n' +
+    'Types:\n' +
+    '- "fact": a durable fact about the user, their life, work, projects, or environment.\n' +
+    '- "preference": how the user wants things done (style, tools, format).\n' +
+    '- "correction": the user corrected the assistant — what to do instead.\n' +
+    '- "limitation": something that does not work / is unavailable.\n' +
+    '- "workaround": a working alternative that was found.\n' +
+    '- "learning": what approach worked or failed — phrase as an ADAPTIVE heuristic ("start broad, narrow if results are weak"), never a rigid absolute.\n' +
+    'Rules:\n' +
+    '- Only items worth remembering WEEKS from now, in unrelated conversations.\n' +
+    '- NO time-bound content (current date/time, today\'s news, "this week", live prices).\n' +
+    '- NO one-off task details, pleasantries, restatements of the question, or generic knowledge the assistant already has.\n' +
+    '- Each text must stand alone without this conversation as context (resolve "it"/"that").\n' +
+    '- 0 to 5 items. If nothing qualifies, return [].';
+
+async function llmExtractMemoriesFromTurn(userText, assistantText) {
+    if (process.env.MEMORY_LLM_EXTRACTION === '0') return null;
+    // Only when a local model is ALREADY serving — never queue behind a cold
+    // load, and never stack more than a couple of extraction completions.
+    let hasRunning = false;
+    for (const inst of modelInstances.values()) {
+        if (inst.status === 'running') { hasRunning = true; break; }
+    }
+    if (!hasRunning || llmExtractInFlight >= LLM_EXTRACT_MAX_INFLIGHT) return null;
+
+    const clean = (t, cap) => String(t || '')
+        .replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '')
+        .trim().slice(0, cap);
+    const u = clean(userText, 4000);
+    const a = clean(assistantText, 6000);
+    if (!u && !a) return null;
+
+    llmExtractInFlight++;
+    try {
+        const raw = await Promise.race([
+            runModelCompletion({
+                messages: [
+                    { role: 'system', content: LLM_EXTRACT_SYSTEM_PROMPT },
+                    { role: 'user', content: `USER MESSAGE:\n${u || '(none)'}\n\nASSISTANT REPLY:\n${a || '(none)'}` },
+                ],
+                temperature: 0,
+                maxTokens: 700,
+            }),
+            new Promise((_, rej) => {
+                const t = setTimeout(() => rej(new Error('llm extraction timed out')), LLM_EXTRACT_TIMEOUT_MS);
+                if (t.unref) t.unref();
+            }),
+        ]);
+        // Parse: strip reasoning, isolate the array, jsonrepair as fallback.
+        const stripped = String(raw || '')
+            .replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '').trim();
+        const start = stripped.indexOf('[');
+        const end = stripped.lastIndexOf(']');
+        if (start < 0 || end <= start) return null;
+        const slice = stripped.slice(start, end + 1);
+        let arr;
+        try { arr = JSON.parse(slice); }
+        catch (_) {
+            try { arr = JSON.parse(require('jsonrepair').jsonrepair(slice)); }
+            catch (_) { return null; }
+        }
+        if (!Array.isArray(arr)) return null;
+
+        // Validate + apply the SAME safety filters the heuristic path uses —
+        // the model is better, not trusted: junk/ephemeral lines still drop.
+        const out = [];
+        for (const it of arr) {
+            if (out.length >= 5) break;
+            const text = shorthandCompress(String(it?.text || '').trim());
+            if (text.length < 12 || text.length > 600) continue;
+            if (isJunkMemoryLine(text)) continue;
+            const type = (typeof it?.type === 'string' && memoryService.VALID_TYPES.has(it.type) && it.type !== 'procedure')
+                ? it.type : 'fact';
+            const isDirectiveType = type !== 'fact';
+            if (!isDirectiveType && isEphemeralFact(text)) continue;
+            const impact = memoryService.VALID_IMPACTS.has(it?.impact)
+                ? it.impact : (isDirectiveType ? 'medium' : 'low');
+            const keywords = extractQueryKeywords(text);
+            if (!keywords.length) continue;
+            out.push({
+                text,
+                keywords,
+                tokens: Math.ceil(text.length / 3),
+                score: impact === 'important' ? 7 : (impact === 'medium' ? 5 : 3),
+                type,
+                impact,
+                sourceRole: null,
+            });
+        }
+        return out;
+    } catch (_) {
+        return null; // unavailable/slow/garbled → heuristic fallback
+    } finally {
+        llmExtractInFlight--;
+    }
 }
 
 function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
@@ -13001,8 +13132,9 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
         if (cursorIdx >= 0) startIdx = cursorIdx + 1;
     }
 
+    // Collect the new user→assistant pairs first, then extract per pair.
     let newestCursor = cursor;
-    const candidates = [];
+    const pairs = [];
     for (let i = startIdx; i < messages.length; i++) {
         const msg = messages[i];
         if (msg.role !== 'assistant') continue;
@@ -13012,9 +13144,27 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
             if (messages[j].role === 'user') { userMsg = messages[j]; break; }
             if (messages[j].role === 'assistant') break; // not paired
         }
-        if (!userMsg) { newestCursor = msg.id || newestCursor; continue; }
+        if (msg.id) newestCursor = msg.id;
+        if (!userMsg) continue;
+        pairs.push({ userText: messageText(userMsg), assistantText: messageText(msg), msgId: msg.id || null });
+    }
 
-        const extracted = extractMemoriesFromTurn(messageText(userMsg), messageText(msg));
+    const candidates = [];
+    let usedLlm = false;
+    for (const pair of pairs) {
+        // LLM extraction first (free — rides the loaded local model), but only
+        // on a normal-sized batch; a long legacy backlog goes straight to the
+        // heuristics rather than queueing N completions. `null` = unavailable
+        // → heuristic fallback. `[]` = the model judged nothing durable — a
+        // VALID verdict we keep (falling back would re-add the filtered noise).
+        let extracted = null;
+        if (pairs.length <= 2) {
+            extracted = await llmExtractMemoriesFromTurn(pair.userText, pair.assistantText);
+            if (extracted) usedLlm = true;
+        }
+        if (extracted == null) {
+            extracted = extractMemoriesFromTurn(pair.userText, pair.assistantText);
+        }
         for (const mem of extracted) {
             candidates.push({
                 text: mem.text,
@@ -13024,33 +13174,36 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
                 type: mem.type,
                 impact: mem.impact,
                 sourceRole: mem.sourceRole,
-                sourceTurnId: msg.id || null,
+                sourceTurnId: pair.msgId,
                 sourceConvId: conversationId,
             });
         }
-        if (msg.id) newestCursor = msg.id;
     }
 
-    let added = 0;
+    let added = 0, superseded = 0;
     let addedItems = [];
     if (candidates.length) {
-        // Dedup is account-wide and prune-to-cap happens inside the service.
+        // Dedup + supersedence are account-wide and prune-to-cap happens
+        // inside the service.
         const res = await memoryService.addAutoMemories(userId, candidates, { sourceConvId: conversationId });
         added = res.added;
+        superseded = res.superseded || 0;
         addedItems = res.items || [];
     }
     if (newestCursor && newestCursor !== cursor) {
         await memoryService.setCursor(userId, conversationId, newestCursor);
     }
-    if (added > 0) {
+    if (added > 0 || superseded > 0) {
         const total = await memoryService.countForUser(userId).catch(() => -1);
-        console.log(`[Memory] Extracted ${added} account memories from conversation ${conversationId} (account total: ${total})`);
+        console.log(`[Memory] Extracted ${added} new + ${superseded} refreshed account memories from conversation ${conversationId} (${usedLlm ? 'llm' : 'heuristic'}; account total: ${total})`);
         // Surface it in the user's process log too (not just server console),
         // with a brief preview of what was learned this turn.
         const preview = addedItems.slice(0, 3)
-            .map(it => `${it.type}/${it.impact || 'low'}: “${(it.text || '').slice(0, 60)}”`).join('; ');
+            .map(it => `${it.superseded ? '↻ ' : ''}${it.type}/${it.impact || 'low'}: “${(it.text || '').slice(0, 60)}”`).join('; ');
+        const verb = superseded > 0 && added === 0
+            ? `updated ${superseded}` : `created ${added}${superseded ? `, updated ${superseded}` : ''}`;
         logUserActivity(userId,
-            `Memory: created ${added} memor${added === 1 ? 'y' : 'ies'} from this turn${preview ? ` — ${preview}` : ''}`);
+            `Memory: ${verb} memor${(added + superseded) === 1 ? 'y' : 'ies'} from this turn${preview ? ` — ${preview}` : ''}`);
     }
 }
 
@@ -13212,8 +13365,36 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     let all;
     try { all = await memoryService.listMemories(userId); } catch { return null; }
     if (!all || !all.length) return null;
+    // Muted memories are kept in the store but never injected (user flag).
+    const storedCount = all.length;
+    all = all.filter(m => !m.muted);
+    if (!all.length) return null;
 
     const queryKeywords = extractQueryKeywords(query);
+
+    // ---- Semantic relevance (PRIMARY signal) ----------------------------
+    // Embedding cosine from the memory index. Catches paraphrase that keyword
+    // overlap can't ("can you graph this" ↔ a render_chart memory). When the
+    // engine is down `semScores` stays null and everything below degrades to
+    // the keyword gates — memory never silently stops working.
+    let semScores = null;
+    try {
+        const sem = await memoryIndex.search(userId, query, 32);
+        if (sem) {
+            semScores = sem.scores;
+            // Self-heal: an EMPTY index while memories exist (store migrated
+            // before the engine was warm, wiped dir, …) → rebuild in the
+            // background; this turn falls back to keywords.
+            if (sem.total === 0 && storedCount > 0) {
+                memoryService.reindexUser(userId).catch(() => {});
+                semScores = null;
+            }
+        }
+    } catch (_) { semScores = null; }
+    // Cosine for a memory, or null when semantic mode is unavailable. A memory
+    // outside the top-k scores 0 (sem mode still active → keyword gate still
+    // backstops it in isRelevant).
+    const semOf = (m) => (semScores ? (semScores.get(m.id) ?? 0) : null);
     const now = Date.now();
     // DIRECTIVES are curated, persona-shaping memories — anything you authored
     // (manual), the model recorded (model learnings), or that's flagged
@@ -13239,10 +13420,21 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     const isDirective = (m) => !isProcedure(m) && (isCurated(m)
         || m.impact === 'important' || (m.type && m.type !== 'fact'));
 
-    const relOf = (m) => jaccardSimilarity(m.keywords || [], queryKeywords);
-    // Topical-relevance gate for AUTO memories (≥2 shared keywords, or one
-    // specific identifier). Curated memories bypass it.
-    const isRelevant = (m) => factKeywordMatch(m.keywords || [], queryKeywords);
+    // Relevance for RANKING: best of semantic cosine and keyword Jaccard.
+    const relOf = (m) => {
+        const j = jaccardSimilarity(m.keywords || [], queryKeywords);
+        const s = semOf(m);
+        return s != null ? Math.max(s, j) : j;
+    };
+    // Topical-relevance GATE for AUTO memories: semantic cosine ≥ threshold,
+    // OR the keyword rule (≥2 shared keywords / one specific identifier) as a
+    // hybrid backstop — embeddings can miss exact identifiers (a CVE id, a
+    // port number) that keywords nail. Curated memories bypass it.
+    const isRelevant = (m) => {
+        const s = semOf(m);
+        if (s != null && s >= MEMORY_SEM_THRESHOLD) return true;
+        return factKeywordMatch(m.keywords || [], queryKeywords);
+    };
     // A GLOBAL behavioral directive — a durable, cross-topic rule about HOW to
     // respond ("from now on, be concise", "always use type hints"). These apply
     // to every turn, so an AUTO-extracted one still injects unconditionally even
@@ -13302,14 +13494,14 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     const directives = all.filter(isDirective)
         .filter(m => isCurated(m) || isGlobalBehavioralDirective(m) || (!isEphemeralFact(m.text) && isRelevant(m)))
         .map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
-    // Facts inject only on a substantive query match (factKeywordMatch: >=2
-    // shared keywords or one specific identifier) AND only if not ephemeral —
-    // the ephemeral skip is defense-in-depth for any time-bound fact stored
-    // before extraction-time filtering existed. Ordered by raw overlap so the
+    // Facts inject only on a substantive query match (semantic cosine ≥
+    // threshold, or the keyword rule) AND only if not ephemeral — the
+    // ephemeral skip is defense-in-depth for any time-bound fact stored
+    // before extraction-time filtering existed. Ordered by relevance so the
     // strongest matches fill the remaining budget first.
     const factCands = all
         .filter(m => !isDirective(m) && !isProcedure(m))
-        .filter(m => !isEphemeralFact(m.text) && factKeywordMatch(m.keywords || [], queryKeywords))
+        .filter(m => !isEphemeralFact(m.text) && isRelevant(m))
         .map(m => ({ m, r: relOf(m) })).sort((a, b) => b.r - a.r);
 
     const picked = [];
@@ -13389,7 +13581,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
         const lines = facts.map(m => `- ${m.text}`).join('\n');
         parts.push(`WHAT YOU KNOW ABOUT THIS USER (from past conversations) — use it to avoid asking again and to work faster:\n${lines}`);
     }
-    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${procedures.length} experience, ${learnings.length} learnings, ${facts.length} facts) conv=${currentConvId || '-'}`);
+    console.log(`[Memory] Injecting ${picked.length} account memories (${usedTokens} tokens; ${procedures.length} experience, ${learnings.length} learnings, ${facts.length} facts; ${semScores ? 'semantic' : 'keyword'} mode) conv=${currentConvId || '-'}`);
     return {
         block: parts.join('\n\n'),
         count: picked.length,
@@ -13414,7 +13606,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
 // fully-transparent contract, and a near-full Pi context is never pushed over
 // (which would trip the backend's max_tokens floor → truncated tool calls).
 
-const PI_MEMORY_BUDGET = 800;        // smaller than chat's 1500 — Pi runs near the limit
+const PI_MEMORY_BUDGET = 800;        // fallback budget — Pi runs near the limit, so smaller than chat
 const PI_MEMORY_RESERVE = 2048;      // headroom for the response
 const v1RecordInFlight = new Set();  // (userId:convKey) currently being recorded — anti-double-record guard
 
@@ -13455,11 +13647,14 @@ async function injectPersonaForV1(req, instance) {
 
     // Room-check: never push an already-large Pi context past the model window.
     const ctx = instance?.config?.contextSize || instance?.config?.maxModelLen || 131072;
+    // Pi budget scales with the window too, but capped leaner than chat (Pi
+    // contexts run hot): clamped 300-1600, falling back to the old fixed 800.
+    const piBudget = memoryBudgetForCtx(ctx, { base: PI_MEMORY_BUDGET, min: 300, max: 1600 });
     let inputEst = 0;
     try { inputEst = estimateTokenCount(JSON.stringify(messages)); } catch (_) { inputEst = 0; }
-    if (inputEst + PI_MEMORY_BUDGET + PI_MEMORY_RESERVE > ctx) return null; // no headroom → skip silently
+    if (inputEst + piBudget + PI_MEMORY_RESERVE > ctx) return null; // no headroom → skip silently
 
-    const mem = await retrieveRelevantMemories(userId, null, latestUserText, PI_MEMORY_BUDGET, { activityHint });
+    const mem = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { activityHint });
     if (!mem || !mem.block) return null;
 
     const sys = messages[0];
@@ -15737,7 +15932,10 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         attachmentKinds: deriveAttachmentKinds(req.body?.attachments),
                     }) || {}).activity || null;
                     const memoryResult = await retrieveRelevantMemories(
-                        chatUserId, chatConvId, latestUserText, MEMORY_RETRIEVAL_TOKEN_BUDGET, { activityHint }
+                        chatUserId, chatConvId, latestUserText,
+                        // Budget scales with the model's window: a small-ctx
+                        // model gets a lean persona block, a big one the full.
+                        memoryBudgetForCtx(contextSize), { activityHint }
                     );
                     if (memoryResult && memoryResult.count) {
                         // Process-log which memories were pulled into THIS turn so
@@ -22007,6 +22205,9 @@ app.patch('/api/memories/:id', requireAuth, async (req, res) => {
         }
         if (req.body?.type !== undefined) patch.type = req.body.type;
         if (req.body?.impact !== undefined) patch.impact = req.body.impact;
+        // User flags: pinned = never pruned; muted = stored but never injected.
+        if (req.body?.pinned !== undefined) patch.pinned = req.body.pinned === true;
+        if (req.body?.muted !== undefined) patch.muted = req.body.muted === true;
         const updated = await memoryService.updateMemory(mem.id, patch);
         res.json({ memory: updated });
     } catch (e) {
@@ -22035,22 +22236,30 @@ app.delete('/api/memories', requireAuth, async (req, res) => {
     }
 });
 
-// Search/test box: score the caller's memories against a query (same scoring
-// the chat injector uses, minus the boosts) and return the top matches.
+// Search/test box: score the caller's memories against a query the same way
+// the chat injector does — semantic cosine (memory index) blended with
+// keyword overlap, falling back to keyword-only when the engine is down.
 app.post('/api/memories/search', requireAuth, async (req, res) => {
     try {
         const query = String(req.body?.query || '').trim();
         if (!query) return res.status(400).json({ error: 'query is required' });
         const k = Math.min(Math.max(parseInt(req.body?.k) || 10, 1), 50);
-        const all = await memoryService.listMemories(memAccountId(req), { all: callerIsAdmin(req) });
+        const accountId = memAccountId(req);
+        const all = await memoryService.listMemories(accountId, { all: callerIsAdmin(req) });
+        // Semantic scores cover the caller's OWN index; an admin's view of
+        // other users' memories scores keyword-only (their vectors live in
+        // per-user indexes we don't cross-query).
+        let sem = null;
+        try { sem = await memoryIndex.search(accountId, query, k * 2); } catch (_) { sem = null; }
         const qk = extractQueryKeywords(query);
-        const scored = all.map((m) => ({
-            ...m,
-            score: memoryService.jaccardSimilarity(m.keywords || [], qk),
-        }));
+        const scored = all.map((m) => {
+            const kw = memoryService.jaccardSimilarity(m.keywords || [], qk);
+            const s = sem?.scores?.get(m.id);
+            return { ...m, score: s != null ? Math.max(s, kw) : kw, semantic: s ?? null };
+        });
         scored.sort((a, b) => b.score - a.score);
         const results = scored.filter((m) => m.score > 0).slice(0, k);
-        res.json({ query, count: results.length, results });
+        res.json({ query, count: results.length, results, mode: sem ? 'semantic+keyword' : 'keyword' });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

@@ -10,6 +10,8 @@ import {
     Sparkles as SparklesIcon,
     User as UserIcon,
     Bot as BotIcon,
+    Pin as PinIcon,
+    EyeOff as MuteIcon,
 } from 'lucide-react';
 
 // Memory tab — account-scoped persona/fact memory that follows the user across
@@ -172,6 +174,18 @@ export default function MemoryPanel() {
             await jsonFetch(`/api/memories/${id}`, { method: 'DELETE' });
             if (selectedId === id) setSelectedId(null);
             await loadMemories();
+        } catch (e) { setError(e.message); }
+    };
+
+    // Pin = never pruned out of the store; Mute = kept but never injected
+    // into a chat turn. Toggles PATCH the flag directly (no edit-form state).
+    const toggleFlag = async (mem, flag) => {
+        try {
+            await jsonFetch(`/api/memories/${mem.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ [flag]: !mem[flag] }),
+            });
+            await loadMemories({ silent: true });
         } catch (e) { setError(e.message); }
     };
 
@@ -342,6 +356,8 @@ export default function MemoryPanel() {
                                                     ? <Chip tone="accent">{`${m.activity || 'experience'} ·×${m.count || 1}`}</Chip>
                                                     : (m.type && <Chip>{m.type}</Chip>)}
                                                 {m.impact && <Chip tone={IMPACT_TONE[m.impact] || 'muted'}>{m.impact}</Chip>}
+                                                {m.pinned && <Chip tone="accent">pinned</Chip>}
+                                                {m.muted && <Chip>muted</Chip>}
                                                 <span>{relativeTime(m.updatedAt || m.createdAt)}</span>
                                                 {isAdmin && m.ownerName ? <span>· {m.ownerName}</span> : null}
                                             </div>
@@ -377,15 +393,39 @@ export default function MemoryPanel() {
                                         {isAdmin && selected.ownerName ? <span>· {selected.ownerName}</span> : null}
                                     </div>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => deleteMemory(selected.id)}
-                                    title="Delete memory"
-                                    className="rounded-lg p-2"
-                                    style={{ color: '#ef4444', border: '1px solid #ef444455' }}
-                                >
-                                    <DeleteIcon size={16} />
-                                </button>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleFlag(selected, 'pinned')}
+                                        title={selected.pinned ? 'Unpin (allow pruning again)' : 'Pin — never auto-pruned'}
+                                        className="rounded-lg p-2"
+                                        style={selected.pinned
+                                            ? { color: 'var(--accent-primary)', border: '1px solid var(--border-focus)', backgroundColor: 'var(--accent-muted)' }
+                                            : { color: 'var(--text-tertiary)', border: '1px solid var(--border-primary)' }}
+                                    >
+                                        <PinIcon size={16} />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleFlag(selected, 'muted')}
+                                        title={selected.muted ? 'Unmute (inject into chats again)' : 'Mute — keep stored but never inject into chats'}
+                                        className="rounded-lg p-2"
+                                        style={selected.muted
+                                            ? { color: '#f59e0b', border: '1px solid #f59e0b55', backgroundColor: '#f59e0b1a' }
+                                            : { color: 'var(--text-tertiary)', border: '1px solid var(--border-primary)' }}
+                                    >
+                                        <MuteIcon size={16} />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => deleteMemory(selected.id)}
+                                        title="Delete memory"
+                                        className="rounded-lg p-2"
+                                        style={{ color: '#ef4444', border: '1px solid #ef444455' }}
+                                    >
+                                        <DeleteIcon size={16} />
+                                    </button>
+                                </div>
                             </div>
 
                             <textarea

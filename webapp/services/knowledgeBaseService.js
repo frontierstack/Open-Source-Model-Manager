@@ -432,6 +432,9 @@ async function stats(kb) {
 module.exports = {
     ensureEngine,
     health,
+    // Raw engine RPC — shared by memoryIndex.js so account-memory embeddings
+    // ride the SAME resident engine process (one model in RAM, two stores).
+    engineCall: call,
     listKBs,
     getKB,
     createKB,
