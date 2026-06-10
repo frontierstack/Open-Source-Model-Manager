@@ -1925,6 +1925,32 @@ function getModelsVolumeBind() {
     return `${hostModelsPath}:/models:ro`;
 }
 
+// Explicit device-cgroup allow rules for NVIDIA char devices, applied to
+// every model container we spawn. The nvidia runtime hook grants device
+// access behind systemd's back; on cgroup v2 + systemd cgroup driver, any
+// host `systemctl daemon-reload` re-applies the container's device filter
+// without those grants, wedging NVML ("Failed to initialize NVML: Unknown
+// Error") until the container restarts. Recording the rules in the
+// container spec makes systemd re-apply GPU access on every reload.
+// Majors are read from /proc/devices (kernel-global, same inside the
+// container) because nvidia-uvm's major is dynamically allocated; the
+// fallback list matches the common allocation.
+let cachedNvidiaCgroupRules = null;
+function getNvidiaDeviceCgroupRules() {
+    if (cachedNvidiaCgroupRules) return cachedNvidiaCgroupRules;
+    let majors = [];
+    try {
+        const devices = require('fs').readFileSync('/proc/devices', 'utf8');
+        for (const line of devices.split('\n')) {
+            const m = line.match(/^\s*(\d+)\s+nvidia/);
+            if (m) majors.push(parseInt(m[1], 10));
+        }
+    } catch { /* fall through to defaults */ }
+    if (majors.length === 0) majors = [195, 236, 239];
+    cachedNvidiaCgroupRules = [...new Set(majors)].map(m => `c ${m}:* rmw`);
+    return cachedNvidiaCgroupRules;
+}
+
 // Detected NVIDIA GPU count, cached for the lifetime of the process.
 // Used as the default tensor_parallel_size when a sglang instance is loaded
 // without an explicit value — sglang should fan out across every GPU
@@ -4416,6 +4442,8 @@ async function createSglangInstance(modelName, modelPath, config) {
                     Count: -1,
                     Capabilities: [['gpu']]
                 }],
+                // Survive host systemd daemon-reloads (see getNvidiaDeviceCgroupRules)
+                DeviceCgroupRules: getNvidiaDeviceCgroupRules(),
                 // Connect to the same network as webapp for internal communication
                 NetworkMode: 'modelserver_default',
                 // sglang needs more shared memory for model loading
@@ -4529,6 +4557,8 @@ async function createSglangHfInstance(repoId, format, config) {
                     Count: -1,
                     Capabilities: [['gpu']]
                 }],
+                // Survive host systemd daemon-reloads (see getNvidiaDeviceCgroupRules)
+                DeviceCgroupRules: getNvidiaDeviceCgroupRules(),
                 NetworkMode: 'modelserver_default',
                 ShmSize: 8 * 1024 * 1024 * 1024
             }
@@ -4657,6 +4687,8 @@ async function createLlamacppInstance(modelName, modelPath, config) {
                     Count: -1,
                     Capabilities: [['gpu']]
                 }],
+                // Survive host systemd daemon-reloads (see getNvidiaDeviceCgroupRules)
+                DeviceCgroupRules: getNvidiaDeviceCgroupRules(),
                 NetworkMode: 'modelserver_default',
                 // llama.cpp needs less shared memory than sglang
                 ShmSize: 2 * 1024 * 1024 * 1024 // 2GB shared memory
@@ -5147,9 +5179,12 @@ async function broadcastSystemMonitoring() {
                     gpuErrorLogged = false;
                 }
             } catch (err) {
-                const errMsg = err.message || String(err);
+                // exec errors put the useful reason in stderr; err.message is
+                // often just "Command failed: <cmd>" which buries the cause
+                // past the truncation below and misses the NVML match.
+                const errMsg = [err.stderr, err.message].filter(Boolean).join('\n') || String(err);
                 if (/Failed to initialize NVML/i.test(errMsg)) {
-                    gpuError = 'NVML init failed inside the container — usually means the host NVIDIA driver was upgraded after the webapp container started, leaving stale device handles. Recover with: docker compose restart webapp';
+                    gpuError = 'NVML init failed inside the container — device cgroup access was dropped (host systemd daemon-reload) or the host driver was upgraded after the container started. Recover with: docker compose restart webapp';
                 } else if (errMsg.includes('not found') || errMsg.includes('ENOENT') || errMsg.includes('No such file')) {
                     gpuError = 'nvidia-smi not found — NVIDIA drivers may not be installed in the container';
                 } else if (errMsg.includes('NVML') || errMsg.includes('driver')) {

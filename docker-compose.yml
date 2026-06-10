@@ -75,6 +75,18 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # Explicit device-cgroup allow rules for the NVIDIA char devices.
+    # The nvidia runtime hook grants these behind systemd's back; on
+    # cgroup v2 + systemd cgroup driver, any host `systemctl daemon-reload`
+    # re-applies the container's device filter WITHOUT them, wedging NVML
+    # ("Failed to initialize NVML: Unknown Error") until restart. Listing
+    # the rules here records them in the container spec so systemd
+    # re-applies GPU access on every reload. Majors: 195=nvidia/nvidiactl/
+    # nvidia-modeset, 236=nvidia-uvm, 239=nvidia-caps (see /proc/devices).
+    device_cgroup_rules:
+      - 'c 195:* rmw'
+      - 'c 236:* rmw'
+      - 'c 239:* rmw'
 
   # Chat interface - separate lightweight React app
   chat:
