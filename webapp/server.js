@@ -12649,9 +12649,39 @@ const MEMORY_RETRIEVAL_TOKEN_BUDGET = 1500;
 // Minimum factuality score to keep a sentence as a memory.
 const MEMORY_MIN_SCORE = 2;
 // Cosine threshold for the SEMANTIC relevance gate (memoryIndex embeddings).
-// potion-retrieval cosines: related content ~0.4-0.7, unrelated ~0.1-0.25.
+// potion-retrieval cosines, measured against real chat queries: a relevant
+// intent phrased as a full chat sentence lands ~0.26-0.43 (instruction
+// boilerplate dilutes the embedding; the same intent phrased tersely scores
+// ~0.4-0.66), unrelated content tops out ~0.2. 0.28 sits between the bands —
+// 0.35 looked safe on terse probes but rejected most sentence-length queries.
 // Tunable without a rebuild via env.
-const MEMORY_SEM_THRESHOLD = parseFloat(process.env.MEMORY_SEM_THRESHOLD || '') || 0.35;
+const MEMORY_SEM_THRESHOLD = parseFloat(process.env.MEMORY_SEM_THRESHOLD || '') || 0.28;
+
+// Semantic scores for a chat query: search with the full text AND a
+// keyword-condensed form, keeping the best cosine per memory. Real chat
+// queries carry instruction boilerplate ("one sentence", "don't search the
+// web") that dilutes the embedding — on the same intent the full sentence
+// measured 0.257 vs 0.289 condensed vs 0.395 terse against the matching
+// memory, so the condensed pass recovers part of the lost signal for one
+// extra local CPU search. Same null-on-engine-down contract as
+// memoryIndex.search; the condensed pass is best-effort on top.
+async function semanticMemoryScores(userId, query, k = 32) {
+    const sem = await memoryIndex.search(userId, query, k);
+    if (!sem) return null;
+    const condensed = extractQueryKeywords(query).join(' ');
+    if (condensed && condensed.length < String(query).trim().length) {
+        try {
+            const semCond = await memoryIndex.search(userId, condensed, k);
+            if (semCond) {
+                for (const [id, s] of semCond.scores) {
+                    const prev = sem.scores.get(id);
+                    if (prev == null || s > prev) sem.scores.set(id, s);
+                }
+            }
+        } catch (_) { /* best-effort — full-query scores already in hand */ }
+    }
+    return sem;
+}
 
 // Scale the memory/persona injection budget with the model's context window —
 // a 4k-ctx model can't afford the same block a 131k one shrugs off. ~4% of
@@ -12855,7 +12885,8 @@ const LLM_EXTRACT_SYSTEM_PROMPT =
     '- "learning": what approach worked or failed — phrase as an ADAPTIVE heuristic ("start broad, narrow if results are weak"), never a rigid absolute.\n' +
     'Rules:\n' +
     '- Only items worth remembering WEEKS from now, in unrelated conversations.\n' +
-    '- NO time-bound content (current date/time, today\'s news, "this week", live prices).\n' +
+    '- NO content whose VALUE is time-bound (current date/time, today\'s news, live prices).\n' +
+    '- A durable change phrased with time words ("we are migrating to X this year", "I use Y now") IS worth keeping — rephrase it atemporally as the new steady state (e.g. "The user\'s hospital is migrating its network from Cisco to Juniper"), do not drop it.\n' +
     '- NO one-off task details, pleasantries, restatements of the question, or generic knowledge the assistant already has.\n' +
     '- Each text must stand alone without this conversation as context (resolve "it"/"that").\n' +
     '- 0 to 5 items. If nothing qualifies, return [].';
@@ -13362,6 +13393,11 @@ async function recordTurnActivity({ userId, conversationId, toolChips, userText,
 // null. `currentConvId` is optional (used only for the continuity boost).
 async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudget = MEMORY_RETRIEVAL_TOKEN_BUDGET, { activityHint = null } = {}) {
     if (!query || typeof query !== 'string') return null;
+    // Defense-in-depth: callers should pass clean user text, but strip any
+    // thinking-control prefix that slipped through (see the chat stream's
+    // latestUserText handling) so it never reaches the embedding or keywords.
+    query = query.replace(/^\/(no_)?think\b\s*/i, '');
+    if (!query.trim()) return null;
     let all;
     try { all = await memoryService.listMemories(userId); } catch { return null; }
     if (!all || !all.length) return null;
@@ -13379,7 +13415,7 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     // the keyword gates — memory never silently stops working.
     let semScores = null;
     try {
-        const sem = await memoryIndex.search(userId, query, 32);
+        const sem = await semanticMemoryScores(userId, query, 32);
         if (sem) {
             semScores = sem.scores;
             // Self-heal: an EMPTY index while memories exist (store migrated
@@ -15922,6 +15958,12 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
                         break;
                     }
                 }
+                // The /no_think control prefix (prepended above for
+                // disableThinking models) is a model control token, not user
+                // intent — keep it out of memory retrieval and activity
+                // classification (it dilutes the query embedding enough to
+                // flip the semantic gate on borderline matches).
+                latestUserText = latestUserText.replace(/^\/(no_)?think\b\s*/i, '');
                 if (latestUserText) {
                     // Predict THIS turn's activity (from the ask + any attachments,
                     // before any tools run) so the matching experience memory is
@@ -22250,7 +22292,7 @@ app.post('/api/memories/search', requireAuth, async (req, res) => {
         // other users' memories scores keyword-only (their vectors live in
         // per-user indexes we don't cross-query).
         let sem = null;
-        try { sem = await memoryIndex.search(accountId, query, k * 2); } catch (_) { sem = null; }
+        try { sem = await semanticMemoryScores(accountId, query, k * 2); } catch (_) { sem = null; }
         const qk = extractQueryKeywords(query);
         const scored = all.map((m) => {
             const kw = memoryService.jaccardSimilarity(m.keywords || [], qk);

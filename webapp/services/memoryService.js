@@ -59,8 +59,18 @@ const MEMORY_TEXT_MAX = 2000;
 const DEDUP_THRESHOLD = 0.75;
 // Supersedence: same TOPIC but different content → the new fact replaces the
 // old one in place (a changed fact must not coexist with its stale version).
+// Two branches: keyword overlap (ratio over the smaller set), and embedding
+// cosine from the memory index. The keyword branch alone missed obvious
+// rewrites — LLM-extracted sentences vary their filler ("primarily consists
+// of" vs "uses … gear"), which inflates both keyword sets: a measured
+// same-topic pair shared 5 keywords yet scored ratio 0.455. Its cosine was
+// 0.656, while the closest must-NOT-merge pair (same user, different aspect:
+// job role vs network gear) measured 0.337 — hence 0.6, with a small shared-
+// keyword floor as an anchor against embedding quirks.
 const SUPERSEDE_RATIO = 0.6;
 const SUPERSEDE_MIN_SHARED = 3;
+const SUPERSEDE_SEM = 0.6;
+const SUPERSEDE_SEM_MIN_SHARED = 2;
 // Experience variants: how many distinct recipes one activity may hold, and
 // how close a new recipe must be (topic overlap) to refine an existing one
 // instead of becoming a new variant. Practice specializes: "coding" on a React
@@ -480,6 +490,21 @@ function pruneUser(list, userId) {
  */
 async function addAutoMemories(userId, candidates, { sourceConvId = null } = {}) {
     if (!Array.isArray(candidates) || !candidates.length) return { added: 0, superseded: 0, items: [] };
+    // Pre-compute embedding similarity (candidate text → existing memories)
+    // for the supersedence pass's semantic branch. Outside the mutate (the
+    // callback is sync); null when the engine is down — the keyword branch
+    // still applies, so supersedence degrades, never breaks. Memories first
+    // added in THIS batch aren't in the index yet; cross-candidate supersede
+    // within one batch falls back to keywords, which is fine.
+    const candSem = [];
+    for (const c of candidates) {
+        let scores = null;
+        try {
+            const sem = await memoryIndex.search(userId, String(c.text || ''), 32);
+            scores = sem ? sem.scores : null;
+        } catch (_) { scores = null; }
+        candSem.push(scores);
+    }
     let added = 0;
     let superseded = 0;
     const items = [];
@@ -487,7 +512,8 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
     let dropped = [];
     await mutateUser(userId, (list) => {
         const acceptedKeywords = list.map((m) => m.keywords || []);
-        for (const c of candidates) {
+        for (let ci = 0; ci < candidates.length; ci++) {
+            const c = candidates[ci];
             const kw = Array.isArray(c.keywords) ? c.keywords : [];
             if (!kw.length) continue;
             const dup = acceptedKeywords.some((k) => jaccardSimilarity(k, kw) >= DEDUP_THRESHOLD);
@@ -495,14 +521,20 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
 
             // Supersedence pass — same topic, different content → refine the
             // old auto fact in place instead of stacking a contradiction.
+            // Keyword overlap OR embedding cosine qualifies; strongest match
+            // wins on whichever signal qualified it.
             const cType = (c.type && VALID_TYPES.has(c.type)) ? c.type : 'fact';
-            let target = null, bestRatio = 0;
+            let target = null, bestMatch = 0;
             for (const m of list) {
                 if (m.source !== 'auto' || m.pinned || m.type === 'procedure') continue;
                 if ((m.type || 'fact') !== cType) continue;
                 const { ratio, inter } = topicOverlap(m.keywords || [], kw);
-                if (inter >= SUPERSEDE_MIN_SHARED && ratio >= SUPERSEDE_RATIO && ratio > bestRatio) {
-                    bestRatio = ratio; target = m;
+                const sem = candSem[ci] ? (candSem[ci].get(m.id) ?? 0) : 0;
+                const keywordHit = inter >= SUPERSEDE_MIN_SHARED && ratio >= SUPERSEDE_RATIO;
+                const semanticHit = sem >= SUPERSEDE_SEM && inter >= SUPERSEDE_SEM_MIN_SHARED;
+                const strength = Math.max(keywordHit ? ratio : 0, semanticHit ? sem : 0);
+                if ((keywordHit || semanticHit) && strength > bestMatch) {
+                    bestMatch = strength; target = m;
                 }
             }
             if (target) {
