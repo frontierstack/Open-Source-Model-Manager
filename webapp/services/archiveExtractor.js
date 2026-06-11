@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -47,6 +48,22 @@ function pickHandler(filename) {
     return HANDLERS.find(h => h.matches(n)) || null;
 }
 
+// gzip outer magic says nothing about what's inside (.tar.gz vs a single
+// gzipped file). Decompress just the head — Z_SYNC_FLUSH tolerates the
+// truncated stream — and check for the tar "ustar" magic at offset 257.
+// Returns 'tar.gz' / 'gz', or null when the stream won't decompress at all
+// (corrupt/truncated download — let the attempt chain surface the real error).
+function sniffGzipInner(buf) {
+    try {
+        const head = zlib.gunzipSync(
+            buf.length > 65536 ? buf.subarray(0, 65536) : buf,
+            { finishFlush: zlib.constants.Z_SYNC_FLUSH },
+        );
+        if (head.length >= 263 && head.subarray(257, 262).toString('ascii') === 'ustar') return 'tar.gz';
+        return 'gz';
+    } catch (_) { return null; }
+}
+
 // Sniff the archive format from the leading bytes. Protects against
 // files whose extension lies (a .7z that's actually a zip, a renamed
 // tarball, etc.) — we trust the magic over the extension when they
@@ -63,18 +80,35 @@ function sniffFormat(buf) {
     // rar v5: 52 61 72 21 1A 07 01 00 ; rar v1.5-4: 52 61 72 21 1A 07 00
     if (buf.slice(0, 7).equals(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00])) ||
         buf.slice(0, 8).equals(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00]))) return 'rar';
-    // gzip: 1F 8B — could be .gz or .tar.gz. We can't tell from the
-    // outer magic; default to tar.gz since that's the overwhelming case
-    // for multi-file archives, and tar will cleanly fail on a single
-    // gzipped file (caller can retry as 'gz').
-    if (buf[0] === 0x1F && buf[1] === 0x8B) return 'tar.gz';
-    // bzip2: 42 5A 68 ("BZh") — same ambiguity as gzip
+    // gzip: 1F 8B — decompress the head and look for an inner tar so a
+    // single gzipped file routes to gunzip instead of failing inside tar.
+    if (buf[0] === 0x1F && buf[1] === 0x8B) return sniffGzipInner(buf) || 'tar.gz';
+    // bzip2: 42 5A 68 ("BZh") — no stdlib decompressor to peek inside;
+    // default tar.bz2, the attempt chain falls back to single-file bz2.
     if (buf[0] === 0x42 && buf[1] === 0x5A && buf[2] === 0x68) return 'tar.bz2';
-    // xz: FD 37 7A 58 5A 00
+    // xz: FD 37 7A 58 5A 00 — same ambiguity, same fallback.
     if (buf.slice(0, 6).equals(Buffer.from([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]))) return 'tar.xz';
     // tar: "ustar" at offset 257 (POSIX), or just a valid-looking tar
     // header — skip; we only hit this path when the extension also fails
     if (buf.length >= 263 && buf.slice(257, 262).toString('ascii') === 'ustar') return 'tar';
+    return null;
+}
+
+// When nothing matches, figure out whether the bytes are even an archive.
+// The classic failure: fetch_url saved an HTML error page (404/login/rate
+// limit) under the archive's filename — tell the model to re-download
+// instead of letting tar produce "gzip: stdin: not in gzip format".
+function describeNonArchive(buf) {
+    const head = buf.slice(0, 512).toString('utf8').replace(/^﻿/, '').trimStart().toLowerCase();
+    if (head.startsWith('<!doctype html') || head.startsWith('<html') || head.startsWith('<head')) {
+        return 'an HTML page (the download likely saved an error/login page instead of the archive — re-fetch the URL and check the response)';
+    }
+    if (head.startsWith('{') || head.startsWith('[')) {
+        return 'JSON (likely an API error response saved in place of the archive — re-fetch and check the response)';
+    }
+    if (isPrintableUtf8(buf.slice(0, 2048))) {
+        return 'plain text, not a binary archive';
+    }
     return null;
 }
 
@@ -146,19 +180,40 @@ async function extractArchive(buffer, filename, opts = {}) {
         handler = HANDLERS.find(h => h.name === sniffed);
         sourcedFrom = 'magic';
     } else if (handler && sniffed && handler.name !== sniffed) {
-        // Extension and magic disagree — magic wins.
-        handler = HANDLERS.find(h => h.name === sniffed);
-        sourcedFrom = 'magic (extension mismatch)';
+        // Extension and magic disagree. Within the same compression family
+        // (xz↔tar.xz, bz2↔tar.bz2) the magic side is a blind tar-first GUESS
+        // (we can't peek inside bz2/xz), while the extension is an informed
+        // claim — keep the extension. gzip is the exception: sniffGzipInner
+        // positively identified the inner content, so its verdict wins. Any
+        // cross-family mismatch (a .tgz that's really a zip) → magic wins.
+        const family = (n) => n.startsWith('tar.') ? n.slice(4) : n;
+        const sameFamily = family(handler.name) === family(sniffed);
+        if (sameFamily && (family(sniffed) === 'bz2' || family(sniffed) === 'xz')) {
+            sourcedFrom = 'extension (family match)';
+        } else {
+            handler = HANDLERS.find(h => h.name === sniffed);
+            sourcedFrom = 'magic (extension mismatch)';
+        }
     }
     if (!handler) {
         const preview = buffer.slice(0, 16).toString('hex');
+        const kind = describeNonArchive(buffer);
         throw new Error(
-            `Cannot detect archive type. Filename "${filename}" extension is not recognized ` +
-            `and the first 16 bytes (${preview}) don't match any known magic number. ` +
-            `Supported: .zip, .7z, .rar, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz. ` +
-            `If this is a truncated base64 payload, ensure the full archive was passed.`
+            kind
+                ? `"${filename}" is not an archive — the content looks like ${kind}. ` +
+                  `(first 16 bytes: ${preview})`
+                : `Cannot detect archive type. Filename "${filename}" extension is not recognized ` +
+                  `and the first 16 bytes (${preview}) don't match any known magic number. ` +
+                  `Supported: .zip, .7z, .rar, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz. ` +
+                  `If this is a truncated base64 payload, ensure the full archive was passed.`
         );
     }
+    // Attempt chain: compressed-tar handlers fall back to their single-file
+    // sibling (a plain .gz/.bz2/.xz that the outer magic can't distinguish
+    // from a compressed tar), and vice versa. Bounded to 2 attempts.
+    const FALLBACK = { 'tar.gz': 'gz', 'tar.bz2': 'bz2', 'tar.xz': 'xz', 'gz': 'tar.gz', 'bz2': 'tar.bz2', 'xz': 'tar.xz' };
+    const attempts = [handler];
+    if (FALLBACK[handler.name]) attempts.push(HANDLERS.find(h => h.name === FALLBACK[handler.name]));
 
     const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
     // When extracting into a caller-owned dir we expect read_file to follow up
@@ -185,39 +240,88 @@ async function extractArchive(buffer, filename, opts = {}) {
     const pathBase = opts.pathBase || extractDir;
 
     try {
-        // Single-stream compressions (.gz / .bz2 / .xz of one file) — write
-        // alongside archive, strip the outer suffix, and treat the result
-        // as the sole entry.
-        if (handler.single) {
-            const binMap = { gz: 'gunzip', bz2: 'bunzip2', xz: 'xz' };
-            const bin = binMap[handler.single];
-            const args = handler.single === 'xz' ? ['-d', '-k', archivePath] : ['-k', archivePath];
-            // gunzip/bunzip2/xz with -k (keep original) write foo.ext -> foo.
-            await execFileP(bin, args, { timeout: EXEC_TIMEOUT_MS });
-            const stripped = archivePath.replace(/\.(gz|bz2|xz)$/i, '');
-            if (!fs.existsSync(stripped)) {
-                throw new Error(`Decompression produced no output (expected ${stripped})`);
+        // Run the attempt chain: first handler that extracts cleanly wins.
+        // Between attempts the output dir is emptied so a half-extracted
+        // failure doesn't pollute the next attempt's listing.
+        let lastErr = null;
+        let used = null;
+        for (const attempt of attempts) {
+            if (!attempt) continue;
+            if (lastErr) {
+                // Clear partial output from the previous attempt (contents
+                // only — extractDir itself may be caller-owned).
+                const leftovers = await fs.promises.readdir(extractDir).catch(() => []);
+                for (const name of leftovers) await rmrf(path.join(extractDir, name));
             }
-            const dest = path.join(extractDir, path.basename(stripped));
-            await fs.promises.rename(stripped, dest);
-        } else {
-            const [bin, tmpl] = handler.cmd;
-            const args = tmpl.map(a => a
-                .replace('__FILE__', archivePath)
-                .replace('__DIR__', extractDir));
             try {
-                await execFileP(bin, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 });
+                if (attempt.single) {
+                    // Single-stream compressions (.gz / .bz2 / .xz of one
+                    // file). The decompressors demand a recognized suffix, so
+                    // stage a correctly-suffixed copy when the name lacks one.
+                    const binMap = { gz: 'gunzip', bz2: 'bunzip2', xz: 'xz' };
+                    const bin = binMap[attempt.single];
+                    let srcPath = archivePath;
+                    if (!new RegExp(`\\.${attempt.single}$`, 'i').test(srcPath)) {
+                        srcPath = `${archivePath}.${attempt.single}`;
+                        await fs.promises.copyFile(archivePath, srcPath);
+                    }
+                    const args = attempt.single === 'xz' ? ['-d', '-k', '-f', srcPath] : ['-k', '-f', srcPath];
+                    // gunzip/bunzip2/xz with -k (keep original) write foo.ext -> foo.
+                    await execFileP(bin, args, { timeout: EXEC_TIMEOUT_MS });
+                    const stripped = srcPath.replace(/\.(gz|bz2|xz)$/i, '');
+                    if (!fs.existsSync(stripped)) {
+                        throw new Error(`Decompression produced no output (expected ${stripped})`);
+                    }
+                    // The decompressed stream may itself be a tar (a .bz2/.xz
+                    // whose outer magic couldn't be peeked) — unpack the inner
+                    // tar instead of returning an opaque single entry.
+                    const innerHead = Buffer.alloc(263);
+                    const fd = await fs.promises.open(stripped, 'r');
+                    try { await fd.read(innerHead, 0, 263, 0); } finally { await fd.close(); }
+                    if (innerHead.subarray(257, 262).toString('ascii') === 'ustar') {
+                        await execFileP('tar', ['-xf', stripped, '-C', extractDir], { timeout: EXEC_TIMEOUT_MS });
+                        await rmrf(stripped);
+                    } else {
+                        // Content isn't a tar — drop any leftover archive-ish
+                        // suffix so the single entry doesn't masquerade as an
+                        // archive ("data.tgz" holding plain text → "data").
+                        const base = path.basename(stripped);
+                        const dest = path.join(extractDir, base.replace(/\.(tgz|tbz2?|txz|tar)$/i, '') || base);
+                        await fs.promises.rename(stripped, dest);
+                    }
+                } else {
+                    const [bin, tmpl] = attempt.cmd;
+                    const args = tmpl.map(a => a
+                        .replace('__FILE__', archivePath)
+                        .replace('__DIR__', extractDir));
+                    await execFileP(bin, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 });
+                }
+                // An extractor that exits 0 but produces nothing (tar can on
+                // some non-tar streams) is a failure — let the next attempt run.
+                const produced = await fs.promises.readdir(extractDir);
+                if (!produced.length) throw new Error('extractor exited cleanly but produced no files');
+                used = attempt;
+                lastErr = null;
+                break;
             } catch (e) {
-                // Surface the tool's stderr plus the leading bytes so the
-                // caller can tell apart "file isn't what the extension
-                // says" from "base64 got truncated in transit".
-                const preview = buffer.slice(0, 16).toString('hex');
-                const tail = (e.stderr || e.stdout || e.message || '').toString().trim().split('\n').slice(-3).join(' ');
-                throw new Error(
-                    `${bin} failed on ${filename} (size=${buffer.length}, first16=${preview}, detectedVia=${sourcedFrom}): ${tail}`
-                );
+                lastErr = { attempt, err: e };
             }
         }
+        if (lastErr || !used) {
+            // Surface the tool's stderr plus the leading bytes so the caller
+            // can tell apart "file isn't what the extension says" from
+            // "base64 got truncated in transit".
+            const { attempt, err } = lastErr;
+            const preview = buffer.slice(0, 16).toString('hex');
+            const tail = (err.stderr || err.stdout || err.message || '').toString().trim().split('\n').slice(-3).join(' ');
+            const tried = attempts.filter(Boolean).map(a => a.name).join(' → ');
+            const kind = describeNonArchive(buffer);
+            throw new Error(
+                (kind ? `"${filename}" does not contain archive data — it looks like ${kind}. ` : '') +
+                `Extraction failed on ${filename} (size=${buffer.length}, first16=${preview}, detectedVia=${sourcedFrom}, tried=${tried}); last error (${attempt.name}): ${tail}`
+            );
+        }
+        handler = used;
 
         const files = await walkDir(extractDir);
         const truncated = files.length > maxEntries;

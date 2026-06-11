@@ -23363,6 +23363,64 @@ app.use((req, res) => {
         return out;
     }
 
+    // Archive-looking files in the conversation workspace (downloaded via
+    // download_file / fetch_url, or created by earlier tools). Lets the model
+    // extract what it just downloaded — previously only UPLOADED archives
+    // (archiveId) worked, so the documented "fetch the .tgz → extract_archive"
+    // flow dead-ended on "No uploaded archives are available". Skips the
+    // archives/ output dir (already-extracted content) and node_modules.
+    const ARCHIVE_EXT_RE = /\.(zip|7z|rar|tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz|gz|bz2|xz)$/i;
+    async function listWorkspaceArchives(ctx, cap = 10) {
+        const sandboxRunner = require('./services/sandboxRunner');
+        let workspace;
+        try {
+            workspace = await sandboxRunner.ensureWorkspace(ctx?.userId ?? null, ctx?.conversationId ?? null);
+        } catch (_) { return { workspace: null, files: [] }; }
+        const fsp = require('fs').promises;
+        const pathMod = require('path');
+        const root = workspace.localInContainer;
+        const files = [];
+        async function walk(dir, rel, depth) {
+            if (files.length >= cap || depth > 4) return;
+            const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+            for (const ent of entries) {
+                if (files.length >= cap) return;
+                if (ent.name === 'node_modules' || (depth === 0 && ent.name === 'archives')) continue;
+                const full = pathMod.join(dir, ent.name);
+                const relPath = rel ? `${rel}/${ent.name}` : ent.name;
+                if (ent.isDirectory()) await walk(full, relPath, depth + 1);
+                else if (ent.isFile() && ARCHIVE_EXT_RE.test(ent.name)) files.push(relPath);
+            }
+        }
+        await walk(root, '', 0);
+        return { workspace, files };
+    }
+
+    // Resolve a workspace-relative path to archive bytes. Traversal-guarded
+    // against the workspace root; accepts the /workspace/-prefixed form the
+    // sandbox tools report so the model can pass paths verbatim.
+    async function resolveArchiveByPath(rawPath, ctx) {
+        const sandboxRunner = require('./services/sandboxRunner');
+        const workspace = await sandboxRunner.ensureWorkspace(ctx?.userId ?? null, ctx?.conversationId ?? null);
+        const pathMod = require('path');
+        const fsp = require('fs').promises;
+        const rel = String(rawPath).trim().replace(/^\/workspace\/?/, '').replace(/^\/+/, '');
+        if (!rel) throw new Error('path is empty.');
+        const resolved = pathMod.resolve(workspace.localInContainer, rel);
+        if (resolved !== workspace.localInContainer &&
+            !resolved.startsWith(workspace.localInContainer + pathMod.sep)) {
+            throw new Error('Resolved path escapes the workspace.');
+        }
+        const stat = await fsp.stat(resolved).catch(() => null);
+        if (!stat || !stat.isFile()) {
+            const { files } = await listWorkspaceArchives(ctx).catch(() => ({ files: [] }));
+            const hint = files.length ? ` Archives in the workspace: ${files.join(', ')}` : '';
+            throw new Error(`No file at workspace path "${rel}".${hint}`);
+        }
+        if (stat.size > 50 * 1024 * 1024) throw new Error(`File is ${stat.size} bytes; 50MB max.`);
+        return { buffer: await fsp.readFile(resolved), filename: pathMod.basename(resolved) };
+    }
+
     async function resolveArchiveById(archiveId, userId) {
         if (!/^[a-f0-9]{32}$/.test(String(archiveId || ''))) {
             throw new Error('archiveId must be a 32-char hex string.');
@@ -23393,15 +23451,21 @@ app.use((req, res) => {
                 function: {
                     name: 'extract_archive',
                     description:
-                        'Extract an archive (.zip, .7z, .rar, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz). ' +
-                        'When the user uploads an archive, the chat puts an `[Archive uploaded: ... archiveId=... ]` marker in their message — pass that archiveId; do NOT paste archive bytes (base64 in tool args gets truncated). ' +
-                        'For tiny inline archives only, pass `base64Data` + `filename`. Returns entry list + inline UTF-8 text for files <200KB (total cap ~2MB).',
+                        'Extract an archive (.zip, .7z, .rar, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz). Type is detected from the file bytes, so a mislabeled extension still extracts. ' +
+                        'Three inputs (pass exactly one): (1) `archiveId` from the `[Archive uploaded: ... archiveId=... ]` marker when the user uploaded the archive; ' +
+                        '(2) `path` — the workspace path of an archive a previous tool downloaded or created (use the exact savePath/path that tool returned, e.g. after download_file or fetch_url); ' +
+                        '(3) `base64Data` + `filename` for tiny inline archives ONLY — base64 in tool args gets truncated, never paste real archive bytes. ' +
+                        'Extracts into the conversation workspace and returns the entry list — pass an entry `path` to read_file/grep_code to inspect contents.',
                     parameters: {
                         type: 'object',
                         properties: {
                             archiveId: {
                                 type: 'string',
-                                description: '32-char hex id from the [Archive uploaded: ...] marker in the user message. Preferred input.',
+                                description: '32-char hex id from the [Archive uploaded: ...] marker in the user message.',
+                            },
+                            path: {
+                                type: 'string',
+                                description: 'Workspace-relative path of an archive already in this conversation workspace (e.g. "color-util.tgz" downloaded earlier). "/workspace/..." prefix accepted.',
                             },
                             base64Data: {
                                 type: 'string',
@@ -23409,7 +23473,7 @@ app.use((req, res) => {
                             },
                             filename: {
                                 type: 'string',
-                                description: 'Required when using base64Data. The extension picks the extractor (e.g. "report.tar.gz").',
+                                description: 'Required when using base64Data. The extension hints the extractor (e.g. "report.tar.gz"); magic bytes override a wrong extension.',
                             },
                         },
                         additionalProperties: false,
@@ -23420,24 +23484,54 @@ app.use((req, res) => {
         async execute(args, ctx) {
             let buffer, filename;
             let archiveId = String(args?.archiveId || '').trim();
-            // Model frequently calls extract_archive with no args or with the
-            // filename in the archiveId slot. Auto-select when there's a
-            // single archive on disk for this user, and produce a much more
-            // useful error otherwise (lists valid ids + their filenames).
+            let wsPath = String(args?.path || '').trim();
+            // Model frequently calls extract_archive with no args or with a
+            // FILENAME in the archiveId slot. Resolution order when archiveId
+            // isn't a valid id: (1) explicit workspace path; (2) a filename
+            // passed as archiveId matched against uploads then workspace
+            // files; (3) auto-select when exactly one candidate exists
+            // anywhere; (4) an error that lists everything extractable.
             const valid = /^[a-f0-9]{32}$/.test(archiveId);
             const b64Given = !!String(args?.base64Data || '').trim();
-            if (!valid && !b64Given) {
+            if (!valid && !wsPath && !b64Given) {
                 const available = await listUserArchives(ctx?.userId).catch(() => []);
-                if (available.length === 1) {
-                    archiveId = available[0].archiveId;
-                } else if (available.length === 0) {
-                    return { error: `No uploaded archives are available for this user. The user must upload the archive again (${Math.round(ARCHIVE_TTL_MS / 3600000)}h TTL).` };
-                } else {
-                    const list = available.map(a => `${a.archiveId} (${a.filename})`).join('; ');
-                    return { error: `archiveId is missing or malformed. Pass one of: ${list}` };
+                const ws = await listWorkspaceArchives(ctx).catch(() => ({ files: [] }));
+                if (archiveId) {
+                    // A non-hex archiveId is usually a filename — match it.
+                    const base = archiveId.split('/').pop().toLowerCase();
+                    const up = available.find(a => a.filename.toLowerCase() === base);
+                    const wf = ws.files.find(f => f.split('/').pop().toLowerCase() === base)
+                        || ws.files.find(f => f.toLowerCase() === archiveId.toLowerCase());
+                    if (up) archiveId = up.archiveId;
+                    else if (wf) wsPath = wf;
+                }
+                if (!/^[a-f0-9]{32}$/.test(archiveId) && !wsPath) {
+                    const candidates = available.length + ws.files.length;
+                    if (available.length === 1 && !ws.files.length) {
+                        archiveId = available[0].archiveId;
+                    } else if (ws.files.length === 1 && !available.length) {
+                        wsPath = ws.files[0];
+                    } else if (candidates === 0) {
+                        return { error: `No archives found — none uploaded by the user (${Math.round(ARCHIVE_TTL_MS / 3600000)}h TTL) and none in the conversation workspace. Download one first (download_file/fetch_url) and pass its path, or ask the user to upload it.` };
+                    } else {
+                        const list = [
+                            ...available.map(a => `archiveId=${a.archiveId} (${a.filename})`),
+                            ...ws.files.map(f => `path=${f}`),
+                        ].join('; ');
+                        return { error: `Ambiguous or malformed archive reference. Pass one of: ${list}` };
+                    }
                 }
             }
-            if (archiveId) {
+            if (wsPath && !/^[a-f0-9]{32}$/.test(archiveId)) {
+                try {
+                    const resolved = await resolveArchiveByPath(wsPath, ctx);
+                    buffer = resolved.buffer;
+                    filename = resolved.filename;
+                } catch (e) {
+                    return { error: e.message };
+                }
+                archiveId = ''; // extraction dir gets a random suffix below
+            } else if (archiveId) {
                 try {
                     const resolved = await resolveArchiveById(archiveId, ctx?.userId);
                     buffer = resolved.buffer;
