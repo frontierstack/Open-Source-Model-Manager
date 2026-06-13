@@ -22935,19 +22935,32 @@ app.use((req, res) => {
                         resolve(/^2\d\d$/.test(parts[0] || '') && /image\//i.test(parts.slice(1).join(' ')));
                     });
             });
+            // The chats are served over HTTPS, so an http:// <img src> is blocked
+            // as mixed content (broken-tile icon) even when curl can fetch it —
+            // the render URL MUST be https. Most hosts serve the same path over
+            // https, so upgrade http→https for the rendered URL.
+            const toHttps = (u) => (typeof u === 'string' && /^http:\/\//i.test(u))
+                ? u.replace(/^http:\/\//i, 'https://') : u;
             // Keep absolute http(s) entries, then validate each so dead/blocked
-            // URLs never reach the UI. Prefer the hotlink-safe thumbnail for
-            // rendering; fall back to the original if the thumbnail is dead;
-            // drop only when BOTH fail. Probe a buffer beyond `count` so a few
-            // dead results can be skipped without re-querying.
+            // URLs never reach the UI. Build https render-candidates (thumbnail
+            // first — hotlink-safe — then the original), probe each, use the first
+            // live one; drop the image if none render. Probe a buffer beyond
+            // `count` so a few dead results can be skipped without re-querying.
             const finalize = async (imgs, source) => {
                 const candidates = (imgs || [])
                     .filter(im => im && typeof im.url === 'string' && /^https?:\/\//i.test(im.url))
                     .slice(0, Math.max(count * 3, count + 6));
                 const vetted = await Promise.all(candidates.map(async (im) => {
-                    const thumb = (im.thumbnail && /^https?:\/\//i.test(im.thumbnail)) ? im.thumbnail : im.url;
-                    if (await probe(thumb)) return { ...im, thumbnail: thumb };
-                    if (im.url !== thumb && await probe(im.url)) return { ...im, thumbnail: im.url };
+                    const renderTries = [];
+                    for (const cand of [im.thumbnail, im.url]) {
+                        if (cand && /^https?:\/\//i.test(cand)) {
+                            const https = toHttps(cand);
+                            if (!renderTries.includes(https)) renderTries.push(https);
+                        }
+                    }
+                    for (const t of renderTries) {
+                        if (await probe(t)) return { ...im, thumbnail: t, url: toHttps(im.url) };
+                    }
                     return null;
                 }));
                 const clean = vetted.filter(Boolean).slice(0, count);

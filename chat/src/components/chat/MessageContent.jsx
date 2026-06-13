@@ -78,10 +78,13 @@ const sharedMarkdownComponents = {
         // to the full image. The find_image tool renders its own grid via
         // ImageBlock — this covers any markdown image the model emits directly.
         if (!src || !/^(https?:|data:image\/)/i.test(src)) return null;
+        // The page is HTTPS — an http:// image is blocked as mixed content.
+        // Upgrade to https (most hosts serve the same path over both).
+        const safeSrc = /^http:\/\//i.test(src) ? src.replace(/^http:\/\//i, 'https://') : src;
         return (
-            <a href={src} target="_blank" rel="noopener noreferrer" className="inline-block my-2">
+            <a href={safeSrc} target="_blank" rel="noopener noreferrer" className="inline-block my-2">
                 <img
-                    src={src}
+                    src={safeSrc}
                     alt={alt || ''}
                     loading="lazy"
                     className="rounded-lg max-w-full h-auto"

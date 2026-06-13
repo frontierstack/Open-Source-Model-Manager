@@ -131,11 +131,14 @@ export default React.memo(function MessageContent({ content }) {
                 // any markdown image the model emits directly.)
                 img({ src, alt }) {
                     if (!src || !/^(https?:|data:image\/)/i.test(src)) return null;
+                    // The page is HTTPS — an http:// image is blocked as mixed
+                    // content. Upgrade to https (most hosts serve both).
+                    const safeSrc = /^http:\/\//i.test(src) ? src.replace(/^http:\/\//i, 'https://') : src;
                     return (
-                        <Link href={src} target="_blank" rel="noopener noreferrer" sx={{ display: 'inline-block', my: 1 }}>
+                        <Link href={safeSrc} target="_blank" rel="noopener noreferrer" sx={{ display: 'inline-block', my: 1 }}>
                             <Box
                                 component="img"
-                                src={src}
+                                src={safeSrc}
                                 alt={alt || ''}
                                 loading="lazy"
                                 sx={{
