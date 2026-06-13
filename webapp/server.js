@@ -22910,11 +22910,47 @@ app.use((req, res) => {
             const query = String(args?.query || '').trim();
             const count = Math.min(8, Math.max(1, parseInt(args?.count || 4, 10)));
             const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-            // Keep only entries with an absolute http(s) image URL; cap at count.
-            const finalize = (imgs, source) => {
-                const clean = (imgs || [])
+            const { execFile } = require('child_process');
+            // curl, not axios — see the DDG note below; also used to validate
+            // candidate image URLs (axios is fingerprint-blocked by some hosts).
+            const curlGet = (url, extra = []) => new Promise((resolve, reject) => {
+                execFile('curl', ['-s', '-L', '--max-time', '10', '-A', UA, ...extra, url],
+                    { maxBuffer: 8 * 1024 * 1024 },
+                    (err, stdout) => (err ? reject(err) : resolve(stdout || '')));
+            });
+            // Liveness probe: a tiny ranged GET that confirms a URL actually
+            // returns an image (2xx/206 + image/* content-type). Models guess
+            // image URLs that 404 (a stale m.media-amazon.com poster returns a
+            // text/plain CloudFront error, not a picture) and some origins
+            // hotlink-block — both render as broken tiles. Dropping them here is
+            // the only place we can guarantee the browser gets a live image.
+            const probe = (url) => new Promise((resolve) => {
+                if (!url || !/^https?:\/\//i.test(url)) return resolve(false);
+                execFile('curl', ['-s', '-L', '-o', '/dev/null', '--max-time', '6', '-A', UA,
+                    '-w', '%{http_code} %{content_type}', '-r', '0-0', url],
+                    { timeout: 8000 },
+                    (err, stdout) => {
+                        if (err) return resolve(false);
+                        const parts = String(stdout || '').trim().split(/\s+/);
+                        resolve(/^2\d\d$/.test(parts[0] || '') && /image\//i.test(parts.slice(1).join(' ')));
+                    });
+            });
+            // Keep absolute http(s) entries, then validate each so dead/blocked
+            // URLs never reach the UI. Prefer the hotlink-safe thumbnail for
+            // rendering; fall back to the original if the thumbnail is dead;
+            // drop only when BOTH fail. Probe a buffer beyond `count` so a few
+            // dead results can be skipped without re-querying.
+            const finalize = async (imgs, source) => {
+                const candidates = (imgs || [])
                     .filter(im => im && typeof im.url === 'string' && /^https?:\/\//i.test(im.url))
-                    .slice(0, count);
+                    .slice(0, Math.max(count * 3, count + 6));
+                const vetted = await Promise.all(candidates.map(async (im) => {
+                    const thumb = (im.thumbnail && /^https?:\/\//i.test(im.thumbnail)) ? im.thumbnail : im.url;
+                    if (await probe(thumb)) return { ...im, thumbnail: thumb };
+                    if (im.url !== thumb && await probe(im.url)) return { ...im, thumbnail: im.url };
+                    return null;
+                }));
+                const clean = vetted.filter(Boolean).slice(0, count);
                 return clean.length
                     ? { imageSpec: { query, images: clean }, count: clean.length, source }
                     : null;
@@ -22935,7 +22971,7 @@ app.use((req, res) => {
                         attribution: (u && u.attribution) || null,
                     };
                 }).filter(Boolean);
-                const out = finalize(images, 'provided');
+                const out = await finalize(images, 'provided');
                 if (out) return out;
                 // nothing valid provided → fall through to search
             }
@@ -22952,12 +22988,6 @@ app.use((req, res) => {
             // Thumbnails come from Bing's CDN (hotlink-safe) — prefer them for
             // display so a hotlink-blocking origin can't break the inline render.
             try {
-                const { execFile } = require('child_process');
-                const curlGet = (url, extra = []) => new Promise((resolve, reject) => {
-                    execFile('curl', ['-s', '-L', '--max-time', '10', '-A', UA, ...extra, url],
-                        { maxBuffer: 8 * 1024 * 1024 },
-                        (err, stdout) => (err ? reject(err) : resolve(stdout || '')));
-                });
                 const enc = encodeURIComponent(query);
                 const page = await curlGet(`https://duckduckgo.com/?q=${enc}&iar=images&iax=images&ia=images`);
                 const m = String(page).match(/vqd="?([\d-]+)"?/);
@@ -22980,7 +23010,7 @@ app.use((req, res) => {
                         width: r.width || null,
                         height: r.height || null,
                     }));
-                    const out = finalize(images, 'duckduckgo');
+                    const out = await finalize(images, 'duckduckgo');
                     if (out) return out;
                 }
             } catch (_) { /* fall through to Openverse */ }
@@ -22993,7 +23023,7 @@ app.use((req, res) => {
                     timeout: 10000,
                 });
                 const rows = Array.isArray(resp.data?.results) ? resp.data.results : [];
-                const out = finalize(rows.map(r => ({
+                const out = await finalize(rows.map(r => ({
                     url: r.url,
                     thumbnail: r.thumbnail || r.url,
                     title: r.title || query,
@@ -23019,7 +23049,7 @@ app.use((req, res) => {
                     timeout: 10000,
                 });
                 const pages = resp.data?.query?.pages ? Object.values(resp.data.query.pages) : [];
-                const out = finalize(pages.map(p => {
+                const out = await finalize(pages.map(p => {
                     const ii = Array.isArray(p.imageinfo) ? p.imageinfo[0] : null;
                     if (!ii) return null;
                     const meta = ii.extmetadata || {};
