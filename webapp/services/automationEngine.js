@@ -1489,8 +1489,10 @@ function buildBuilderSystemPrompt() {
         '- Wire every step with edges (source→target). Data flows trigger → … → final step.',
         '- Reference a previous step inside any text/arg with {{nodes.<id>.<field>}} or {{last}} (previous output). Exact {{nodes.<id>}} is that node\'s whole output.',
         '- Branch from gates with sourceHandle on the OUTGOING edge: gate.if → "true"/"false"; gate.filter → "out"; gate.switch → one handle per case.',
+        '- BRANCH HANDLES BELONG ONLY TO GATES. A model / tool / connector node has exactly ONE output — NEVER put a "sourceHandle" (e.g. "true"/"false") on an edge whose source is a model/fetch/tool/etc. node; that edge is dead and never fires. To branch on a model\'s answer, send the model INTO a gate.if (e.g. condition on "{{nodes.<model>}}" contains/not_contains a sentinel word) and branch from the GATE, not the model.',
         '- DEDUPE A FEED / "only new or unique ITEMS on future runs" / "notify only when a new post/article/listing appears": use a db_store node with a "key" (the unique field — id or url; add "keyNormalize": true and "keyStrip" for messy text/titles). It stores only unseen records and returns them in `.new`. Then add a gate.if on `{{nodes.<store>.new}}` with op "not_empty" and continue on the "true" handle. NEVER rely on the model to remember past items — persistence is what makes it unique across runs.',
         '- DEDUPE KEY RULES (CRITICAL): the "key" MUST be a field that is UNIQUE PER ITEM and STABLE across runs — for articles/posts that is the per-item "link" (or "id"). The db_store input MUST be the LIST OF ITEMS (one row per article), never a single wrapper object. NEVER key on a value that is identical on every run — e.g. a source-page url or site title coming from a fetch_url of a HOMEPAGE/section page: that stores one row per PAGE (the page url never changes), so it reports "new" on the first run and then ZERO forever. That is not dedupe — it silently suppresses ALL content. If you only have a page (not a feed), the items aren\'t separated yet, so fetch_url→db_store CANNOT dedupe articles; use parse_rss on the site\'s feed instead (see below).',
+        '- ALERT WHEN SOMETHING BECOMES TRUE / "tell me WHEN tickets go on sale / when it is back in stock / when the status flips" (a state CHANGE on a stable target, NOT a feed of new items): do NOT db_store the search/fetch results — their urls/ids are STABLE across runs, so db_store marks them all "new" on the first run and then ZERO forever, which silently suppresses the alert PERMANENTLY (it never fires even once the thing actually happens). Instead detect the STATE TRANSITION: (1) web_search / fetch_url / http_request the source, (2) a model node that emits a STRICT machine verdict — e.g. prompt it to output exactly "AVAILABLE: <urls>" when the thing is true or exactly "NONE" otherwise, and NOTHING else (pick sentinels where the negative does NOT contain the positive word — "NONE" not "NOT AVAILABLE", since contains-checks would match the substring), (3) track_changes { "key": "<a constant string id for this watch>", "content": "{{nodes.<model>}}" } to detect when that verdict TEXT changes between runs, (4) gate.if { "condition": { "left": "{{nodes.<track>.changed}}", "op": "not_empty" } } on the "true" handle (only when the verdict changed), (5) a SECOND gate.if { "condition": { "left": "{{nodes.<model>}}", "op": "not_contains", "right": "NONE" } } on its "true" handle (only when it is now the positive state), (6) telegram/slack. This alerts on the moment of the transition, never suppresses forever, and never spams the same alert every run while the state holds.',
         '- MONITOR ONE PAGE/SOURCE FOR CHANGES AND REPORT WHAT CHANGED (a single URL/API whose CONTENT mutates over time — NOT a feed of new items): use a track_changes node, NOT db_store. Wire: fetch_url (or scrapling_fetch for bot-protected sites, or http_request for a JSON API) → track_changes { "key": "<the url>" } (leave "content" blank to use the fetched body) → gate.if { "condition": { "left": "{{nodes.<track>.changed}}", "op": "not_empty", "right": "" } } → model (prompt the diff, e.g. "Summarize what changed on the page:\\n{{nodes.<track>.diff}}") on the "true" handle → telegram/slack. track_changes stores the previous snapshot per key and returns { changed, diff, added, removed, revision }; the FIRST run stores a baseline (changed=false) so nothing is sent until a real change. db_store CANNOT do this (keying a single page by its content makes every version look "new" and gives no diff).',
         '- LATEST NEWS / ARTICLES FROM A SITE (a feed): the BEST source is the site\'s RSS/Atom FEED, parsed with the parse_rss node — parse_rss { "args": { "url": "https://feeds.bbci.co.uk/news/world/rss.xml" } } returns clean { items:[{title, link, summary, published, id}] } with no scraping. Do NOT use http_request+parse_json on a feed (parse_json cannot parse XML) and do NOT write a run_python XML parser. Do NOT use a site-specific web_search ("site:... latest") — DuckDuckGo rate-limits those. Good world/news feeds: https://feeds.bbci.co.uk/news/world/rss.xml , https://rss.cnn.com/rss/edition_world.rss , https://www.theguardian.com/world/rss , http://rss.cnn.com/rss/cnn_topstories.rss . For cybersecurity: https://www.bleepingcomputer.com/feed/ , https://www.darkreading.com/rss.xml , https://krebsonsecurity.com/feed/ , https://www.securityweek.com/feed/ , https://www.theregister.com/security/headlines.atom (avoid feedburner-backed feeds like thehackernews.com/feeds/posts/default — they 403 behind the egress proxy). web_search is only for open-ended "find pages about X". To report only NEW stories across runs: parse_rss → db_store(key="link") → gate.if({{nodes.<store>.new}} not_empty) → model → create_pdf.',
         '- MULTIPLE FEEDS (e.g. a daily newspaper from several sites): give each source its OWN parse_rss node, fan them all into a merge, then db_store. Because parse_rss outputs { items:[…] }, the merge holds N feed-wrapper objects, so the db_store "value" MUST FLATTEN them into one article list: value "{{nodes.<merge>.items.*.items}}" (the ".*.items" maps over every feed and flattens). Do NOT use "{{nodes.<merge>.items}}" (that stores N wrapper objects keyed on a missing field → never dedupes). key "link".',
@@ -1501,7 +1503,7 @@ function buildBuilderSystemPrompt() {
         '- run_python / run_node DO NOT have access to workflow data as variables. There is NO `nodes`, `last`, `input` or any node id available as a Python/JS name — referencing them throws "NameError: name \'nodes\' is not defined". To use an upstream value inside the code you MUST interpolate it as a literal via templating, e.g. code: "import json\\ndata = json.loads(r\'\'\'{{nodes.n2.content}}\'\'\')\\n…". But prefer NOT using run_python for fetching/parsing at all — use http_request + parse_json (JSON) or fetch_url + a model node (HTML). Reserve run_python for pure local transforms on already-interpolated data.',
         '- fetch_url returns { url, title, content, success } — the page text is in "content" (NOT "data"). http_request returns { success, status, data } — the response body is in "data" (a string for JSON APIs; feed it to parse_json).',
         '- A REPORT WITH GRAPHS/CHARTS IN A PDF: get the numbers (fetch_timeseries for stock/market data — args.symbol/period/interval, rows come back in .data; or http_request+parse_json for a JSON API), then chart_plot { "args": { "type":"line", "x":"{{nodes.<dataId>.data.*.date}}", "y":"{{nodes.<dataId>.data.*.close}}", "title":"..." } } to render a PNG into the workspace, then create_pdf whose markdown "content" embeds that image with an image tag: ![Chart]({{nodes.<chartId>.file}}) alongside the written analysis. create_pdf renders ![alt](path) images from /workspace (and /workspace/artifacts). Do NOT use render_chart for a PDF (it only makes an on-screen spec, not a file). Wire: fetch_timeseries → chart_plot → model (write the analysis) → create_pdf (embed ![Chart]({{nodes.<chartId>.file}}) + the analysis).',
-        '- MULTI-DAY/MULTI-TIME SCHEDULES (e.g. "Mon and Wed at 9am AND Fri at 4:30pm"): use trigger.schedule with a "crons" ARRAY of 5-field cron lines, one per (days, time) group. Example: { "crons": ["0 9 * * 1,3", "30 16 * * 5"] }. NEVER set "cron" (singular) to an array — use "crons". For one-off future dates use { "runAt": ["2026-12-25T09:00:00Z", ...] } (ISO UTC). intervalMs and cron(s)/runAt are mutually exclusive; pick one form per schedule node.',
+        '- MULTI-DAY/MULTI-TIME SCHEDULES (e.g. "Mon and Wed at 9am AND Fri at 4:30pm"): use trigger.schedule with a "crons" ARRAY of 5-field cron lines, one per (days, time) group. Example: { "crons": ["0 9 * * 1,3", "30 16 * * 5"] }. NEVER set "cron" (singular) to an array — use "crons". For one-off future dates use { "runAt": ["2026-12-25T09:00:00Z", ...] } (ISO UTC). intervalMs and cron(s)/runAt are mutually exclusive; pick ONE form per schedule node and OMIT the others entirely — when you set crons/cron/runAt do NOT also include intervalMs (leaving a stray intervalMs is ignored at run time but is a footgun and clutters the change log).',
         '- COLLECTING/MONITORING DATA "over/throughout an hour": a single run is one point in time and cannot watch for an hour by itself. fetch_timeseries is DAILY/weekly/monthly only (no intraday), so for live intraday monitoring use a Schedule trigger at a short interval (e.g. every 5 minutes) that fetches the current value (http_request to the quote/price endpoint) and appends it to db_store; then a db_query (newest-N) feeds the chart/report from the rows collected across runs. If the user just wants a price trend, fetch_timeseries daily history over a period (e.g. 1mo) charted is the simple path.',
         '',
         'Per-node data (set only what is needed):',
@@ -1646,6 +1648,48 @@ function layoutWorkflow(nodes, edges) {
 // Accepts node "type" as either a builtin key (e.g. http_request) or its engine
 // type (e.g. tool); merges builtin defaults; drops unknown nodes / dangling
 // edges; ensures a trigger entry exists.
+// Gate nodes are the ONLY nodes with named branch handles (true/false/case). A
+// model/tool/connector node has exactly one output, so a sourceHandle on an edge
+// leaving one is a dead/invalid branch — a real LLM-edit mistake (e.g. wiring a
+// "false" handle off a model node).
+const GATE_TYPES = new Set(['gate.if', 'gate.filter', 'gate.switch']);
+
+// Remove self-contradictory leftovers from a node's merged data. Currently a
+// Schedule node that specifies a calendar form (crons/cron/runAt) must NOT also
+// carry intervalMs: the scheduler prioritizes the calendar (server.js hasCalendar
+// check), so a stale intervalMs default (300000) is a footgun — clearing the
+// calendar later silently reverts the trigger to every-5-min — and it clutters
+// the edit diff. Also drops empty calendar fields so only the chosen form remains.
+// Mutates and returns `data`.
+function normalizeNodeData(type, data) {
+    if (!data || typeof data !== 'object') return data;
+    if (type === 'trigger.schedule') {
+        const hasCrons = Array.isArray(data.crons) && data.crons.some(c => typeof c === 'string' && c.trim());
+        const hasCron = typeof data.cron === 'string' && data.cron.trim() !== '';
+        const hasRunAt = Array.isArray(data.runAt) && data.runAt.some(c => typeof c === 'string' && c.trim());
+        // Drop empty calendar fields regardless (they only confuse the diff/UI).
+        if (Array.isArray(data.crons) && !hasCrons) delete data.crons;
+        if (data.cron === '' || (typeof data.cron === 'string' && data.cron.trim() === '')) delete data.cron;
+        if (Array.isArray(data.runAt) && !hasRunAt) delete data.runAt;
+        // A real calendar form wins → drop the (usually default) intervalMs.
+        if (hasCrons || hasCron || hasRunAt) delete data.intervalMs;
+    }
+    return data;
+}
+
+// Drop branch handles the model put on edges leaving a NON-gate node (keeps the
+// generic 'out'). Defends against the classic LLM-edit error of branching off a
+// model/tool node, which leaves a dead edge that never fires. Mutates `edges`.
+function sanitizeEdgeHandles(nodes, edges) {
+    const typeById = new Map(nodes.map(n => [String(n.id), n.type]));
+    for (const e of edges) {
+        if (!e.sourceHandle) continue;
+        const st = typeById.get(String(e.source));
+        if (!GATE_TYPES.has(st) && e.sourceHandle !== 'out') delete e.sourceHandle;
+    }
+    return edges;
+}
+
 function materializeWorkflow(spec) {
     const byKey = new Map(), byType = new Map();
     for (const b of BUILTIN_NODE_TYPES) { byKey.set(b.key, b); byType.set(b.type, b); }
@@ -1661,6 +1705,7 @@ function materializeWorkflow(spec) {
         if (n && n.id != null) idMap.set(String(n.id), newId);
         const data = { ...(b.defaults || {}), ...(n && n.data && typeof n.data === 'object' ? n.data : {}) };
         if (!data.label) data.label = b.label;
+        normalizeNodeData(b.type, data);
         nodes.push({ id: newId, type: b.type, position: { x: 0, y: 0 }, data });
     }
     if (!nodes.length) throw new Error('the model produced no recognizable nodes');
@@ -1684,6 +1729,7 @@ function materializeWorkflow(spec) {
         const first = nodes.find(n => n.id !== 'n0' && !withIncoming.has(n.id)) || nodes.find(n => n.id !== 'n0');
         if (first) edges.unshift({ id: `e${++e}`, source: 'n0', target: first.id });
     }
+    sanitizeEdgeHandles(nodes, edges);
     layoutWorkflow(nodes, edges);
     const name = (spec && typeof spec.name === 'string' && spec.name.trim()) ? spec.name.trim().slice(0, 80) : 'Generated automation';
     return { name, nodes, edges };
@@ -1733,10 +1779,18 @@ function materializeWorkflowEdit(spec, base) {
     // 2) align proposed → base ids. claimedBase guards 1:1 matching.
     const claimedBase = new Set();
     const finalIds = new Array(raw.length).fill(null);
-    // pass A — exact id match
+    // pass A — exact id match, but ONLY when the node TYPE also matches. Without
+    // the type guard, an inserted/renumbered node that reuses a shifted base id
+    // (e.g. a brand-new parse_json the model emitted as "n3" where base n3 was a
+    // db_store) hijacks the wrong base node, and the diff reads as a phantom
+    // "type changed db_store→parse_json" cascade instead of a clean "added
+    // parse_json". A genuine same-type edit (incl. a tool rename within type
+    // 'tool') still matches here and shows as "changed".
     for (let i = 0; i < raw.length; i++) {
         const id = raw[i].rawId;
-        if (id && baseNodes.has(id) && !claimedBase.has(id)) { finalIds[i] = id; claimedBase.add(id); }
+        if (id && baseNodes.has(id) && !claimedBase.has(id) && baseNodes.get(id).type === raw[i].b.type) {
+            finalIds[i] = id; claimedBase.add(id);
+        }
     }
     // pass B — by signature among unclaimed base nodes (handles dropped ids)
     for (let i = 0; i < raw.length; i++) {
@@ -1761,6 +1815,7 @@ function materializeWorkflowEdit(spec, base) {
         const baseN = baseNodes.get(id);
         const data = r.data;
         if (!data.label) data.label = (baseN && baseN.data && baseN.data.label) || r.b.label;
+        normalizeNodeData(r.b.type, data);
         const position = (baseN && baseN.position) || r.position || null;
         nodes.push({ id, type: r.b.type, position, data });
     }
@@ -1781,6 +1836,7 @@ function materializeWorkflowEdit(spec, base) {
         if (ed.sourceHandle) edge.sourceHandle = String(ed.sourceHandle);
         edges.push(edge);
     }
+    sanitizeEdgeHandles(nodes, edges);
     // place any node missing a position (new nodes) near a positioned neighbour
     let maxX = 0; for (const n of nodes) if (n.position && typeof n.position.x === 'number') maxX = Math.max(maxX, n.position.x);
     let stray = 0;

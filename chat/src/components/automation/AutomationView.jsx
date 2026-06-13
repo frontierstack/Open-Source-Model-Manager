@@ -9,6 +9,7 @@ import './automation.css';
 import {
     ArrowLeft, Plus, Play, Square, Save, Trash2, Archive, ArchiveRestore,
     Power, PowerOff, Copy, Check, ChevronDown, ChevronRight, History as HistoryIcon, X as CloseIcon, Download, Braces, Menu as MenuIcon,
+    Sparkles, Wand2, FlaskConical, RotateCcw,
 } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConfirm } from '../ConfirmDialog';
@@ -422,6 +423,15 @@ const prefersReducedMotion = () => {
     catch (_) { return false; }
 };
 
+// Caption for a node during the time-lapse replay, by its role in the assembly.
+function captionForRole(role, label) {
+    const L = label || 'step';
+    if (role === 'update') return `Updating “${L}”`;
+    if (role === 'remove') return `Removing “${L}”`;
+    if (role === 'keep') return `“${L}”`;
+    return `Adding “${L}”`;
+}
+
 function FlowEditor({ showSnackbar, models }) {
     const setView = useChatStore(s => s.setView);
     const confirm = useConfirm();
@@ -468,6 +478,12 @@ function FlowEditor({ showSnackbar, models }) {
     // Construction/diff replay: a token + timer registry so a replay is fully
     // cancellable (navigate away / start another build) with no leaked timers.
     const [assembling, setAssembling] = useState(false);
+    // Time-lapse HUD: a caption for the step being replayed + a {i,total} counter,
+    // and a replay handle so the user can re-watch the last build/edit assembly.
+    const [animCaption, setAnimCaption] = useState('');
+    const [animStep, setAnimStep] = useState(null); // { i, total }
+    const [canReplay, setCanReplay] = useState(false);
+    const replayRef = useRef(null);                  // () => void, replays the last assembly
     const animTokenRef = useRef(0);
     const animTimersRef = useRef([]);
     useEffect(() => { try { localStorage.setItem('automationPanelWidth', String(panelWidth)); } catch (_) {} }, [panelWidth]);
@@ -603,8 +619,11 @@ function FlowEditor({ showSnackbar, models }) {
             setLeftDrawerOpen(false); // mobile: reveal the canvas after picking from the drawer
             addCountRef.current = n.length;
             if (animate === 'build' && n.length && animFnsRef.current.animateConstruction) {
-                animFnsRef.current.animateConstruction(n, e);
+                // role map: every node is freshly added in a from-scratch build.
+                const roleById = new Map(n.map(x => [x.id, 'add']));
+                animFnsRef.current.animateConstruction(n, e, { roleById });
             } else {
+                if (animFnsRef.current.clearReplay) animFnsRef.current.clearReplay();
                 setNodes(n);
                 setEdges(e);
             }
@@ -631,6 +650,7 @@ function FlowEditor({ showSnackbar, models }) {
     // list from inside the editor.
     const backToList = useCallback(() => {
         if (animFnsRef.current.cancelAnim) animFnsRef.current.cancelAnim();
+        if (animFnsRef.current.clearReplay) animFnsRef.current.clearReplay();
         setSelected(null);
         setName('');
         setNodes([]);
@@ -641,68 +661,101 @@ function FlowEditor({ showSnackbar, models }) {
         setWebhookUrl('');
         setNodeOutputs({});
         setShowHistory(false);
-        setEditOpen(false);
+        setAssistantOpen(false);
         setEditResult(null);
-        setEditPrompt('');
+        setBuildResult(null);
+        setAssistantPrompt('');
     }, [setNodes, setEdges]);
 
-    // Build with LLM — describe an automation in plain language, the model assembles it.
-    const [buildOpen, setBuildOpen] = useState(false);
-    const [buildPrompt, setBuildPrompt] = useState('');
-    const [building, setBuilding] = useState(false);
-    const [buildTest, setBuildTest] = useState(false);
-    const [buildLog, setBuildLog] = useState(null);
+    // ---- AI Assistant (Build + Edit in one roomy modal) ----
+    // One modal serves both flows: Build a new automation from a description, or
+    // Edit the open one. A wide composer + a readable result view (NL summary,
+    // color-coded change log, test report) replaces the old cramped rail boxes.
+    const [assistantOpen, setAssistantOpen] = useState(false);
+    const [assistantMode, setAssistantMode] = useState('build'); // 'build' | 'edit'
+    const [assistantPrompt, setAssistantPrompt] = useState('');
+    const [assistantTest, setAssistantTest] = useState(false);
+    const [assistantBusy, setAssistantBusy] = useState(false);
+    const [buildResult, setBuildResult] = useState(null);   // { id, summary, buildLog, testReport, nodeCount }
+    const [editResult, setEditResult] = useState(null);     // { proposed, diff, summary, changelog, buildLog?, testReport? }
+
+    const openAssistant = useCallback((mode) => {
+        if (mode === 'edit' && !selected) return;
+        setAssistantMode(mode);
+        setAssistantPrompt('');
+        setBuildResult(null);
+        setEditResult(null);
+        setAssistantOpen(true);
+    }, [selected]);
+    const closeAssistant = useCallback(() => {
+        if (assistantBusy) return;
+        setAssistantOpen(false);
+        setAssistantPrompt('');
+        setBuildResult(null);
+        setEditResult(null);
+    }, [assistantBusy]);
+    // Reset the assistant's pending result when the open automation changes.
+    useEffect(() => { setEditResult(null); setBuildResult(null); }, [selected && selected.id]);
+
     const buildAutomation = useCallback(async () => {
-        const p = buildPrompt.trim();
-        if (!p || building) return;
-        setBuilding(true);
-        setBuildLog(null);
+        const p = assistantPrompt.trim();
+        if (!p || assistantBusy) return;
+        setAssistantBusy(true);
+        setBuildResult(null);
         try {
             const res = await fetch('/api/automations/build', {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt: p, test: buildTest }),
+                body: JSON.stringify({ prompt: p, test: assistantTest }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to build automation');
             await loadAutomations();
-            selectAutomation(data.id, { animate: 'build' });
-            setBuildPrompt('');
-            const log = Array.isArray(data.buildLog) ? data.buildLog : null;
-            setBuildLog(log);
-            // Keep the box open to show the build log; otherwise close it.
-            if (!log) setBuildOpen(false);
-            notify('Built with LLM — review and tweak the steps before running', 'success');
+            await selectAutomation(data.id); // load the graph; the time-lapse plays on "Watch it build"
+            setBuildResult({
+                id: data.id,
+                summary: data.summary || '',
+                buildLog: Array.isArray(data.buildLog) ? data.buildLog : [],
+                testReport: data.testReport || null,
+                nodeCount: Array.isArray(data.nodes) ? data.nodes.length : 0,
+            });
+            notify('Built with LLM — review the summary, then watch it assemble', 'success');
         } catch (err) { notify(err.message, 'error'); }
-        finally { setBuilding(false); }
-    }, [buildPrompt, building, buildTest, loadAutomations, selectAutomation]);
+        finally { setAssistantBusy(false); }
+    }, [assistantPrompt, assistantBusy, assistantTest, loadAutomations, selectAutomation]);
 
-    // Edit with LLM — describe a change to the OPEN automation; preview the diff, then apply.
-    const [editOpen, setEditOpen] = useState(false);
-    const [editPrompt, setEditPrompt] = useState('');
-    const [editing, setEditing] = useState(false);
-    const [editResult, setEditResult] = useState(null); // { proposed, diff, buildLog? }
-    const [editTest, setEditTest] = useState(false);
-    useEffect(() => { setEditOpen(false); setEditResult(null); setEditPrompt(''); }, [selected && selected.id]);
+    // Close the modal and play the construction time-lapse on the board.
+    const watchBuild = useCallback(() => {
+        setAssistantOpen(false);
+        setBuildResult(null);
+        setAssistantPrompt('');
+        const fn = animFnsRef.current.animateConstruction;
+        if (fn && nodes.length) {
+            const roleById = new Map(nodes.map(n => [n.id, 'add']));
+            fn(nodes, edges, { roleById });
+        }
+    }, [nodes, edges]);
+
     const previewEdit = useCallback(async () => {
-        const p = editPrompt.trim();
-        if (!p || editing || !selected) return;
-        setEditing(true);
+        const p = assistantPrompt.trim();
+        if (!p || assistantBusy || !selected) return;
+        setAssistantBusy(true);
         try {
             const res = await fetch(`/api/automations/${selected.id}/edit`, {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt: p, test: editTest }),
+                body: JSON.stringify({ prompt: p, test: assistantTest }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to edit automation');
             setEditResult(data);
         } catch (err) { notify(err.message, 'error'); }
-        finally { setEditing(false); }
-    }, [editPrompt, editing, editTest, selected]);
+        finally { setAssistantBusy(false); }
+    }, [assistantPrompt, assistantBusy, assistantTest, selected]);
+
     const applyEdit = useCallback(async () => {
         if (!editResult || !selected) return;
-        setEditing(true);
+        setAssistantBusy(true);
         // Snapshot the current (pre-apply) board so the diff replay can fade out
         // removed nodes before revealing the new graph.
         const baseNodes = nodes;
@@ -733,10 +786,10 @@ function FlowEditor({ showSnackbar, models }) {
             else { setNodes(nextNodes); setEdges(nextEdges); }
             await loadAutomations();
             seedNodeOutputs(selected.id);
-            setEditResult(null); setEditPrompt(''); setEditOpen(false);
+            setEditResult(null); setAssistantPrompt(''); setAssistantOpen(false);
             notify('Changes applied', 'success');
         } catch (err) { notify(err.message, 'error'); }
-        finally { setEditing(false); }
+        finally { setAssistantBusy(false); }
     }, [editResult, selected, nodes, edges, labelFor, loadAutomations, setNodes, setEdges, seedNodeOutputs]);
 
     // ---- graph edits ----
@@ -930,16 +983,20 @@ function FlowEditor({ showSnackbar, models }) {
     // Reveal `rfNodes`/`rfEdges` one wave at a time. `accent(id)` (optional) tags
     // a node for the pulse (changed) class instead of the appear class — used by
     // the diff replay. Resolves when the reveal completes (or is cancelled).
-    const animateConstruction = useCallback((rfNodes, rfEdges, { accentIds } = {}) => {
+    const animateConstruction = useCallback((rfNodes, rfEdges, { accentIds, roleById } = {}) => {
         cancelAnim();
         const token = animTokenRef.current;
-        const STAGGER = 170;     // per-node reveal cadence (140–220ms feel)
+        const STAGGER = 200;     // per-node reveal cadence — reads as a time-lapse
         const EDGE_SETTLE = 520; // glow → settled
+        // Register a replay of THIS exact assembly so the user can re-watch it.
+        replayRef.current = () => animateConstruction(rfNodes, rfEdges, { accentIds, roleById });
+        setCanReplay(true);
 
         if (prefersReducedMotion() || !rfNodes.length) {
             setNodes(rfNodes);
             setEdges(rfEdges);
             setAssembling(false);
+            setAnimCaption(''); setAnimStep(null);
             try { requestAnimationFrame(() => fitView({ duration: 200, padding: 0.2 })); } catch (_) {}
             return;
         }
@@ -950,6 +1007,10 @@ function FlowEditor({ showSnackbar, models }) {
         const revealAt = new Map();
         revealOrder.forEach((id, i) => revealAt.set(id, i));
         const accent = accentIds instanceof Set ? accentIds : null;
+        const roles = roleById instanceof Map ? roleById : null;
+        const labelOf = new Map(rfNodes.map(n => [n.id, (n.data && n.data.label) || n.type]));
+        setAnimStep({ i: 0, total: revealOrder.length });
+        setAnimCaption('');
 
         // Start with every node staged-but-invisible (is-hidden) and every edge
         // pending (path opacity 0); flipping anim→appear/pulse kicks the keyframe.
@@ -959,7 +1020,12 @@ function FlowEditor({ showSnackbar, models }) {
 
         revealOrder.forEach((id, idx) => {
             animLater(token, idx * STAGGER, () => {
-                const animKind = accent && accent.has(id) ? 'pulse' : 'appear';
+                const isAccent = accent && accent.has(id);
+                const animKind = isAccent ? 'pulse' : 'appear';
+                const role = roles ? roles.get(id) : (isAccent ? 'update' : 'add');
+                // Narrate this step on the time-lapse HUD.
+                setAnimCaption(captionForRole(role, labelOf.get(id)));
+                setAnimStep({ i: idx + 1, total: revealOrder.length });
                 setNodes(ns => ns.map(n => n.id === id ? { ...n, data: { ...n.data, anim: animKind } } : n));
                 // Draw the incoming edges whose source has already appeared.
                 setEdges(es => es.map(e => {
@@ -984,6 +1050,7 @@ function FlowEditor({ showSnackbar, models }) {
                 ? { ...e, className: undefined, animated: false } : e));
             setNodes(ns => ns.map(n => n.data && n.data.anim ? { ...n, data: { ...n.data, anim: null } } : n));
             setAssembling(false);
+            setAnimCaption(''); setAnimStep(null);
             try { fitView({ duration: 260, padding: 0.2 }); } catch (_) {}
         });
     }, [cancelAnim, animLater, setNodes, setEdges, fitView]);
@@ -994,40 +1061,59 @@ function FlowEditor({ showSnackbar, models }) {
     // the accent set). `base` = the pre-apply RF nodes/edges (for the fade-out).
     const animateDiff = useCallback((baseNodes, baseEdges, nextNodes, nextEdges, diff) => {
         cancelAnim();
+        // Register a replay of this exact diff assembly.
+        replayRef.current = () => animateDiff(baseNodes, baseEdges, nextNodes, nextEdges, diff);
+        setCanReplay(true);
+        const addedIds = new Set((diff && diff.addedNodes || []).map(n => n.id));
+        const changedIds = new Set((diff && diff.changedNodes || []).map(n => n.id));
+        // Role per surviving node so each reveal narrates correctly (add/update/keep).
+        const roleById = new Map();
+        for (const n of nextNodes) roleById.set(n.id, addedIds.has(n.id) ? 'add' : (changedIds.has(n.id) ? 'update' : 'keep'));
         if (prefersReducedMotion()) {
             setNodes(nextNodes); setEdges(nextEdges); setAssembling(false);
+            setAnimCaption(''); setAnimStep(null);
             try { requestAnimationFrame(() => fitView({ duration: 200, padding: 0.2 })); } catch (_) {}
             return;
         }
         const removedIds = new Set((diff && diff.removedNodes || []).map(n => n.id));
-        const changedIds = new Set((diff && diff.changedNodes || []).map(n => n.id));
-        const FADE = 460;
+        const FADE = 520;
         if (removedIds.size) {
             setAssembling(true);
             const token = ++animTokenRef.current; // claim a token for the fade phase
+            const removedLabels = (diff.removedNodes || []).map(n => n.label).filter(Boolean);
+            setAnimCaption(removedLabels.length === 1 ? `Removing “${removedLabels[0]}”` : `Removing ${removedIds.size} step${removedIds.size > 1 ? 's' : ''}`);
+            setAnimStep(null);
             // Show the OLD graph, flag removed nodes with the remove keyframe.
             setNodes(baseNodes.map(n => removedIds.has(n.id) ? { ...n, data: { ...n.data, anim: 'remove' } } : { ...n, data: { ...n.data, anim: null } }));
             setEdges(baseEdges.map(e => (removedIds.has(e.source) || removedIds.has(e.target)) ? { ...e, className: 'is-removing-edge', animated: false } : e));
-            animLater(token, FADE, () => animateConstruction(nextNodes, nextEdges, { accentIds: changedIds }));
+            animLater(token, FADE, () => animateConstruction(nextNodes, nextEdges, { accentIds: changedIds, roleById }));
         } else {
-            animateConstruction(nextNodes, nextEdges, { accentIds: changedIds });
+            animateConstruction(nextNodes, nextEdges, { accentIds: changedIds, roleById });
         }
     }, [cancelAnim, animLater, animateConstruction, setNodes, setEdges, fitView]);
 
+    // Forget the last replay + clear the time-lapse HUD (used when a run, a new
+    // selection, or returning to the list supersedes the assembly view).
+    const clearReplay = useCallback(() => {
+        setCanReplay(false); replayRef.current = null; setAnimCaption(''); setAnimStep(null);
+    }, []);
+    const replayAssembly = useCallback(() => { if (replayRef.current) replayRef.current(); }, []);
+
     // Keep the ref current so selectAutomation (declared earlier) can reach the
     // replay helpers at call time.
-    useEffect(() => { animFnsRef.current = { animateConstruction, animateDiff, cancelAnim }; }, [animateConstruction, animateDiff, cancelAnim]);
+    useEffect(() => { animFnsRef.current = { animateConstruction, animateDiff, cancelAnim, clearReplay }; }, [animateConstruction, animateDiff, cancelAnim, clearReplay]);
     // Cancel any in-flight replay on unmount.
     useEffect(() => () => cancelAnim(), [cancelAnim]);
 
     // ---- run (SSE) + animation ----
     const resetRunVisuals = useCallback(() => {
         cancelAnim(); // a run supersedes any in-flight construction replay
+        clearReplay();
         setAssembling(false);
         setNodes(ns => ns.map(n => ({ ...n, data: { ...n.data, status: undefined, anim: null } })));
         setEdges(es => es.map(e => ({ ...e, className: undefined, animated: false })));
         setNodeOutputs({});
-    }, [setNodes, setEdges, cancelAnim]);
+    }, [setNodes, setEdges, cancelAnim, clearReplay]);
 
     // Mirror a generated file produced by each node onto its card as a minimal
     // chip (the only after-run detail kept on the canvas — full text output lives
@@ -1204,6 +1290,75 @@ function FlowEditor({ showSnackbar, models }) {
         return groups;
     }, [palette]);
 
+    // ---- Assistant result renderers (plain functions — no focusable inputs, so
+    // calling them inline in JSX is safe and avoids remount concerns) ----
+    const renderTestReport = (tr) => {
+        if (!tr) return null;
+        const tone = tr.ok ? 'ok' : (tr.configNeeded ? 'warn' : 'err');
+        return (
+            <div className={`ai-test ai-test--${tone}`}>
+                <div className="ai-test__head">
+                    {tr.ok ? <Check size={14} /> : <FlaskConical size={14} />}
+                    <span>{tr.ok ? 'Test passed — data flows end to end' : (tr.configNeeded ? 'Runs — only needs configuration you supply' : 'Test found issues')}</span>
+                    {tr.passes ? <span className="ai-test__passes">{tr.passes} pass{tr.passes > 1 ? 'es' : ''}</span> : null}
+                </div>
+                {tr.verdict ? <div className="ai-test__verdict">{tr.verdict}</div> : null}
+                {Array.isArray(tr.nodes) && tr.nodes.length > 0 && (
+                    <div className="ai-test__nodes">
+                        {tr.nodes.map(n => (
+                            <div key={n.id} className={`ai-test__node ${(n.status === 'failed' || n.flagged) ? 'is-bad' : (n.status === 'completed' ? 'is-ok' : '')}`}>
+                                <span className="ai-test__dot" />
+                                <span className="ai-test__nlabel">{n.label}</span>
+                                <span className="ai-test__npreview">{n.error || n.preview || n.status || ''}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+    const renderChangeDetail = (diff) => {
+        if (!diff) return null;
+        const empty = ((diff.addedNodes || []).length + (diff.changedNodes || []).length + (diff.removedNodes || []).length) === 0;
+        return (
+            <div className="ai-diff">
+                {(diff.addedNodes || []).map(n => (
+                    <div key={'a' + n.id} className="ai-diff__row ai-diff__row--add">
+                        <span className="ai-diff__sign">+</span>
+                        <div className="ai-diff__main">
+                            <div className="ai-diff__title">Added <b>{n.label}</b> <span className="ai-diff__type">{n.type}</span></div>
+                            {Array.isArray(n.config) && n.config.map((c, i) => <div key={i} className="ai-diff__cfg">{c}</div>)}
+                        </div>
+                    </div>
+                ))}
+                {(diff.changedNodes || []).map(n => (
+                    <div key={'c' + n.id} className="ai-diff__row ai-diff__row--change">
+                        <span className="ai-diff__sign">~</span>
+                        <div className="ai-diff__main">
+                            <div className="ai-diff__title">Updated <b>{n.label}</b> <span className="ai-diff__type">{n.type}</span></div>
+                            {Array.isArray(n.changes) && n.changes.length ? n.changes.map((c, i) => (
+                                <div key={i} className="ai-diff__chg">
+                                    <span className="ai-diff__field">{c.field}</span>
+                                    <span className="ai-diff__before">{c.before}</span>
+                                    <span className="ai-diff__arrow">→</span>
+                                    <span className="ai-diff__after">{c.after}</span>
+                                </div>
+                            )) : (n.fields && n.fields.length ? <div className="ai-diff__cfg">{n.fields.join(', ')}</div> : null)}
+                        </div>
+                    </div>
+                ))}
+                {(diff.removedNodes || []).map(n => (
+                    <div key={'r' + n.id} className="ai-diff__row ai-diff__row--remove">
+                        <span className="ai-diff__sign">−</span>
+                        <div className="ai-diff__main"><div className="ai-diff__title">Removed <b>{n.label}</b> <span className="ai-diff__type">{n.type}</span></div></div>
+                    </div>
+                ))}
+                {(diff.addedEdges > 0 || diff.removedEdges > 0) && <div className="ai-diff__edges">Connections: +{diff.addedEdges} / −{diff.removedEdges}</div>}
+                {empty && <div className="ai-diff__none">No node changes — only field tweaks.</div>}
+            </div>
+        );
+    };
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg)' }}>
             {/* Header */}
@@ -1274,99 +1429,13 @@ function FlowEditor({ showSnackbar, models }) {
                         </button>
                         <div className="auto-rail__aihint">Create with AI</div>
                         <div className="auto-rail__aibtns">
-                            <button className={`auto-btn auto-btn--grow${buildOpen ? ' is-active' : ''}`} onClick={() => setBuildOpen(o => { if (o) setBuildLog(null); return !o; })} title="Describe an automation and let the model build it for you">
-                                <span>Build</span>
+                            <button className="auto-btn auto-btn--grow" onClick={() => openAssistant('build')} title="Describe an automation and let the model build it for you">
+                                <Sparkles size={13} /> <span>Build</span>
                             </button>
-                            <button className={`auto-btn auto-btn--grow${editOpen ? ' is-active' : ''}`} onClick={() => { if (!selected) return; setEditOpen(o => !o); setEditResult(null); }} disabled={!selected} title={selected ? 'Describe a change to the open automation' : 'Open an automation first to edit it with AI'}>
-                                <span>Edit</span>
+                            <button className="auto-btn auto-btn--grow" onClick={() => openAssistant('edit')} disabled={!selected} title={selected ? 'Describe a change to the open automation' : 'Open an automation first to edit it with AI'}>
+                                <Wand2 size={13} /> <span>Edit</span>
                             </button>
                         </div>
-                        {buildOpen && (
-                            <div style={{ marginTop: 6 }}>
-                                <textarea
-                                    value={buildPrompt}
-                                    onChange={(e) => setBuildPrompt(e.target.value)}
-                                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) buildAutomation(); }}
-                                    placeholder="Describe the automation you want… e.g. every morning fetch a feed and Telegram me only the new items"
-                                    rows={3}
-                                    disabled={building}
-                                    style={{ ...fieldInput, resize: 'vertical', minHeight: 64, lineHeight: 1.4 }}
-                                />
-                                <Toggle checked={buildTest} onChange={setBuildTest} disabled={building}>Test &amp; improve <span style={{ opacity: 0.7 }}>— run it &amp; let the model fix issues (slower)</span></Toggle>
-                                <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
-                                    <button className="auto-btn auto-btn--primary auto-btn--grow" onClick={buildAutomation} disabled={building || !buildPrompt.trim()}>
-                                        {building ? 'Building…' : 'Build'}
-                                    </button>
-                                    <button className="auto-btn auto-btn--ghost" onClick={() => { setBuildOpen(false); setBuildPrompt(''); setBuildLog(null); }} disabled={building}>Cancel</button>
-                                </div>
-                                {building && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{buildTest ? 'Building, testing & improving…' : 'The model is assembling your workflow…'}</div>}
-                                {buildLog && (
-                                    <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)', maxHeight: 180, overflowY: 'auto' }}>
-                                        {buildLog.map((l, i) => <div key={i} style={{ marginBottom: 2 }}>• {l}</div>)}
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                        {selected && editOpen && (
-                            <div style={{ marginTop: 6 }}>
-                                {!editResult ? (<>
-                                    <textarea
-                                        value={editPrompt}
-                                        onChange={(e) => setEditPrompt(e.target.value)}
-                                        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) previewEdit(); }}
-                                        placeholder={`Describe a change to “${name || 'this automation'}”… e.g. add a Slack alert on the false branch`}
-                                        rows={3}
-                                        disabled={editing}
-                                        style={{ ...fieldInput, resize: 'vertical', minHeight: 60, lineHeight: 1.4 }}
-                                    />
-                                    <Toggle checked={editTest} onChange={setEditTest} disabled={editing}>Test &amp; improve <span style={{ opacity: 0.7 }}>— run it &amp; let the model fix issues (slower)</span></Toggle>
-                                    <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
-                                        <button className="auto-btn auto-btn--primary auto-btn--grow" onClick={previewEdit} disabled={editing || !editPrompt.trim()}>
-                                            {editing ? (editTest ? 'Testing…' : 'Thinking…') : 'Preview changes'}
-                                        </button>
-                                        <button className="auto-btn auto-btn--ghost" onClick={() => { setEditOpen(false); setEditPrompt(''); setEditResult(null); }} disabled={editing}>Cancel</button>
-                                    </div>
-                                    {editing && <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 5 }}>{editTest ? 'Revising, testing & improving…' : 'The model is revising your workflow…'}</div>}
-                                </>) : (<>
-                                    <div style={{ fontSize: 11, border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)', maxHeight: 260, overflowY: 'auto' }}>
-                                        <div style={{ fontWeight: 600, color: 'var(--ink-2)', marginBottom: 4 }}>Proposed changes</div>
-                                        {editResult.diff.addedNodes.map(n => (
-                                            <div key={'a' + n.id} style={{ marginBottom: 3 }}>
-                                                <div style={{ color: '#22c55e' }}>+ added <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>
-                                                {Array.isArray(n.config) && n.config.map((c, i) => (
-                                                    <div key={i} style={{ color: 'var(--ink-3)', paddingLeft: 12, fontFamily: 'var(--mono, monospace)', fontSize: 10 }}>{c}</div>
-                                                ))}
-                                            </div>
-                                        ))}
-                                        {editResult.diff.changedNodes.map(n => (
-                                            <div key={'c' + n.id} style={{ marginBottom: 3 }}>
-                                                <div style={{ color: 'var(--accent)' }}>~ changed <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>
-                                                {Array.isArray(n.changes) && n.changes.length ? n.changes.map((c, i) => (
-                                                    <div key={i} style={{ paddingLeft: 12, fontSize: 10, lineHeight: 1.45 }}>
-                                                        <span style={{ color: 'var(--ink-2)', fontWeight: 600 }}>{c.field}</span>{': '}
-                                                        <span style={{ color: '#ef4444', textDecoration: 'line-through', opacity: 0.8 }}>{c.before}</span>
-                                                        <span style={{ color: 'var(--ink-3)' }}> → </span>
-                                                        <span style={{ color: '#22c55e' }}>{c.after}</span>
-                                                    </div>
-                                                )) : (n.fields && n.fields.length ? <div style={{ color: 'var(--ink-3)', paddingLeft: 12, fontSize: 10 }}>{n.fields.join(', ')}</div> : null)}
-                                            </div>
-                                        ))}
-                                        {editResult.diff.removedNodes.map(n => <div key={'r' + n.id} style={{ color: '#ef4444' }}>− removed <b>{n.label}</b> <span style={{ color: 'var(--ink-3)' }}>({n.type})</span></div>)}
-                                        {(editResult.diff.addedEdges > 0 || editResult.diff.removedEdges > 0) && <div style={{ color: 'var(--ink-3)', marginTop: 3 }}>edges: +{editResult.diff.addedEdges} / −{editResult.diff.removedEdges}</div>}
-                                        {(editResult.diff.addedNodes.length + editResult.diff.changedNodes.length + editResult.diff.removedNodes.length) === 0 && <div style={{ color: 'var(--ink-3)' }}>No node changes detected.</div>}
-                                    </div>
-                                    {Array.isArray(editResult.buildLog) && editResult.buildLog.length > 0 && (
-                                        <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--ink-3)', border: '1px solid var(--rule)', borderRadius: 8, padding: 8, background: 'var(--bg)', maxHeight: 180, overflowY: 'auto' }}>
-                                            {editResult.buildLog.map((l, i) => <div key={i} style={{ marginBottom: 2 }}>• {l}</div>)}
-                                        </div>
-                                    )}
-                                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                                        <button className="auto-btn auto-btn--primary auto-btn--grow" onClick={applyEdit} disabled={editing}>{editing ? 'Applying…' : 'Apply'}</button>
-                                        <button className="auto-btn auto-btn--ghost" onClick={() => setEditResult(null)} disabled={editing}>Discard</button>
-                                    </div>
-                                </>)}
-                            </div>
-                        )}
                     </div>
                     <div style={{ overflowY: 'auto', flex: '0 0 auto', maxHeight: '38%', padding: '4px 8px 8px' }}>
                         <div className="auto-rail__section">
@@ -1563,10 +1632,21 @@ function FlowEditor({ showSnackbar, models }) {
                         </NodeDropContext.Provider>
                     )}
                     {assembling && (
-                        <div className="auto-assembling-badge" style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 7, background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 999, padding: '5px 13px', fontSize: 12, fontWeight: 600, color: 'var(--accent)', boxShadow: '0 2px 10px rgba(0,0,0,0.18)', zIndex: 5 }}>
-                            <span className="auto-node__spinner" style={{ width: 12, height: 12 }} />
-                            <span>Assembling…</span>
+                        <div className="auto-timelapse">
+                            <div className="auto-timelapse__row">
+                                <span className="auto-node__spinner" style={{ width: 13, height: 13 }} />
+                                <span className="auto-timelapse__cap">{animCaption || 'Assembling…'}</span>
+                                {animStep && animStep.total ? <span className="auto-timelapse__count">{animStep.i}/{animStep.total}</span> : null}
+                            </div>
+                            {animStep && animStep.total ? (
+                                <div className="auto-timelapse__bar"><div className="auto-timelapse__fill" style={{ width: `${Math.round((animStep.i / animStep.total) * 100)}%` }} /></div>
+                            ) : null}
                         </div>
+                    )}
+                    {!assembling && canReplay && selected && (
+                        <button className="auto-btn auto-btn--sm auto-replay" onClick={replayAssembly} title="Replay how the assistant assembled this workflow">
+                            <RotateCcw size={13} /> <span>Replay assembly</span>
+                        </button>
                     )}
                     {runResult && (
                         <div style={{ position: 'absolute', bottom: 12, left: 12, right: 150, maxHeight: 140, overflow: 'auto', background: 'var(--surface)', border: `1px solid ${runResult.status === 'failed' ? 'var(--danger, #ef4444)' : 'var(--ok, #22c55e)'}`, borderRadius: 8, padding: '8px 10px', fontSize: 11.5, color: 'var(--ink-2)' }}>
@@ -1623,6 +1703,106 @@ function FlowEditor({ showSnackbar, models }) {
                 )}
             </div>
             {chipBuilderOpen && <ChipBuilder onClose={() => setChipBuilderOpen(false)} customChips={customChips} onSaved={loadChips} notify={notify} />}
+
+            {/* ---- AI Assistant modal: roomy composer + readable suggestions ---- */}
+            {assistantOpen && (() => {
+                const mode = assistantMode;
+                const result = mode === 'build' ? buildResult : editResult;
+                const tr = result && result.testReport;
+                const stepChain = (nodes || []).map(n => (n.data && n.data.label) || n.type);
+                const submit = () => (mode === 'build' ? buildAutomation() : previewEdit());
+                return (
+                    <div className="ai-modal-backdrop" onClick={closeAssistant}>
+                        <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
+                            <div className="ai-modal__head">
+                                <div className="ai-modal__tabs">
+                                    <button className={`ai-tab ${mode === 'build' ? 'is-active' : ''}`} disabled={assistantBusy}
+                                        onClick={() => { if (!assistantBusy) { setAssistantMode('build'); setBuildResult(null); setEditResult(null); } }}>
+                                        <Sparkles size={13} /> <span>Build new</span>
+                                    </button>
+                                    <button className={`ai-tab ${mode === 'edit' ? 'is-active' : ''}`} disabled={assistantBusy || !selected}
+                                        title={selected ? '' : 'Open an automation first'}
+                                        onClick={() => { if (!assistantBusy && selected) { setAssistantMode('edit'); setBuildResult(null); setEditResult(null); } }}>
+                                        <Wand2 size={13} /> <span>{selected ? `Edit “${name || 'current'}”` : 'Edit'}</span>
+                                    </button>
+                                </div>
+                                <button className="ai-modal__close" onClick={closeAssistant} disabled={assistantBusy} title="Close"><CloseIcon size={17} /></button>
+                            </div>
+
+                            <div className="ai-modal__body">
+                                {!result ? (
+                                    <>
+                                        <label className="ai-modal__label">{mode === 'build' ? 'Describe the automation you want' : `Describe the change to “${name || 'this automation'}”`}</label>
+                                        <textarea
+                                            className="ai-modal__composer"
+                                            value={assistantPrompt}
+                                            onChange={(e) => setAssistantPrompt(e.target.value)}
+                                            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && assistantPrompt.trim() && !assistantBusy) submit(); }}
+                                            placeholder={mode === 'build'
+                                                ? 'e.g. Every weekday at 8am, fetch three cybersecurity RSS feeds, keep only the articles I have not seen before, write a short digest, and DM it to me on Telegram.'
+                                                : 'e.g. Also post the summary to Slack, and only alert me when something actually changed since the last run.'}
+                                            disabled={assistantBusy}
+                                            autoFocus
+                                        />
+                                        <div className="ai-modal__opts">
+                                            <Toggle checked={assistantTest} onChange={setAssistantTest} disabled={assistantBusy}>
+                                                Test &amp; improve <span style={{ opacity: 0.7 }}>— run it &amp; let the model fix issues before showing you (slower)</span>
+                                            </Toggle>
+                                        </div>
+                                        {assistantBusy && (
+                                            <div className="ai-modal__busy">
+                                                <span className="auto-node__spinner" style={{ width: 15, height: 15 }} />
+                                                <span>{assistantTest
+                                                    ? (mode === 'build' ? 'Building, testing & improving…' : 'Revising, testing & improving…')
+                                                    : (mode === 'build' ? 'The model is assembling your workflow…' : 'The model is revising your workflow…')}</span>
+                                            </div>
+                                        )}
+                                        <div className="ai-modal__actions">
+                                            <button className="auto-btn auto-btn--accent" onClick={submit} disabled={assistantBusy || !assistantPrompt.trim()}>
+                                                {mode === 'build' ? <><Sparkles size={14} /> <span>{assistantBusy ? 'Building…' : 'Build'}</span></> : <><Wand2 size={14} /> <span>{assistantBusy ? 'Thinking…' : 'Preview changes'}</span></>}
+                                            </button>
+                                            <button className="auto-btn auto-btn--ghost" onClick={closeAssistant} disabled={assistantBusy}>Cancel</button>
+                                            <span className="ai-modal__hint">⌘ / Ctrl + Enter</span>
+                                        </div>
+                                    </>
+                                ) : mode === 'build' ? (
+                                    <>
+                                        <div className="ai-summary"><Sparkles size={16} /><div>{result.summary || `A ${result.nodeCount}-step automation is ready.`}</div></div>
+                                        <div className="ai-sec__label">Steps</div>
+                                        <div className="ai-chain">
+                                            {stepChain.map((l, i) => <React.Fragment key={i}>{i > 0 && <span className="ai-chain__arrow">→</span>}<span className="ai-chain__step">{l}</span></React.Fragment>)}
+                                        </div>
+                                        {renderTestReport(tr)}
+                                        <div className="ai-modal__actions">
+                                            <button className="auto-btn auto-btn--accent" onClick={watchBuild}><Play size={13} /> <span>Watch it build</span></button>
+                                            <button className="auto-btn auto-btn--ghost" onClick={() => { setBuildResult(null); setAssistantPrompt(''); }}>Build another</button>
+                                            <button className="auto-btn auto-btn--ghost" onClick={closeAssistant}>Done</button>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div className="ai-summary"><Wand2 size={16} /><div>{result.summary || 'Proposed changes are ready to review.'}</div></div>
+                                        {Array.isArray(result.changelog) && result.changelog.length > 0 && (
+                                            <>
+                                                <div className="ai-sec__label">Change log</div>
+                                                <ul className="ai-changelog">{result.changelog.map((l, i) => <li key={i}>{l}</li>)}</ul>
+                                            </>
+                                        )}
+                                        <div className="ai-sec__label">Details</div>
+                                        {renderChangeDetail(result.diff)}
+                                        {renderTestReport(tr)}
+                                        <div className="ai-modal__actions">
+                                            <button className="auto-btn auto-btn--accent" onClick={applyEdit} disabled={assistantBusy}>{assistantBusy ? 'Applying…' : <><Check size={14} /> <span>Apply changes</span></>}</button>
+                                            <button className="auto-btn auto-btn--ghost" onClick={() => setEditResult(null)} disabled={assistantBusy}>Try a different change</button>
+                                            <button className="auto-btn auto-btn--ghost" onClick={closeAssistant} disabled={assistantBusy}>Discard</button>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }

@@ -8272,15 +8272,19 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
 
     let lastAssess = null;
     let lastOutcome = null;
+    let lastRec = null;     // the most recent run record (per-node detail for the test report)
+    let passesRun = 0;      // how many run/repair passes actually executed
     let configStop = false;
     let goalFix = '';
 
     for (let pass = 1; pass <= MAX_REPAIR_PASSES; pass++) {
+        passesRun = pass;
         // Start each pass from clean cross-run state so this run exercises the
         // full happy path (new items → notify/PDF) for the goal-judge to see.
         await resetStatefulStorage(wfObj, req);
         const { outcome, rec } = await runOnce();
         lastOutcome = outcome;
+        lastRec = rec;
         goalFix = '';
         const configError = outcome.status === 'failed' && isConfigError(outcome.error);
         // assessRunHealth reads rec.nodes; if the run threw before producing a
@@ -8450,13 +8454,53 @@ async function runAndRepairWorkflow(wfObj, base, model, req, buildLog, goalPromp
     }
 
     // Clear verdict.
+    let verdictText;
+    let outcomeKind; // 'ok' | 'config' | 'failed'
     if (configStop) {
-        // already logged the config message above
+        outcomeKind = 'config';
+        verdictText = 'Runs — only needs configuration you must supply (a token / credential / reachable source).';
+        // (the specific config message was already pushed to buildLog above)
     } else if (lastAssess && lastAssess.ok) {
+        outcomeKind = 'ok';
+        verdictText = 'Data is flowing end to end ✓';
         buildLog.push('Result: data is flowing ✓');
     } else {
-        buildLog.push('Result: still no data after repair passes — best attempt kept; likely needs the sites\' RSS feeds or a configured search/API key.');
+        outcomeKind = 'failed';
+        verdictText = 'Still no data after repair passes — best attempt kept; likely needs the sites\' RSS feeds or a configured search/API key.';
+        buildLog.push('Result: ' + verdictText);
     }
+
+    // Structured report for the UI — the same information the buildLog conveys in
+    // prose, but per-node and machine-readable so the Assistant panel can render a
+    // clear pass/fail table instead of a wall of bullet text.
+    const labelById = new Map((wfObj.nodes || []).map(n => [String(n.id), (n.data && n.data.label) || n.type]));
+    const shortPreview = (o) => {
+        if (o == null) return '';
+        let s = typeof o === 'string' ? o : (() => { try { return JSON.stringify(o); } catch (_) { return String(o); } })();
+        s = s.replace(/\s+/g, ' ').trim();
+        return s.length > 160 ? s.slice(0, 160) + '…' : s;
+    };
+    const flaggedIds = new Set((lastAssess && lastAssess.issues || []).map(i => i.nodeId).filter(Boolean));
+    const reportNodes = (lastRec && Array.isArray(lastRec.nodes) ? lastRec.nodes : []).map(n => ({
+        id: n.nodeId,
+        label: labelById.get(String(n.nodeId)) || n.type,
+        type: n.type,
+        status: n.status,
+        error: n.error || null,
+        preview: shortPreview(n.output),
+        flagged: flaggedIds.has(n.nodeId),
+    }));
+    const testReport = {
+        outcome: outcomeKind,                 // ok | config | failed
+        ok: outcomeKind === 'ok',
+        configNeeded: outcomeKind === 'config',
+        status: lastOutcome ? lastOutcome.status : 'unknown',
+        passes: passesRun,
+        verdict: verdictText,
+        issues: (lastAssess && lastAssess.issues || []).map(i => ({ nodeId: i.nodeId, type: i.type, severity: i.severity, detail: i.detail })),
+        nodes: reportNodes,
+    };
+    return testReport;
 }
 
 // Build an automation from a natural-language prompt: the model emits a workflow
@@ -8477,6 +8521,62 @@ function parseBuilderSpec(raw) {
         const obj = JSON.parse(repaired);
         return obj && typeof obj === 'object' ? obj : null;
     } catch (_) { return null; }
+}
+
+// Turn a structured workflow diff into plain-English change-log lines. Used both
+// as the deterministic fallback summary and as context for the model summarizer.
+function diffToChangeLines(diff) {
+    if (!diff || typeof diff !== 'object') return [];
+    const lines = [];
+    for (const n of (diff.addedNodes || [])) lines.push(`Added a “${n.label}” step.`);
+    for (const n of (diff.changedNodes || [])) {
+        const fields = (n.changes || []).map(c => c.field).filter(Boolean);
+        lines.push(`Updated “${n.label}”${fields.length ? ` (${fields.join(', ')})` : ''}.`);
+    }
+    for (const n of (diff.removedNodes || [])) lines.push(`Removed the “${n.label}” step.`);
+    const ae = diff.addedEdges || 0, re = diff.removedEdges || 0;
+    if (ae || re) lines.push(`Rewired ${ae ? `${ae} new connection${ae > 1 ? 's' : ''}` : ''}${ae && re ? ' and ' : ''}${re ? `removed ${re} connection${re > 1 ? 's' : ''}` : ''}.`);
+    return lines;
+}
+
+// Deterministic, model-free summary — always available so the Assistant panel
+// has a headline even when the summarizer model call fails/times out.
+function deterministicSummary({ isBuild, wf, diff }) {
+    if (isBuild) {
+        const chain = (wf.nodes || []).map(n => (n.data && n.data.label) || n.type);
+        if (!chain.length) return 'An empty automation.';
+        return `A ${chain.length}-step automation: ${chain.join(' → ')}.`;
+    }
+    const lines = diffToChangeLines(diff);
+    return lines.length ? lines.join(' ') : 'No structural changes were needed.';
+}
+
+// Best-effort, time-boxed plain-English summary of what an automation does (build)
+// or what a change did (edit) for the Assistant panel headline. Falls back to the
+// deterministic summary on any failure/timeout so the response is never blocked.
+async function summarizeAutomation({ isBuild, prompt, wf, diff, model }) {
+    try {
+        const stepList = (wf.nodes || []).map(n => (n.data && n.data.label) || n.type).join(' → ');
+        const ask = isBuild
+            ? `Summarize, in 1-2 friendly plain-English sentences addressed to the user, what this automation does. Do NOT list node types, ids, or JSON.\n\nThe user asked for: "${String(prompt || '').slice(0, 300)}"\nSteps: ${stepList}`
+            : `Summarize, in 1-2 friendly plain-English sentences addressed to the user, what this change does to their automation. Do NOT mention node ids or JSON.\n\nThe user asked: "${String(prompt || '').slice(0, 300)}"\nWhat changed:\n${diffToChangeLines(diff).join('\n') || '(no structural change — only field tweaks)'}`;
+        const messages = [
+            { role: 'system', content: 'You write one short, friendly summary sentence (max ~50 words) of an automation workflow. Output ONLY the sentence(s) — no preamble, no markdown, no bullet points.' },
+            { role: 'user', content: ask },
+        ];
+        // Time-box the summary so a stuck model can't stall the build/edit response;
+        // clear the timer on the common (model-wins) path so it doesn't dangle.
+        let summaryTimer;
+        const text = await Promise.race([
+            runModelCompletion({ messages, model, temperature: 0.3, maxTokens: 160 }),
+            new Promise((_, reject) => { summaryTimer = setTimeout(() => reject(new Error('summary timeout')), 10000); }),
+        ]).finally(() => clearTimeout(summaryTimer));
+        let s = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^```[\s\S]*?\n?|```\s*$/g, '').trim();
+        s = s.replace(/^[-*•\s"]+/, '').replace(/["\s]+$/, '').trim();
+        return s || deterministicSummary({ isBuild, wf, diff });
+    } catch (_) {
+        return deterministicSummary({ isBuild, wf, diff });
+    }
 }
 
 app.post('/api/automations/build', requireAuth, async (req, res) => {
@@ -8526,14 +8626,16 @@ app.post('/api/automations/build', requireAuth, async (req, res) => {
         workflows.push(wf);
         await saveWorkflows(workflows);
         const buildLog = [`Built ${wf.nodes.length} node(s): ${wf.nodes.map(n => (n.data && n.data.label) || n.type).join(' → ')}`];
+        let testReport = null;
         if (req.body && req.body.test) {
             try {
-                await runAndRepairWorkflow(wf, wf, model, req, buildLog, String(prompt).trim());
+                testReport = await runAndRepairWorkflow(wf, wf, model, req, buildLog, String(prompt).trim());
                 wf.updatedAt = new Date().toISOString();
                 await saveWorkflows(workflows); // persist any auto-fix
             } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
         }
-        res.status(201).json({ ...wf, buildLog });
+        const summary = await summarizeAutomation({ isBuild: true, prompt: String(prompt).trim(), wf, model });
+        res.status(201).json({ ...wf, buildLog, summary, ...(testReport ? { testReport } : {}) });
     } catch (error) {
         console.error('Error building automation:', error);
         res.status(500).json({ error: `Failed to build automation: ${error.message}` });
@@ -8573,7 +8675,7 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
             : '';
         const messages = [
             { role: 'system', content: automationEngine.buildBuilderSystemPrompt() },
-            { role: 'user', content: `Here is the current automation as JSON:\n${JSON.stringify(compacted)}\n\nApply this change: "${String(prompt).trim()}"\n\nReturn the FULL revised automation as one JSON object (same shape). KEEP each existing node's "id" for nodes you keep; invent new ids only for nodes you add; preserve nodes the change does not touch.${keepNote}\n\nRespond with ONLY the JSON.` },
+            { role: 'user', content: `Here is the current automation as JSON:\n${JSON.stringify(compacted)}\n\nApply this change: "${String(prompt).trim()}"\n\nReturn the FULL revised automation as one JSON object (same shape).\n\nCRITICAL — node id discipline (this keeps the change log readable and the wiring correct):\n- KEEP every retained node's "id" BYTE-FOR-BYTE. Do NOT renumber: if you insert a node between n2 and n3, the existing n3, n4 … keep their ids — do NOT shift them up.\n- Give each genuinely NEW node a brand-new unused id (e.g. n7, n8). Never reuse or reassign an existing id to a different node.\n- Update every edge to reference these stable ids. Renumbering corrupts the diff (it reads as a cascade of phantom "type changed" entries) and can mis-wire the graph.\n- Preserve nodes the change does not touch exactly as they are.${keepNote}\n\nRespond with ONLY the JSON.` },
         ];
         const text = await runModelCompletion({ messages, model, temperature: 0.2, maxTokens: 8000 });
         let raw = String(text || '').trim();
@@ -8597,22 +8699,62 @@ app.post('/api/automations/:id/edit', requireAuth, async (req, res) => {
             console.warn(`[automations/edit] ${wf.id}: model left an unresolved placeholder token — a long field may be incomplete in the proposed edit.`);
         }
         let buildLog;
+        let testReport = null;
         if (req.body && req.body.test) {
             buildLog = [`Proposed ${proposed.nodes.length} node(s)`];
             try {
                 // Run the PROPOSED revision (not saved) and auto-fix a fixable failure,
                 // so the diff the user confirms is the tested-and-improved version.
                 const probe = { ...wf, nodes: proposed.nodes, edges: proposed.edges };
-                await runAndRepairWorkflow(probe, wf, model, req, buildLog, String(prompt).trim());
+                testReport = await runAndRepairWorkflow(probe, wf, model, req, buildLog, String(prompt).trim());
                 proposed.nodes = probe.nodes;
                 proposed.edges = probe.edges;
             } catch (e) { buildLog.push(`Test & improve skipped: ${e.message}`); }
         }
         const diff = automationEngine.diffWorkflows(wf, proposed);
-        res.json({ proposed, diff, ...(buildLog ? { buildLog } : {}) });
+        const changelog = diffToChangeLines(diff);
+        const summary = await summarizeAutomation({ isBuild: false, prompt: String(prompt).trim(), wf: proposed, diff, model });
+        res.json({ proposed, diff, summary, changelog, ...(buildLog ? { buildLog } : {}), ...(testReport ? { testReport } : {}) });
     } catch (error) {
         console.error('Error editing automation:', error);
         res.status(500).json({ error: `Failed to edit automation: ${error.message}` });
+    }
+});
+
+// Test a SAVED automation: run it once, auto-repair fixable failures, and return
+// a structured test report. The same engine the build/edit "Test & improve"
+// toggle uses, but invokable on an existing automation on its own — the clean
+// "test it for me" path. Persists the repair only if it changed the graph
+// (skip with { apply: false }); never touches enabled/schedule state.
+app.post('/api/automations/:id/test', requireAuth, async (req, res) => {
+    if (!checkPermission(req.apiKeyData, AUTOMATION_PERM)) {
+        return res.status(403).json({ error: 'Automation permission required' });
+    }
+    try {
+        const workflows = await loadWorkflows();
+        const idx = workflows.findIndex(w => w.id === req.params.id);
+        if (idx === -1) return res.status(404).json({ error: 'Automation not found' });
+        const wf = workflows[idx];
+        if (!checkOwnership(wf, req.userId) && !callerIsAdmin(req)) {
+            return res.status(403).json({ error: 'Access denied: automation belongs to another user' });
+        }
+        const model = (req.body && req.body.model) || undefined;
+        const goalPrompt = (req.body && req.body.goal) || wf.description || '';
+        const buildLog = [`Testing ${(wf.nodes || []).length} node(s)…`];
+        const before = JSON.stringify({ nodes: wf.nodes || [], edges: wf.edges || [] });
+        // Repair operates on a deep copy; only commit if it actually improved the graph.
+        const probe = { ...wf, nodes: JSON.parse(JSON.stringify(wf.nodes || [])), edges: JSON.parse(JSON.stringify(wf.edges || [])) };
+        const testReport = await runAndRepairWorkflow(probe, wf, model, req, buildLog, String(goalPrompt).trim());
+        let applied = false;
+        if (!(req.body && req.body.apply === false) && JSON.stringify({ nodes: probe.nodes, edges: probe.edges }) !== before) {
+            wf.nodes = probe.nodes; wf.edges = probe.edges; wf.updatedAt = new Date().toISOString();
+            await saveWorkflows(workflows);
+            applied = true;
+        }
+        res.json({ id: wf.id, testReport, buildLog, applied, ...(applied ? { name: wf.name, nodes: wf.nodes, edges: wf.edges } : {}) });
+    } catch (error) {
+        console.error('Error testing automation:', error);
+        res.status(500).json({ error: `Failed to test automation: ${error.message}` });
     }
 });
 

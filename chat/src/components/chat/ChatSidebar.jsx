@@ -10,6 +10,7 @@ import {
     Star,
     PanelLeftClose,
     ChevronDown,
+    ChevronRight,
     Folder,
     FolderOpen,
     FolderPlus,
@@ -378,6 +379,18 @@ export default function ChatSidebar({
         background: 'transparent', cursor: 'pointer',
         transition: 'background .1s, border-color .1s',
     };
+    // Primary "New chat" CTA — filled accent so it reads as the main action.
+    const navPrimaryBtn = {
+        ...newChatBtn,
+        justifyContent: 'center',
+        border: '1px solid var(--accent)',
+        background: 'var(--accent)',
+        color: 'var(--accent-ink, #fff)',
+        fontWeight: 600,
+    };
+    // "Automations" navigation entry — solid (not dashed) border so it reads as a
+    // nav item that opens a view, not a "create new" affordance.
+    const navItemBtn = { ...newChatBtn, border: '1px solid var(--rule-2)' };
     const newFolderRow = { padding: '0 12px 8px' };
     const newFolderBtn = {
         display: 'flex', alignItems: 'center', gap: 6,
@@ -945,32 +958,25 @@ export default function ChatSidebar({
                 </div>
             </div>
 
-            {/* New chat */}
+            {/* New chat — primary action */}
             <div style={newChatRow}>
                 <button
                     onClick={handleNewConversation}
-                    style={newChatBtn}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'var(--accent-soft)';
-                        e.currentTarget.style.borderColor = 'var(--accent)';
-                        e.currentTarget.style.color = 'var(--accent)';
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                        e.currentTarget.style.borderColor = 'var(--rule-2)';
-                        e.currentTarget.style.color = 'var(--ink-2)';
-                    }}
+                    style={navPrimaryBtn}
+                    onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; }}
                 >
-                    <Plus style={{ width: 14, height: 14 }} strokeWidth={2} />
+                    <Plus style={{ width: 14, height: 14 }} strokeWidth={2.25} />
                     <span>New chat</span>
                 </button>
             </div>
 
-            {/* Automation — opens the full-screen workflow editor */}
+            {/* Automations — navigates to the full-screen workflow editor */}
             <div style={newChatRow}>
                 <button
                     onClick={() => { setView('automation'); if (onMobileClose) onMobileClose(); }}
-                    style={newChatBtn}
+                    style={navItemBtn}
+                    title="Build & manage automations"
                     onMouseEnter={(e) => {
                         e.currentTarget.style.background = 'var(--accent-soft)';
                         e.currentTarget.style.borderColor = 'var(--accent)';
@@ -983,7 +989,8 @@ export default function ChatSidebar({
                     }}
                 >
                     <Workflow style={{ width: 14, height: 14 }} strokeWidth={2} />
-                    <span>Automation</span>
+                    <span>Automations</span>
+                    <ChevronRight style={{ width: 14, height: 14, marginLeft: 'auto', opacity: 0.55 }} strokeWidth={2} />
                 </button>
             </div>
 

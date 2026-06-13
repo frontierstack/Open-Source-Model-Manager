@@ -602,3 +602,88 @@
     .cf-modal__body { flex-direction: column; }
     .cf-modal__list { width: auto; border-right: none; border-bottom: 1px solid var(--rule); max-height: 30vh; }
 }
+
+/* ============================================================ *
+ * AI Assistant modal (Build / Edit) + time-lapse HUD.
+ * A roomy composer + a readable result view (NL summary, color-coded
+ * change log, structured test report) — replaces the cramped rail boxes.
+ * All theme-token based so it tracks every chat theme + the accent picker.
+ * ============================================================ */
+.ai-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 90; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 20px 20px; }
+.ai-modal { width: 680px; max-width: 96vw; max-height: 86vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--rule); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,.5); overflow: hidden; }
+.ai-modal__head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--rule); flex-shrink: 0; }
+.ai-modal__tabs { display: flex; gap: 6px; flex: 1; }
+.ai-tab { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--rule-2, var(--rule)); border-radius: 9px; background: var(--bg); color: var(--ink-2); font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
+.ai-tab:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ai-tab.is-active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #fff); }
+.ai-tab:disabled { opacity: .5; cursor: default; }
+.ai-modal__close { width: 30px; height: 30px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--ink-3); border-radius: 8px; cursor: pointer; }
+.ai-modal__close:hover:not(:disabled) { background: var(--bg); color: var(--ink); }
+.ai-modal__body { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+.ai-modal__label { font-size: 11px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--ink-3); margin-bottom: 7px; }
+.ai-modal__composer { width: 100%; box-sizing: border-box; min-height: 156px; resize: vertical; border: 1px solid var(--rule-2, var(--rule)); border-radius: 11px; background: var(--bg); color: var(--ink); font: inherit; font-size: 14px; line-height: 1.55; padding: 12px 13px; outline: none; }
+.ai-modal__composer:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.ai-modal__composer::placeholder { color: var(--ink-3); opacity: .85; }
+.ai-modal__opts { margin-top: 11px; }
+.ai-modal__busy { display: flex; align-items: center; gap: 9px; margin-top: 12px; font-size: 12.5px; color: var(--accent); }
+.ai-modal__actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.ai-modal__hint { margin-left: auto; font-size: 10.5px; color: var(--ink-3); }
+
+.ai-summary { display: flex; gap: 10px; align-items: flex-start; padding: 12px 13px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 11px; color: var(--ink); font-size: 13.5px; line-height: 1.5; }
+.ai-summary svg { color: var(--accent); flex-shrink: 0; margin-top: 1px; }
+.ai-sec__label { font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--ink-3); margin: 16px 0 7px; }
+.ai-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ai-chain__step { display: inline-flex; align-items: center; padding: 4px 10px; border: 1px solid var(--rule-2, var(--rule)); border-radius: 999px; background: var(--bg); color: var(--ink-2); font-size: 12px; font-weight: 500; }
+.ai-chain__arrow { color: var(--ink-3); font-size: 12px; }
+.ai-changelog { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.ai-changelog li { font-size: 13px; line-height: 1.5; color: var(--ink); }
+
+.ai-diff { display: flex; flex-direction: column; gap: 7px; border: 1px solid var(--rule-2, var(--rule)); border-radius: 11px; padding: 11px 12px; background: var(--bg); }
+.ai-diff__row { display: flex; gap: 8px; align-items: flex-start; }
+.ai-diff__sign { font-family: monospace; font-weight: 700; font-size: 14px; flex-shrink: 0; width: 12px; text-align: center; line-height: 1.4; }
+.ai-diff__row--add .ai-diff__sign { color: #22c55e; }
+.ai-diff__row--change .ai-diff__sign { color: var(--accent); }
+.ai-diff__row--remove .ai-diff__sign { color: #ef4444; }
+.ai-diff__main { min-width: 0; flex: 1; }
+.ai-diff__title { font-size: 12.5px; color: var(--ink); }
+.ai-diff__type { font-size: 10.5px; color: var(--ink-3); font-family: monospace; margin-left: 4px; }
+.ai-diff__cfg { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--ink-3); padding-left: 2px; margin-top: 2px; word-break: break-word; }
+.ai-diff__chg { font-size: 11.5px; line-height: 1.5; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 5px; align-items: baseline; }
+.ai-diff__field { font-weight: 700; color: var(--ink-2); }
+.ai-diff__before { color: #ef4444; text-decoration: line-through; opacity: .8; word-break: break-word; }
+.ai-diff__arrow { color: var(--ink-3); }
+.ai-diff__after { color: #22c55e; word-break: break-word; }
+.ai-diff__edges { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+.ai-diff__none { font-size: 12px; color: var(--ink-3); }
+
+.ai-test { margin-top: 14px; border: 1px solid var(--rule-2, var(--rule)); border-radius: 11px; padding: 11px 12px; background: var(--bg); }
+.ai-test--ok { border-color: var(--ok, #22c55e); }
+.ai-test--warn { border-color: var(--warning, #f59e0b); }
+.ai-test--err { border-color: var(--danger, #ef4444); }
+.ai-test__head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.ai-test--ok .ai-test__head svg { color: var(--ok, #22c55e); }
+.ai-test--warn .ai-test__head svg, .ai-test--err .ai-test__head svg { color: var(--warning, #f59e0b); }
+.ai-test__passes { margin-left: auto; font-size: 10px; font-weight: 600; color: var(--ink-3); border: 1px solid var(--rule-2, var(--rule)); border-radius: 999px; padding: 1px 8px; }
+.ai-test__verdict { font-size: 11.5px; color: var(--ink-2); margin-top: 6px; line-height: 1.45; }
+.ai-test__nodes { display: flex; flex-direction: column; gap: 3px; margin-top: 9px; }
+.ai-test__node { display: flex; align-items: center; gap: 7px; font-size: 11px; min-width: 0; }
+.ai-test__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-4, #64748b); flex-shrink: 0; }
+.ai-test__node.is-ok .ai-test__dot { background: var(--ok, #22c55e); }
+.ai-test__node.is-bad .ai-test__dot { background: var(--danger, #ef4444); }
+.ai-test__nlabel { font-weight: 600; color: var(--ink-2); flex-shrink: 0; }
+.ai-test__npreview { color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ai-test__node.is-bad .ai-test__npreview { color: var(--danger, #ef4444); }
+
+/* Time-lapse HUD (top-center of the canvas during a build/edit replay) */
+.auto-timelapse { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6; min-width: 220px; max-width: min(70%, 460px); background: var(--surface); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 12px; box-shadow: 0 4px 18px rgba(0,0,0,.24); }
+.auto-timelapse__row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent); }
+.auto-timelapse__cap { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-timelapse__count { flex-shrink: 0; font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.auto-timelapse__bar { margin-top: 6px; height: 3px; border-radius: 999px; background: var(--accent-soft); overflow: hidden; }
+.auto-timelapse__fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width .2s ease; }
+.auto-replay { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6; box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+
+@media (max-width: 768px) {
+    .ai-modal { width: 100%; max-height: 92vh; }
+    .ai-modal-backdrop { padding: 2vh 8px 8px; }
+}
