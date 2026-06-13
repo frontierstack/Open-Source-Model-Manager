@@ -124,6 +124,33 @@ export default React.memo(function MessageContent({ content }) {
                     );
                 },
 
+                // Images — react-markdown drops images without a renderer.
+                // Only render http(s)/data images; cap the size so a huge
+                // original doesn't blow out the bubble; click-through to full.
+                // (find_image renders its own grid via ImageBlock — this covers
+                // any markdown image the model emits directly.)
+                img({ src, alt }) {
+                    if (!src || !/^(https?:|data:image\/)/i.test(src)) return null;
+                    return (
+                        <Link href={src} target="_blank" rel="noopener noreferrer" sx={{ display: 'inline-block', my: 1 }}>
+                            <Box
+                                component="img"
+                                src={src}
+                                alt={alt || ''}
+                                loading="lazy"
+                                sx={{
+                                    maxWidth: '100%',
+                                    height: 'auto',
+                                    maxHeight: 420,
+                                    borderRadius: '8px',
+                                    border: '1px solid var(--border-primary)',
+                                    display: 'block',
+                                }}
+                            />
+                        </Link>
+                    );
+                },
+
                 // Lists
                 ul({ children }) {
                     return (

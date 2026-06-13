@@ -18,6 +18,7 @@ import DescriptionIcon from '@mui/icons-material/Description';
 import CodeIcon from '@mui/icons-material/Code';
 import TableChartIcon from '@mui/icons-material/TableChart';
 import MessageContent from './MessageContent';
+import ImageBlock from './ImageBlock';
 import ThinkingIndicator from './ThinkingIndicator';
 
 /**
@@ -29,6 +30,7 @@ export default React.memo(function ChatMessage({
     reasoning,
     timestamp,
     attachments,
+    imageSpecs,
     isStreaming,
     streamingContent,
     streamingReasoning,
@@ -243,6 +245,13 @@ export default React.memo(function ChatMessage({
                 ) : (
                     <MessageContent content={displayContent} />
                 )}
+
+                {/* Inline images from the find_image tool — rendered as a
+                    thumbnail grid in the response, mirroring the dedicated
+                    chat app. Populated on message commit. */}
+                {!isUser && Array.isArray(imageSpecs) && imageSpecs.map((spec, idx) => (
+                    <ImageBlock key={`img-${idx}`} spec={spec} />
+                ))}
 
                 {/* Actions (copy and export buttons) */}
                 {!isUser && displayContent && (

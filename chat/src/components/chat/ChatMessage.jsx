@@ -7,6 +7,7 @@ import ToolMilestones from './ToolMilestones';
 import SearchSources from './SearchSources';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
+import ImageBlock from './ImageBlock';
 import ArtifactList from './ArtifactList';
 import { useChatStore } from '../../stores/useChatStore';
 
@@ -533,6 +534,18 @@ export default React.memo(function ChatMessage({
                                     spec={tc.chartSpec}
                                     summary={tc.chartSummary || ''}
                                 />
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Inline images — surface find_image results as a thumbnail
+                        grid in the main response body, same first-class treatment
+                        as charts. The picture is what the user asked for, so it
+                        belongs in the reply, not buried in the tool chip. */}
+                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.some(tc => tc?.imageSpec) && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: displayContent ? 12 : 0 }}>
+                            {toolCalls.filter(tc => tc?.imageSpec).map((tc, idx) => (
+                                <ImageBlock key={`bubble-image-${idx}`} spec={tc.imageSpec} />
                             ))}
                         </div>
                     )}

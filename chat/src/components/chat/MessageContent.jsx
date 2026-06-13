@@ -71,6 +71,25 @@ const sharedMarkdownComponents = {
             </a>
         );
     },
+    img({ src, alt }) {
+        // react-markdown drops images unless we provide a renderer. Only render
+        // remote http(s)/data images (no javascript: etc.); cap the size so a
+        // huge original doesn't blow out the bubble, lazy-load, and click-through
+        // to the full image. The find_image tool renders its own grid via
+        // ImageBlock — this covers any markdown image the model emits directly.
+        if (!src || !/^(https?:|data:image\/)/i.test(src)) return null;
+        return (
+            <a href={src} target="_blank" rel="noopener noreferrer" className="inline-block my-2">
+                <img
+                    src={src}
+                    alt={alt || ''}
+                    loading="lazy"
+                    className="rounded-lg max-w-full h-auto"
+                    style={{ maxHeight: 420, border: '1px solid var(--rule-2)' }}
+                />
+            </a>
+        );
+    },
     ul({ children }) {
         return <ul className="pl-5 mb-4 list-disc marker:text-dark-500">{children}</ul>;
     },

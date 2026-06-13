@@ -22861,6 +22861,188 @@ app.use((req, res) => {
         },
     });
 
+    // ----- find_image ------------------------------------------------------
+    // Answers "find/show me a picture of X". The model CANNOT reliably guess
+    // working image URLs — it hallucinates links that 404 — so it has no good
+    // way to satisfy this on its own. Two modes:
+    //  • SEARCH: general web image search via DuckDuckGo Images (keyless, finds
+    //    ANYTHING incl. games/characters/products/people), with Openverse +
+    //    Wikimedia Commons as CC-licensed fallbacks if DDG is rate-limited.
+    //  • DISPLAY: pass `urls` the model already found via any other tool
+    //    (web_search/fetch_url/etc.) and they're rendered as-is — "search
+    //    anywhere, just display it".
+    // Either way it returns real, resolvable URLs inside `imageSpec`; the chat
+    // UI detects imageSpec on the tool result and renders the photos inline as a
+    // thumbnail grid (same lift-onto-the-chip pattern as render_chart), so the
+    // user sees the picture without the model having to emit any markdown.
+    tools.registerTool({
+        name: 'find_image',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'find_image',
+                    description:
+                        'USE WHEN the user asks to find / show / display / get a picture, photo, image, or "what does X look like". ' +
+                        'Searches the WHOLE WEB for images (DuckDuckGo Images, no API key — finds anything: games, characters, products, places, people, art) and returns real, working image URLs that the chat renders inline as a thumbnail grid. ' +
+                        'Do NOT invent image URLs or write your own markdown image links — they 404. Call this tool instead; the images display automatically from its result. ' +
+                        'Pass a concise VISUAL query — the subject only (e.g. "Bowser castle Super Mario 64", "margherita pizza"), not a full sentence. ' +
+                        'If you ALREADY have image URLs from another tool (web_search / fetch_url / a page you read), pass them as `urls` to display them directly instead of searching again. ' +
+                        'Returns 4 images by default; pass count:1 when the user asks for "a"/"one" picture. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: 'The visual subject to search for. Optional if `urls` is given.' },
+                            count: { type: 'integer', minimum: 1, maximum: 8, description: 'How many images to return (default 4).' },
+                            urls: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description: 'Optional: direct image URLs you already found elsewhere, to display as-is (skips searching).',
+                            },
+                        },
+                        required: [],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const query = String(args?.query || '').trim();
+            const count = Math.min(8, Math.max(1, parseInt(args?.count || 4, 10)));
+            const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+            // Keep only entries with an absolute http(s) image URL; cap at count.
+            const finalize = (imgs, source) => {
+                const clean = (imgs || [])
+                    .filter(im => im && typeof im.url === 'string' && /^https?:\/\//i.test(im.url))
+                    .slice(0, count);
+                return clean.length
+                    ? { imageSpec: { query, images: clean }, count: clean.length, source }
+                    : null;
+            };
+
+            // --- Mode DISPLAY: the model already found image URLs elsewhere ---
+            if (Array.isArray(args?.urls) && args.urls.length) {
+                const images = args.urls.map((u) => {
+                    const url = typeof u === 'string' ? u : (u && u.url);
+                    if (!url) return null;
+                    return {
+                        url: String(url),
+                        thumbnail: String((u && u.thumbnail) || url),
+                        title: String((u && u.title) || query || ''),
+                        source: (u && u.source) || 'provided',
+                        sourceUrl: String((u && (u.sourceUrl || u.page)) || url),
+                        license: (u && u.license) || null,
+                        attribution: (u && u.attribution) || null,
+                    };
+                }).filter(Boolean);
+                const out = finalize(images, 'provided');
+                if (out) return out;
+                // nothing valid provided → fall through to search
+            }
+
+            if (!query) return { error: 'Provide a `query` to search for, or `urls` to display.' };
+
+            // --- Mode SEARCH, primary: DuckDuckGo Images (whole web, keyless) ---
+            // Two-step: scrape a vqd token from the search page, then hit i.js.
+            // NB: this MUST go through curl, not axios — DDG fingerprints Node's
+            // TLS/HTTP stack and 403s axios on i.js (every header combo, incl.
+            // UA-only) while curl (browser-like fingerprint) gets 200. curl ships
+            // in the webapp image. URL is passed as a single execFile arg (no
+            // shell), query URL-encoded, so there's no injection surface.
+            // Thumbnails come from Bing's CDN (hotlink-safe) — prefer them for
+            // display so a hotlink-blocking origin can't break the inline render.
+            try {
+                const { execFile } = require('child_process');
+                const curlGet = (url, extra = []) => new Promise((resolve, reject) => {
+                    execFile('curl', ['-s', '-L', '--max-time', '10', '-A', UA, ...extra, url],
+                        { maxBuffer: 8 * 1024 * 1024 },
+                        (err, stdout) => (err ? reject(err) : resolve(stdout || '')));
+                });
+                const enc = encodeURIComponent(query);
+                const page = await curlGet(`https://duckduckgo.com/?q=${enc}&iar=images&iax=images&ia=images`);
+                const m = String(page).match(/vqd="?([\d-]+)"?/);
+                if (m && m[1]) {
+                    const body = await curlGet(
+                        `https://duckduckgo.com/i.js?l=us-en&o=json&q=${enc}&vqd=${encodeURIComponent(m[1])}&f=,,,,,&p=1`,
+                        ['-H', 'Referer: https://duckduckgo.com/'],
+                    );
+                    let parsed = null;
+                    try { parsed = JSON.parse(body); } catch (_) { /* not JSON → fall through */ }
+                    const rows = Array.isArray(parsed?.results) ? parsed.results : [];
+                    const images = rows.map(r => ({
+                        url: r.image,
+                        thumbnail: r.thumbnail || r.image,
+                        title: r.title || query,
+                        source: r.source ? String(r.source).toLowerCase() : 'web',
+                        sourceUrl: r.url || r.image,
+                        license: null,
+                        attribution: null,
+                        width: r.width || null,
+                        height: r.height || null,
+                    }));
+                    const out = finalize(images, 'duckduckgo');
+                    if (out) return out;
+                }
+            } catch (_) { /* fall through to Openverse */ }
+
+            // --- Fallback 1: Openverse (CC-licensed aggregator; mature excluded by default) ---
+            try {
+                const resp = await axios.get('https://api.openverse.org/v1/images/', {
+                    params: { q: query, page_size: count, mature: false },
+                    headers: { 'User-Agent': UA, Accept: 'application/json' },
+                    timeout: 10000,
+                });
+                const rows = Array.isArray(resp.data?.results) ? resp.data.results : [];
+                const out = finalize(rows.map(r => ({
+                    url: r.url,
+                    thumbnail: r.thumbnail || r.url,
+                    title: r.title || query,
+                    source: r.source || r.provider || 'openverse',
+                    sourceUrl: r.foreign_landing_url || r.url,
+                    license: [r.license, r.license_version].filter(Boolean).join(' ').toUpperCase() || null,
+                    attribution: r.attribution || (r.creator ? `by ${r.creator}` : null),
+                    width: r.width || null,
+                    height: r.height || null,
+                })), 'openverse');
+                if (out) return out;
+            } catch (_) { /* fall through to Wikimedia */ }
+
+            // --- Fallback 2: Wikimedia Commons ---
+            try {
+                const resp = await axios.get('https://commons.wikimedia.org/w/api.php', {
+                    params: {
+                        action: 'query', format: 'json', generator: 'search',
+                        gsrsearch: `filetype:bitmap ${query}`, gsrnamespace: 6, gsrlimit: count,
+                        prop: 'imageinfo', iiprop: 'url|size|extmetadata', iiurlwidth: 640,
+                    },
+                    headers: { 'User-Agent': UA, Accept: 'application/json' },
+                    timeout: 10000,
+                });
+                const pages = resp.data?.query?.pages ? Object.values(resp.data.query.pages) : [];
+                const out = finalize(pages.map(p => {
+                    const ii = Array.isArray(p.imageinfo) ? p.imageinfo[0] : null;
+                    if (!ii) return null;
+                    const meta = ii.extmetadata || {};
+                    const artist = meta.Artist?.value ? String(meta.Artist.value).replace(/<[^>]*>/g, '').trim() : null;
+                    return {
+                        url: ii.url,
+                        thumbnail: ii.thumburl || ii.url,
+                        title: String(p.title || query).replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, ''),
+                        source: 'wikimedia commons',
+                        sourceUrl: ii.descriptionurl || ii.url,
+                        license: meta.LicenseShortName?.value || null,
+                        attribution: artist || null,
+                        width: ii.width || null,
+                        height: ii.height || null,
+                    };
+                }).filter(Boolean), 'wikimedia');
+                if (out) return out;
+            } catch (_) { /* fall through to error */ }
+
+            return { error: `No images found for "${query}". Try a simpler, more visual query (the subject only).`, query };
+        },
+    });
+
     // ----- fetch_timeseries ------------------------------------------------
     // Pulls historical OHLC data from Yahoo Finance's v8 chart endpoint —
     // free, no API key, JSON, broad coverage (stocks, indexes, FX, crypto).

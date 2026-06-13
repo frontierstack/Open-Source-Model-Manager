@@ -713,6 +713,11 @@ export default function ChatContainer({
             let assistantContent = '';
             let assistantReasoning = '';
             let continuationInfo = null;
+            // find_image tool results arrive as `tool_result` SSE events; collect
+            // their imageSpec so we can render the pictures inline on the committed
+            // message. (This is the only tool event the webapp chat consumes —
+            // it has no general tool-chip UI like the dedicated chat app.)
+            const collectedImageSpecs = [];
 
             // Start the smooth-reveal pump for this turn (de-jitters bursty
             // MTP/spec output). Cleaned up in the finally block below.
@@ -759,6 +764,18 @@ export default function ChatContainer({
                                 }
                                 console.log(`[Map-Reduce] ${phase}: ${statusMsg}`);
                                 continue; // Don't process as content
+                            }
+
+                            // Capture find_image results — render the photos
+                            // inline on the finished message. Other tool events
+                            // are ignored (no tool-chip UI in the webapp chat).
+                            if (parsed.type === 'tool_result'
+                                && parsed.result && typeof parsed.result === 'object'
+                                && parsed.result.imageSpec
+                                && Array.isArray(parsed.result.imageSpec.images)
+                                && parsed.result.imageSpec.images.length) {
+                                collectedImageSpecs.push(parsed.result.imageSpec);
+                                continue;
                             }
 
                             // Handle memory-injection notice
@@ -869,6 +886,7 @@ export default function ChatContainer({
                 reasoning: finalReasoning,
                 timestamp: new Date().toISOString(),
                 chunked: continuationInfo?.hasMore || false,
+                ...(collectedImageSpecs.length ? { imageSpecs: collectedImageSpecs } : {}),
             };
 
             const finalMessages = [...updatedMessages, assistantMessage];

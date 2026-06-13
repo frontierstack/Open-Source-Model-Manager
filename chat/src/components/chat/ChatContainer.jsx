@@ -260,6 +260,10 @@ function buildNativeChipEntries(streamingToolCalls) {
         const sources = extractSources(tc.name, tc.result);
         const tcChartSpec = (tc.result && typeof tc.result === 'object' && tc.result.chartSpec) ? tc.result.chartSpec : null;
         const tcChartSummary = (tc.result && typeof tc.result === 'object' && typeof tc.result.summary === 'string') ? tc.result.summary : '';
+        // find_image returns an imageSpec the UI renders inline as a thumbnail
+        // grid — lifted onto the chip like chartSpec so the picture survives
+        // on the persisted message without keeping the full tool_result.
+        const tcImageSpec = (tc.result && typeof tc.result === 'object' && tc.result.imageSpec && Array.isArray(tc.result.imageSpec.images)) ? tc.result.imageSpec : null;
         const tcArtifacts = (
             tc.result && typeof tc.result === 'object' && Array.isArray(tc.result._artifacts)
                 ? tc.result._artifacts
@@ -281,6 +285,7 @@ function buildNativeChipEntries(streamingToolCalls) {
             sources: sources && sources.length ? sources : undefined,
             chartSpec: tcChartSpec || undefined,
             chartSummary: tcChartSummary || undefined,
+            imageSpec: tcImageSpec || undefined,
             artifacts: tcArtifacts && tcArtifacts.length ? tcArtifacts : undefined,
             sandboxed: tc.sandboxed,
             sandboxSource: tc.sandboxSource,

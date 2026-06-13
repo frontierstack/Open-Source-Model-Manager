@@ -1061,6 +1061,10 @@ body.font-size-large .markdown-content,
   margin-left: auto;
   margin-right: auto;
 }
+.my-2{
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
 .my-3{
   margin-top: 0.75rem;
   margin-bottom: 0.75rem;
@@ -1222,6 +1226,9 @@ body.font-size-large .markdown-content,
 }
 .h-\[600px\]{
   height: 600px;
+}
+.h-auto{
+  height: auto;
 }
 .h-full{
   height: 100%;
