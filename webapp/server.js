@@ -22861,6 +22861,11 @@ app.use((req, res) => {
         },
     });
 
+    // Tracks (conversationId|query) pairs already bounced by the web-search-
+    // first gate, so a query is redirected at most once before falling through
+    // to the built-in image search (loop-safe). Bounded/cleared in execute.
+    const findImageWebFirstSeen = new Map();
+
     // ----- find_image ------------------------------------------------------
     // Answers "find/show me a picture of X". The model CANNOT reliably guess
     // working image URLs — it hallucinates links that 404 — so it has no good
@@ -22883,21 +22888,24 @@ app.use((req, res) => {
                 function: {
                     name: 'find_image',
                     description:
-                        'USE WHEN the user asks to find / show / display / get a picture, photo, image, or "what does X look like". ' +
-                        'Searches the WHOLE WEB for images (DuckDuckGo Images, no API key — finds anything: games, characters, products, places, people, art) and returns real, working image URLs that the chat renders inline as a thumbnail grid. ' +
-                        'Do NOT invent image URLs or write your own markdown image links — they 404. Call this tool instead; the images display automatically from its result. ' +
-                        'Pass a concise VISUAL query — the subject only (e.g. "Bowser castle Super Mario 64", "margherita pizza"), not a full sentence. ' +
-                        'If you ALREADY have image URLs from another tool (web_search / fetch_url / a page you read), pass them as `urls` to display them directly instead of searching again. ' +
+                        'USE WHEN the user asks to find / show / display / get a picture, photo, image, or "what does X look like". This tool displays images inline in the chat as a thumbnail grid. ' +
+                        'PREFERRED FLOW: FIRST use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to find real image URLs on relevant pages, THEN call this tool with those URLs in `urls` to display them. The web-search tools see the live web and find the most relevant, current images. ' +
+                        'Do NOT invent image URLs or write your own markdown image links — they 404. Always route images through this tool; they display automatically from its result. ' +
+                        'FALLBACK: if you have no URLs yet (you skipped the web search, or it surfaced none), pass a concise VISUAL query — the subject only (e.g. "Bowser castle Super Mario 64", "margherita pizza"), not a full sentence — and this tool runs its own image search (DuckDuckGo Images, keyless, whole web). ' +
                         'Returns 4 images by default; pass count:1 when the user asks for "a"/"one" picture. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            query: { type: 'string', description: 'The visual subject to search for. Optional if `urls` is given.' },
+                            query: { type: 'string', description: 'Fallback only: the visual subject to search for, when you have no `urls`. Optional if `urls` is given.' },
                             count: { type: 'integer', minimum: 1, maximum: 8, description: 'How many images to return (default 4).' },
                             urls: {
                                 type: 'array',
                                 items: { type: 'string' },
-                                description: 'Optional: direct image URLs you already found elsewhere, to display as-is (skips searching).',
+                                description: 'PREFERRED: direct image URLs you found via a web-search tool (web_search / scrapling_fetch / crawl_pages / playwright_fetch / fetch_url), to display as-is.',
+                            },
+                            retryDirect: {
+                                type: 'boolean',
+                                description: 'Set true ONLY after a web search surfaced no usable image URL, to run the built-in image search as a last resort.',
                             },
                         },
                         required: [],
@@ -22906,7 +22914,7 @@ app.use((req, res) => {
                 },
             };
         },
-        async execute(args) {
+        async execute(args, ctx) {
             const query = String(args?.query || '').trim();
             const count = Math.min(8, Math.max(1, parseInt(args?.count || 4, 10)));
             const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -22990,6 +22998,31 @@ app.use((req, res) => {
             }
 
             if (!query) return { error: 'Provide a `query` to search for, or `urls` to display.' };
+
+            // --- Web-search-first gate ---------------------------------------
+            // User preference: the model should source images via the web-search
+            // tools FIRST, then feed the URLs here for display. A tool
+            // description alone did not reliably move a local model off calling
+            // find_image directly, so this is a RUNTIME gate: a plain query-only
+            // call (no urls, no explicit retryDirect) is bounced back ONCE with
+            // instructions to web_search first. Loop-safe and never dead-ends —
+            // the SAME (conversation, query) seen again, or an explicit
+            // retryDirect, falls through to the built-in image search, so if the
+            // web search surfaces nothing the user still gets pictures.
+            const noUrlsProvided = !(Array.isArray(args?.urls) && args.urls.length);
+            if (noUrlsProvided && !args?.retryDirect) {
+                const gateKey = `${(ctx && ctx.conversationId) || 'global'}|${query.toLowerCase()}`;
+                if (!findImageWebFirstSeen.has(gateKey)) {
+                    if (findImageWebFirstSeen.size > 1000) findImageWebFirstSeen.clear();
+                    findImageWebFirstSeen.set(gateKey, 1);
+                    return {
+                        needsWebSearch: true,
+                        query,
+                        instruction: `Do NOT display images from the built-in search yet. FIRST call web_search (or scrapling_fetch / crawl_pages / fetch_url) to find real image URLs for "${query}" on relevant pages, then call find_image again with those URLs in \`urls\` to display them. ONLY if the web search surfaces no usable image URL, call find_image again with query:"${query}" and retryDirect:true.`,
+                    };
+                }
+                // already redirected once for this query → proceed to built-in search
+            }
 
             // --- Mode SEARCH, primary: DuckDuckGo Images (whole web, keyless) ---
             // Two-step: scrape a vqd token from the search page, then hit i.js.
@@ -23085,7 +23118,11 @@ app.use((req, res) => {
                 if (out) return out;
             } catch (_) { /* fall through to error */ }
 
-            return { error: `No images found for "${query}". Try a simpler, more visual query (the subject only).`, query };
+            return {
+                error: `No images found for "${query}" via the built-in image search.`,
+                query,
+                hint: 'Try a simpler, more visual query (the subject only). If it still finds nothing, use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to locate a real image URL on a relevant page, then call find_image again with that URL in `urls` to display it.',
+            };
         },
     });
 
