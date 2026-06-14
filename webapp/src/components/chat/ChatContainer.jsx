@@ -718,6 +718,9 @@ export default function ChatContainer({
             // message. (This is the only tool event the webapp chat consumes —
             // it has no general tool-chip UI like the dedicated chat app.)
             const collectedImageSpecs = [];
+            // find_video results arrive the same way — collect their videoSpec
+            // so the clips render inline (click-to-play) on the committed message.
+            const collectedVideoSpecs = [];
 
             // Start the smooth-reveal pump for this turn (de-jitters bursty
             // MTP/spec output). Cleaned up in the finally block below.
@@ -775,6 +778,17 @@ export default function ChatContainer({
                                 && Array.isArray(parsed.result.imageSpec.images)
                                 && parsed.result.imageSpec.images.length) {
                                 collectedImageSpecs.push(parsed.result.imageSpec);
+                                continue;
+                            }
+
+                            // Capture find_video results — render the clips
+                            // inline on the finished message.
+                            if (parsed.type === 'tool_result'
+                                && parsed.result && typeof parsed.result === 'object'
+                                && parsed.result.videoSpec
+                                && Array.isArray(parsed.result.videoSpec.videos)
+                                && parsed.result.videoSpec.videos.length) {
+                                collectedVideoSpecs.push(parsed.result.videoSpec);
                                 continue;
                             }
 
@@ -887,6 +901,7 @@ export default function ChatContainer({
                 timestamp: new Date().toISOString(),
                 chunked: continuationInfo?.hasMore || false,
                 ...(collectedImageSpecs.length ? { imageSpecs: collectedImageSpecs } : {}),
+                ...(collectedVideoSpecs.length ? { videoSpecs: collectedVideoSpecs } : {}),
             };
 
             const finalMessages = [...updatedMessages, assistantMessage];

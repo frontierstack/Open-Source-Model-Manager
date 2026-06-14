@@ -6,6 +6,15 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import CodeBlock from './CodeBlock';
 import CodePreviewBlock from './CodePreviewBlock';
+import { InlineVideoLink, videoDescriptorFromUrl } from './VideoBlock';
+
+// Flatten a react-markdown link's children to plain text (used as the video
+// title when we render a video link inline as a player).
+function childrenToText(children) {
+    if (typeof children === 'string') return children;
+    if (Array.isArray(children)) return children.map(c => (typeof c === 'string' ? c : '')).join('');
+    return '';
+}
 
 /**
  * MessageContent - Renders markdown content with Tailwind styling
@@ -65,6 +74,13 @@ const sharedMarkdownComponents = {
         return <h3 className="text-base font-semibold mt-4 mb-2 text-dark-100">{children}</h3>;
     },
     a({ href, children }) {
+        // A model-emitted video link (YouTube/Vimeo/Dailymotion or a direct
+        // video file) renders inline as a playable player instead of a bare
+        // link — videos belong IN the chat, mirroring the markdown img
+        // renderer. find_video renders its own grid via VideoBlock; this
+        // catches the common case where the model just lists the URL.
+        const vid = videoDescriptorFromUrl(href, childrenToText(children));
+        if (vid) return <InlineVideoLink video={vid} />;
         return (
             <a href={href} target="_blank" rel="noopener noreferrer" className="hover:underline break-all" style={{ color: 'var(--accent)' }}>
                 {children}

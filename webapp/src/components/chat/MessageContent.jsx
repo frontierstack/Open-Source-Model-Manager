@@ -5,6 +5,15 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Link from '@mui/material/Link';
 import CodeBlock from './CodeBlock';
+import { InlineVideoLink, videoDescriptorFromUrl } from './VideoBlock';
+
+// Flatten a react-markdown link's children to plain text (used as the video
+// title when we render a video link inline as a player).
+function childrenToText(children) {
+    if (typeof children === 'string') return children;
+    if (Array.isArray(children)) return children.map(c => (typeof c === 'string' ? c : '')).join('');
+    return '';
+}
 
 // Repair GFM tables emitted on a single line. Models occasionally produce
 // `| H1 | H2 | | :--- | :--- | | a | b |` with no row breaks, which
@@ -106,6 +115,14 @@ export default React.memo(function MessageContent({ content }) {
 
                 // Links
                 a({ href, children }) {
+                    // A model-emitted video link (YouTube/Vimeo/Dailymotion or
+                    // a direct video file) renders inline as a playable player
+                    // instead of a bare link — videos belong IN the chat,
+                    // mirroring the markdown img renderer. find_video renders
+                    // its own grid via VideoBlock; this catches the common case
+                    // where the model just lists the URL.
+                    const vid = videoDescriptorFromUrl(href, childrenToText(children));
+                    if (vid) return <InlineVideoLink video={vid} />;
                     return (
                         <Link
                             href={href}
