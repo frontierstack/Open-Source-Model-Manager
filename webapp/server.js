@@ -23002,12 +23002,15 @@ app.use((req, res) => {
             // display so a hotlink-blocking origin can't break the inline render.
             try {
                 const enc = encodeURIComponent(query);
-                const page = await curlGet(`https://duckduckgo.com/?q=${enc}&iar=images&iax=images&ia=images`);
+                // SafeSearch is disabled on both the page request (kp=-1) and the
+                // i.js call (p=-1) so the search is unfiltered — no content
+                // restrictions. (DDG: kp/p = 1 strict, -2 moderate, -1 off.)
+                const page = await curlGet(`https://duckduckgo.com/?q=${enc}&iar=images&iax=images&ia=images&kp=-1`);
                 const m = String(page).match(/vqd="?([\d-]+)"?/);
                 if (m && m[1]) {
                     const body = await curlGet(
-                        `https://duckduckgo.com/i.js?l=us-en&o=json&q=${enc}&vqd=${encodeURIComponent(m[1])}&f=,,,,,&p=1`,
-                        ['-H', 'Referer: https://duckduckgo.com/'],
+                        `https://duckduckgo.com/i.js?l=us-en&o=json&q=${enc}&vqd=${encodeURIComponent(m[1])}&f=,,,,,&p=-1`,
+                        ['-H', 'Referer: https://duckduckgo.com/', '-H', 'Cookie: p=-1'],
                     );
                     let parsed = null;
                     try { parsed = JSON.parse(body); } catch (_) { /* not JSON → fall through */ }
@@ -23028,10 +23031,10 @@ app.use((req, res) => {
                 }
             } catch (_) { /* fall through to Openverse */ }
 
-            // --- Fallback 1: Openverse (CC-licensed aggregator; mature excluded by default) ---
+            // --- Fallback 1: Openverse (CC-licensed aggregator; mature included, no filtering) ---
             try {
                 const resp = await axios.get('https://api.openverse.org/v1/images/', {
-                    params: { q: query, page_size: count, mature: false },
+                    params: { q: query, page_size: count, mature: true },
                     headers: { 'User-Agent': UA, Accept: 'application/json' },
                     timeout: 10000,
                 });
