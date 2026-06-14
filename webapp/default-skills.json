@@ -796,6 +796,97 @@
     "enabled": true
   },
   {
+    "name": "find_image",
+    "description": "Find and display real images. Searches the whole web for pictures (DuckDuckGo Images, no API key, SafeSearch off) or displays image URLs you already have, returning live URLs the chat renders inline.",
+    "type": "tool",
+    "parameters": {
+      "query": "string",
+      "count": "number",
+      "urls": "array"
+    },
+    "systemPrompt": "Use this skill when the user asks to find / show / display / get a picture, photo, or image of something. SEARCH mode: pass a concise visual `query` (the subject only) to search the whole web. DISPLAY mode: pass `urls` you already found via another tool to render them as-is. Returns 4 images by default; pass count:1 for 'a'/'one'. SafeSearch is disabled — searching is unrestricted. Do not invent image URLs; this tool returns only live, probed URLs.",
+    "code": "# This skill is executed natively via the chat tool registry (server.js find_image).\n# Parameters:\n#   query (string): Visual subject to search for. Optional if `urls` is given.\n#   count (number): How many images to return (default 4, max 8).\n#   urls (array): Optional direct image URLs to display as-is (skips searching).\n#\n# Search path: DuckDuckGo Images (whole web, keyless, SafeSearch OFF) with\n# Openverse and Wikimedia Commons as fallbacks (no content filtering). Every\n# candidate is liveness-probed and http->https upgraded before render.",
+    "enabled": true
+  },
+  {
+    "name": "render_chart",
+    "description": "Render an inline chart in the chat UI (line, bar, area, pie, scatter) from data you provide or fetched, so the user sees the visualization instead of a prose summary.",
+    "type": "tool",
+    "parameters": {
+      "type": "string",
+      "title": "string",
+      "xLabel": "string",
+      "yLabel": "string",
+      "data": "array",
+      "series": "array",
+      "summary": "string"
+    },
+    "systemPrompt": "Use this skill whenever the user asks to graph, plot, chart, or visualize data. Pick the type from the data shape: line/area for time series, bar for categorical comparisons, pie for parts-of-a-whole (<=8 slices), scatter for correlations. Single-series data is [{x, y}, ...]; multi-series uses series[] of {name, color?} with one {x, seriesName: y, ...} object per x-value. Always include a clear title and axis labels.",
+    "code": "# This skill is executed natively via the chat tool registry (server.js render_chart).\n# Parameters:\n#   type (string): line | bar | area | pie | scatter\n#   title/xLabel/yLabel (string): Chart labels (omit axes for pie).\n#   data (array): Rows of data. Single-series [{x, y}]; multi-series [{x, s1: y1, ...}]; pie [{label, value}].\n#   series (array): Optional explicit {name, color?} entries for multi-series charts.\n#   summary (string): One-sentence takeaway shown above the chart.\n#\n# Returns a chartSpec the chat UI renders inline via Recharts.",
+    "enabled": true
+  },
+  {
+    "name": "fetch_timeseries",
+    "description": "Fetch historical OHLC price history from Yahoo Finance (free, no API key) for stocks, indexes, forex, crypto, and commodities. Pair with render_chart to plot a price chart.",
+    "type": "tool",
+    "parameters": {
+      "symbol": "string",
+      "period": "string",
+      "interval": "string"
+    },
+    "systemPrompt": "Use this skill when the user asks for stock/index/forex/crypto charts, price history, or to graph a ticker. Symbols: bare ticker for stocks (AAPL), ^GSPC/^DJI/^IXIC for indexes (also accepts ^spx/^dji/^ndq aliases), EURUSD=X or 'eurusd' for forex, BTC-USD for crypto, GC=F/CL=F for commodities. period: 1mo/3mo/6mo/1y/2y/5y/ytd/max (default 1y). interval: d/w/m. Then pass the rows into render_chart with type=line.",
+    "code": "# This skill is executed natively via the chat tool registry (server.js fetch_timeseries).\n# Parameters:\n#   symbol (string): Yahoo Finance symbol (AAPL, ^GSPC, EURUSD=X, BTC-USD, GC=F).\n#   period (string): Lookback window 1mo/3mo/6mo/1y/2y/5y/ytd/max (default 1y).\n#   interval (string): Bar interval d/w/m (default d).\n#\n# Source: Yahoo Finance v8 chart endpoint. Symbols are normalised so training-era\n# instincts like ^spx/^ndq map to Yahoo's ^GSPC/^IXIC.",
+    "enabled": true
+  },
+  {
+    "name": "crawl_pages",
+    "description": "Walk a paginated listing across multiple pages in one call (url-pattern, link-follow, load-more, or infinite-scroll). Use for 'top N / most recent N' requests or when a fetch returned only page 1.",
+    "type": "tool",
+    "parameters": {
+      "url": "string",
+      "maxPages": "number",
+      "mode": "string",
+      "nextSelector": "string",
+      "loadMoreSelector": "string",
+      "waitForSelector": "string",
+      "timeout": "number",
+      "maxLength": "number",
+      "includeLinks": "boolean",
+      "stealth": "boolean"
+    },
+    "systemPrompt": "Use this skill when the user asks for 'top N / most recent N' items spanning a paginated listing, or when a fetch returned only page 1. Modes: auto (default; URL pattern then DOM Next/Load-more), url-pattern (increments ?page=/?p=/?offset=//page/N/), link-follow (clicks Next; pass nextSelector to override), load-more (clicks button; pass loadMoreSelector), infinite-scroll. Rejects private addresses. Stops on duplicate content.",
+    "code": "# This skill is executed natively via the chat tool registry (server.js crawl_pages).\n# Parameters:\n#   url (string): Absolute HTTP(S) starting URL.\n#   maxPages (number): Hard cap on pages to walk (default 5, max 20).\n#   mode (string): auto | url-pattern | link-follow | load-more | infinite-scroll.\n#   nextSelector/loadMoreSelector/waitForSelector (string): CSS overrides per mode.\n#   timeout (number): Per-page timeout in ms (default 20000).\n#   maxLength (number): Total combined content cap (default 30000).\n#   includeLinks (boolean): Include extracted links per page.\n#   stealth (boolean): Prefer Scrapling for url-pattern fetches on bot-gated sites.",
+    "enabled": true
+  },
+  {
+    "name": "scrapling_fetch",
+    "description": "Fetch a webpage with Scrapling stealth (StealthyFetcher + curl_cffi) — the strongest anti-bot fetch. Use when fetch_url/playwright_fetch returned thin or bot-blocked content (Cloudflare, DataDome, 'Just a moment', CAPTCHA).",
+    "type": "tool",
+    "parameters": {
+      "url": "string",
+      "timeout": "number",
+      "extractLinks": "boolean",
+      "maxLength": "number"
+    },
+    "systemPrompt": "Use this skill when fetch_url or playwright_fetch returned thin/bot-blocked content (Cloudflare, PerimeterX, DataDome, Akamai, 'Checking your browser' / 'Just a moment' / 'Access denied' / CAPTCHA), or for threat-intel portals (abuse.ch, threatfox, urlhaus). Slower than fetch_url; reach for it only when evasion is needed, but try it before asking the user to paste. Rejects private addresses.",
+    "code": "# This skill is executed natively via the chat tool registry (server.js scrapling_fetch).\n# Parameters:\n#   url (string): Absolute HTTP(S) URL to fetch.\n#   timeout (number): Timeout in ms (default 30000).\n#   extractLinks (boolean): Include extracted links in the result (default false).\n#   maxLength (number): Truncate content to this many chars (default 15000).\n#\n# Backed by scraplingService (StealthyFetcher + curl_cffi). Chain: fetch_url ->\n# playwright_fetch -> scrapling_fetch.",
+    "enabled": true
+  },
+  {
+    "name": "virustotal_lookup",
+    "description": "Query VirusTotal for an IP, domain, URL, or file hash (md5/sha1/sha256) — detection stats, flagging engines, community votes, and metadata. Use before asking the user to paste VT screenshots.",
+    "type": "tool",
+    "parameters": {
+      "resource": "string",
+      "resource_type": "string",
+      "view": "string",
+      "timeout": "number"
+    },
+    "systemPrompt": "Use this skill to look up threat-intel for an IP, domain, URL, or file hash on VirusTotal. resource_type is auto-detected (ip_address/domain/url/file); pass it to override. view=detection (default) returns stats + flagging engines + metadata; view=community returns votes + comments; view=full returns both. With a VIRUSTOTAL_API_KEY set it returns structured data; otherwise it scrapes the GUI page.",
+    "code": "# This skill is executed natively via the chat tool registry (server.js virustotal_lookup).\n# Parameters:\n#   resource (string): IP, domain, absolute URL, or file hash (md5/sha1/sha256).\n#   resource_type (string): Optional override ip_address/domain/url/file.\n#   view (string): detection (default) | community | full.\n#   timeout (number): Per-request timeout in ms (default 15000).\n#\n# Uses the VirusTotal API when VIRUSTOTAL_API_KEY is set, else falls back to\n# scraping the GUI page (unstructured).",
+    "enabled": true
+  },
+  {
     "name": "create_pdf",
     "description": "Generate a polished, downloadable PDF from markdown-formatted text. Renders headings, tables, bullets, fenced code blocks, blockquotes, horizontal rules, inline code, bold, and italic \u2014 with full Unicode support (arrows, box-drawing, math symbols all render). Output is written into /workspace/artifacts/ and the chat UI shows a download chip automatically.",
     "type": "tool",
