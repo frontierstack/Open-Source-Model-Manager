@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Download, FileText } from 'lucide-react';
+import { Globe, Link as LinkIcon, Wrench, BookOpen, AlertCircle, ChevronDown, Check, Loader2, Shield, BarChart3, Image as ImageIcon, Film, Download, FileText } from 'lucide-react';
 import SearchSources from './SearchSources';
 import ChartBlock from './ChartBlock';
 import ImageBlock from './ImageBlock';
+import VideoBlock from './VideoBlock';
 import ArtifactList from './ArtifactList';
 
 /**
@@ -31,6 +32,7 @@ export default function ToolCallBlock({ tool }) {
         chartSpec,
         chartSummary,
         imageSpec,
+        videoSpec,
         artifacts,
         sandboxed,
         sandboxNetwork,
@@ -52,12 +54,16 @@ export default function ToolCallBlock({ tool }) {
     // find_image returns an imageSpec the UI renders inline as a thumbnail grid,
     // same lift-onto-the-chip pattern as render_chart's chartSpec.
     const isImage = !!imageSpec || (type === 'native_tool_call' && label === 'find_image');
+    // find_video returns a videoSpec the UI renders inline as click-to-play
+    // players, same lift-onto-the-chip pattern as imageSpec.
+    const isVideo = !!videoSpec || (type === 'native_tool_call' && label === 'find_video');
     const IconComponent =
         type === 'web_search' ? Globe :
         type === 'url_fetch' ? LinkIcon :
         isSkillLoad ? BookOpen :
         isChart ? BarChart3 :
         isImage ? ImageIcon :
+        isVideo ? Film :
         Wrench;
 
     const toolName =
@@ -93,7 +99,7 @@ export default function ToolCallBlock({ tool }) {
     // Show args panel when we have parsed args or the legacy single-string `query`.
     const argEntries = args && typeof args === 'object' ? Object.entries(args) : null;
     const hasArgs = (argEntries && argEntries.length > 0) || (!argEntries && query);
-    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || hasArtifacts;
+    const hasDetail = isFailed || (preview && !isRunning) || hasSources || hasArgs || !!chartSpec || !!imageSpec || !!videoSpec || hasArtifacts;
 
     const statusColor =
         isRunning ? 'var(--accent)'
@@ -105,9 +111,9 @@ export default function ToolCallBlock({ tool }) {
     // (content-driven) width. Charts force the chip to take full width so
     // the chart has room to breathe.
     const wrap = {
-        display: (isChart || isImage) ? 'flex' : 'inline-flex',
+        display: (isChart || isImage || isVideo) ? 'flex' : 'inline-flex',
         flexDirection: 'column',
-        width: (isChart || isImage) ? '100%' : undefined,
+        width: (isChart || isImage || isVideo) ? '100%' : undefined,
         maxWidth: '100%',
         border: `1px solid ${isFailed ? 'color-mix(in oklab, var(--danger) 45%, var(--rule))' : 'var(--rule)'}`,
         borderRadius: 8,
@@ -215,6 +221,9 @@ export default function ToolCallBlock({ tool }) {
                     {imageSpec && (
                         <ImageBlock spec={imageSpec} />
                     )}
+                    {videoSpec && (
+                        <VideoBlock spec={videoSpec} />
+                    )}
                     {hasArtifacts && (
                         <ArtifactList artifacts={artifacts} />
                     )}
@@ -230,7 +239,7 @@ export default function ToolCallBlock({ tool }) {
                     )}
                     {isFailed && error && <ErrorBlock error={error} toolName={toolName} />}
                     {hasSources && <SearchSources sources={sourceList} />}
-                    {preview && !isFailed && !hasSources && !chartSpec && !imageSpec && (
+                    {preview && !isFailed && !hasSources && !chartSpec && !imageSpec && !videoSpec && (
                         <pre style={{
                             margin: 0,
                             fontFamily: 'var(--font-mono)', fontSize: 11.5,

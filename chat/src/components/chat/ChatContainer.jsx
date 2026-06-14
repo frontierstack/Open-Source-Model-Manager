@@ -264,6 +264,9 @@ function buildNativeChipEntries(streamingToolCalls) {
         // grid — lifted onto the chip like chartSpec so the picture survives
         // on the persisted message without keeping the full tool_result.
         const tcImageSpec = (tc.result && typeof tc.result === 'object' && tc.result.imageSpec && Array.isArray(tc.result.imageSpec.images)) ? tc.result.imageSpec : null;
+        // find_video returns a videoSpec rendered inline as click-to-play
+        // players — lifted onto the chip like imageSpec/chartSpec.
+        const tcVideoSpec = (tc.result && typeof tc.result === 'object' && tc.result.videoSpec && Array.isArray(tc.result.videoSpec.videos)) ? tc.result.videoSpec : null;
         const tcArtifacts = (
             tc.result && typeof tc.result === 'object' && Array.isArray(tc.result._artifacts)
                 ? tc.result._artifacts
@@ -286,6 +289,7 @@ function buildNativeChipEntries(streamingToolCalls) {
             chartSpec: tcChartSpec || undefined,
             chartSummary: tcChartSummary || undefined,
             imageSpec: tcImageSpec || undefined,
+            videoSpec: tcVideoSpec || undefined,
             artifacts: tcArtifacts && tcArtifacts.length ? tcArtifacts : undefined,
             sandboxed: tc.sandboxed,
             sandboxSource: tc.sandboxSource,

@@ -19,6 +19,7 @@ import CodeIcon from '@mui/icons-material/Code';
 import TableChartIcon from '@mui/icons-material/TableChart';
 import MessageContent from './MessageContent';
 import ImageBlock from './ImageBlock';
+import VideoBlock from './VideoBlock';
 import ThinkingIndicator from './ThinkingIndicator';
 
 /**
@@ -31,6 +32,7 @@ export default React.memo(function ChatMessage({
     timestamp,
     attachments,
     imageSpecs,
+    videoSpecs,
     isStreaming,
     streamingContent,
     streamingReasoning,
@@ -251,6 +253,12 @@ export default React.memo(function ChatMessage({
                     chat app. Populated on message commit. */}
                 {!isUser && Array.isArray(imageSpecs) && imageSpecs.map((spec, idx) => (
                     <ImageBlock key={`img-${idx}`} spec={spec} />
+                ))}
+
+                {/* Inline videos from the find_video tool — click-to-play
+                    players rendered in the response, mirroring the chat app. */}
+                {!isUser && Array.isArray(videoSpecs) && videoSpecs.map((spec, idx) => (
+                    <VideoBlock key={`vid-${idx}`} spec={spec} />
                 ))}
 
                 {/* Actions (copy and export buttons) */}

@@ -8,6 +8,7 @@ import SearchSources from './SearchSources';
 import FilePreviewModal, { isAttachmentPreviewable } from './FilePreviewModal';
 import ChartBlock from './ChartBlock';
 import ImageBlock from './ImageBlock';
+import VideoBlock from './VideoBlock';
 import ArtifactList from './ArtifactList';
 import { useChatStore } from '../../stores/useChatStore';
 
@@ -546,6 +547,17 @@ export default React.memo(function ChatMessage({
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: displayContent ? 12 : 0 }}>
                             {toolCalls.filter(tc => tc?.imageSpec).map((tc, idx) => (
                                 <ImageBlock key={`bubble-image-${idx}`} spec={tc.imageSpec} />
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Inline videos — surface find_video results as click-to-play
+                        players in the main response body, same first-class
+                        treatment as images/charts. */}
+                    {!isUser && !bodyCollapsed && Array.isArray(toolCalls) && toolCalls.some(tc => tc?.videoSpec) && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: displayContent ? 12 : 0 }}>
+                            {toolCalls.filter(tc => tc?.videoSpec).map((tc, idx) => (
+                                <VideoBlock key={`bubble-video-${idx}`} spec={tc.videoSpec} />
                             ))}
                         </div>
                     )}

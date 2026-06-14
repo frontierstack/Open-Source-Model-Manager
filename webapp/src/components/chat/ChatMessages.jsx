@@ -111,6 +111,7 @@ export default function ChatMessages({
                     timestamp={message.timestamp}
                     attachments={message.attachments}
                     imageSpecs={message.imageSpecs}
+                    videoSpecs={message.videoSpecs}
                     isStreaming={false}
                     onExportContent={onExportContent}
                 />

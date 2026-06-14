@@ -152,6 +152,11 @@ app.use(helmet({
             imgSrc: ["'self'", "data:", "https:"],
             connectSrc: ["'self'", "wss:", "ws:"],  // WebSocket connections
             fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            // find_video renders YouTube/Vimeo/Dailymotion clips inline as
+            // click-to-play <iframe> embeds, and CC-licensed direct .webm/.ogv
+            // files via <video> — allow those provider frames + https media.
+            frameSrc: ["'self'", "https://www.youtube.com", "https://www.youtube-nocookie.com", "https://player.vimeo.com", "https://www.dailymotion.com"],
+            mediaSrc: ["'self'", "data:", "blob:", "https:"],
             objectSrc: ["'none'"],
             upgradeInsecureRequests: [],
         },
@@ -23122,6 +23127,296 @@ app.use((req, res) => {
                 error: `No images found for "${query}" via the built-in image search.`,
                 query,
                 hint: 'Try a simpler, more visual query (the subject only). If it still finds nothing, use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to locate a real image URL on a relevant page, then call find_image again with that URL in `urls` to display it.',
+            };
+        },
+    });
+
+    // Tracks (conversationId|query) pairs already bounced by the find_video
+    // web-search-first gate (loop-safe; mirrors findImageWebFirstSeen).
+    const findVideoWebFirstSeen = new Map();
+
+    // ----- find_video ------------------------------------------------------
+    // Answers "find/show/play me a video of X". Mirrors find_image: the model
+    // cannot reliably guess working video URLs, so it routes them through this
+    // tool, which returns a `videoSpec` the chat UI renders inline as
+    // click-to-play players. Two modes:
+    //  • SEARCH: DuckDuckGo Videos (keyless, whole web — finds YouTube/Vimeo/
+    //    etc.), with Wikimedia Commons (CC-licensed direct .webm/.ogv) as a
+    //    fallback if DDG is rate-limited.
+    //  • DISPLAY: pass `urls` the model already found via any other tool
+    //    (web_search/fetch_url/etc.) — YouTube/Vimeo watch links become
+    //    embeds, direct .mp4/.webm files play inline.
+    // The chat UI detects videoSpec on the tool result and renders the clips
+    // inline (same lift-onto-the-chip pattern as render_chart/find_image), so
+    // the user sees a playable video without the model emitting any markup.
+    tools.registerTool({
+        name: 'find_video',
+        build() {
+            return {
+                type: 'function',
+                function: {
+                    name: 'find_video',
+                    description:
+                        'USE WHEN the user asks to find / show / display / get / play a video, clip, trailer, or "show me footage of X". This tool displays videos inline in the chat as click-to-play players. Content is UNRESTRICTED — it returns whatever the web has, including mature content, no SafeSearch. ' +
+                        'PREFERRED FLOW: FIRST use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to BROADLY find real video URLs across the whole web (YouTube/Vimeo/Dailymotion/etc. watch pages or direct .mp4/.webm files), THEN call this tool with those URLs in `urls` to display them. Feed the actual VIDEO URLs (the watch link or media file), NOT article/news pages. ' +
+                        'Do NOT invent video URLs or write your own markdown/HTML links — they 404 and will not play. Always route videos through this tool; they display automatically from its result. ' +
+                        'FALLBACK: if you have no URLs yet (skipped the web search, or it surfaced none), pass a concise `query` — the subject only (e.g. "margherita pizza recipe"), not a full sentence — and this tool runs its own broad, unrestricted video search (DuckDuckGo Videos, keyless, many sources). ' +
+                        'Returns 3 videos by default; pass count:1 when the user asks for "a"/"one" video. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: 'Fallback only: the subject to search videos for (the subject only, not a full sentence). Optional if `urls` is given.' },
+                            count: { type: 'integer', minimum: 1, maximum: 6, description: 'How many videos to return (default 3).' },
+                            urls: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description: 'PREFERRED: real video URLs (YouTube/Vimeo/Dailymotion watch pages or direct .mp4/.webm files) you found via a web-search tool, to display as-is.',
+                            },
+                            retryDirect: {
+                                type: 'boolean',
+                                description: 'Set true ONLY after a web search surfaced no usable video URL, to run the built-in broad video search as a last resort.',
+                            },
+                        },
+                        required: [],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args, ctx) {
+            const query = String(args?.query || '').trim();
+            const count = Math.min(6, Math.max(1, parseInt(args?.count || 3, 10)));
+            const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+            const { execFile } = require('child_process');
+            // curl, not axios — DDG fingerprint-blocks Node's TLS stack (see the
+            // find_image note); also used to validate candidate URLs.
+            const curlGet = (url, extra = []) => new Promise((resolve, reject) => {
+                execFile('curl', ['-s', '-L', '--max-time', '10', '-A', UA, ...extra, url],
+                    { maxBuffer: 8 * 1024 * 1024 },
+                    (err, stdout) => (err ? reject(err) : resolve(stdout || '')));
+            });
+            // Liveness probe: a tiny ranged GET confirming a URL serves the
+            // expected content-type (2xx/206 + image/* for poster thumbnails,
+            // video/* for direct media files). Embeds are trusted (the iframe
+            // provider serves its own poster), so they're not probed.
+            const probeType = (url, typeRe) => new Promise((resolve) => {
+                if (!url || !/^https?:\/\//i.test(url)) return resolve(false);
+                execFile('curl', ['-s', '-L', '-o', '/dev/null', '--max-time', '6', '-A', UA,
+                    '-w', '%{http_code} %{content_type}', '-r', '0-0', url],
+                    { timeout: 8000 },
+                    (err, stdout) => {
+                        if (err) return resolve(false);
+                        const parts = String(stdout || '').trim().split(/\s+/);
+                        resolve(/^2\d\d$/.test(parts[0] || '') && typeRe.test(parts.slice(1).join(' ')));
+                    });
+            });
+            const probeImage = (u) => probeType(u, /image\//i);
+            const probeVideo = (u) => probeType(u, /video\//i);
+            // The chats are HTTPS — an http:// embed/poster/media src is blocked
+            // as mixed content even when reachable. Upgrade http→https.
+            const toHttps = (u) => (typeof u === 'string' && /^http:\/\//i.test(u))
+                ? u.replace(/^http:\/\//i, 'https://') : u;
+            // Derive an embeddable player URL + poster from a watch/page URL so a
+            // bare YouTube/Vimeo link the model passes still plays inline.
+            const ytId = (u) => {
+                const m = String(u || '').match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|v\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i);
+                return m ? m[1] : null;
+            };
+            const vimeoId = (u) => { const m = String(u || '').match(/vimeo\.com\/(?:video\/)?(\d+)/i); return m ? m[1] : null; };
+            const dmId = (u) => { const m = String(u || '').match(/(?:dailymotion\.com\/(?:video|embed\/video)\/|dai\.ly\/)([A-Za-z0-9]+)/i); return m ? m[1] : null; };
+            const isDirectVideo = (u) => /\.(mp4|webm|ogg|ogv|mov|m4v|mkv|avi|3gp|3g2|mpeg|mpg|m2ts|ts|flv|wmv)(?:[?#]|$)/i.test(String(u || ''));
+            // Provider tag for a result URL — used to diversify the result mix so
+            // the grid isn't all one source (YouTube is included, just not the
+            // forced default — the search is broad).
+            const providerOf = (u) => {
+                const s = String(u || '').toLowerCase();
+                if (/youtube\.com|youtu\.be/.test(s)) return 'youtube';
+                if (/vimeo\.com/.test(s)) return 'vimeo';
+                if (/dailymotion\.com|dai\.ly/.test(s)) return 'dailymotion';
+                try { return new URL(s).hostname.replace(/^www\./, ''); } catch (_) { return 'web'; }
+            };
+            const deriveEmbed = (u) => {
+                const y = ytId(u);
+                if (y) return { embedUrl: `https://www.youtube-nocookie.com/embed/${y}`, thumbnail: `https://i.ytimg.com/vi/${y}/hqdefault.jpg`, source: 'youtube' };
+                const v = vimeoId(u);
+                if (v) return { embedUrl: `https://player.vimeo.com/video/${v}`, thumbnail: null, source: 'vimeo' };
+                const d = dmId(u);
+                if (d) return { embedUrl: `https://www.dailymotion.com/embed/video/${d}`, thumbnail: null, source: 'dailymotion' };
+                return null;
+            };
+            // Round-robin interleave by provider so a broad search returns a MIX
+            // (e.g. youtube, vimeo, dailymotion, …) rather than the top source
+            // monopolizing the grid — keeps YouTube in play without defaulting to
+            // it. Stable within each provider's original relevance order.
+            const diversify = (vids) => {
+                const buckets = new Map();
+                for (const v of vids) {
+                    const k = providerOf(v && (v.url || v.sourceUrl || v.embedUrl));
+                    if (!buckets.has(k)) buckets.set(k, []);
+                    buckets.get(k).push(v);
+                }
+                const lists = [...buckets.values()];
+                const out = [];
+                for (let i = 0; out.length < vids.length; i++) {
+                    let any = false;
+                    for (const l of lists) { if (l[i]) { out.push(l[i]); any = true; } }
+                    if (!any) break;
+                }
+                return out;
+            };
+            // Validate candidates: a video must be playable (a trusted embed, or
+            // a direct file that probes as video/*); poster thumbnails are probed
+            // so a dead image never renders broken (embeds tolerate a missing
+            // poster — they show their own). Probe a buffer beyond `count`.
+            const finalize = async (vids, source) => {
+                const candidates = (vids || [])
+                    .filter(v => v && (v.embedUrl || v.videoUrl))
+                    .slice(0, Math.max(count * 3, count + 6));
+                const vetted = await Promise.all(candidates.map(async (v) => {
+                    const embedUrl = v.embedUrl ? toHttps(v.embedUrl) : null;
+                    let videoUrl = v.videoUrl ? toHttps(v.videoUrl) : null;
+                    // A direct file must serve video bytes — but trust a known
+                    // video extension even when the host sends a generic
+                    // content-type (octet-stream), so the browser can still try
+                    // to play less-common formats (mkv/avi/flv/…).
+                    if (!embedUrl && videoUrl && !(await probeVideo(videoUrl)) && !isDirectVideo(videoUrl)) videoUrl = null;
+                    if (!embedUrl && !videoUrl) return null;
+                    let thumbnail = v.thumbnail ? toHttps(v.thumbnail) : null;
+                    if (thumbnail && !(await probeImage(thumbnail))) thumbnail = null;
+                    return { ...v, embedUrl, videoUrl, thumbnail, url: toHttps(v.url || v.sourceUrl || '') };
+                }));
+                const clean = vetted.filter(Boolean).slice(0, count);
+                return clean.length
+                    ? { videoSpec: { query, videos: clean }, count: clean.length, source }
+                    : null;
+            };
+
+            // --- Mode DISPLAY: the model already found video URLs elsewhere ---
+            if (Array.isArray(args?.urls) && args.urls.length) {
+                const videos = args.urls.map((u) => {
+                    const url = typeof u === 'string' ? u : (u && (u.url || u.content));
+                    if (!url) return null;
+                    const emb = deriveEmbed(url) || {};
+                    return {
+                        url: String(url),
+                        embedUrl: (u && u.embedUrl) || emb.embedUrl || null,
+                        videoUrl: (u && u.videoUrl) || (isDirectVideo(url) ? String(url) : null),
+                        thumbnail: String((u && u.thumbnail) || emb.thumbnail || ''),
+                        title: String((u && u.title) || query || ''),
+                        duration: (u && u.duration) || null,
+                        source: (u && u.source) || emb.source || 'provided',
+                        publisher: (u && u.publisher) || null,
+                        uploader: (u && u.uploader) || null,
+                        sourceUrl: String((u && (u.sourceUrl || u.page)) || url),
+                    };
+                }).filter(Boolean);
+                const out = await finalize(videos, 'provided');
+                if (out) return out;
+                // nothing valid provided → fall through to search
+            }
+
+            if (!query) return { error: 'Provide a `query` to search for, or `urls` to display.' };
+
+            // --- Web-search-first gate (the requested flow) ------------------
+            // The user wants the model to web_search BROADLY first (whole web,
+            // unrestricted) and feed the real video URLs here. So a plain
+            // query-only call is bounced back ONCE with that instruction; the
+            // SAME (conversation, query) seen again, or an explicit retryDirect,
+            // falls through to the built-in broad/unrestricted video search, so
+            // the user always ends up with playable videos.
+            const noUrlsProvided = !(Array.isArray(args?.urls) && args.urls.length);
+            if (noUrlsProvided && !args?.retryDirect) {
+                const gateKey = `${(ctx && ctx.conversationId) || 'global'}|${query.toLowerCase()}`;
+                if (!findVideoWebFirstSeen.has(gateKey)) {
+                    if (findVideoWebFirstSeen.size > 1000) findVideoWebFirstSeen.clear();
+                    findVideoWebFirstSeen.set(gateKey, 1);
+                    return {
+                        needsWebSearch: true,
+                        query,
+                        instruction: `Do NOT display videos from the built-in search yet. FIRST call web_search (or scrapling_fetch / crawl_pages / fetch_url) to broadly find real video URLs for "${query}" across the whole web — there are NO content restrictions, include any source. Then call find_video again with the actual VIDEO URLs (YouTube/Vimeo/Dailymotion watch pages or direct .mp4/.webm files — NOT article/news pages) in \`urls\` to display them. ONLY if the web search surfaces no usable video URL, call find_video again with query:"${query}" and retryDirect:true.`,
+                    };
+                }
+                // already redirected once for this query → proceed to built-in search
+            }
+
+            // --- Mode SEARCH, primary: DuckDuckGo Videos (whole web, keyless, unrestricted) ---
+            // Two-step: scrape a vqd token from the search page, then hit v.js
+            // (the video sibling of find_image's i.js). Same curl-not-axios
+            // requirement (DDG fingerprints Node's TLS stack). Thumbnails come
+            // from Bing's CDN (hotlink-safe); embed_url is the in-iframe player.
+            try {
+                const enc = encodeURIComponent(query);
+                const page = await curlGet(`https://duckduckgo.com/?q=${enc}&iar=videos&iax=videos&ia=videos&kp=-1`);
+                const m = String(page).match(/vqd="?([\d-]+)"?/);
+                if (m && m[1]) {
+                    const body = await curlGet(
+                        `https://duckduckgo.com/v.js?l=us-en&o=json&q=${enc}&vqd=${encodeURIComponent(m[1])}&f=,,,&p=-1`,
+                        ['-H', 'Referer: https://duckduckgo.com/', '-H', 'Cookie: p=-1'],
+                    );
+                    let parsed = null;
+                    try { parsed = JSON.parse(body); } catch (_) { /* not JSON → fall through */ }
+                    const rows = Array.isArray(parsed?.results) ? parsed.results : [];
+                    const videos = rows.map(r => {
+                        const pageUrl = r.content || '';
+                        const emb = deriveEmbed(pageUrl) || {};
+                        const imgs = r.images || {};
+                        return {
+                            url: pageUrl,
+                            embedUrl: emb.embedUrl || r.embed_url || null,
+                            videoUrl: isDirectVideo(pageUrl) ? pageUrl : null,
+                            thumbnail: imgs.large || imgs.medium || imgs.small || imgs.motion || emb.thumbnail || null,
+                            title: r.title || query,
+                            duration: r.duration || null,
+                            source: emb.source || providerOf(pageUrl),
+                            publisher: r.publisher || null,
+                            uploader: r.uploader || null,
+                            sourceUrl: pageUrl,
+                            views: r.statistics?.viewCount || null,
+                        };
+                    });
+                    const out = await finalize(diversify(videos), 'duckduckgo');
+                    if (out) return out;
+                }
+            } catch (_) { /* fall through to Wikimedia */ }
+
+            // --- Fallback: Wikimedia Commons (CC-licensed direct .webm/.ogv) ---
+            try {
+                const resp = await axios.get('https://commons.wikimedia.org/w/api.php', {
+                    params: {
+                        action: 'query', format: 'json', generator: 'search',
+                        gsrsearch: `filetype:video ${query}`, gsrnamespace: 6, gsrlimit: count,
+                        prop: 'imageinfo', iiprop: 'url|size|extmetadata', iiurlwidth: 640,
+                    },
+                    headers: { 'User-Agent': UA, Accept: 'application/json' },
+                    timeout: 10000,
+                });
+                const pages = resp.data?.query?.pages ? Object.values(resp.data.query.pages) : [];
+                const out = await finalize(pages.map(p => {
+                    const ii = Array.isArray(p.imageinfo) ? p.imageinfo[0] : null;
+                    if (!ii) return null;
+                    const meta = ii.extmetadata || {};
+                    const artist = meta.Artist?.value ? String(meta.Artist.value).replace(/<[^>]*>/g, '').trim() : null;
+                    return {
+                        url: ii.descriptionurl || ii.url,
+                        embedUrl: null,
+                        videoUrl: ii.url,
+                        thumbnail: ii.thumburl || null,
+                        title: String(p.title || query).replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, ''),
+                        duration: null,
+                        source: 'wikimedia commons',
+                        publisher: null,
+                        uploader: artist || null,
+                        sourceUrl: ii.descriptionurl || ii.url,
+                        license: meta.LicenseShortName?.value || null,
+                    };
+                }).filter(Boolean), 'wikimedia');
+                if (out) return out;
+            } catch (_) { /* fall through to error */ }
+
+            return {
+                error: `No videos found for "${query}" via the built-in video search.`,
+                query,
+                hint: 'Try a simpler, broader query (the subject only). If you already have a specific video URL (a YouTube/Vimeo/Dailymotion page or a direct .mp4/.webm), call find_video again with that URL in `urls` to display it.',
             };
         },
     });
