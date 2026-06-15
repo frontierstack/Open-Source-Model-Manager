@@ -646,6 +646,10 @@ const PATH_ARG_NAMES = [
     // very natural `/tmp/foo.tgz` never gets rewritten to `/workspace/foo.tgz`
     // and the file disappears between calls.
     'savePath', 'tarPath', 'zipPath', 'extractPath',
+    // convert_image (Pillow) reads `inputPath` and writes `outputPath`; without
+    // rewriting these, a bare/`/tmp` path isn't routed under /workspace and the
+    // in/out files don't line up with the mounted bucket.
+    'inputPath', 'outputPath',
     // run_python/run_node's large-script escape hatch: a /workspace .py/.js path
     // passed instead of inline `code` (which truncates at the tool-call arg token
     // cap). Rewriting it lets the model pass `script.py` or `/workspace/script.py`

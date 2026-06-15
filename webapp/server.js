@@ -20018,6 +20018,13 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'chart_plot',
     // audio transcription (faster-whisper, small.en bundled in sandbox image)
     'transcribe_audio',
+    // image format conversion (Pillow) reads inputPath and writes outputPath
+    // under /workspace; screenshot writes savePath there. Without the mount the
+    // file lands in the per-run tmpfs and vanishes / can't be read back — the
+    // same class of bug as download_file. (screenshot additionally needs a
+    // display the headless sandbox lacks, so it stays non-functional regardless;
+    // this just fixes the path/mount half.)
+    'convert_image', 'screenshot',
 ]);
 
 // NETWORK-requiring default skills. These get sandboxed with an allowlist
@@ -20192,6 +20199,18 @@ async function addMissingDefaultSkills() {
                 existing.updatedAt = new Date().toISOString();
                 applyPolicy(existing);
                 updated.push(t.name);
+            } else {
+                // No template (code/desc/resource) diff, but still ENFORCE the
+                // workspace/network policy — the WORKSPACE_/NETWORK_SANDBOX_DEFAULTS
+                // sets can change without a code change (e.g. a skill newly added
+                // to the workspace set), and without this an already-installed
+                // managed skill would never get its mount/network flags flipped.
+                const before = JSON.stringify([existing.workspace, existing.network, existing.sandbox, existing.allowlist || null]);
+                applyPolicy(existing);
+                if (JSON.stringify([existing.workspace, existing.network, existing.sandbox, existing.allowlist || null]) !== before) {
+                    existing.updatedAt = new Date().toISOString();
+                    updated.push(t.name);
+                }
             }
         }
         if (!added.length && !updated.length) return;
