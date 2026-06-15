@@ -152,10 +152,15 @@ app.use(helmet({
             imgSrc: ["'self'", "data:", "https:"],
             connectSrc: ["'self'", "wss:", "ws:"],  // WebSocket connections
             fontSrc: ["'self'", "https://fonts.gstatic.com"],
-            // find_video renders YouTube/Vimeo/Dailymotion clips inline as
-            // click-to-play <iframe> embeds, and CC-licensed direct .webm/.ogv
-            // files via <video> — allow those provider frames + https media.
-            frameSrc: ["'self'", "https://www.youtube.com", "https://www.youtube-nocookie.com", "https://player.vimeo.com", "https://www.dailymotion.com"],
+            // find_video renders clips inline as click-to-play <iframe> embeds
+            // (YouTube, Vimeo, Dailymotion's geo player, Internet Archive, and
+            // PeerTube federation) plus CC-licensed direct .webm/.ogv via
+            // <video>. The multi-source search pulls embeds from PeerTube's
+            // federated instances — arbitrary, unbounded https hosts that can't
+            // be allow-listed — so frame-src is relaxed to https: (script-src
+            // stays locked: no unsafe-inline/eval, nonce-gated). media/img
+            // already allow https: for direct files + posters.
+            frameSrc: ["'self'", "https:"],
             mediaSrc: ["'self'", "data:", "blob:", "https:"],
             objectSrc: ["'none'"],
             upgradeInsecureRequests: [],
@@ -23131,24 +23136,25 @@ app.use((req, res) => {
         },
     });
 
-    // Tracks (conversationId|query) pairs already bounced by the find_video
-    // web-search-first gate (loop-safe; mirrors findImageWebFirstSeen).
+    // Tracks (conversationId|query) pairs already bounced once by find_video's
+    // web-search-first gate, so a query-only call is nudged to web_search just
+    // once instead of looping (mirrors findImageWebFirstSeen).
     const findVideoWebFirstSeen = new Map();
 
     // ----- find_video ------------------------------------------------------
-    // Answers "find/show/play me a video of X". Mirrors find_image: the model
-    // cannot reliably guess working video URLs, so it routes them through this
-    // tool, which returns a `videoSpec` the chat UI renders inline as
-    // click-to-play players. Two modes:
-    //  • SEARCH: DuckDuckGo Videos (keyless, whole web — finds YouTube/Vimeo/
-    //    etc.), with Wikimedia Commons (CC-licensed direct .webm/.ogv) as a
-    //    fallback if DDG is rate-limited.
-    //  • DISPLAY: pass `urls` the model already found via any other tool
-    //    (web_search/fetch_url/etc.) — YouTube/Vimeo watch links become
-    //    embeds, direct .mp4/.webm files play inline.
-    // The chat UI detects videoSpec on the tool result and renders the clips
-    // inline (same lift-onto-the-chip pattern as render_chart/find_image), so
-    // the user sees a playable video without the model emitting any markup.
+    // Answers "find/show/play me a video of X". The MODEL drives discovery:
+    // it web_searches (and, if needed, fetch_url/scrapling/playwright) to find
+    // the video, then passes the URLs it found to this tool. find_video does
+    // NOT run its own search — it is a URL→player EXTRACTOR + renderer:
+    //  • A clean watch/file URL (YouTube/Vimeo/Dailymotion watch page, or a
+    //    direct .mp4/.webm) is turned into an inline player as-is.
+    //  • ANY other page (a news article, blog, etc. that embeds a video) is
+    //    fetched server-side (SSRF-guarded) and the real video is scraped out
+    //    of it — og:video / twitter:player meta, provider <iframe> embeds,
+    //    <video>/<source> tags, or a direct .mp4/.webm in the markup.
+    // It returns a `videoSpec` the chat UI renders inline (same lift-onto-the-
+    // chip pattern as render_chart/find_image). A query-only call (no URLs) is
+    // bounced once to web_search, since the model owns discovery.
     tools.registerTool({
         name: 'find_video',
         build() {
@@ -23157,25 +23163,21 @@ app.use((req, res) => {
                 function: {
                     name: 'find_video',
                     description:
-                        'USE WHEN the user asks to find / show / display / get / play a video, clip, trailer, or "show me footage of X". This tool displays videos inline in the chat as click-to-play players. Content is UNRESTRICTED — it returns whatever the web has, including mature content, no SafeSearch. ' +
-                        'PREFERRED FLOW: FIRST use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to BROADLY find real video URLs across the whole web (YouTube/Vimeo/Dailymotion/etc. watch pages or direct .mp4/.webm files), THEN call this tool with those URLs in `urls` to display them. Feed the actual VIDEO URLs (the watch link or media file), NOT article/news pages. ' +
-                        'Do NOT invent video URLs or write your own markdown/HTML links — they 404 and will not play. Always route videos through this tool; they display automatically from its result. ' +
-                        'FALLBACK: if you have no URLs yet (skipped the web search, or it surfaced none), pass a concise `query` — the subject only (e.g. "margherita pizza recipe"), not a full sentence — and this tool runs its own broad, unrestricted video search (DuckDuckGo Videos, keyless, many sources). ' +
-                        'Returns 3 videos by default; pass count:1 when the user asks for "a"/"one" video. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
+                        'USE WHEN the user asks to find / show / display / get / play a video, clip, trailer, or "show me footage of X". It displays videos inline in the chat as click-to-play players. ' +
+                        'HOW IT WORKS: YOU find the video, this tool displays it. The normal flow is: (1) call web_search for the topic to find pages/URLs that have the video; (2) call find_video with those URLs in `urls`. find_video then EXTRACTS the playable video from each URL and renders it inline — pass a YouTube/Vimeo/Dailymotion watch link OR a direct .mp4/.webm OR even an ordinary article/page that contains a video (the tool pulls the embedded video out of the page for you). ' +
+                        'If a page loads its video via JavaScript and the tool reports it could not extract one, fetch that page yourself with scrapling_fetch or playwright_fetch, find the real video URL, and pass THAT in `urls`. ' +
+                        'Do NOT invent video URLs — only pass URLs you actually found via a tool. If you call this with just a `query` and no `urls`, it will tell you to web_search first. Do not write your own markdown/HTML video links; route everything through this tool so it displays automatically. ' +
+                        'Shows up to ~6 videos (whatever you pass, capped); pass count:1 when the user asks for "a"/"one" video. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            query: { type: 'string', description: 'Fallback only: the subject to search videos for (the subject only, not a full sentence). Optional if `urls` is given.' },
-                            count: { type: 'integer', minimum: 1, maximum: 6, description: 'How many videos to return (default 3).' },
                             urls: {
                                 type: 'array',
                                 items: { type: 'string' },
-                                description: 'PREFERRED: real video URLs (YouTube/Vimeo/Dailymotion watch pages or direct .mp4/.webm files) you found via a web-search tool, to display as-is.',
+                                description: 'The video/page URLs you found via web_search (or fetch_url/scrapling/playwright): watch pages (YouTube/Vimeo/Dailymotion/…), direct .mp4/.webm files, OR ordinary pages that embed a video. The tool extracts the playable video from each and displays it. This is the main input.',
                             },
-                            retryDirect: {
-                                type: 'boolean',
-                                description: 'Set true ONLY after a web search surfaced no usable video URL, to run the built-in broad video search as a last resort.',
-                            },
+                            query: { type: 'string', description: 'What the user wants a video of (the subject only). Used to label results; if given WITHOUT `urls`, the tool tells you to web_search first.' },
+                            count: { type: 'integer', minimum: 1, maximum: 6, description: 'Max videos to show (default: as many as you pass, capped at 6). Pass 1 for "a"/"one" video.' },
                         },
                         required: [],
                         additionalProperties: false,
@@ -23188,13 +23190,6 @@ app.use((req, res) => {
             const count = Math.min(6, Math.max(1, parseInt(args?.count || 3, 10)));
             const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
             const { execFile } = require('child_process');
-            // curl, not axios — DDG fingerprint-blocks Node's TLS stack (see the
-            // find_image note); also used to validate candidate URLs.
-            const curlGet = (url, extra = []) => new Promise((resolve, reject) => {
-                execFile('curl', ['-s', '-L', '--max-time', '10', '-A', UA, ...extra, url],
-                    { maxBuffer: 8 * 1024 * 1024 },
-                    (err, stdout) => (err ? reject(err) : resolve(stdout || '')));
-            });
             // Liveness probe: a tiny ranged GET confirming a URL serves the
             // expected content-type (2xx/206 + image/* for poster thumbnails,
             // video/* for direct media files). Embeds are trusted (the iframe
@@ -23225,9 +23220,7 @@ app.use((req, res) => {
             const vimeoId = (u) => { const m = String(u || '').match(/vimeo\.com\/(?:video\/)?(\d+)/i); return m ? m[1] : null; };
             const dmId = (u) => { const m = String(u || '').match(/(?:dailymotion\.com\/(?:video|embed\/video)\/|dai\.ly\/)([A-Za-z0-9]+)/i); return m ? m[1] : null; };
             const isDirectVideo = (u) => /\.(mp4|webm|ogg|ogv|mov|m4v|mkv|avi|3gp|3g2|mpeg|mpg|m2ts|ts|flv|wmv)(?:[?#]|$)/i.test(String(u || ''));
-            // Provider tag for a result URL — used to diversify the result mix so
-            // the grid isn't all one source (YouTube is included, just not the
-            // forced default — the search is broad).
+            // Provider tag for a result URL — used to diversify the result mix.
             const providerOf = (u) => {
                 const s = String(u || '').toLowerCase();
                 if (/youtube\.com|youtu\.be/.test(s)) return 'youtube';
@@ -23241,182 +23234,203 @@ app.use((req, res) => {
                 const v = vimeoId(u);
                 if (v) return { embedUrl: `https://player.vimeo.com/video/${v}`, thumbnail: null, source: 'vimeo' };
                 const d = dmId(u);
-                if (d) return { embedUrl: `https://www.dailymotion.com/embed/video/${d}`, thumbnail: null, source: 'dailymotion' };
+                // Dailymotion's real embeddable player is the geo host; the older
+                // www.dailymotion.com/embed/video/<id> form 301-redirects there
+                // (an extra round-trip and host-pinned-CSP footgun), so emit geo
+                // directly. frame-src is https: so the geo host is allowed.
+                if (d) return { embedUrl: `https://geo.dailymotion.com/player.html?video=${d}`, thumbnail: null, source: 'dailymotion' };
                 return null;
             };
-            // Round-robin interleave by provider so a broad search returns a MIX
-            // (e.g. youtube, vimeo, dailymotion, …) rather than the top source
-            // monopolizing the grid — keeps YouTube in play without defaulting to
-            // it. Stable within each provider's original relevance order.
-            const diversify = (vids) => {
-                const buckets = new Map();
-                for (const v of vids) {
-                    const k = providerOf(v && (v.url || v.sourceUrl || v.embedUrl));
-                    if (!buckets.has(k)) buckets.set(k, []);
-                    buckets.get(k).push(v);
-                }
-                const lists = [...buckets.values()];
-                const out = [];
-                for (let i = 0; out.length < vids.length; i++) {
-                    let any = false;
-                    for (const l of lists) { if (l[i]) { out.push(l[i]); any = true; } }
-                    if (!any) break;
-                }
-                return out;
+            // Cap any single async extraction so one slow/hung page can't stall
+            // the whole parallel batch; on timeout it contributes nothing. The
+            // pending timer is cleared once the race settles so a fast extraction
+            // doesn't leave an unreferenced timer hanging.
+            const withTimeout = (p, ms, fallback) => {
+                let t;
+                const timer = new Promise((res) => { t = setTimeout(() => res(fallback), ms); });
+                return Promise.race([Promise.resolve(p).catch(() => fallback), timer])
+                    .finally(() => clearTimeout(t));
             };
-            // Validate candidates: a video must be playable (a trusted embed, or
-            // a direct file that probes as video/*); poster thumbnails are probed
-            // so a dead image never renders broken (embeds tolerate a missing
-            // poster — they show their own). Probe a buffer beyond `count`.
-            const finalize = async (vids, source) => {
+            // Stable per-video identity, used to drop exact duplicates while
+            // PRESERVING the order the model passed its URLs in.
+            const dedupKey = (v) => {
+                const e = String((v && v.embedUrl) || ''), u = String((v && (v.url || v.sourceUrl)) || '');
+                const y = ytId(e) || ytId(u); if (y) return 'yt:' + y;
+                const vi = vimeoId(e) || vimeoId(u); if (vi) return 'vi:' + vi;
+                const dm = (e.match(/[?&]video=([A-Za-z0-9]+)/) || [])[1] || dmId(u); if (dm) return 'dm:' + dm;
+                return (e || String((v && v.videoUrl) || '') || u).toLowerCase();
+            };
+            // Validate candidates: a video must be playable (an embed, or a direct
+            // file that probes as video/* — but trust a known video extension even
+            // when the host sends a generic content-type so less-common formats
+            // still reach <video>). Poster thumbnails are probed unless trustThumb
+            // (the client also falls back to a gradient via <img onError>).
+            const finalize = async (vids, source, lim = count) => {
                 const candidates = (vids || [])
                     .filter(v => v && (v.embedUrl || v.videoUrl))
-                    .slice(0, Math.max(count * 3, count + 6));
+                    .slice(0, Math.max(lim * 3, lim + 6));
                 const vetted = await Promise.all(candidates.map(async (v) => {
                     const embedUrl = v.embedUrl ? toHttps(v.embedUrl) : null;
                     let videoUrl = v.videoUrl ? toHttps(v.videoUrl) : null;
-                    // A direct file must serve video bytes — but trust a known
-                    // video extension even when the host sends a generic
-                    // content-type (octet-stream), so the browser can still try
-                    // to play less-common formats (mkv/avi/flv/…).
-                    if (!embedUrl && videoUrl && !(await probeVideo(videoUrl)) && !isDirectVideo(videoUrl)) videoUrl = null;
+                    // A direct file must serve video bytes. For files SCRAPED
+                    // heuristically (mustProbe — a <video>/<source> src or a bare
+                    // .mp4/.webm in the markup, which can be a decorative asset)
+                    // the probe is authoritative. For a file the model or an
+                    // og:video tag explicitly declared, a known video extension is
+                    // trusted even when the ranged probe is flaky.
+                    if (!embedUrl && videoUrl) {
+                        const ok = await probeVideo(videoUrl);
+                        if (!ok && (v.mustProbe || !isDirectVideo(videoUrl))) videoUrl = null;
+                    }
                     if (!embedUrl && !videoUrl) return null;
                     let thumbnail = v.thumbnail ? toHttps(v.thumbnail) : null;
-                    if (thumbnail && !(await probeImage(thumbnail))) thumbnail = null;
+                    if (thumbnail && !v.trustThumb && !(await probeImage(thumbnail))) thumbnail = null;
                     return { ...v, embedUrl, videoUrl, thumbnail, url: toHttps(v.url || v.sourceUrl || '') };
                 }));
-                const clean = vetted.filter(Boolean).slice(0, count);
+                const clean = vetted.filter(Boolean).slice(0, lim);
                 return clean.length
                     ? { videoSpec: { query, videos: clean }, count: clean.length, source }
                     : null;
             };
 
-            // --- Mode DISPLAY: the model already found video URLs elsewhere ---
-            if (Array.isArray(args?.urls) && args.urls.length) {
-                const videos = args.urls.map((u) => {
-                    const url = typeof u === 'string' ? u : (u && (u.url || u.content));
-                    if (!url) return null;
-                    const emb = deriveEmbed(url) || {};
-                    return {
-                        url: String(url),
-                        embedUrl: (u && u.embedUrl) || emb.embedUrl || null,
-                        videoUrl: (u && u.videoUrl) || (isDirectVideo(url) ? String(url) : null),
-                        thumbnail: String((u && u.thumbnail) || emb.thumbnail || ''),
-                        title: String((u && u.title) || query || ''),
-                        duration: (u && u.duration) || null,
-                        source: (u && u.source) || emb.source || 'provided',
-                        publisher: (u && u.publisher) || null,
-                        uploader: (u && u.uploader) || null,
-                        sourceUrl: String((u && (u.sourceUrl || u.page)) || url),
-                    };
-                }).filter(Boolean);
-                const out = await finalize(videos, 'provided');
-                if (out) return out;
-                // nothing valid provided → fall through to search
-            }
-
-            if (!query) return { error: 'Provide a `query` to search for, or `urls` to display.' };
-
-            // --- Web-search-first gate (the requested flow) ------------------
-            // The user wants the model to web_search BROADLY first (whole web,
-            // unrestricted) and feed the real video URLs here. So a plain
-            // query-only call is bounced back ONCE with that instruction; the
-            // SAME (conversation, query) seen again, or an explicit retryDirect,
-            // falls through to the built-in broad/unrestricted video search, so
-            // the user always ends up with playable videos.
-            const noUrlsProvided = !(Array.isArray(args?.urls) && args.urls.length);
-            if (noUrlsProvided && !args?.retryDirect) {
-                const gateKey = `${(ctx && ctx.conversationId) || 'global'}|${query.toLowerCase()}`;
-                if (!findVideoWebFirstSeen.has(gateKey)) {
-                    if (findVideoWebFirstSeen.size > 1000) findVideoWebFirstSeen.clear();
-                    findVideoWebFirstSeen.set(gateKey, 1);
-                    return {
-                        needsWebSearch: true,
-                        query,
-                        instruction: `Do NOT display videos from the built-in search yet. FIRST call web_search (or scrapling_fetch / crawl_pages / fetch_url) to broadly find real video URLs for "${query}" across the whole web — there are NO content restrictions, include any source. Then call find_video again with the actual VIDEO URLs (YouTube/Vimeo/Dailymotion watch pages or direct .mp4/.webm files — NOT article/news pages) in \`urls\` to display them. ONLY if the web search surfaces no usable video URL, call find_video again with query:"${query}" and retryDirect:true.`,
-                    };
-                }
-                // already redirected once for this query → proceed to built-in search
-            }
-
-            // --- Mode SEARCH, primary: DuckDuckGo Videos (whole web, keyless, unrestricted) ---
-            // Two-step: scrape a vqd token from the search page, then hit v.js
-            // (the video sibling of find_image's i.js). Same curl-not-axios
-            // requirement (DDG fingerprints Node's TLS stack). Thumbnails come
-            // from Bing's CDN (hotlink-safe); embed_url is the in-iframe player.
-            try {
-                const enc = encodeURIComponent(query);
-                const page = await curlGet(`https://duckduckgo.com/?q=${enc}&iar=videos&iax=videos&ia=videos&kp=-1`);
-                const m = String(page).match(/vqd="?([\d-]+)"?/);
-                if (m && m[1]) {
-                    const body = await curlGet(
-                        `https://duckduckgo.com/v.js?l=us-en&o=json&q=${enc}&vqd=${encodeURIComponent(m[1])}&f=,,,&p=-1`,
-                        ['-H', 'Referer: https://duckduckgo.com/', '-H', 'Cookie: p=-1'],
-                    );
-                    let parsed = null;
-                    try { parsed = JSON.parse(body); } catch (_) { /* not JSON → fall through */ }
-                    const rows = Array.isArray(parsed?.results) ? parsed.results : [];
-                    const videos = rows.map(r => {
-                        const pageUrl = r.content || '';
-                        const emb = deriveEmbed(pageUrl) || {};
-                        const imgs = r.images || {};
-                        return {
-                            url: pageUrl,
-                            embedUrl: emb.embedUrl || r.embed_url || null,
-                            videoUrl: isDirectVideo(pageUrl) ? pageUrl : null,
-                            thumbnail: imgs.large || imgs.medium || imgs.small || imgs.motion || emb.thumbnail || null,
-                            title: r.title || query,
-                            duration: r.duration || null,
-                            source: emb.source || providerOf(pageUrl),
-                            publisher: r.publisher || null,
-                            uploader: r.uploader || null,
-                            sourceUrl: pageUrl,
-                            views: r.statistics?.viewCount || null,
-                        };
+            // Decode the handful of HTML entities that show up in meta/title text.
+            const decodeEntities = (s) => String(s || '')
+                .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/gi, "'").replace(/&#x2f;/gi, '/');
+            const absolutize = (u, base) => {
+                if (!u) return null;
+                if (u.startsWith('//')) return 'https:' + u;
+                try { return new URL(u, base).href; } catch (_) { return /^https?:\/\//i.test(u) ? u : null; }
+            };
+            // Pull a playable video out of ANY URL the model found via web_search.
+            // A clean watch/file URL is used directly; otherwise the page HTML is
+            // fetched (SSRF-guarded) and scraped, in priority order, for:
+            //   og:video / twitter:player → provider <iframe> embeds →
+            //   <video>/<source> tags → any direct .mp4/.webm in the markup.
+            const extractVideoFromPage = async (rawUrl) => {
+                const pageUrl = toHttps(String(rawUrl || '').trim());
+                if (!/^https?:\/\//i.test(pageUrl)) return null;
+                // Fast path: it's already a watch/file URL — no fetch needed.
+                const direct = deriveEmbed(pageUrl);
+                if (direct) return { ...direct, url: pageUrl, sourceUrl: pageUrl };
+                if (isDirectVideo(pageUrl)) return { videoUrl: pageUrl, url: pageUrl, sourceUrl: pageUrl, source: providerOf(pageUrl) };
+                // SSRF guard before fetching a model-supplied URL.
+                if (isPrivateUrl(pageUrl)) return null;
+                let html = '';
+                try {
+                    const resp = await axios.get(pageUrl, {
+                        headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
+                        timeout: 12000, maxRedirects: 5, responseType: 'text',
+                        maxContentLength: 6 * 1024 * 1024,
+                        validateStatus: (s) => s >= 200 && s < 400,
                     });
-                    const out = await finalize(diversify(videos), 'duckduckgo');
-                    if (out) return out;
+                    html = typeof resp.data === 'string' ? resp.data : '';
+                } catch (_) { return null; }
+                if (!html) return null;
+                const metaContent = (key) => {
+                    const re1 = new RegExp(`<meta[^>]+(?:property|name)=["']${key}["'][^>]*\\scontent=["']([^"']*)["']`, 'i');
+                    const re2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${key}["']`, 'i');
+                    const m = html.match(re1) || html.match(re2);
+                    return m ? decodeEntities(m[1]) : null;
+                };
+                const host = providerOf(pageUrl);
+                const title = metaContent('og:title') || metaContent('twitter:title') ||
+                    decodeEntities((html.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || '') || query || '';
+                const thumb = absolutize(metaContent('og:image') || metaContent('og:image:url') ||
+                    metaContent('twitter:image') || metaContent('twitter:image:src'), pageUrl);
+                const fromUrl = (u) => {
+                    const abs = absolutize(u, pageUrl);
+                    if (!abs) return null;
+                    const e = deriveEmbed(abs); if (e) return { ...e };
+                    if (isDirectVideo(abs)) return { videoUrl: abs, source: host };
+                    return null;
+                };
+                // 1) Open Graph / Twitter player video.
+                let d = fromUrl(metaContent('og:video:secure_url')) || fromUrl(metaContent('og:video:url')) ||
+                    fromUrl(metaContent('og:video')) || fromUrl(metaContent('twitter:player:stream')) ||
+                    fromUrl(metaContent('twitter:player'));
+                // 2) Provider <iframe> embeds in the body.
+                if (!d) {
+                    for (const m of html.matchAll(/<iframe[^>]+src=["']([^"']+)["']/ig)) {
+                        const e = deriveEmbed(absolutize(m[1], pageUrl) || '');
+                        if (e) { d = e; break; }
+                    }
                 }
-            } catch (_) { /* fall through to Wikimedia */ }
+                // 3) <video src> / <source src=…mp4|webm>. Heuristic → mustProbe.
+                if (!d) {
+                    const vs = html.match(/<video[^>]*\ssrc=["']([^"']+)["']/i) ||
+                        html.match(/<source[^>]+src=["']([^"']+\.(?:mp4|webm|ogg|ogv|m4v|mov)[^"']*)["']/i);
+                    if (vs) { const u = absolutize(vs[1], pageUrl); if (u) d = { videoUrl: u, source: host, mustProbe: true }; }
+                }
+                // 4) Last resort: a direct .mp4/.webm in the markup — but skip
+                // decorative/asset files (favicons, sprites, logos, loaders) that
+                // aren't real content, and force a content-type probe (mustProbe).
+                if (!d) {
+                    const ASSET = /favicon|sprite|\/icons?\/|logo|placeholder|loading|spinner|site\.webm/i;
+                    for (const m of html.matchAll(/https?:\/\/[^"'\s<>\\]+\.(?:mp4|webm)(?:\?[^"'\s<>\\]*)?/ig)) {
+                        if (ASSET.test(m[0])) continue;
+                        d = { videoUrl: m[0], source: host, mustProbe: true };
+                        break;
+                    }
+                }
+                if (!d) return null;
+                return {
+                    url: pageUrl,
+                    embedUrl: d.embedUrl || null,
+                    videoUrl: d.videoUrl || null,
+                    thumbnail: d.thumbnail || thumb || null,
+                    title: title || '',
+                    duration: null,
+                    source: d.source || host,
+                    sourceUrl: pageUrl,
+                    mustProbe: d.mustProbe || false,
+                };
+            };
 
-            // --- Fallback: Wikimedia Commons (CC-licensed direct .webm/.ogv) ---
-            try {
-                const resp = await axios.get('https://commons.wikimedia.org/w/api.php', {
-                    params: {
-                        action: 'query', format: 'json', generator: 'search',
-                        gsrsearch: `filetype:video ${query}`, gsrnamespace: 6, gsrlimit: count,
-                        prop: 'imageinfo', iiprop: 'url|size|extmetadata', iiurlwidth: 640,
-                    },
-                    headers: { 'User-Agent': UA, Accept: 'application/json' },
-                    timeout: 10000,
-                });
-                const pages = resp.data?.query?.pages ? Object.values(resp.data.query.pages) : [];
-                const out = await finalize(pages.map(p => {
-                    const ii = Array.isArray(p.imageinfo) ? p.imageinfo[0] : null;
-                    if (!ii) return null;
-                    const meta = ii.extmetadata || {};
-                    const artist = meta.Artist?.value ? String(meta.Artist.value).replace(/<[^>]*>/g, '').trim() : null;
-                    return {
-                        url: ii.descriptionurl || ii.url,
-                        embedUrl: null,
-                        videoUrl: ii.url,
-                        thumbnail: ii.thumburl || null,
-                        title: String(p.title || query).replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, ''),
-                        duration: null,
-                        source: 'wikimedia commons',
-                        publisher: null,
-                        uploader: artist || null,
-                        sourceUrl: ii.descriptionurl || ii.url,
-                        license: meta.LicenseShortName?.value || null,
-                    };
-                }).filter(Boolean), 'wikimedia');
+            // --- Primary: display the videos the model found via web search ---
+            // find_video runs NO search of its own — the model discovers videos
+            // (web_search, then optionally fetch_url/scrapling/playwright) and
+            // hands the URLs here. Each URL becomes a playable video: a clean
+            // watch/file URL plays directly; any other page is fetched and the
+            // embedded video scraped out of it (og:video/<video>/provider iframe/
+            // direct file). The model's order is preserved (exact dupes dropped).
+            if (Array.isArray(args?.urls) && args.urls.length) {
+                const inputUrls = args.urls
+                    .map((u) => (typeof u === 'string' ? u : (u && (u.url || u.content || u.href))))
+                    .filter((u) => typeof u === 'string' && u.trim())
+                    .slice(0, 12);
+                const extracted = await Promise.all(
+                    inputUrls.map((u) => withTimeout(extractVideoFromPage(u), 14000, null)),
+                );
+                const videos = extracted.filter(Boolean).map((v) => ({ ...v, title: v.title || query || '' }));
+                const seen = new Set();
+                const ordered = videos.filter((v) => { const k = dedupKey(v); if (seen.has(k)) return false; seen.add(k); return true; });
+                const lim = Math.min(6, Math.max(count, ordered.length));
+                const out = await finalize(ordered, 'extracted', lim);
                 if (out) return out;
-            } catch (_) { /* fall through to error */ }
+                return {
+                    error: 'Could not extract a playable video from the provided URL(s).',
+                    query: query || null,
+                    hint: 'Pass the actual video page or file — a YouTube/Vimeo/Dailymotion watch link, or a direct .mp4/.webm. If a page loads its video via JavaScript, fetch it first with scrapling_fetch or playwright_fetch, find the real video URL (an og:video meta, a <video> src, or a provider <iframe>), and pass THAT in `urls`.',
+                };
+            }
 
+            // --- No URLs yet: the model owns discovery → send it to web_search --
+            if (!query) return { error: 'Provide `urls` (video/page URLs you found) to display, or a `query` describing what to look for.' };
+            const gateKey = `${(ctx && ctx.conversationId) || 'global'}|${query.toLowerCase()}`;
+            if (!findVideoWebFirstSeen.has(gateKey)) {
+                if (findVideoWebFirstSeen.size > 1000) findVideoWebFirstSeen.clear();
+                findVideoWebFirstSeen.set(gateKey, 1);
+                return {
+                    needsWebSearch: true,
+                    query,
+                    instruction: `find_video does not search on its own — YOU find the video. FIRST call web_search for "${query}" (add a word like "video", "trailer", or "clip", or the platform, if it helps). Collect the resulting URLs: watch pages (YouTube/Vimeo/Dailymotion/etc.) AND ordinary pages/articles that contain a video both work — find_video will pull the embedded video out of a page for you. If a page's video is JavaScript-loaded and find_video cannot extract it, fetch the page with scrapling_fetch or playwright_fetch, locate the real video URL, and pass that. Then call find_video again with the URLs in \`urls\` to display them inline.`,
+                };
+            }
             return {
-                error: `No videos found for "${query}" via the built-in video search.`,
+                error: `No videos to display for "${query}".`,
                 query,
-                hint: 'Try a simpler, broader query (the subject only). If you already have a specific video URL (a YouTube/Vimeo/Dailymotion page or a direct .mp4/.webm), call find_video again with that URL in `urls` to display it.',
+                hint: 'web_search for the topic, then call find_video again with the video/page URLs in `urls`.',
             };
         },
     });
