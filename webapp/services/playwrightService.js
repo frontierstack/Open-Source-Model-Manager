@@ -1344,12 +1344,192 @@ async function crawlPages(url, options = {}) {
     }
 }
 
+/**
+ * Sniff streaming-media network traffic from a page.
+ *
+ * Loads `url` in a real (stealth) browser and PASSIVELY records every network
+ * request/response whose URL or content-type identifies it as streaming media:
+ *   • HLS manifests  — *.m3u8  / application/vnd.apple.mpegurl
+ *   • DASH manifests — *.mpd   / application/dash+xml
+ *   • direct files   — *.mp4/.webm/.mov/.m4v/.ogv/.flv (and any video/* response)
+ * Many players only request the real stream once the user presses play, so when
+ * `interact` is true it also un-mutes+plays any <video>, clicks common play
+ * controls, and keeps listening for a few seconds — this is what surfaces the
+ * stream URL that a JS player fetches but never writes into the page HTML.
+ *
+ * Read-only: it never downloads response bodies (header sniff only) and never
+ * blocks or rewrites requests, so the player initialises exactly as it would
+ * for a real visitor. HLS/DASH *segments* (.ts/.m4s/init/seg-N) are counted but
+ * dropped from `media` — the manifest is the thing that plays.
+ *
+ * @param {string} url
+ * @param {Object} options
+ * @param {boolean} options.interact   click/auto-play to trigger lazy streams (default true)
+ * @param {number}  options.timeout    navigation timeout ms (default 20000)
+ * @param {number}  options.settleMs   quiet wait after load before interacting (default 3500)
+ * @param {number}  options.captureMs  listen window after interaction (default 6000)
+ * @param {number}  options.maxResults cap on returned media URLs (default 25)
+ * @returns {Object} { success, url, finalUrl, title, media:[{url,kind,contentType,phase}],
+ *                     pageVideos:[...], counts:{hls,dash,file,segment}, error? }
+ */
+async function sniffMediaStreams(url, options = {}) {
+    const {
+        interact = true,
+        timeout = 20000,
+        settleMs = 3500,
+        captureMs = 6000,
+        maxResults = 25,
+    } = options;
+
+    let poolEntry = null;
+    let context = null;
+    let page = null;
+
+    const media = new Map();            // url(no #) -> { url, kind, contentType, phase }
+    const counts = { hls: 0, dash: 0, file: 0, segment: 0 };
+    let currentPhase = 'load';
+
+    // Decorative/asset files that look like media but aren't content.
+    const ASSET = /favicon|sprite|\/icons?\/|\/logos?\/|placeholder|loading|spinner|site\.webm|\/ads?\/|advert/i;
+
+    // Classify a (url, contentType) pair → 'hls' | 'dash' | 'file' | 'segment' | null.
+    const classify = (u, ct) => {
+        const s = String(u || '');
+        if (!/^https?:\/\//i.test(s)) return null;        // skip blob:/data:/about:
+        const path = s.split('#')[0].split('?')[0].toLowerCase();
+        const c = String(ct || '').toLowerCase();
+        // Manifests (highest value) — match first so a ?query'd .m3u8 still wins.
+        if (/\.m3u8$/.test(path) || c.includes('mpegurl')) return 'hls';
+        if (/\.mpd$/.test(path) || c.includes('dash+xml')) return 'dash';
+        // HLS/DASH media segments → noise (counted, not returned).
+        if (/\.(ts|m4s)$/.test(path) || c === 'video/mp2t' ||
+            /\binit\.(mp4|m4s|cmf[vat])$/.test(path) ||
+            /(?:^|[\/_-])(?:seg(?:ment)?|chunk|frag)[-_]?\d+/.test(path)) return 'segment';
+        // Direct, progressive files.
+        if (/\.(mp4|webm|mov|m4v|ogv|ogg|mkv|avi|flv|m2ts|3gp)$/.test(path)) {
+            return ASSET.test(s) ? null : 'file';
+        }
+        // Content-type says video but the URL didn't (CDN with an opaque path).
+        if (/^video\//.test(c) && !ASSET.test(s)) return 'file';
+        return null;
+    };
+
+    const record = (u, ct) => {
+        const kind = classify(u, ct);
+        if (!kind) return;
+        counts[kind] = (counts[kind] || 0) + 1;
+        if (kind === 'segment') return;                   // tracked, never surfaced
+        const key = String(u).split('#')[0];
+        if (media.has(key)) return;
+        media.set(key, { url: key, kind, contentType: ct || '', phase: currentPhase });
+    };
+
+    try {
+        poolEntry = await getBrowser();
+        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        page = await context.newPage();
+        await applyStealthPatches(page);
+
+        // Passive listeners — observe only; never block, never read bodies.
+        page.on('request', (req) => { try { record(req.url(), ''); } catch (_) {} });
+        page.on('response', (resp) => { try { record(resp.url(), resp.headers()['content-type'] || ''); } catch (_) {} });
+
+        // Don't hard-fail on a >=400 HTML status — some player pages 403 the
+        // document yet still expose the stream over XHR.
+        await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
+        try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (_) {}
+        await page.waitForTimeout(settleMs);
+
+        // Supplement with DOM-declared sources (cheap; catches <video>/og:video).
+        let pageVideos = [];
+        try {
+            pageVideos = await page.evaluate(() => {
+                const out = [];
+                const push = (u) => { if (u && typeof u === 'string') out.push(u); };
+                document.querySelectorAll('video[src]').forEach((v) => push(v.getAttribute('src')));
+                document.querySelectorAll('video source[src]').forEach((s) => push(s.getAttribute('src')));
+                const og = document.querySelector('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:video:secure_url"]');
+                if (og) push(og.getAttribute('content'));
+                return out;
+            });
+        } catch (_) { pageVideos = []; }
+        for (const u of pageVideos) {
+            let abs = null;
+            try { abs = new URL(u, page.url()).href; } catch (_) { abs = null; }
+            if (abs) record(abs, '');
+        }
+
+        // Interaction phase: provoke lazy-loaded streams.
+        if (interact) {
+            currentPhase = 'interact';
+            try {
+                await page.evaluate(() => {
+                    document.querySelectorAll('video').forEach((v) => {
+                        try { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (_) {}
+                    });
+                });
+            } catch (_) {}
+            const SELECTORS = [
+                'button[aria-label*="play" i]', '[aria-label*="play" i][role="button"]',
+                '.ytp-large-play-button', '.vjs-big-play-button', '.jw-icon-display', '.plyr__control--overlaid',
+                '[class*="play-button"]', '[class*="playButton"]', '[class*="play-btn"]',
+                'button.play', '.video-play', 'button[title*="play" i]',
+            ];
+            for (const sel of SELECTORS) {
+                try {
+                    const el = page.locator(sel).first();
+                    if (await el.isVisible().catch(() => false)) {
+                        await el.click({ timeout: 1500 }).catch(() => {});
+                        break;
+                    }
+                } catch (_) {}
+            }
+            // Fallback: click the center of the first sizeable <video> element.
+            try {
+                const box = await page.locator('video').first().boundingBox().catch(() => null);
+                if (box && box.width > 80) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
+            } catch (_) {}
+            await page.waitForTimeout(captureMs);
+        }
+
+        // Order: manifests first (hls, then dash), then files; preserve
+        // discovery order within a rank (V8 sort is stable).
+        const rank = { hls: 0, dash: 1, file: 2 };
+        const out = Array.from(media.values())
+            .sort((a, b) => (rank[a.kind] - rank[b.kind]))
+            .slice(0, maxResults);
+
+        return {
+            success: true,
+            url,
+            finalUrl: page.url(),
+            title: await page.title().catch(() => ''),
+            media: out,
+            pageVideos,
+            counts,
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message,
+            url,
+            media: Array.from(media.values()).slice(0, maxResults),
+            counts,
+        };
+    } finally {
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
+        if (poolEntry) releaseBrowser(poolEntry);
+    }
+}
+
 module.exports = {
     fetchUrlContent,
     fetchMultipleUrls,
     searchAndFetch,
     interactAndFetch,
     crawlPages,
+    sniffMediaStreams,
     cleanup,
     getPoolStatus
 };

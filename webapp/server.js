@@ -23184,7 +23184,7 @@ app.use((req, res) => {
                     description:
                         'USE WHEN the user asks to find / show / display / get / play a video, clip, trailer, or "show me footage of X". It displays videos inline in the chat as click-to-play players. ' +
                         'HOW IT WORKS: YOU find the video, this tool displays it. The normal flow is: (1) call web_search for the topic to find pages/URLs that have the video; (2) call find_video with those URLs in `urls`. find_video then EXTRACTS the playable video from each URL and renders it inline — pass a YouTube/Vimeo/Dailymotion watch link OR a direct .mp4/.webm OR even an ordinary article/page that contains a video (the tool pulls the embedded video out of the page for you). ' +
-                        'If a page loads its video via JavaScript and the tool reports it could not extract one, fetch that page yourself with scrapling_fetch or playwright_fetch, find the real video URL, and pass THAT in `urls`. ' +
+                        'If a page loads its video via JavaScript, find_video automatically inspects the page network traffic in a real browser to recover the stream (HLS .m3u8 / DASH .mpd / a dynamically-loaded .mp4) — so passing the page URL usually just works, and a .m3u8 plays via the built-in HLS player. If it still reports it could not extract one, call sniff_media_streams on that page to list every streaming URL, then pass the best one back here. ' +
                         'Do NOT invent video URLs — only pass URLs you actually found via a tool. If you call this with just a `query` and no `urls`, it will tell you to web_search first. Do not write your own markdown/HTML video links; route everything through this tool so it displays automatically. ' +
                         'Shows up to ~6 videos (whatever you pass, capped); pass count:1 when the user asks for "a"/"one" video. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
                     parameters: {
@@ -23239,6 +23239,22 @@ app.use((req, res) => {
             const vimeoId = (u) => { const m = String(u || '').match(/vimeo\.com\/(?:video\/)?(\d+)/i); return m ? m[1] : null; };
             const dmId = (u) => { const m = String(u || '').match(/(?:dailymotion\.com\/(?:video|embed\/video)\/|dai\.ly\/)([A-Za-z0-9]+)/i); return m ? m[1] : null; };
             const isDirectVideo = (u) => /\.(mp4|webm|ogg|ogv|mov|m4v|mkv|avi|3gp|3g2|mpeg|mpg|m2ts|ts|flv|wmv)(?:[?#]|$)/i.test(String(u || ''));
+            // HLS (.m3u8) / DASH (.mpd) adaptive-stream manifests — the format JS
+            // players actually load. The client plays HLS via the bundled hls.js
+            // (native on Safari); the videoSpec carries streamType so the frontend
+            // knows to wire it up rather than drop it into a bare <video src>.
+            const isStreamManifest = (u) => /\.(m3u8|mpd)(?:[?#]|$)/i.test(String(u || ''));
+            const streamKindOf = (u) => /\.m3u8(?:[?#]|$)/i.test(String(u || '')) ? 'hls'
+                : (/\.mpd(?:[?#]|$)/i.test(String(u || '')) ? 'dash' : null);
+            // Generic reachability probe (any 2xx/3xx). A manifest is a tiny text
+            // file served as application/vnd.apple.mpegurl / dash+xml / text /
+            // octet-stream — NOT video/* — so probeVideo would wrongly reject it.
+            const probeReachable = (url) => new Promise((resolve) => {
+                if (!url || !/^https?:\/\//i.test(url)) return resolve(false);
+                execFile('curl', ['-s', '-L', '-o', '/dev/null', '--max-time', '6', '-A', UA,
+                    '-w', '%{http_code}', '-r', '0-0', url], { timeout: 8000 },
+                    (err, stdout) => { if (err) return resolve(false); resolve(/^[23]\d\d$/.test(String(stdout || '').trim())); });
+            });
             // Provider tag for a result URL — used to diversify the result mix.
             const providerOf = (u) => {
                 const s = String(u || '').toLowerCase();
@@ -23298,8 +23314,14 @@ app.use((req, res) => {
                     // og:video tag explicitly declared, a known video extension is
                     // trusted even when the ranged probe is flaky.
                     if (!embedUrl && videoUrl) {
-                        const ok = await probeVideo(videoUrl);
-                        if (!ok && (v.mustProbe || !isDirectVideo(videoUrl))) videoUrl = null;
+                        if (v.streamType || isStreamManifest(videoUrl)) {
+                            // HLS/DASH manifest — liveness is "does it load", not
+                            // "is it video/*". The client plays it via hls.js.
+                            if (!(await probeReachable(videoUrl))) videoUrl = null;
+                        } else {
+                            const ok = await probeVideo(videoUrl);
+                            if (!ok && (v.mustProbe || !isDirectVideo(videoUrl))) videoUrl = null;
+                        }
                     }
                     if (!embedUrl && !videoUrl) return null;
                     let thumbnail = v.thumbnail ? toHttps(v.thumbnail) : null;
@@ -23333,6 +23355,7 @@ app.use((req, res) => {
                 const direct = deriveEmbed(pageUrl);
                 if (direct) return { ...direct, url: pageUrl, sourceUrl: pageUrl };
                 if (isDirectVideo(pageUrl)) return { videoUrl: pageUrl, url: pageUrl, sourceUrl: pageUrl, source: providerOf(pageUrl) };
+                if (isStreamManifest(pageUrl)) return { videoUrl: pageUrl, streamType: streamKindOf(pageUrl), url: pageUrl, sourceUrl: pageUrl, source: providerOf(pageUrl) };
                 // SSRF guard before fetching a model-supplied URL.
                 if (isPrivateUrl(pageUrl)) return null;
                 let html = '';
@@ -23362,6 +23385,7 @@ app.use((req, res) => {
                     if (!abs) return null;
                     const e = deriveEmbed(abs); if (e) return { ...e };
                     if (isDirectVideo(abs)) return { videoUrl: abs, source: host };
+                    if (isStreamManifest(abs)) return { videoUrl: abs, streamType: streamKindOf(abs), source: host };
                     return null;
                 };
                 // 1) Open Graph / Twitter player video.
@@ -23392,11 +23416,25 @@ app.use((req, res) => {
                         break;
                     }
                 }
+                // 5) An HLS/DASH manifest embedded in inline player config / JSON.
+                // Many sites never put the stream in a <video> tag — it's a string
+                // in a <script>. JSON escapes slashes (https:\/\/…), so unescape a
+                // working copy first (guarded so the 6MB replace only runs when a
+                // manifest token is actually present).
+                if (!d && (html.indexOf('.m3u8') >= 0 || html.indexOf('.mpd') >= 0)) {
+                    const hay = html.replace(/\\\//g, '/');
+                    const mm = hay.match(/https?:\/\/[^"'\s<>\\]+?\.m3u8(?:\?[^"'\s<>\\]*)?/i) ||
+                        hay.match(/https?:\/\/[^"'\s<>\\]+?\.mpd(?:\?[^"'\s<>\\]*)?/i);
+                    if (mm && !/favicon|sprite|logo|placeholder|loading|spinner|advert|\/ads?\//i.test(mm[0])) {
+                        d = { videoUrl: mm[0], streamType: streamKindOf(mm[0]), source: host };
+                    }
+                }
                 if (!d) return null;
                 return {
                     url: pageUrl,
                     embedUrl: d.embedUrl || null,
                     videoUrl: d.videoUrl || null,
+                    streamType: d.streamType || null,
                     thumbnail: d.thumbnail || thumb || null,
                     title: title || '',
                     duration: null,
@@ -23406,13 +23444,49 @@ app.use((req, res) => {
                 };
             };
 
+            // Network-inspection fallback: when the static scrape above finds
+            // nothing, load the page in a REAL browser and watch its network
+            // traffic for the stream URL (HLS .m3u8 / DASH .mpd / a JS-fetched
+            // .mp4) that the player requests but never writes into the page HTML.
+            // Same candidate shape as extractVideoFromPage (or null). Heavy
+            // (Playwright pool of 3), so the caller bounds how many it runs.
+            const sniffVideoFromPage = async (rawUrl) => {
+                if (!playwrightEnabled || !playwrightService || typeof playwrightService.sniffMediaStreams !== 'function') return null;
+                const pageUrl = toHttps(String(rawUrl || '').trim());
+                if (!/^https?:\/\//i.test(pageUrl) || isPrivateUrl(pageUrl)) return null;
+                let res;
+                try {
+                    res = await playwrightService.sniffMediaStreams(pageUrl, { interact: true, timeout: 18000, settleMs: 2500, captureMs: 4500, maxResults: 12 });
+                } catch (_) { return null; }
+                if (!res || !res.success || !Array.isArray(res.media) || !res.media.length) return null;
+                // Best playable stream: HLS manifest → direct file → DASH manifest.
+                const pick = res.media.find((m) => m.kind === 'hls') ||
+                    res.media.find((m) => m.kind === 'file') ||
+                    res.media.find((m) => m.kind === 'dash');
+                if (!pick) return null;
+                return {
+                    url: pageUrl,
+                    embedUrl: null,
+                    videoUrl: pick.url,
+                    streamType: pick.kind === 'file' ? null : pick.kind,
+                    thumbnail: null,
+                    title: res.title || query || '',
+                    duration: null,
+                    source: providerOf(res.finalUrl || pageUrl),
+                    sourceUrl: pageUrl,
+                    mustProbe: false,
+                };
+            };
+
             // --- Primary: display the videos the model found via web search ---
             // find_video runs NO search of its own — the model discovers videos
             // (web_search, then optionally fetch_url/scrapling/playwright) and
             // hands the URLs here. Each URL becomes a playable video: a clean
             // watch/file URL plays directly; any other page is fetched and the
             // embedded video scraped out of it (og:video/<video>/provider iframe/
-            // direct file). The model's order is preserved (exact dupes dropped).
+            // direct file). If the static scrape comes up empty for a page, the
+            // page's network traffic is inspected to recover JS-loaded streams.
+            // The model's order is preserved (exact dupes dropped).
             if (Array.isArray(args?.urls) && args.urls.length) {
                 const inputUrls = args.urls
                     .map((u) => (typeof u === 'string' ? u : (u && (u.url || u.content || u.href))))
@@ -23421,7 +23495,20 @@ app.use((req, res) => {
                 const extracted = await Promise.all(
                     inputUrls.map((u) => withTimeout(extractVideoFromPage(u), 14000, null)),
                 );
-                const videos = extracted.filter(Boolean).map((v) => ({ ...v, title: v.title || query || '' }));
+                // For pages the static pass missed, inspect the network (bounded:
+                // Playwright is heavy and serialises behind a pool of 3).
+                const results = inputUrls.map((u, i) => extracted[i]);
+                if (playwrightEnabled && playwrightService) {
+                    const missIdx = results.map((v, i) => (v ? -1 : i)).filter((i) => i >= 0);
+                    const targets = missIdx.slice(0, 4);
+                    if (targets.length) {
+                        const sniffed = await Promise.all(
+                            targets.map((i) => withTimeout(sniffVideoFromPage(inputUrls[i]), 30000, null)),
+                        );
+                        targets.forEach((idx, k) => { if (sniffed[k]) results[idx] = sniffed[k]; });
+                    }
+                }
+                const videos = results.filter(Boolean).map((v) => ({ ...v, title: v.title || query || '' }));
                 const seen = new Set();
                 const ordered = videos.filter((v) => { const k = dedupKey(v); if (seen.has(k)) return false; seen.add(k); return true; });
                 const lim = Math.min(6, Math.max(count, ordered.length));
@@ -23451,6 +23538,74 @@ app.use((req, res) => {
                 query,
                 hint: 'web_search for the topic, then call find_video again with the video/page URLs in `urls`.',
             };
+        },
+    });
+
+    // ----- sniff_media_streams ---------------------------------------------
+    // Network inspector — the "see the networking of a website" capability.
+    // Opens a page in a real browser, presses play, and watches its network
+    // traffic to surface the actual streaming URLs that JS video players fetch
+    // (HLS .m3u8 / DASH .mpd / a dynamically-loaded .mp4) but never write into
+    // the page HTML — i.e. what a human opening DevTools → Network would read
+    // off. Pairs with find_video to display one inline (find_video also runs
+    // this automatically as a fallback; this explicit tool is for when the
+    // model wants the full list or to pick a specific stream). Hidden when
+    // Playwright is unavailable (build() returns null).
+    tools.registerTool({
+        name: 'sniff_media_streams',
+        build() {
+            if (!playwrightEnabled || !playwrightService || typeof playwrightService.sniffMediaStreams !== 'function') return null;
+            return {
+                type: 'function',
+                function: {
+                    name: 'sniff_media_streams',
+                    description:
+                        'USE WHEN a web page plays a video/audio stream but the link is NOT in the page HTML — modern players (live TV, sports, embedded players, many news/streaming sites) load the real media over the network as an HLS playlist (.m3u8), a DASH manifest (.mpd), or a dynamically-fetched .mp4. ' +
+                        'This opens the page in a REAL browser, presses play, and watches the NETWORK TRAFFIC to capture those streaming URLs for you (it does what a human opening DevTools → Network would do). ' +
+                        'It returns the media URLs it observed (manifests first, then direct files). To DISPLAY one inline in the chat, pass it to find_video in `urls` — a .m3u8 plays via the built-in HLS player. ' +
+                        'Reach for this when find_video could not extract a video from a page, or when the user explicitly wants the underlying stream link. Give it the actual watch/player page (not a search-results page). One page per call; rejects private addresses.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'The page URL to inspect (the watch/player page). The tool loads it, plays it, and reports the streaming URLs requested over the network.' },
+                            interact: { type: 'boolean', description: 'Press play / click the player to trigger lazy-loaded streams (default true). Set false to only capture what loads automatically.' },
+                        },
+                        required: ['url'],
+                        additionalProperties: false,
+                    },
+                },
+            };
+        },
+        async execute(args) {
+            const url = String(args?.url || '').trim();
+            if (!url) return { error: 'url is required' };
+            { const _block = urlBlockReason(url); if (_block) return { error: _block }; }
+            if (!playwrightEnabled || !playwrightService || typeof playwrightService.sniffMediaStreams !== 'function') {
+                return { success: false, error: 'Network inspection (Playwright) is not available on this host. Fall back to scrapling_fetch/playwright_fetch and look for an og:video or .m3u8 in the page.' };
+            }
+            const interact = args?.interact !== false;
+            try {
+                const res = await playwrightService.sniffMediaStreams(url, { interact, timeout: 22000, settleMs: 3500, captureMs: 6500, maxResults: 25 });
+                const media = Array.isArray(res?.media) ? res.media : [];
+                const streams = media.map((m) => ({ url: m.url, type: m.kind, ...(m.contentType ? { contentType: m.contentType } : {}) }));
+                if (!res?.success && !streams.length) {
+                    return { url, success: false, error: res?.error || 'Could not load the page.', hint: 'Confirm the page loads with playwright_fetch/scrapling_fetch, or pass a different (watch/player) URL.' };
+                }
+                const playable = streams.filter((s) => s.type === 'hls' || s.type === 'file' || s.type === 'dash');
+                return {
+                    url,
+                    success: true,
+                    finalUrl: res.finalUrl || url,
+                    title: res.title || '',
+                    streams,
+                    ...(res.counts ? { counts: res.counts } : {}),
+                    ...(playable.length
+                        ? { hint: `Found ${playable.length} playable stream(s). To show one in the chat, call find_video with that URL in \`urls\` (a .m3u8 plays via the built-in HLS player).` }
+                        : { hint: 'No streaming URLs were observed. The media may be DRM-protected, inside a cross-origin iframe (sniff that iframe’s src directly), or only loads after sign-in. Try again with interact:true, or use playwright_interact to navigate/dismiss overlays first.' }),
+                };
+            } catch (e) {
+                return { url, success: false, error: e.message || String(e) };
+            }
         },
     });
 

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import Hls from 'hls.js';
 
 // Inline video renderer for the find_video native tool result. Receives the
 // videoSpec object the server returned in tool_result.result.videoSpec:
@@ -32,7 +33,51 @@ export function videoDescriptorFromUrl(rawUrl, title) {
     if (/\.(mp4|webm|ogg|ogv|mov|m4v|mkv|avi|3gp|3g2|mpeg|mpg|m2ts|ts|flv|wmv)(?:[?#]|$)/i.test(url)) {
         return { videoUrl: url, url, sourceUrl: url, title: title || '', source: 'video' };
     }
+    // HLS / DASH adaptive-stream manifests — played via hls.js (HlsVideo).
+    if (/\.m3u8(?:[?#]|$)/i.test(url)) {
+        return { videoUrl: url, streamType: 'hls', url, sourceUrl: url, title: title || '', source: 'stream' };
+    }
+    if (/\.mpd(?:[?#]|$)/i.test(url)) {
+        return { videoUrl: url, streamType: 'dash', url, sourceUrl: url, title: title || '', source: 'stream' };
+    }
     return null;
+}
+
+// Plays a direct media URL inside the tile's <video>. Routes HLS (.m3u8 /
+// streamType 'hls') through hls.js on browsers without native HLS (everything
+// except Safari/iOS); a plain .mp4/.webm/DASH is handed straight to the
+// element. The hls.js instance is destroyed on unmount / src change so
+// switching tiles doesn't leak media decoders.
+function HlsVideo({ src, poster, streamType, style }) {
+    const ref = useRef(null);
+    useEffect(() => {
+        const video = ref.current;
+        if (!video || !src) return undefined;
+        const isHls = streamType === 'hls' || /\.m3u8(?:[?#]|$)/i.test(src);
+        let hls = null;
+        let cancelled = false;
+        const playNative = () => {
+            try { video.src = src; const p = video.play(); if (p && p.catch) p.catch(() => {}); } catch (_) { /* ignore */ }
+        };
+        // Safari/iOS play HLS natively; everywhere else use hls.js (MSE).
+        if (isHls && !video.canPlayType('application/vnd.apple.mpegurl') && Hls && Hls.isSupported()) {
+            hls = new Hls({ enableWorker: true });
+            hls.loadSource(src);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                if (cancelled) return;
+                const p = video.play(); if (p && p.catch) p.catch(() => {});
+            });
+            hls.on(Hls.Events.ERROR, (_evt, data) => {
+                if (data && data.fatal) { try { hls.destroy(); } catch (_) { /* ignore */ } hls = null; if (!cancelled) playNative(); }
+            });
+        } else {
+            playNative();
+        }
+        return () => { cancelled = true; if (hls) { try { hls.destroy(); } catch (_) { /* ignore */ } } };
+    }, [src, streamType]);
+    // eslint-disable-next-line jsx-a11y/media-has-caption
+    return <video ref={ref} poster={poster || undefined} controls autoPlay style={style} />;
 }
 
 function VideoTile({ video }) {
@@ -74,8 +119,12 @@ function VideoTile({ video }) {
     if (playing && canFile) {
         return (
             <span style={frame}>
-                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                <video src={video.videoUrl} poster={poster || undefined} controls autoPlay style={{ ...fill, objectFit: 'contain', background: '#000' }} />
+                <HlsVideo
+                    src={video.videoUrl}
+                    streamType={video.streamType}
+                    poster={poster}
+                    style={{ ...fill, objectFit: 'contain', background: '#000' }}
+                />
             </span>
         );
     }
