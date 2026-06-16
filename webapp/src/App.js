@@ -7220,6 +7220,287 @@ fetch('${baseUrl}/api/chips', {
 })
 .then(res => res.json())
 .then(result => console.log('Created chip:', result.id));`
+            },
+            '/api/knowledge-bases': {
+                curl: `# Bearer Token Authentication
+# List your knowledge bases
+curl -k ${baseUrl}/api/knowledge-bases \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k ${baseUrl}/api/knowledge-bases \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Create a knowledge base
+curl -k -X POST ${baseUrl}/api/knowledge-bases \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Product Docs",
+    "description": "Manuals and spec sheets"
+  }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {"Authorization": "Bearer your_bearer_token"}
+
+# OR API Key + Secret Authentication
+# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret"}
+
+# List knowledge bases
+kbs = requests.get(f"${baseUrl}/api/knowledge-bases", headers=headers, verify=False).json()
+print(f"{len(kbs)} knowledge base(s)")
+
+# Create a knowledge base
+resp = requests.post(
+    f"${baseUrl}/api/knowledge-bases",
+    headers={**headers, "Content-Type": "application/json"},
+    json={"name": "Product Docs", "description": "Manuals and spec sheets"},
+    verify=False,
+)
+print("Created:", resp.json().get("id"))`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+
+# List knowledge bases
+$kbs = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases" -Headers $headers
+Write-Output "Knowledge bases: $($kbs.Count)"
+
+# Create a knowledge base
+$body = @{ name = "Product Docs"; description = "Manuals and spec sheets" } | ConvertTo-Json
+$kb = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+Write-Output "Created: $($kb.id)"`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+
+// List knowledge bases
+const kbs = await fetch('${baseUrl}/api/knowledge-bases', { headers }).then(r => r.json());
+console.log(\`\${kbs.length} knowledge base(s)\`);
+
+// Create a knowledge base
+const kb = await fetch('${baseUrl}/api/knowledge-bases', {
+  method: 'POST',
+  headers: { ...headers, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name: 'Product Docs', description: 'Manuals and spec sheets' })
+}).then(r => r.json());
+console.log('Created:', kb.id);`
+            },
+            '/api/knowledge-bases/:id': {
+                curl: `# Bearer Token Authentication
+# Get one knowledge base (metadata + documents[])
+curl -k ${baseUrl}/api/knowledge-bases/KB_ID \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k ${baseUrl}/api/knowledge-bases/KB_ID \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"
+
+# Rename / edit description (PATCH)
+curl -k -X PATCH ${baseUrl}/api/knowledge-bases/KB_ID \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "name": "Renamed KB" }'
+
+# Delete a knowledge base
+curl -k -X DELETE ${baseUrl}/api/knowledge-bases/KB_ID \\
+  -H "Authorization: Bearer your_bearer_token"`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {"Authorization": "Bearer your_bearer_token"}
+
+# OR API Key + Secret Authentication
+# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret"}
+
+kb_id = "KB_ID"
+
+# Get metadata + documents
+kb = requests.get(f"${baseUrl}/api/knowledge-bases/{kb_id}", headers=headers, verify=False).json()
+print(kb.get("name"), "-", len(kb.get("documents", [])), "doc(s)")
+
+# Rename / edit description
+requests.patch(
+    f"${baseUrl}/api/knowledge-bases/{kb_id}",
+    headers={**headers, "Content-Type": "application/json"},
+    json={"name": "Renamed KB"}, verify=False,
+)
+
+# Delete
+requests.delete(f"${baseUrl}/api/knowledge-bases/{kb_id}", headers=headers, verify=False)`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$kbId = "KB_ID"
+
+# Get metadata + documents
+$kb = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId" -Headers $headers
+Write-Output "$($kb.name) - $($kb.documents.Count) doc(s)"
+
+# Rename / edit description
+$body = @{ name = "Renamed KB" } | ConvertTo-Json
+Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId" -Method Patch -Headers $headers -Body $body -ContentType "application/json"
+
+# Delete
+Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId" -Method Delete -Headers $headers`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+const kbId = 'KB_ID';
+
+// Get metadata + documents
+const kb = await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}\`, { headers }).then(r => r.json());
+console.log(kb.name, '-', (kb.documents || []).length, 'doc(s)');
+
+// Rename / edit description
+await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}\`, {
+  method: 'PATCH',
+  headers: { ...headers, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name: 'Renamed KB' })
+});
+
+// Delete
+await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}\`, { method: 'DELETE', headers });`
+            },
+            '/api/knowledge-bases/:id/documents': {
+                curl: `# Bearer Token Authentication
+# Add a document — base64-encoded file bytes (auto-chunked + embedded).
+# 'content' is base64 (any file type: pdf/docx/xlsx/txt/html); use 'text'
+# instead to send raw UTF-8. Max 50MB.
+curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/documents \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d "{
+    \\"filename\\": \\"manual.pdf\\",
+    \\"content\\": \\"$(base64 -w0 manual.pdf)\\"
+  }"
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/documents \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "filename": "notes.txt", "text": "raw UTF-8 text instead of base64" }'`,
+                python: `import base64, requests
+
+# Bearer Token Authentication
+headers = {"Authorization": "Bearer your_bearer_token", "Content-Type": "application/json"}
+
+# OR API Key + Secret Authentication
+# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret", "Content-Type": "application/json"}
+
+kb_id = "KB_ID"
+with open("manual.pdf", "rb") as f:
+    content_b64 = base64.b64encode(f.read()).decode()
+
+resp = requests.post(
+    f"${baseUrl}/api/knowledge-bases/{kb_id}/documents",
+    headers=headers,
+    json={"filename": "manual.pdf", "content": content_b64},  # or {"filename": "notes.txt", "text": "..."}
+    verify=False,
+).json()
+print("Chunks indexed:", resp["document"]["chunkCount"])`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$kbId = "KB_ID"
+
+$bytes = [System.IO.File]::ReadAllBytes("manual.pdf")
+$contentB64 = [System.Convert]::ToBase64String($bytes)
+
+$body = @{ filename = "manual.pdf"; content = $contentB64 } | ConvertTo-Json
+$resp = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/$kbId/documents" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+Write-Output "Chunks indexed: $($resp.document.chunkCount)"`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+const kbId = 'KB_ID';
+
+// content = base64 of the file bytes; or send { filename, text } for raw UTF-8.
+const fs = require('fs');
+const contentB64 = fs.readFileSync('manual.pdf').toString('base64');
+
+const resp = await fetch(\`${baseUrl}/api/knowledge-bases/\${kbId}/documents\`, {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ filename: 'manual.pdf', content: contentB64 })
+}).then(r => r.json());
+console.log('Chunks indexed:', resp.document.chunkCount);`
+            },
+            '/api/knowledge-bases/:id/documents/:docId': {
+                curl: `# Bearer Token Authentication
+# Remove a document from a knowledge base (drops its chunks + embeddings)
+curl -k -X DELETE ${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID \\
+  -H "Authorization: Bearer your_bearer_token"
+
+# OR API Key + Secret Authentication
+curl -k -X DELETE ${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret"`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {"Authorization": "Bearer your_bearer_token"}
+
+# OR API Key + Secret Authentication
+# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret"}
+
+requests.delete(
+    f"${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID",
+    headers=headers, verify=False,
+)
+print("Document removed")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID" -Method Delete -Headers $headers
+Write-Output "Document removed"`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token' };
+await fetch('${baseUrl}/api/knowledge-bases/KB_ID/documents/DOC_ID', { method: 'DELETE', headers });
+console.log('Document removed');`
+            },
+            '/api/knowledge-bases/:id/search': {
+                curl: `# Bearer Token Authentication
+# Semantic top-k search over one knowledge base. 'k' is the number of
+# cited snippets to return (default 5).
+curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/search \\
+  -H "Authorization: Bearer your_bearer_token" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "query": "How do I reset the device?", "k": 5 }'
+
+# OR API Key + Secret Authentication
+curl -k -X POST ${baseUrl}/api/knowledge-bases/KB_ID/search \\
+  -H "X-API-Key: your_api_key" \\
+  -H "X-API-Secret: your_api_secret" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "query": "How do I reset the device?", "k": 5 }'`,
+                python: `import requests
+
+# Bearer Token Authentication
+headers = {"Authorization": "Bearer your_bearer_token", "Content-Type": "application/json"}
+
+# OR API Key + Secret Authentication
+# headers = {"X-API-Key": "your_api_key", "X-API-Secret": "your_api_secret", "Content-Type": "application/json"}
+
+resp = requests.post(
+    f"${baseUrl}/api/knowledge-bases/KB_ID/search",
+    headers=headers,
+    json={"query": "How do I reset the device?", "k": 5},
+    verify=False,
+).json()
+for hit in resp.get("results", []):
+    print(f"[{hit.get('filename')}] {hit.get('text', '')[:120]}")`,
+                powershell: `# Bearer Token Authentication
+$headers = @{ "Authorization" = "Bearer your_bearer_token" }
+$body = @{ query = "How do I reset the device?"; k = 5 } | ConvertTo-Json
+$resp = Invoke-RestMethod -Uri "${baseUrl}/api/knowledge-bases/KB_ID/search" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+$resp.results | ForEach-Object { Write-Output "[$($_.filename)] $($_.text)" }`,
+                javascript: `// Bearer Token Authentication
+const headers = { 'Authorization': 'Bearer your_bearer_token', 'Content-Type': 'application/json' };
+
+const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({ query: 'How do I reset the device?', k: 5 })
+}).then(r => r.json());
+(resp.results || []).forEach(hit => console.log(\`[\${hit.filename}] \${(hit.text || '').slice(0, 120)}\`));`
             }
         };
 
@@ -10732,6 +11013,12 @@ fetch('${baseUrl}/api/chips', {
                                                             <MenuItem value="/api/memories/:id/update">PATCH /api/memories/:id - Edit Memory</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming">GET /api/conversations/:id/streaming - Streaming Status</MenuItem>
                                                             <MenuItem value="/api/conversations/:id/streaming/cancel">DELETE /api/conversations/:id/streaming - Cancel Stream</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Knowledge Bases (RAG) ───</MenuItem>
+                                                            <MenuItem value="/api/knowledge-bases">GET/POST /api/knowledge-bases - List / Create Knowledge Base</MenuItem>
+                                                            <MenuItem value="/api/knowledge-bases/:id">GET/PATCH/DELETE /api/knowledge-bases/:id - Get / Rename / Delete</MenuItem>
+                                                            <MenuItem value="/api/knowledge-bases/:id/documents">POST /api/knowledge-bases/:id/documents - Add Document (base64)</MenuItem>
+                                                            <MenuItem value="/api/knowledge-bases/:id/documents/:docId">DELETE /api/knowledge-bases/:id/documents/:docId - Remove Document</MenuItem>
+                                                            <MenuItem value="/api/knowledge-bases/:id/search">POST /api/knowledge-bases/:id/search - Semantic Search</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Apps Management ───</MenuItem>
                                                             <MenuItem value="/api/apps">GET /api/apps - List Apps</MenuItem>
                                                             <MenuItem value="/api/apps/:name/start">POST /api/apps/:name/start - Start App</MenuItem>
@@ -11320,6 +11607,31 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                                 <TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>download_html (skill)</TableCell>
                                                                 <TableCell sx={{ color: 'var(--text-secondary)' }}>When <code>fetch_url</code>'s extraction is too lossy, the <code>download_html</code> sandbox skill saves the page's <strong>raw, untruncated</strong> HTML into <code>/workspace</code> so <code>read_file</code> / <code>grep_code</code> / <code>parse_html</code> can work the full document. For bot-protected sites prefer <code>scrapling_fetch</code> / Playwright Fetch.</TableCell>
                                                             </TableRow>
+                                                        </TableBody>
+                                                    </Table>
+                                                </Box>
+                                            </Grid>
+
+                                            {/* ====================== Other native tools ====================== */}
+                                            <Grid item xs={12}>
+                                                <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
+                                                    <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', mb: 0.5, color: 'var(--accent-primary)' }}>Other native chat tools</Typography>
+                                                    <Typography variant="caption" sx={{ display: 'block', mb: 1, color: 'var(--text-secondary)', fontSize: '0.72rem' }}>
+                                                        The chat model also calls these as function calls when relevant — same chip rendering, no UI toggle. Each is registered in <code>chatTools.js</code> and runs only on <code>/api/chat/stream</code> (raw <code>/v1/*</code> does not inject them).
+                                                    </Typography>
+                                                    <Table size="small" sx={{ ...compactTableSx, '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.72rem' } }}>
+                                                        <TableBody>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', width: 190, whiteSpace: 'nowrap' }}>crawl_pages</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Follow links from a seed URL and pull text from multiple pages in one call.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>scrapling_fetch</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Stealth anti-bot page fetch (Scrapling StealthyFetcher) for sites that block plain requests.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>playwright_fetch / playwright_interact</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Full browser load (XHR interception) and scripted clicks / typing for JS-heavy pages.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>sniff_media_streams</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DevTools-style network inspector — passively records the media URLs (HLS <code>.m3u8</code>, DASH <code>.mpd</code>, direct files) a JS player loads at runtime. Hidden when Playwright is unavailable.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_video</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Extracts a playable video (embed / direct file / HLS) from URLs the model found via search and renders an inline click-to-play player in the chat.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>find_image</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Searches the open web for images (or displays model-supplied URLs), liveness-probes each, and renders an inline thumbnail grid.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>render_chart</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Validates a chart spec (line / bar / area / pie / scatter) and renders it inline via Recharts.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>fetch_timeseries</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pulls a price/quote time series from Yahoo Finance (no key) for charting and analysis.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>search_knowledge_base</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Semantic RAG lookup over the user's knowledge bases — returns cited snippets only. Hidden until the user has at least one KB.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>dns_lookup / virustotal_lookup</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>DNS record resolution and VirusTotal reputation lookup for security / OSINT questions.</TableCell></TableRow>
+                                                            <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--accent-primary)', whiteSpace: 'nowrap' }}>base64_decode / load_skill</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Decode a base64 blob; load a skill's full code on demand. Plus every enabled skill in the catalog is exposed as its own tool.</TableCell></TableRow>
                                                         </TableBody>
                                                     </Table>
                                                 </Box>

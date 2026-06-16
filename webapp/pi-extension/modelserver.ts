@@ -26,7 +26,11 @@
 //                                      want when running pi as a CLI agent.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+// Pi migrated from `@sinclair/typebox` 0.34 to the rebranded `typebox` 1.x in
+// 0.69.0; new extensions should import from `typebox` (the legacy
+// `@sinclair/typebox` root alias still works but is deprecated). The Type
+// builder API and emitted JSON-Schema shape are identical for what we use.
+import { Type } from "typebox";
 import * as fs from "fs";
 import { basename, dirname } from "path";
 
@@ -261,7 +265,13 @@ export default async function (pi: ExtensionAPI) {
             }));
             (pi as any).registerProvider("modelserver", {
                 baseUrl: `${baseUrl}/v1`,
-                apiKey: "MODELSERVER_API_KEY",
+                // Pi resolves `apiKey` as a config-value template: a leading
+                // `$` (or `${VAR}`) interpolates the environment variable; a
+                // bare string is treated as a LITERAL. So this MUST be
+                // "$MODELSERVER_API_KEY" — without the `$`, Pi would send
+                // `Authorization: Bearer MODELSERVER_API_KEY` (the literal
+                // name) and every model call 401s.
+                apiKey: "$MODELSERVER_API_KEY",
                 api: "openai-completions",
                 models
             });

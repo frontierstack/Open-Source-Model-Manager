@@ -59,6 +59,20 @@ node_major() {
     have node || { echo 0; return; }
     node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1
 }
+node_minor() {
+    have node || { echo 0; return; }
+    node -v 2>/dev/null | sed 's/^v//' | cut -d. -f2
+}
+# Pi engines require Node >=22.19.0. major>22 is fine; on the 22 line the
+# minor must be >=19 (a bare 22.0–22.18 passes a major-only check but then
+# pi/npm can fail engine validation or hit the V8 stack quirk).
+node_ok() {
+    local maj min
+    maj=$(node_major); min=$(node_minor)
+    [ "${maj:-0}" -gt 22 ] 2>/dev/null && return 0
+    [ "${maj:-0}" -eq 22 ] 2>/dev/null && [ "${min:-0}" -ge 19 ] 2>/dev/null && return 0
+    return 1
+}
 
 # Node v20+/v22 core-dumps at startup with a V8 StackOverflow
 # ("Trace/breakpoint trap (core dumped)") the moment it runs real JS when the
@@ -100,14 +114,14 @@ if ! have curl; then
 fi
 log "  curl present: $(curl --version | head -1)"
 
-# ---------- step 3: ensure Node >= 22 (Pi >=0.75 requires 22.19+) ----------
+# ---------- step 3: ensure Node >= 22.19 (Pi engines require it) ----------
 log "Step 3/6: Node >= 22.19"
 maj=$(node_major)
-if [ "$maj" -ge 22 ] 2>/dev/null; then
+if node_ok; then
     log "  Node $(node -v) detected — OK"
 else
     if [ "$maj" -gt 0 ]; then
-        warn "  Node $(node -v) too old (Pi >=0.75 needs Node >=22.19); upgrading."
+        warn "  Node $(node -v) too old (Pi needs Node >=22.19); upgrading."
     else
         log "  Node not installed; installing Node 22 LTS"
     fi
@@ -127,11 +141,11 @@ else
             printf '\n=== apt install nodejs ===\n'
             sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y nodejs
         } >>"$NODE_LOG" 2>&1
-        if [ "$(node_major)" -ge 22 ] 2>/dev/null; then
+        if node_ok; then
             installed=1
             ok "  installed system Node $(node -v)"
         else
-            warn "  NodeSource path didn't produce Node>=22; tail of log:"
+            warn "  NodeSource path didn't produce Node>=22.19; tail of log:"
             tail -8 "$NODE_LOG" | sed 's/^/    /' >&2
         fi
     fi
@@ -167,19 +181,19 @@ else
         # Some MITM proxies break nvm's fetch of nodejs.org/dist/index.tab,
         # which makes the `22` alias unresolvable. Fall back to pinned
         # Node 22 LTS releases (try latest first, then known-stable).
-        if [ "$(node_major)" -lt 22 ] 2>/dev/null || ! have node; then
-            for ver in 22.20.0 22.19.0 22.11.0; do
+        if ! node_ok || ! have node; then
+            for ver in 22.20.0 22.19.0; do
                 log "  alias '22' unresolvable; trying pinned v$ver"
                 {
                     printf '\n=== nvm install %s ===\n' "$ver"
                     NODE_TLS_REJECT_UNAUTHORIZED=0 nvm install "$ver"
                 } >>"$NODE_LOG" 2>&1
-                if [ "$(node_major)" -ge 22 ] 2>/dev/null; then break; fi
+                if node_ok; then break; fi
             done
         fi
         # Final fallback: direct tarball install if nvm can't reach
         # nodejs.org/dist/ at all.
-        if [ "$(node_major)" -lt 22 ] 2>/dev/null || ! have node; then
+        if ! node_ok || ! have node; then
             log "  nvm can't reach nodejs.org/dist/; trying direct tarball install"
             tarball_ver=22.20.0
             arch=$(uname -m); case "$arch" in
@@ -196,12 +210,12 @@ else
             } >>"$NODE_LOG" 2>&1
             rm -rf "$tdir"
         fi
-        if [ "$(node_major)" -ge 22 ] 2>/dev/null; then
+        if node_ok; then
             installed=1
             nvm use "$(node -v | sed 's/^v//')" >>"$NODE_LOG" 2>&1 || true
             ok "  installed Node $(node -v)"
         else
-            err "Could not install Node>=22 by any path; tail of log:"
+            err "Could not install Node>=22.19 by any path; tail of log:"
             tail -30 "$NODE_LOG" | sed 's/^/    /' >&2
             err "Full log: $NODE_LOG"
             exit 1
@@ -209,7 +223,7 @@ else
     fi
 
     if [ "$installed" = 0 ]; then
-        err "Could not install Node >=22 by any path. Aborting."
+        err "Could not install Node >=22.19 by any path. Aborting."
         exit 1
     fi
 fi
@@ -220,12 +234,21 @@ npm config set strict-ssl false >/dev/null 2>&1 || true
 
 pi_ver=""
 if have pi && pi --version >/dev/null 2>&1; then pi_ver="$(pi --version 2>/dev/null | tr -d '[:space:]')"; fi
-# Pi <0.75 is missing context-overflow auto-recovery + supply-chain hardening
-# and predates the Node 22.19 requirement bump; force-upgrade.
+# Pi <0.75 is missing context-overflow auto-recovery + supply-chain hardening,
+# predates the Node 22.19 bump, and predates the TypeBox 1.x extension API
+# (0.69) this extension now targets; force-upgrade. Major-aware so a future
+# 1.x (minor resets to 0) isn't wrongly flagged as old.
 pi_needs_upgrade=0
 if [ -n "$pi_ver" ]; then
+    pi_major="$(printf '%s' "$pi_ver" | cut -d. -f1)"
     pi_minor="$(printf '%s' "$pi_ver" | cut -d. -f2)"
-    [ "${pi_minor:-0}" -ge 75 ] 2>/dev/null || pi_needs_upgrade=1
+    if [ "${pi_major:-0}" -gt 0 ] 2>/dev/null; then
+        : # 1.x or newer — fine
+    elif [ "${pi_minor:-0}" -ge 75 ] 2>/dev/null; then
+        : # 0.75+ — fine
+    else
+        pi_needs_upgrade=1
+    fi
 fi
 if [ -n "$pi_ver" ] && [ "$pi_needs_upgrade" = 0 ]; then
     log "  Pi already installed: $pi_ver"
@@ -293,8 +316,11 @@ fetch_ext modelserver.ts || { err "Failed to download modelserver.ts"; exit 1; }
 fetch_ext package.json   || { err "Failed to download package.json";   exit 1; }
 log "  files dropped"
 
-# install deps in the extension dir (Typebox)
-if [ -d "$EXT_DIR/node_modules/@sinclair/typebox" ]; then
+# install deps in the extension dir (Typebox). Pi 0.69+ uses the rebranded
+# `typebox` package (1.x), not the old `@sinclair/typebox` — check for the
+# CURRENT dep so an older install that only has @sinclair/typebox still gets
+# `typebox` pulled in on re-run (the extension now imports from `typebox`).
+if [ -d "$EXT_DIR/node_modules/typebox" ]; then
     log "  extension deps already present, skipping npm install"
 else
     log "  installing extension deps (Typebox)"
