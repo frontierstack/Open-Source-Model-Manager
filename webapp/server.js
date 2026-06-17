@@ -19995,6 +19995,11 @@ const WORKSPACE_SANDBOX_DEFAULTS = new Set([
     'move_file', 'copy_file', 'append_to_file',
     'tail_file', 'head_file', 'search_files', 'search_replace_file',
     'diff_files', 'grep_code', 'outline_file', 'replace_lines',
+    // Disk-read siblings of read_file that were missing the workspace mount, so
+    // they ran in-process and 404'd on /workspace/... paths (a file the model
+    // had just written into /workspace/artifacts/ reported "not found"). They
+    // read a workspace file by path exactly like read_file — they need the mount.
+    'get_file_metadata', 'read_email_file',
     // make a workspace file downloadable — copies into /workspace/artifacts/
     'make_downloadable',
     // send a workspace file to telegram/slack/http (reads /workspace/artifacts)
