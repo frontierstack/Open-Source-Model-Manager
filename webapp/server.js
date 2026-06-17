@@ -22946,6 +22946,7 @@ app.use((req, res) => {
                         'USE WHEN the user asks to find / show / display / get a picture, photo, image, or "what does X look like". This tool displays images inline in the chat as a thumbnail grid. ' +
                         'PREFERRED FLOW: FIRST use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to find real image URLs on relevant pages, THEN call this tool with those URLs in `urls` to display them. The web-search tools see the live web and find the most relevant, current images. ' +
                         'Do NOT invent image URLs or write your own markdown image links — they 404. Always route images through this tool; they display automatically from its result. ' +
+                        'Pass EVERY image URL you find here even if you suspect the site blocks hotlinking — when a URL will not load directly the tool saves the picture server-side (like "save image as") and embeds the bytes so it still renders. NEVER fall back to printing the image URL as a text link. ' +
                         'FALLBACK: if you have no URLs yet (you skipped the web search, or it surfaced none), pass a concise VISUAL query — the subject only (e.g. "Bowser castle Super Mario 64", "margherita pizza"), not a full sentence — and this tool runs its own image search (DuckDuckGo Images, keyless, whole web). ' +
                         'Returns 4 images by default; pass count:1 when the user asks for "a"/"one" picture. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
                     parameters: {
@@ -23004,6 +23005,62 @@ app.use((req, res) => {
             // https, so upgrade http→https for the rendered URL.
             const toHttps = (u) => (typeof u === 'string' && /^http:\/\//i.test(u))
                 ? u.replace(/^http:\/\//i, 'https://') : u;
+            // "Save image as": download the raw bytes server-side. The server has
+            // no browser Referer / CSP / mixed-content constraints, so it can pull
+            // images a hotlink-blocking origin refuses to serve to an <img> tag.
+            // Sends the source PAGE as Referer (what a real "save image as" does)
+            // to satisfy referer-gated CDNs.
+            const curlBytes = (url, referer) => new Promise((resolve) => {
+                if (!url || !/^https?:\/\//i.test(url)) return resolve(null);
+                const args = ['-s', '-L', '--max-time', '14', '-A', UA];
+                if (referer && /^https?:\/\//i.test(referer)) args.push('-e', referer);
+                args.push(url);
+                execFile('curl', args, { maxBuffer: 16 * 1024 * 1024, encoding: 'buffer' },
+                    (err, stdout) => resolve(err ? null : (stdout && stdout.length ? stdout : null)));
+            });
+            // Sniff image magic bytes so an HTML error page / JSON saved with an
+            // image URL isn't embedded as a fake picture.
+            const sniffImageMime = (buf) => {
+                if (!buf || buf.length < 12) return null;
+                if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg';
+                if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
+                if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+                if (buf[0] === 0x42 && buf[1] === 0x4D) return 'image/bmp';
+                if ((buf[0] === 0x49 && buf[1] === 0x49 && buf[2] === 0x2A) || (buf[0] === 0x4D && buf[1] === 0x4D && buf[2] === 0x00)) return 'image/tiff';
+                if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+                if (buf.toString('utf8', 0, 256).trimStart().startsWith('<svg') || buf.toString('utf8', 0, 256).includes('<svg')) return 'image/svg+xml';
+                return null;
+            };
+            const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;   // don't pull huge originals
+            const MAX_RAW_EMBED_BYTES = 1.5 * 1024 * 1024; // cap for the no-reencode path
+            // Pull the bytes (prefer the full original, fall back to the thumbnail),
+            // confirm they're really an image, then downscale/re-encode via Jimp to
+            // keep the embedded data URL small. Formats Jimp can't decode (webp/svg)
+            // embed raw if under the cap. Returns a data: URL or null.
+            const captureAsDataUrl = async (im) => {
+                for (const src of [im.url, im.thumbnail]) {
+                    if (!src || !/^https?:\/\//i.test(src)) continue;
+                    const buf = await curlBytes(src, im.sourceUrl || src);
+                    if (!buf || buf.length > MAX_CAPTURE_BYTES) continue;
+                    const mime = sniffImageMime(buf);
+                    if (!mime) continue; // not an image (HTML 404 / error page)
+                    try {
+                        const { Jimp } = require('jimp');
+                        const image = await Jimp.read(buf);
+                        if (image.bitmap.width > 1024) image.resize({ w: 1024 });
+                        const out = await image.getBuffer('image/jpeg', { quality: 78 });
+                        return `data:image/jpeg;base64,${out.toString('base64')}`;
+                    } catch (_) {
+                        // Jimp can't decode this format (webp/svg/animated) — embed
+                        // the raw bytes if they're small enough; the browser renders
+                        // webp/svg data URLs natively.
+                        if (buf.length <= MAX_RAW_EMBED_BYTES) {
+                            return `data:${mime};base64,${buf.toString('base64')}`;
+                        }
+                    }
+                }
+                return null;
+            };
             // Keep absolute http(s) entries, then validate each so dead/blocked
             // URLs never reach the UI. Build https render-candidates (thumbnail
             // first — hotlink-safe — then the original), probe each, use the first
@@ -23037,16 +23094,23 @@ app.use((req, res) => {
                     for (const t of renderTries) {
                         if (await probe(t)) return { ...im, thumbnail: t, url: toHttps(im.url) };
                     }
+                    // No URL hotlinks (404 / 403 / referer-gated / mixed-content).
+                    // Rather than drop the picture and leave the model with only a
+                    // dead link, "save image as": fetch the bytes server-side and
+                    // embed them as a data URL so it still renders inline.
+                    const dataUrl = await captureAsDataUrl(im);
+                    if (dataUrl) return { ...im, thumbnail: dataUrl, url: toHttps(im.url), captured: true };
                     return null;
                 }));
                 // Pass 2: dedup on the FINAL render url (the actual <img src>) —
                 // two distinct source urls can resolve to the same https
                 // thumbnail after the upgrade/fallback, which the user sees as a
-                // duplicate tile.
+                // duplicate tile. For a captured image the thumbnail is a (large)
+                // data URL — key it on its source url instead of hashing the bytes.
                 const seenRender = new Set();
                 const clean = [];
                 for (const im of vetted.filter(Boolean)) {
-                    const k = normKey(im.thumbnail) || normKey(im.url);
+                    const k = (im.thumbnail && !/^data:/i.test(im.thumbnail) ? normKey(im.thumbnail) : '') || normKey(im.url);
                     if (k && seenRender.has(k)) continue;
                     if (k) seenRender.add(k);
                     clean.push(im);
