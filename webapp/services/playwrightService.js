@@ -662,6 +662,31 @@ async function extractContent(page, options = {}) {
             if (rows.length > 0) tables.push(rows.join('\n'));
         });
 
+        // Extract image captions + per-image links. Image-heavy pages
+        // (Instagram, Pinterest, photo galleries) carry their per-image TEXT in
+        // the <img alt> accessibility caption and the post/permalink on the
+        // wrapping <a> — an image-only feed has almost no <p> content, so
+        // without this the extractor returns a near-empty page. Scan the whole
+        // document (tiles often sit outside the detected main region) and drop
+        // decorative/sprite alts.
+        const imageItems = [];
+        const seenAlt = new Set();
+        const ALT_DECOR = /^(image|photo|picture|logo|icon|avatar|thumbnail)$|sprite|placeholder|spinner|loading|profile picture|may be an image of nothing/i;
+        document.querySelectorAll('img[alt]').forEach(img => {
+            const alt = (img.getAttribute('alt') || '').trim().replace(/\s+/g, ' ');
+            if (!alt || alt.length < 10 || ALT_DECOR.test(alt) || seenAlt.has(alt)) return;
+            // Skip sub-icon images (avatars, inline glyphs, tracking pixels) —
+            // they carry alts like "Go to X's profile" that aren't page content.
+            const rect = img.getBoundingClientRect();
+            const w = img.naturalWidth || rect.width;
+            const h = img.naturalHeight || rect.height;
+            if ((w && w < 64) || (h && h < 64)) return;
+            seenAlt.add(alt);
+            const a = img.closest('a[href]');
+            const src = img.currentSrc || img.src || img.getAttribute('data-src') || '';
+            imageItems.push({ alt, link: a ? a.href : '', src });
+        });
+
         // Build output
         let output = '';
 
@@ -697,6 +722,18 @@ async function extractContent(page, options = {}) {
                     output += `${t}\n\n`;
                 }
             });
+        }
+
+        if (imageItems.length > 0) {
+            output += '\nImages:\n';
+            imageItems.forEach(im => {
+                if (output.length < maxLength - 500) {
+                    output += `- ${im.alt}\n`;
+                    if (im.link) output += `  post: ${im.link}\n`;
+                    if (im.src) output += `  image: ${im.src}\n`;
+                }
+            });
+            output += '\n';
         }
 
         if (includeLinks && links.length > 0) {
@@ -861,6 +898,28 @@ async function fetchUrlContent(url, options = {}) {
             }
         }
 
+        // Trigger lazy-loaded content on ANY page (not just thin ones): many
+        // sites fetch images / infinite-scroll posts / late XHR only as the
+        // viewport reaches them, so a static render misses most of the content.
+        // Bounded so it adds ~1-2s at most, then returns to top.
+        if (waitForJS) {
+            try {
+                await page.evaluate(async () => {
+                    await new Promise((resolve) => {
+                        let total = 0;
+                        const step = () => {
+                            window.scrollBy(0, window.innerHeight);
+                            total += window.innerHeight;
+                            if (total < document.body.scrollHeight && total < 18000) setTimeout(step, 150);
+                            else { window.scrollTo(0, 0); resolve(); }
+                        };
+                        step();
+                    });
+                });
+                await page.waitForTimeout(800);
+            } catch (_) { /* scrolling is best-effort */ }
+        }
+
         // Wait for specific selector if requested
         if (waitForSelector) {
             try {
@@ -930,8 +989,25 @@ async function fetchUrlContent(url, options = {}) {
             }
             if (apiContent.length > 200) {
                 console.log(`[Playwright] Captured ${capturedJsonResponses.length} API responses (${apiContent.length} chars text), enriching content`);
-                const titleLine = title ? `Title: ${title}\n\n` : '';
-                content = titleLine + apiContent.slice(0, maxLength - titleLine.length);
+                // SUPPLEMENT, don't supplant. The rendered DOM holds the
+                // human-readable text + media (paragraphs, tables, image
+                // captions/links) the JSON omits; the captured XHR/fetch JSON
+                // holds structured data the DOM hasn't rendered. A model needs
+                // BOTH — replacing wholesale (the old behavior) discarded
+                // whichever half the page kept in the DOM, which on image/media
+                // SPAs is the part the user actually asked for. Only fall back to
+                // JSON-only when the DOM yielded nothing but chrome.
+                const dom = (content || '').trim();
+                const domBeyondTitle = dom.replace(/^Title:.*$/m, '').trim();
+                if (domBeyondTitle.length > 60) {
+                    const room = maxLength - dom.length - 80;
+                    content = room > 200
+                        ? `${dom}\n\nStructured data (captured from the page's API calls):\n${apiContent.slice(0, room)}`
+                        : dom;
+                } else {
+                    const titleLine = title ? `Title: ${title}\n\n` : '';
+                    content = titleLine + apiContent.slice(0, maxLength - titleLine.length);
+                }
             }
         }
 
