@@ -1597,8 +1597,22 @@ async function extractPageImages(url, options = {}) {
                     return best;
                 };
                 document.querySelectorAll('img').forEach((img) => {
-                    const ss = fromSrcset(img.getAttribute('srcset'));
-                    push(ss || img.currentSrc || img.src, img.naturalWidth, img.naturalHeight, 'img');
+                    const ss = fromSrcset(img.getAttribute('srcset') || img.getAttribute('data-srcset'));
+                    // A dynamically-loaded post image (lazy / below the fold) may
+                    // still be undecoded when we read it — naturalWidth/Height are
+                    // 0 — even after scrolling. Fall back to the element's RENDERED
+                    // box size so a genuinely-displayed image still passes the size
+                    // gate; without this an extensionless CDN url (no .jpg to
+                    // whitelist on) with naturalWidth 0 is dropped on the floor.
+                    const r = img.getBoundingClientRect();
+                    const w = img.naturalWidth || Math.round(r.width);
+                    const h = img.naturalHeight || Math.round(r.height);
+                    // Some lazy loaders keep the real url in data-src/data-original
+                    // until the image enters the viewport.
+                    const src = ss || img.currentSrc || img.src
+                        || img.getAttribute('data-src') || img.getAttribute('data-original')
+                        || img.getAttribute('data-lazy-src');
+                    push(src, w, h, 'img');
                 });
                 document.querySelectorAll('picture source[srcset]').forEach((s) => {
                     push(fromSrcset(s.getAttribute('srcset')), 0, 0, 'source');
@@ -1631,8 +1645,12 @@ async function extractPageImages(url, options = {}) {
             .filter((im) => !ASSET.test(im.url))
             .filter((im) => {
                 if (im.source === 'meta') return true;
+                // width/height is naturalWidth OR (for an undecoded lazy img) the
+                // rendered box size, so a displayed post image passes even when its
+                // url is extensionless and it had not decoded yet.
                 if (im.width >= minDimension && im.height >= minDimension) return true;
-                // dimension unknown (lazy <img> not yet decoded, or a srcset/source) — keep if it has a real image extension
+                // dimension still unknown (virtualized/off-layout img, or a
+                // srcset/source with no element) — keep if it has a real image extension
                 if ((im.width === 0 || im.height === 0) && /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)(?:[?#]|$)/i.test(im.url)) return true;
                 return false;
             })
