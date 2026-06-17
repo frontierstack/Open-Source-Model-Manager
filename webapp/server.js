@@ -4122,6 +4122,11 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             // Exclude multimodal projection files (always auxiliary)
             if (lowerName.includes('mmproj')) return false;
 
+            // Exclude speculative-decoding draft heads (e.g. .../MTP/model-F16-MTP.gguf,
+            // *-assistant.gguf — gemma4-assistant / Gemma4AssistantForCausalLM). These are
+            // NOT standalone-loadable; picking one yields "unknown model architecture".
+            if (/(?:^|[/_-])mtp(?:[/_.-]|$)/i.test(f) || /-assistant\.gguf$/i.test(lowerName)) return false;
+
             // Exclude only specifically named encoder/vision files (not VLM model names)
             // Examples: "vision-encoder.gguf", "audio-encoder.gguf", "text-encoder.gguf"
             if (lowerName.match(/(vision|audio|text)-?encoder/)) return false;
@@ -4134,9 +4139,16 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
         });
 
         if (ggufFiles.length === 0) {
-            // Check if there are mmproj files to provide helpful error message
-            const mmprojFiles = files.filter(f => f.endsWith('.gguf') && f.toLowerCase().includes('mmproj'));
-            if (mmprojFiles.length > 0) {
+            // Provide a helpful error message based on what auxiliary files ARE present.
+            const allGgufs = files.filter(f => f.endsWith('.gguf'));
+            const hasMtp = allGgufs.some(f => /(?:^|[/_-])mtp(?:[/_.-]|$)/i.test(f) || /-assistant\.gguf$/i.test(f.toLowerCase()));
+            const hasMmproj = allGgufs.some(f => f.toLowerCase().includes('mmproj'));
+            if (hasMtp) {
+                return res.status(400).json({
+                    error: 'No main model file found. This directory contains only speculative-decoding draft heads (MTP / *-assistant), which cannot be loaded as standalone models. Download the main model quant (e.g. the Q4_K_XL / Q8_0 file at the repo root) and try again.'
+                });
+            }
+            if (hasMmproj) {
                 return res.status(400).json({
                     error: 'No main model file found. This directory contains only multimodal projection (mmproj) files which cannot be loaded as standalone models. Please download the main model file.'
                 });

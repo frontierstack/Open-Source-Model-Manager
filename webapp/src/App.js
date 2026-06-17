@@ -142,11 +142,35 @@ const extractParameterSize = (filename) => {
 };
 
 const extractQuantization = (filename) => {
-    const match = filename.match(/[IQ]+[_]?(\d+[_]?[KM]?[_]?[SMLXH0]?[SM]?)/i);
+    const base = filename.split('/').pop();
+    // Match real quant tokens, capturing the FULL token incl. trailing size letters
+    // (XL/XXS/NL...), an optional UD- (unsloth dynamic) prefix, and float types.
+    // Examples: UD-Q4_K_XL, Q4_0, Q8_0, IQ4_XS, IQ2_XXS, TQ1_0, BF16, F16, F32, MXFP4.
+    const match = base.match(
+        /(?:UD[-_])?(?:I?Q\d+(?:_[0-9A-Z]+)*|TQ\d+_\d+|MXFP4|BF16|FP16|F16|FP8|F32)/i
+    );
     if (match) {
-        return match[0].toUpperCase().replace(/_+/g, '_');
+        return match[0].toUpperCase().replace(/-/g, '-').replace(/_+/g, '_');
     }
     return null;
+};
+
+// Classify a GGUF sibling into a main model quant, a vision projector (mmproj),
+// or a speculative-decoding draft head (MTP / *-assistant). Draft heads and
+// projectors are NOT standalone-loadable models, so the picker must mark them
+// and the loader must never auto-select one as the primary model.
+const classifyGgufFile = (rfilename) => {
+    const lower = rfilename.toLowerCase();
+    const base = rfilename.split('/').pop().replace(/\.gguf$/i, '');
+    const quant = extractQuantization(rfilename);
+    if (lower.includes('mmproj') || /(vision|audio|text)-?encoder|-encoder\.gguf$/.test(lower)) {
+        return { kind: 'mmproj', quant, label: quant ? `mmproj · ${quant}` : base };
+    }
+    // MTP folder/suffix or *-assistant drafter
+    if (/(?:^|[/_-])mtp(?:[/_.-]|$)/i.test(rfilename) || /-assistant\b/i.test(lower)) {
+        return { kind: 'draft', quant, label: quant ? `MTP · ${quant}` : base };
+    }
+    return { kind: 'main', quant, label: quant || base };
 };
 
 const isSplitFile = (filename) => {
@@ -9311,22 +9335,27 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                     PaperProps={{ sx: { width: 380, bgcolor: 'background.paper', backgroundImage: 'none' } }}
                                 >
                                     {selectedModelFiles.length > 0 && (() => {
-                                        // Collect unique quantization types for filter
-                                        const allQuants = [...new Set(selectedModelFiles.map(f => extractQuantization(f.rfilename)).filter(Boolean))];
-                                        // Active quant filter (empty = show all)
+                                        // Classify every sibling so main quants, vision projectors
+                                        // (mmproj) and speculative draft heads (MTP) are grouped, not mixed.
                                         const activeQuantFilter = fileFilter.startsWith('q:') ? fileFilter.slice(2) : null;
+                                        const classified = selectedModelFiles.map(f => ({ file: f, ...classifyGgufFile(f.rfilename) }));
 
-                                        const filteredFiles = selectedModelFiles.filter(file => {
-                                            // Type filter
-                                            if (fileFilter === 'single' && isSplitFile(file.rfilename)) return false;
-                                            if (fileFilter === 'split' && !isSplitFile(file.rfilename)) return false;
-                                            // Quant filter
-                                            if (activeQuantFilter) {
-                                                const q = extractQuantization(file.rfilename);
-                                                if (q !== activeQuantFilter) return false;
-                                            }
+                                        const passesFilter = (c) => {
+                                            if (fileFilter === 'single' && isSplitFile(c.file.rfilename)) return false;
+                                            if (fileFilter === 'split' && !isSplitFile(c.file.rfilename)) return false;
+                                            if (activeQuantFilter && c.quant !== activeQuantFilter) return false;
                                             return true;
-                                        });
+                                        };
+                                        const bySize = (a, b) => (a.file.size || 0) - (b.file.size || 0);
+                                        const groups = [
+                                            { key: 'main', title: 'Model quants', hint: '', items: classified.filter(c => c.kind === 'main' && passesFilter(c)).sort(bySize) },
+                                            { key: 'mmproj', title: 'Vision projector (mmproj)', hint: 'Download alongside a main quant — not a standalone model', items: classified.filter(c => c.kind === 'mmproj' && passesFilter(c)).sort(bySize) },
+                                            { key: 'draft', title: 'Draft / speculative (MTP)', hint: 'Speculative-decoding draft head — not loadable on its own', items: classified.filter(c => c.kind === 'draft' && passesFilter(c)).sort(bySize) },
+                                        ].filter(g => g.items.length > 0);
+                                        const totalShown = groups.reduce((n, g) => n + g.items.length, 0);
+                                        // Quant chips come from MAIN quants only (drafts/projectors shouldn't pollute the filter)
+                                        const allQuants = [...new Set(classified.filter(c => c.kind === 'main').map(c => c.quant).filter(Boolean))];
+                                        const selectedClass = ggufFile ? classifyGgufFile(ggufFile) : null;
 
                                         return (
                                         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -9385,68 +9414,96 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                 )}
                                             </Box>
 
-                                            {/* File list — compact rows */}
+                                            {/* File list — grouped, compact rows */}
                                             <Box sx={{ flex: 1, overflow: 'auto', px: 1, py: 0.5 }}>
-                                                {filteredFiles.map(file => {
-                                                    const quant = extractQuantization(file.rfilename);
-                                                    const isSelected = ggufFile === file.rfilename;
-                                                    const isSplit = isSplitFile(file.rfilename);
-                                                    const splitInfo = getSplitInfo(file.rfilename);
-                                                    // For files with no detected quantization, show a short filename instead
-                                                    const displayLabel = quant || file.rfilename.replace(/\.gguf$/i, '').split('/').pop().slice(-20);
-                                                    return (
-                                                        <Box
-                                                            key={file.rfilename}
-                                                            onClick={() => handleSelectGGUFFile(file.rfilename)}
-                                                            sx={{
-                                                                display: 'flex', alignItems: 'center', gap: 1.5,
-                                                                px: 1.5, py: 1.25, mx: 0.5, my: 0.25,
-                                                                borderRadius: 1.5, cursor: 'pointer',
-                                                                borderLeft: '3px solid',
-                                                                borderLeftColor: isSelected ? 'primary.main' : 'transparent',
-                                                                bgcolor: isSelected ? 'var(--bg-hover)' : 'transparent',
-                                                                transition: 'all 0.15s',
-                                                                '&:hover': {
-                                                                    bgcolor: isSelected ? 'var(--bg-hover)' : 'var(--bg-tertiary)',
-                                                                },
-                                                            }}
-                                                        >
-                                                            {/* Quant label */}
-                                                            <Typography sx={{
-                                                                fontFamily: quant ? '"Fira Code", monospace' : 'inherit',
-                                                                fontWeight: 700, fontSize: '0.88rem',
-                                                                color: isSelected ? 'primary.main' : 'text.primary',
-                                                                minWidth: 80,
-                                                                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                                                            }}>
-                                                                {displayLabel}
-                                                            </Typography>
-                                                            {/* Split badge */}
-                                                            {isSplit && (
-                                                                <Typography sx={{ fontSize: '0.75rem', color: '#f59e0b', fontWeight: 600, minWidth: 30 }}>
-                                                                    {splitInfo?.part}/{splitInfo?.total}
+                                                {groups.map(group => (
+                                                    <Box key={group.key} sx={{ mb: 0.5 }}>
+                                                        {/* Group header (only when more than one group is present) */}
+                                                        {groups.length > 1 && (
+                                                            <Box sx={{ px: 1.5, pt: 1.5, pb: 0.5 }}>
+                                                                <Typography sx={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, color: group.key === 'main' ? 'text.secondary' : '#f59e0b' }}>
+                                                                    {group.title}
                                                                 </Typography>
-                                                            )}
-                                                            {/* Size — pushed right */}
-                                                            {file.size > 0 && (
-                                                                <Typography sx={{
-                                                                    ml: 'auto', fontSize: '0.85rem', fontWeight: 500,
-                                                                    color: 'text.secondary', fontVariantNumeric: 'tabular-nums', flexShrink: 0,
-                                                                }}>
-                                                                    {formatFileSize(file.size)}
-                                                                </Typography>
-                                                            )}
-                                                            {/* Check */}
-                                                            {isSelected && <CheckCircleIcon sx={{ fontSize: 18, color: 'primary.main', flexShrink: 0 }} />}
-                                                        </Box>
-                                                    );
-                                                })}
-                                                {filteredFiles.length === 0 && (
+                                                                {group.hint && (
+                                                                    <Typography sx={{ fontSize: '0.7rem', color: 'text.secondary', lineHeight: 1.3, mt: 0.25 }}>
+                                                                        {group.hint}
+                                                                    </Typography>
+                                                                )}
+                                                            </Box>
+                                                        )}
+                                                        {group.items.map(c => {
+                                                            const file = c.file;
+                                                            const isSelected = ggufFile === file.rfilename;
+                                                            const isSplit = isSplitFile(file.rfilename);
+                                                            const splitInfo = getSplitInfo(file.rfilename);
+                                                            const isAux = c.kind !== 'main';
+                                                            return (
+                                                                <Box
+                                                                    key={file.rfilename}
+                                                                    onClick={() => handleSelectGGUFFile(file.rfilename)}
+                                                                    sx={{
+                                                                        display: 'flex', alignItems: 'center', gap: 1.5,
+                                                                        px: 1.5, py: 1.25, mx: 0.5, my: 0.25,
+                                                                        borderRadius: 1.5, cursor: 'pointer',
+                                                                        borderLeft: '3px solid',
+                                                                        borderLeftColor: isSelected ? 'primary.main' : 'transparent',
+                                                                        bgcolor: isSelected ? 'var(--bg-hover)' : 'transparent',
+                                                                        opacity: isAux && !isSelected ? 0.78 : 1,
+                                                                        transition: 'all 0.15s',
+                                                                        '&:hover': {
+                                                                            bgcolor: isSelected ? 'var(--bg-hover)' : 'var(--bg-tertiary)',
+                                                                        },
+                                                                    }}
+                                                                >
+                                                                    {/* Quant / type label */}
+                                                                    <Typography sx={{
+                                                                        fontFamily: c.quant ? '"Fira Code", monospace' : 'inherit',
+                                                                        fontWeight: 700, fontSize: '0.88rem',
+                                                                        color: isSelected ? 'primary.main' : (isAux ? 'text.secondary' : 'text.primary'),
+                                                                        minWidth: 80,
+                                                                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                                                    }}>
+                                                                        {c.label}
+                                                                    </Typography>
+                                                                    {/* Split badge */}
+                                                                    {isSplit && (
+                                                                        <Typography sx={{ fontSize: '0.75rem', color: '#f59e0b', fontWeight: 600, minWidth: 30 }}>
+                                                                            {splitInfo?.part}/{splitInfo?.total}
+                                                                        </Typography>
+                                                                    )}
+                                                                    {/* Size — pushed right */}
+                                                                    {file.size > 0 && (
+                                                                        <Typography sx={{
+                                                                            ml: 'auto', fontSize: '0.85rem', fontWeight: 500,
+                                                                            color: 'text.secondary', fontVariantNumeric: 'tabular-nums', flexShrink: 0,
+                                                                        }}>
+                                                                            {formatFileSize(file.size)}
+                                                                        </Typography>
+                                                                    )}
+                                                                    {/* Check */}
+                                                                    {isSelected && <CheckCircleIcon sx={{ fontSize: 18, color: 'primary.main', flexShrink: 0 }} />}
+                                                                </Box>
+                                                            );
+                                                        })}
+                                                    </Box>
+                                                ))}
+                                                {totalShown === 0 && (
                                                     <Typography sx={{ textAlign: 'center', color: 'text.secondary', fontSize: '0.88rem', py: 4 }}>
                                                         No files match current filters
                                                     </Typography>
                                                 )}
                                             </Box>
+
+                                            {/* Guard: warn when a non-standalone file (draft/projector) is selected */}
+                                            {selectedClass && selectedClass.kind !== 'main' && (
+                                                <Box sx={{ mx: 1.5, mb: 0.5, p: 1.25, borderRadius: 1.5, border: '1px solid', borderColor: '#f59e0b', bgcolor: 'rgba(245,158,11,0.08)' }}>
+                                                    <Typography sx={{ fontSize: '0.78rem', color: '#f59e0b', fontWeight: 600, lineHeight: 1.4 }}>
+                                                        {selectedClass.kind === 'draft'
+                                                            ? '⚠ This is a speculative-decoding draft head (MTP / *-assistant), not a standalone model. It will not load on its own — download a main quant above.'
+                                                            : '⚠ This is a vision projector (mmproj), not a standalone model. Download it in addition to a main quant.'}
+                                                    </Typography>
+                                                </Box>
+                                            )}
 
                                             {/* Download button — pinned at bottom */}
                                             <Box sx={{ p: 2.5, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
