@@ -23621,24 +23621,46 @@ app.use((req, res) => {
                 try {
                     res = await playwrightService.sniffMediaStreams(pageUrl, { interact: true, timeout: 18000, settleMs: 2500, captureMs: 4500, maxResults: 12 });
                 } catch (_) { return null; }
-                if (!res || !res.success || !Array.isArray(res.media) || !res.media.length) return null;
+                if (!res || !res.success) return null;
+                const media = Array.isArray(res.media) ? res.media : [];
                 // Best playable stream: HLS manifest → direct file → DASH manifest.
-                const pick = res.media.find((m) => m.kind === 'hls') ||
-                    res.media.find((m) => m.kind === 'file') ||
-                    res.media.find((m) => m.kind === 'dash');
-                if (!pick) return null;
-                return {
-                    url: pageUrl,
-                    embedUrl: null,
-                    videoUrl: pick.url,
-                    streamType: pick.kind === 'file' ? null : pick.kind,
-                    thumbnail: null,
-                    title: res.title || query || '',
-                    duration: null,
-                    source: providerOf(res.finalUrl || pageUrl),
-                    sourceUrl: pageUrl,
-                    mustProbe: false,
-                };
+                const pick = media.find((m) => m.kind === 'hls') ||
+                    media.find((m) => m.kind === 'file') ||
+                    media.find((m) => m.kind === 'dash');
+                if (pick) {
+                    return {
+                        url: pageUrl,
+                        embedUrl: null,
+                        videoUrl: pick.url,
+                        streamType: pick.kind === 'file' ? null : pick.kind,
+                        thumbnail: null,
+                        title: res.title || query || '',
+                        duration: null,
+                        source: providerOf(res.finalUrl || pageUrl),
+                        sourceUrl: pageUrl,
+                        mustProbe: false,
+                    };
+                }
+                // No raw stream — recover a JS-injected provider <iframe> embed
+                // (YouTube/Vimeo/etc.) the sniffer pulled from the rendered DOM.
+                for (const e of (Array.isArray(res.embeds) ? res.embeds : [])) {
+                    const d = deriveEmbed(toHttps(String(e || '')));
+                    if (d) {
+                        return {
+                            url: pageUrl,
+                            embedUrl: d.embedUrl || null,
+                            videoUrl: d.videoUrl || null,
+                            streamType: d.streamType || null,
+                            thumbnail: d.thumbnail || null,
+                            title: res.title || query || '',
+                            duration: null,
+                            source: d.source || providerOf(res.finalUrl || pageUrl),
+                            sourceUrl: pageUrl,
+                            mustProbe: false,
+                        };
+                    }
+                }
+                return null;
             };
 
             // --- Primary: display the videos the model found via web search ---
@@ -23680,7 +23702,7 @@ app.use((req, res) => {
                 return {
                     error: 'Could not extract a playable video from the provided URL(s).',
                     query: query || null,
-                    hint: 'Pass the actual video page or file — a YouTube/Vimeo/Dailymotion watch link, or a direct .mp4/.webm. If a page loads its video via JavaScript, fetch it first with scrapling_fetch or playwright_fetch, find the real video URL (an og:video meta, a <video> src, or a provider <iframe>), and pass THAT in `urls`.',
+                    hint: 'Pass the actual video page or file — a YouTube/Vimeo/Dailymotion watch link, or a direct .mp4/.webm. If a page loads its video via JavaScript, fetch it first with playwright_fetch (it renders the page and lists the playable video URLs under a "Videos:" heading — embeds, <video> files, og:video) or sniff_media_streams (for HLS/DASH stream URLs), then pass those URLs in `urls`.',
                 };
             }
 
@@ -23693,7 +23715,7 @@ app.use((req, res) => {
                 return {
                     needsWebSearch: true,
                     query,
-                    instruction: `find_video does not search on its own — YOU find the video. FIRST call web_search for "${query}" (add a word like "video", "trailer", or "clip", or the platform, if it helps). Collect the resulting URLs: watch pages (YouTube/Vimeo/Dailymotion/etc.) AND ordinary pages/articles that contain a video both work — find_video will pull the embedded video out of a page for you. If a page's video is JavaScript-loaded and find_video cannot extract it, fetch the page with scrapling_fetch or playwright_fetch, locate the real video URL, and pass that. Then call find_video again with the URLs in \`urls\` to display them inline.`,
+                    instruction: `find_video does not search on its own — YOU find the video. FIRST call web_search for "${query}" (add a word like "video", "trailer", or "clip", or the platform, if it helps). Collect the resulting URLs: watch pages (YouTube/Vimeo/Dailymotion/etc.) AND ordinary pages/articles that contain a video both work — find_video will pull the embedded video out of a page for you. If a page's video is JavaScript-loaded and find_video cannot extract it, fetch the page with playwright_fetch — it renders the page and lists the playable video URLs under a "Videos:" heading (provider embeds, <video> files, og:video) — or use sniff_media_streams for HLS/DASH stream URLs, then pass those. Then call find_video again with the URLs in \`urls\` to display them inline.`,
                 };
             }
             return {

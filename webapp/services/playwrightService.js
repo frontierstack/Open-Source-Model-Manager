@@ -572,6 +572,16 @@ async function extractContent(page, options = {}) {
     const { includeLinks = false, maxLength = 8000 } = options;
 
     return await page.evaluate(({ includeLinks, maxLength }) => {
+        // Snapshot provider <iframe> video embeds (YouTube/Vimeo/etc.) BEFORE the
+        // cleanup below strips all iframes — otherwise the video harvest further
+        // down can never see them.
+        const EMBED_HOST = /(youtube\.com\/embed|youtube-nocookie\.com|youtu\.be|player\.vimeo\.com|vimeo\.com\/video|dailymotion\.com\/embed|geo\.dailymotion\.com|player\.twitch\.tv|facebook\.com\/plugins\/video|streamable\.com\/[eo]\/|wistia|brightcove|jwplayer|kaltura)/i;
+        const embedIframeSrcs = [];
+        document.querySelectorAll('iframe[src]').forEach(f => {
+            const s = f.getAttribute('src') || '';
+            if (EMBED_HOST.test(s)) { try { embedIframeSrcs.push(new URL(s, location.href).href); } catch (_) {} }
+        });
+
         // Remove unwanted elements
         const removeSelectors = [
             'script', 'style', 'noscript', 'iframe', 'svg',
@@ -687,6 +697,26 @@ async function extractContent(page, options = {}) {
             imageItems.push({ alt, link: a ? a.href : '', src });
         });
 
+        // Extract video sources + provider embeds from the rendered DOM. A
+        // page's playable video is a <video>/<source> file, a provider <iframe>
+        // player (YouTube/Vimeo/Dailymotion/etc.), or an og:video — JS injects
+        // these after load, so a static fetch misses them entirely. Surfacing
+        // the real url here lets the model hand it straight to find_video
+        // instead of eyeballing raw HTML.
+        const videoItems = [];
+        const seenVid = new Set();
+        const addVid = (u, kind) => {
+            if (!u) return;
+            let abs; try { abs = new URL(u, location.href).href; } catch (_) { return; }
+            if (!/^https?:/i.test(abs) || seenVid.has(abs)) return;
+            seenVid.add(abs); videoItems.push({ url: abs, kind });
+        };
+        document.querySelectorAll('video[src]').forEach(v => addVid(v.getAttribute('src') || v.currentSrc, 'file'));
+        document.querySelectorAll('video source[src]').forEach(s => addVid(s.getAttribute('src'), 'file'));
+        embedIframeSrcs.forEach(s => addVid(s, 'embed'));   // provider iframes snapshotted pre-cleanup
+        const ogv = document.querySelector('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:video:secure_url"],meta[name="twitter:player:stream"]');
+        if (ogv) addVid(ogv.getAttribute('content'), 'og:video');
+
         // Build output
         let output = '';
 
@@ -702,6 +732,17 @@ async function extractContent(page, options = {}) {
             output += 'Key Points:\n';
             headings.slice(0, 8).forEach(h => {
                 output += `- ${h}\n`;
+            });
+            output += '\n';
+        }
+
+        // Videos first — there are only ever a handful and they're high-value
+        // (the model passes them to find_video), so emit them before the bulky
+        // paragraph content can exhaust the char budget.
+        if (videoItems.length > 0) {
+            output += 'Videos:\n';
+            videoItems.forEach(v => {
+                if (output.length < maxLength - 300) output += `- [${v.kind}] ${v.url}\n`;
             });
             output += '\n';
         }
@@ -1516,19 +1557,26 @@ async function sniffMediaStreams(url, options = {}) {
         try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (_) {}
         await page.waitForTimeout(settleMs);
 
-        // Supplement with DOM-declared sources (cheap; catches <video>/og:video).
-        let pageVideos = [];
+        // Supplement with DOM-declared sources (cheap; catches <video>/og:video)
+        // plus provider <iframe> players the JS injected — a YouTube/Vimeo/etc.
+        // embed is cross-origin so the network listener never sees its stream,
+        // and a static scrape never saw the iframe; without this such a page
+        // recovers nothing.
+        let pageVideos = [], pageEmbeds = [];
         try {
-            pageVideos = await page.evaluate(() => {
-                const out = [];
-                const push = (u) => { if (u && typeof u === 'string') out.push(u); };
-                document.querySelectorAll('video[src]').forEach((v) => push(v.getAttribute('src')));
-                document.querySelectorAll('video source[src]').forEach((s) => push(s.getAttribute('src')));
+            const domMedia = await page.evaluate(() => {
+                const vids = [], embeds = [];
+                const EMBED_HOST = /(youtube\.com\/embed|youtube-nocookie\.com|youtu\.be|player\.vimeo\.com|vimeo\.com\/video|dailymotion\.com\/embed|geo\.dailymotion\.com|player\.twitch\.tv|facebook\.com\/plugins\/video|streamable\.com\/[eo]\/|wistia|brightcove|jwplayer|kaltura)/i;
+                document.querySelectorAll('video[src]').forEach((v) => v.getAttribute('src') && vids.push(v.getAttribute('src')));
+                document.querySelectorAll('video source[src]').forEach((s) => s.getAttribute('src') && vids.push(s.getAttribute('src')));
                 const og = document.querySelector('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:video:secure_url"]');
-                if (og) push(og.getAttribute('content'));
-                return out;
+                if (og && og.getAttribute('content')) vids.push(og.getAttribute('content'));
+                document.querySelectorAll('iframe[src]').forEach((f) => { const s = f.getAttribute('src') || ''; if (EMBED_HOST.test(s)) embeds.push(s); });
+                return { vids, embeds };
             });
-        } catch (_) { pageVideos = []; }
+            pageVideos = domMedia.vids || [];
+            pageEmbeds = (domMedia.embeds || []).map((u) => { try { return new URL(u, page.url()).href; } catch (_) { return null; } }).filter(Boolean);
+        } catch (_) { pageVideos = []; pageEmbeds = []; }
         for (const u of pageVideos) {
             let abs = null;
             try { abs = new URL(u, page.url()).href; } catch (_) { abs = null; }
@@ -1581,6 +1629,7 @@ async function sniffMediaStreams(url, options = {}) {
             finalUrl: page.url(),
             title: await page.title().catch(() => ''),
             media: out,
+            embeds: pageEmbeds,
             pageVideos,
             counts,
         };
