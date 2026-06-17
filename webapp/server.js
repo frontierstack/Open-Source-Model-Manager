@@ -22777,6 +22777,7 @@ app.use((req, res) => {
                     description:
                         'Fetch a URL and return its readable text. Rejects private/internal addresses. ' +
                         'Already cascades Scrapling (anti-bot) → Playwright (JS render) → axios internally, so after a fetch_url that returns content there is no point re-fetching the SAME url with playwright_fetch or scrapling_fetch — they hit the same page. ' +
+                        'EXCEPTION — image-heavy / dynamic pages: for a social profile or feed, a photo gallery, or a product/listing grid, OR whenever the user asks for the IMAGES and their captions/text from a page, use playwright_fetch instead (it scrolls, renders, and returns each image URL with its alt-text caption and permalink). Plain fetch_url on those returns only page chrome — no images, no post text — so do not keep retrying it or fall through to download_html. ' +
                         'Trust the fetched content over training when they conflict, and cite the URL. ' +
                         'If the result includes a `hint`, follow it: a bot-protection/thin-content hint means retry with scrapling_fetch; a shopping/product-page hint means the price or stock is dynamically gated — switch SOURCE (web_search) instead of re-scraping the same URL. ' +
                         'For long results (>1000 chars) where the user wants a specific fact, follow up with search_string on the returned text.',
@@ -24014,10 +24015,12 @@ app.use((req, res) => {
                 function: {
                     name: 'playwright_fetch',
                     description:
-                        'USE WHEN fetch_url returned empty/wrong content for a JS-rendered page (SPA, lazy-loaded, dynamic). ' +
-                        'Fetch a webpage rendered by a real browser (Playwright + stealth). Use for JavaScript-heavy pages, SPAs, and sites where fetch_url returned empty or wrong content. Falls back to axios if Playwright is unavailable. Rejects private/internal addresses. ' +
+                        'USE WHEN fetch_url returned empty/wrong content for a JS-rendered page (SPA, lazy-loaded, dynamic), OR WHENEVER the user wants the IMAGES and/or the TEXT off an image-heavy page — a social profile or feed (Instagram, etc.), a photo gallery, a product/listing grid, any infinite-scroll page. ' +
+                        'It renders the page in a real browser (Playwright + stealth), SCROLLS to trigger lazy-loaded media, and returns an "Images:" section listing each rendered image\'s URL, its caption (the alt text — this is where image-only feeds keep their per-image description), and its post/permalink, alongside the page\'s headings/paragraphs/tables. So a SINGLE call gets both the pictures and the text describing them. ' +
+                        'For those requests call this DIRECTLY and do NOT loop through fetch_url / scrapling_fetch / download_html / crawl_pages first — on JS-rendered sites those see only the static HTML shell, which contains none of the images or post text (that is the loop that fails). Pass includeLinks:true to also collect every link. ' +
+                        'Falls back to axios if Playwright is unavailable. Rejects private/internal addresses. ' +
                         'If the result includes a `hint` mentioning bot protection or thin content (Cloudflare, "Just a moment...", CAPTCHA), retry the same URL with scrapling_fetch — do NOT ask the user to paste before trying it. ' +
-                        'This only loads ONE static view — to click, scroll for lazy content, paginate, search, or otherwise move around the page to find items, use playwright_interact instead.',
+                        'This loads ONE view (it does auto-scroll for lazy content) — to click, accept a cookie wall, paginate, search, or otherwise move around the page to find items, use playwright_interact instead.',
                     parameters: {
                         type: 'object',
                         properties: {
