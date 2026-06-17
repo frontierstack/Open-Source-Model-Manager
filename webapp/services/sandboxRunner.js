@@ -898,6 +898,17 @@ function resolveInWorkspace(input, mount = CONTAINER_MOUNT) {
     let trimmed = input;
     if (trimmed.startsWith(mount + '/')) trimmed = trimmed.slice(mount.length + 1);
     else if (trimmed === mount) trimmed = '';
+    else {
+        // A RELATIVE path that begins with the mount's basename — the model
+        // frequently drops the leading slash and passes "workspace/artifacts"
+        // instead of "/workspace/artifacts". Treat that leading segment as the
+        // mount so it doesn't join to "/workspace/workspace/artifacts" (a real
+        // failure seen in the wild). Single leading segment only, so a genuine
+        // subdir named "workspace" deeper in the tree is untouched.
+        const mountBase = mount.replace(/^\/+/, '');
+        if (trimmed === mountBase) trimmed = '';
+        else if (trimmed.startsWith(mountBase + '/')) trimmed = trimmed.slice(mountBase.length + 1);
+    }
     // An absolute path that points outside /workspace — typically one the model
     // invented (a stale extract dir, a bare /tmp/pkg/index.js, a host path that
     // doesn't exist here). PRESERVE the directory structure under /workspace
