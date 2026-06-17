@@ -22947,6 +22947,7 @@ app.use((req, res) => {
                         'PREFERRED FLOW: FIRST use a web-search tool (web_search, scrapling_fetch, crawl_pages, playwright_fetch, or fetch_url) to find real image URLs on relevant pages, THEN call this tool with those URLs in `urls` to display them. The web-search tools see the live web and find the most relevant, current images. ' +
                         'Do NOT invent image URLs or write your own markdown image links — they 404. Always route images through this tool; they display automatically from its result. ' +
                         'Pass EVERY image URL you find here even if you suspect the site blocks hotlinking — when a URL will not load directly the tool saves the picture server-side (like "save image as") and embeds the bytes so it still renders. NEVER fall back to printing the image URL as a text link. ' +
+                        'You do NOT need direct image URLs: you can pass the PAGE URLs the web search returned (a wallpaper gallery, an Unsplash/Pexels/Pixabay listing, an article — e.g. "https://wallpaperaccess.com/abstract-space-art") and the tool opens each in a real browser and extracts the rendered images itself. So if scraping a page for <img> links fails because it is JavaScript-rendered, do NOT keep trying — just pass the page URL here. ' +
                         'FALLBACK: if you have no URLs yet (you skipped the web search, or it surfaced none), pass a concise VISUAL query — the subject only (e.g. "Bowser castle Super Mario 64", "margherita pizza"), not a full sentence — and this tool runs its own image search (DuckDuckGo Images, keyless, whole web). ' +
                         'Returns 4 images by default; pass count:1 when the user asks for "a"/"one" picture. After it succeeds, briefly say what you found — you do not need to repeat the URLs.',
                     parameters: {
@@ -22957,7 +22958,7 @@ app.use((req, res) => {
                             urls: {
                                 type: 'array',
                                 items: { type: 'string' },
-                                description: 'PREFERRED: direct image URLs you found via a web-search tool (web_search / scrapling_fetch / crawl_pages / playwright_fetch / fetch_url), to display as-is.',
+                                description: 'PREFERRED: URLs you found via a web-search tool — EITHER direct image URLs (displayed as-is) OR the web PAGE URLs that contain the images (gallery / listing / article pages), which the tool opens in a real browser and extracts the rendered images from. Mix both freely.',
                             },
                             retryDirect: {
                                 type: 'boolean',
@@ -22998,6 +22999,17 @@ app.use((req, res) => {
                         const parts = String(stdout || '').trim().split(/\s+/);
                         resolve(/^2\d\d$/.test(parts[0] || '') && /image\//i.test(parts.slice(1).join(' ')));
                     });
+            });
+            // Like probe but returns the content-type string (''=unknown) so the
+            // DISPLAY path can tell a direct image URL from a web PAGE the model
+            // passed in (a gallery/article page → hand to Playwright to extract
+            // the rendered images from).
+            const probeContentType = (url) => new Promise((resolve) => {
+                if (!url || !/^https?:\/\//i.test(url)) return resolve('');
+                execFile('curl', ['-s', '-L', '-o', '/dev/null', '--max-time', '6', '-A', UA,
+                    '-w', '%{content_type}', '-r', '0-0', url],
+                    { timeout: 8000 },
+                    (err, stdout) => resolve(err ? '' : String(stdout || '').trim().toLowerCase()));
             });
             // The chats are served over HTTPS, so an http:// <img src> is blocked
             // as mixed content (broken-tile icon) even when curl can fetch it —
@@ -23121,22 +23133,57 @@ app.use((req, res) => {
                     : null;
             };
 
-            // --- Mode DISPLAY: the model already found image URLs elsewhere ---
+            // --- Mode DISPLAY: the model already found URLs elsewhere ---------
+            // Each provided URL is either a DIRECT image (use as-is) or a web
+            // PAGE the model found (a wallpaper gallery / article / Unsplash etc.).
+            // For a page we load it in a real browser and read the rendered
+            // images out of it — "right click → save image as" — because those
+            // sites are JS-rendered and their <img> URLs aren't in the static
+            // HTML the model can scrape. Both then flow through finalize (probe →
+            // server-side capture) so the picture always renders.
             if (Array.isArray(args?.urls) && args.urls.length) {
-                const images = args.urls.map((u) => {
+                const mk = (u, url, extra = {}) => ({
+                    url: String(url),
+                    thumbnail: String((u && u.thumbnail) || url),
+                    title: String((u && u.title) || query || ''),
+                    source: (u && u.source) || extra.source || 'provided',
+                    sourceUrl: String((u && (u.sourceUrl || u.page)) || extra.sourceUrl || url),
+                    license: (u && u.license) || null,
+                    attribution: (u && u.attribution) || null,
+                });
+                const directImages = [];
+                const pageUrls = [];
+                const IMG_EXT = /\.(jpe?g|png|gif|webp|bmp|avif|svg|tiff?)(?:[?#]|$)/i;
+                for (const u of args.urls) {
                     const url = typeof u === 'string' ? u : (u && u.url);
-                    if (!url) return null;
-                    return {
-                        url: String(url),
-                        thumbnail: String((u && u.thumbnail) || url),
-                        title: String((u && u.title) || query || ''),
-                        source: (u && u.source) || 'provided',
-                        sourceUrl: String((u && (u.sourceUrl || u.page)) || url),
-                        license: (u && u.license) || null,
-                        attribution: (u && u.attribution) || null,
-                    };
-                }).filter(Boolean);
-                const out = await finalize(images, 'provided');
+                    if (!url || !/^https?:\/\//i.test(url)) continue;
+                    if (IMG_EXT.test(url)) { directImages.push(mk(u, url)); continue; }
+                    // No image extension — could be an extensionless image CDN or a
+                    // web page. Ask the server what it actually serves.
+                    const ct = await probeContentType(url);
+                    if (/^image\//.test(ct)) directImages.push(mk(u, url));
+                    else if (!ct || /text\/html|application\/xhtml/.test(ct)) pageUrls.push({ url, meta: u });
+                    else directImages.push(mk(u, url)); // unknown non-html → let finalize probe/capture decide
+                }
+
+                let images = [...directImages];
+                // Extract rendered images from any page URLs via Playwright
+                // (bounded — the pool is small). Largest images first.
+                if (pageUrls.length && playwrightEnabled && playwrightService && typeof playwrightService.extractPageImages === 'function') {
+                    const perPage = Math.max(4, count * 2);
+                    for (const pg of pageUrls.slice(0, 4)) {
+                        try {
+                            const res = await playwrightService.extractPageImages(pg.url, { maxResults: perPage });
+                            if (res && res.success && Array.isArray(res.images)) {
+                                for (const im of res.images.slice(0, perPage)) {
+                                    images.push(mk(pg.meta, im.url, { source: 'page', sourceUrl: pg.url }));
+                                }
+                            }
+                        } catch (_) { /* one bad page shouldn't sink the rest */ }
+                    }
+                }
+
+                const out = await finalize(images, pageUrls.length ? 'page-extract' : 'provided');
                 if (out) return out;
                 // nothing valid provided → fall through to search
             }

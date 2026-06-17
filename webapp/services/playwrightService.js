@@ -1523,6 +1523,132 @@ async function sniffMediaStreams(url, options = {}) {
     }
 }
 
+// Load a (often JS-rendered) page in a real browser and read the images the
+// way a human would after "right click → save image as": the actually-rendered
+// <img> elements (with their true natural dimensions), <picture>/<source>
+// srcsets, large CSS background images, and og:image/twitter:image. Static HTML
+// scraping misses all of these on SPA/lazy-loaded gallery pages (wallpaper
+// sites, Unsplash, Pexels, etc.), which is why the model otherwise loops trying
+// to parse image URLs out of dead markup. Returns absolute URLs, largest first.
+async function extractPageImages(url, options = {}) {
+    const {
+        timeout = 22000,
+        settleMs = 2500,
+        minDimension = 256,   // ignore icons/sprites/thumbnails below this
+        maxResults = 16,
+    } = options;
+
+    let poolEntry = null;
+    let context = null;
+    let page = null;
+
+    // URL fragments that mark a decorative/non-content image.
+    const ASSET = /sprite|favicon|\/icons?\/|[-_]icon[-_.]|\/logos?\/|[-_]logo[-_.]|avatar|placeholder|spinner|loading|1x1|blank\.|pixel\.|spacer|data:image/i;
+
+    try {
+        poolEntry = await getBrowser();
+        context = await poolEntry.browser.newContext(getStealthContextOptions());
+        page = await context.newPage();
+        await applyStealthPatches(page);
+
+        await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
+        try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (_) {}
+        await page.waitForTimeout(settleMs);
+
+        // Scroll through the page to trigger lazy-loaded images, then settle.
+        try {
+            await page.evaluate(async () => {
+                await new Promise((resolve) => {
+                    let total = 0;
+                    const step = () => {
+                        window.scrollBy(0, window.innerHeight);
+                        total += window.innerHeight;
+                        if (total < document.body.scrollHeight && total < 25000) setTimeout(step, 140);
+                        else { window.scrollTo(0, 0); resolve(); }
+                    };
+                    step();
+                });
+            });
+            await page.waitForTimeout(700);
+        } catch (_) {}
+
+        let raw = [];
+        try {
+            raw = await page.evaluate(() => {
+                const out = [];
+                const seen = new Set();
+                const abs = (u) => { try { return new URL(u, location.href).href; } catch (_) { return null; } };
+                const push = (rawUrl, w, h, src) => {
+                    const u = abs(rawUrl);
+                    if (!u || !/^https?:/i.test(u) || seen.has(u)) return;
+                    seen.add(u);
+                    out.push({ url: u, width: w || 0, height: h || 0, source: src });
+                };
+                // Pick the highest-resolution candidate out of a srcset string.
+                const fromSrcset = (ss) => {
+                    if (!ss) return null;
+                    let best = null, bestW = -1;
+                    ss.split(',').forEach((part) => {
+                        const seg = part.trim().split(/\s+/);
+                        const u = seg[0];
+                        const w = seg[1] && seg[1].endsWith('w') ? parseInt(seg[1], 10) : 0;
+                        if (u && w > bestW) { bestW = w; best = u; }
+                    });
+                    return best;
+                };
+                document.querySelectorAll('img').forEach((img) => {
+                    const ss = fromSrcset(img.getAttribute('srcset'));
+                    push(ss || img.currentSrc || img.src, img.naturalWidth, img.naturalHeight, 'img');
+                });
+                document.querySelectorAll('picture source[srcset]').forEach((s) => {
+                    push(fromSrcset(s.getAttribute('srcset')), 0, 0, 'source');
+                });
+                // Large CSS background images (hero/banner/tiles).
+                document.querySelectorAll('*').forEach((el) => {
+                    const bg = getComputedStyle(el).backgroundImage;
+                    if (bg && bg.indexOf('url(') === 0) {
+                        const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+                        if (m) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width >= 200 && r.height >= 200) push(m[1], Math.round(r.width), Math.round(r.height), 'bg');
+                        }
+                    }
+                });
+                ['meta[property="og:image"]', 'meta[property="og:image:url"]', 'meta[name="twitter:image"]', 'link[rel="image_src"]'].forEach((sel) => {
+                    const el = document.querySelector(sel);
+                    if (el) push(el.getAttribute('content') || el.getAttribute('href'), 0, 0, 'meta');
+                });
+                return out;
+            });
+        } catch (_) { raw = []; }
+
+        const finalUrl = page.url();
+        const title = await page.title().catch(() => '');
+
+        // Keep substantial images (by natural size) plus og:image/srcset entries
+        // whose dimensions the DOM didn't expose; drop decorative assets.
+        const images = raw
+            .filter((im) => !ASSET.test(im.url))
+            .filter((im) => {
+                if (im.source === 'meta') return true;
+                if (im.width >= minDimension && im.height >= minDimension) return true;
+                // dimension unknown (lazy <img> not yet decoded, or a srcset/source) — keep if it has a real image extension
+                if ((im.width === 0 || im.height === 0) && /\.(jpe?g|png|webp|gif|bmp|avif|tiff?)(?:[?#]|$)/i.test(im.url)) return true;
+                return false;
+            })
+            .sort((a, b) => (b.width * b.height) - (a.width * a.height))
+            .slice(0, maxResults);
+
+        return { success: true, url, finalUrl, title, images };
+    } catch (error) {
+        return { success: false, error: error.message, url, images: [] };
+    } finally {
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
+        if (poolEntry) releaseBrowser(poolEntry);
+    }
+}
+
 module.exports = {
     fetchUrlContent,
     fetchMultipleUrls,
@@ -1530,6 +1656,7 @@ module.exports = {
     interactAndFetch,
     crawlPages,
     sniffMediaStreams,
+    extractPageImages,
     cleanup,
     getPoolStatus
 };
