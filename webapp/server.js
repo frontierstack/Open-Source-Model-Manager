@@ -4113,6 +4113,21 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
         const modelPath = path.join('/models', modelName);
         const files = await fs.readdir(modelPath, { recursive: true });
 
+        // A genuine standalone speculative-decoding draft head is one of:
+        //   - a file inside an MTP/ subdirectory (extracted heads live there),
+        //   - an MTP tag IMMEDIATELY before .gguf, e.g. model-F16-MTP.gguf
+        //     (optionally with a -NNNNN-of-NNNNN split suffix), or
+        //   - a gemma *-assistant.gguf drafter.
+        // It is NOT every file with "mtp" in the name: "MTP-Preserved" / "Native-MTP"
+        // mid-name marks a MAIN model that merely KEEPS its built-in MTP heads
+        // (Qwen3.5/3.6-MTP, DeepSeek-V3/R1) — that loads standalone with spec-type=draft-mtp.
+        const isMtpDraftFile = (name) => {
+            const l = name.toLowerCase();
+            return /(?:^|\/)mtp\//i.test(name)
+                || /[._-]mtp(?:-\d{5}-of-\d{5})?\.gguf$/i.test(l)
+                || /-assistant\.gguf$/i.test(l);
+        };
+
         // Filter for main model GGUF files, excluding auxiliary files
         // Be more specific to avoid filtering out main VLM (Vision Language Model) files
         let ggufFiles = files.filter(f => {
@@ -4122,10 +4137,9 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
             // Exclude multimodal projection files (always auxiliary)
             if (lowerName.includes('mmproj')) return false;
 
-            // Exclude speculative-decoding draft heads (e.g. .../MTP/model-F16-MTP.gguf,
-            // *-assistant.gguf — gemma4-assistant / Gemma4AssistantForCausalLM). These are
-            // NOT standalone-loadable; picking one yields "unknown model architecture".
-            if (/(?:^|[/_-])mtp(?:[/_.-]|$)/i.test(f) || /-assistant\.gguf$/i.test(lowerName)) return false;
+            // Exclude speculative-decoding draft heads (see isMtpDraftFile above).
+            // These are NOT standalone-loadable; picking one yields "unknown model architecture".
+            if (isMtpDraftFile(f)) return false;
 
             // Exclude only specifically named encoder/vision files (not VLM model names)
             // Examples: "vision-encoder.gguf", "audio-encoder.gguf", "text-encoder.gguf"
@@ -4141,7 +4155,7 @@ app.post('/api/models/:modelName/load', requireAuth, async (req, res) => {
         if (ggufFiles.length === 0) {
             // Provide a helpful error message based on what auxiliary files ARE present.
             const allGgufs = files.filter(f => f.endsWith('.gguf'));
-            const hasMtp = allGgufs.some(f => /(?:^|[/_-])mtp(?:[/_.-]|$)/i.test(f) || /-assistant\.gguf$/i.test(f.toLowerCase()));
+            const hasMtp = allGgufs.some(isMtpDraftFile);
             const hasMmproj = allGgufs.some(f => f.toLowerCase().includes('mmproj'));
             if (hasMtp) {
                 return res.status(400).json({
@@ -22995,9 +23009,22 @@ app.use((req, res) => {
             // first — hotlink-safe — then the original), probe each, use the first
             // live one; drop the image if none render. Probe a buffer beyond
             // `count` so a few dead results can be skipped without re-querying.
+            // Normalize a URL for duplicate detection: drop protocol, a leading
+            // www., the trailing slash, and case. Query strings are KEPT — image
+            // CDNs (Bing thumbs, resize endpoints) encode the distinct original
+            // in the query, so two different pictures don't collapse to one key.
+            const normKey = (u) => (typeof u === 'string'
+                ? u.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/+$/, '').toLowerCase()
+                : '');
             const finalize = async (imgs, source) => {
+                // Pass 1: drop exact-duplicate SOURCE urls before probing — the
+                // model often lists the same image twice and providers return
+                // repeats, so we'd otherwise probe + render the same picture in
+                // multiple tiles.
+                const seenSrc = new Set();
                 const candidates = (imgs || [])
                     .filter(im => im && typeof im.url === 'string' && /^https?:\/\//i.test(im.url))
+                    .filter(im => { const k = normKey(im.url); if (!k || seenSrc.has(k)) return false; seenSrc.add(k); return true; })
                     .slice(0, Math.max(count * 3, count + 6));
                 const vetted = await Promise.all(candidates.map(async (im) => {
                     const renderTries = [];
@@ -23012,7 +23039,19 @@ app.use((req, res) => {
                     }
                     return null;
                 }));
-                const clean = vetted.filter(Boolean).slice(0, count);
+                // Pass 2: dedup on the FINAL render url (the actual <img src>) —
+                // two distinct source urls can resolve to the same https
+                // thumbnail after the upgrade/fallback, which the user sees as a
+                // duplicate tile.
+                const seenRender = new Set();
+                const clean = [];
+                for (const im of vetted.filter(Boolean)) {
+                    const k = normKey(im.thumbnail) || normKey(im.url);
+                    if (k && seenRender.has(k)) continue;
+                    if (k) seenRender.add(k);
+                    clean.push(im);
+                    if (clean.length >= count) break;
+                }
                 return clean.length
                     ? { imageSpec: { query, images: clean }, count: clean.length, source }
                     : null;

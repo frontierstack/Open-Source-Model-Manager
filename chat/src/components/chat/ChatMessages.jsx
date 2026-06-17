@@ -39,6 +39,22 @@ function StreamingMessage() {
                              snippet: typeof r.content === 'string' ? r.content.slice(0, 220) : '' }];
             }
         }
+        // Lift rich render specs onto the LIVE chip the same way the committed
+        // path (buildNativeChipEntries) does — without these, find_image's
+        // imageSpec (and find_video's videoSpec / render_chart's chartSpec /
+        // sandbox artifacts) only appeared after the stream finished and the
+        // message was committed.
+        const tcChartSpec = (r && typeof r === 'object' && r.chartSpec) ? r.chartSpec : null;
+        const tcChartSummary = (r && typeof r === 'object' && typeof r.summary === 'string') ? r.summary : '';
+        const tcImageSpec = (r && typeof r === 'object' && r.imageSpec && Array.isArray(r.imageSpec.images)) ? r.imageSpec : null;
+        const tcVideoSpec = (r && typeof r === 'object' && r.videoSpec && Array.isArray(r.videoSpec.videos)) ? r.videoSpec : null;
+        const tcArtifacts = (
+            r && typeof r === 'object' && Array.isArray(r._artifacts)
+                ? r._artifacts
+                    .filter(a => a && typeof a === 'object' && typeof a.url === 'string' && typeof a.name === 'string')
+                    .map(a => ({ name: a.name, size: a.size, url: a.url, runId: a.runId }))
+                : null
+        );
         return {
             type: 'native_tool_call',
             label: tc.name,
@@ -50,6 +66,11 @@ function StreamingMessage() {
             error: tc.error,
             preview: tc.preview,
             sources: sources && sources.length ? sources : undefined,
+            chartSpec: tcChartSpec || undefined,
+            chartSummary: tcChartSummary || undefined,
+            imageSpec: tcImageSpec || undefined,
+            videoSpec: tcVideoSpec || undefined,
+            artifacts: tcArtifacts && tcArtifacts.length ? tcArtifacts : undefined,
             sandboxed: tc.sandboxed,
             sandboxSource: tc.sandboxSource,
             sandboxNetwork: tc.sandboxNetwork,

@@ -166,8 +166,13 @@ const classifyGgufFile = (rfilename) => {
     if (lower.includes('mmproj') || /(vision|audio|text)-?encoder|-encoder\.gguf$/.test(lower)) {
         return { kind: 'mmproj', quant, label: quant ? `mmproj · ${quant}` : base };
     }
-    // MTP folder/suffix or *-assistant drafter
-    if (/(?:^|[/_-])mtp(?:[/_.-]|$)/i.test(rfilename) || /-assistant\b/i.test(lower)) {
+    // Genuine standalone draft head: an MTP/ subfolder, an MTP tag immediately
+    // before .gguf (model-F16-MTP.gguf, optionally split), or a *-assistant drafter.
+    // A mid-name "MTP-Preserved" / "Native-MTP" marks a MAIN model that keeps its
+    // built-in MTP heads (loads standalone with spec-type=draft-mtp) — NOT a draft.
+    if (/(?:^|\/)mtp\//i.test(rfilename)
+        || /[._-]mtp(?:-\d{5}-of-\d{5})?\.gguf$/i.test(lower)
+        || /-assistant\.gguf$/i.test(lower)) {
         return { kind: 'draft', quant, label: quant ? `MTP · ${quant}` : base };
     }
     return { kind: 'main', quant, label: quant || base };
