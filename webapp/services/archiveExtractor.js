@@ -150,6 +150,40 @@ async function rmrf(dir) {
     catch (_) { /* best effort */ }
 }
 
+// Make an extracted tree readable by the sandbox's unprivileged user (uid
+// 1000). The webapp extracts as root and tar/unzip/7z/rar restore the
+// archive's STORED modes + ownership — so an entry that isn't world-readable
+// (e.g. a 0600 file, or a 0700 dir with no traversal bit for "other") makes a
+// later sandboxed read_file/move_file fail with EACCES. We OR in read bits for
+// files and read+traverse bits for directories, preserving any existing
+// execute bits. chmod-by-root works regardless of the (possibly archive-stored)
+// owner. Best-effort, bounded, and symlink-safe (chmod() follows links on
+// Linux and lchmod isn't supported, so symlinks are skipped, not recursed).
+async function normalizeTreePermissions(root) {
+    let visited = 0;
+    const MAX_VISIT = MAX_ENTRIES * 4; // headroom over the listing cap
+    async function walk(dir) {
+        let entries;
+        try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
+        catch (_) { return; }
+        for (const ent of entries) {
+            if (visited++ > MAX_VISIT) return;
+            if (ent.isSymbolicLink()) continue; // don't chmod through a link
+            const full = path.join(dir, ent.name);
+            if (ent.isDirectory()) {
+                try { const st = await fs.promises.stat(full); await fs.promises.chmod(full, st.mode | 0o755); }
+                catch (_) { /* best effort */ }
+                await walk(full);
+            } else if (ent.isFile()) {
+                try { const st = await fs.promises.stat(full); await fs.promises.chmod(full, st.mode | 0o644); }
+                catch (_) { /* best effort */ }
+            }
+        }
+    }
+    try { const st = await fs.promises.stat(root); await fs.promises.chmod(root, st.mode | 0o755); } catch (_) { /* best effort */ }
+    await walk(root);
+}
+
 /**
  * Extract an archive provided as raw bytes.
  * @param {Buffer} buffer - archive bytes
@@ -322,6 +356,12 @@ async function extractArchive(buffer, filename, opts = {}) {
             );
         }
         handler = used;
+
+        // Persist mode hands these files to a sandboxed reader (uid 1000); the
+        // archive's stored modes/owner may not grant it read/traversal, so
+        // normalize before listing. Harmless to skip in legacy temp-dir mode
+        // (the webapp reads everything itself, as root).
+        if (persistMode) await normalizeTreePermissions(extractDir);
 
         const files = await walkDir(extractDir);
         const truncated = files.length > maxEntries;
