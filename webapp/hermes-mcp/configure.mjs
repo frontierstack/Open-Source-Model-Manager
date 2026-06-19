@@ -57,17 +57,25 @@ if (fs.existsSync(CONFIG_PATH)) {
 // (confirmed headless workaround): with all four set, `hermes` goes straight to
 // the agent instead of prompting for provider/model/key. The key is inlined so
 // there's no env-resolution prompt. We preserve any other model.* keys.
+// Pick the API base URL Hermes' (cert-verifying Python) client should use, and
+// the default model, in one probe. For a self-hosted server on loopback/private
+// IP the cert is self-signed — Hermes' httpx client can't verify it and fails
+// with "APIConnectionError: Connection error" (the browser lets you click
+// through; Python won't). The webapp also serves a PLAIN-HTTP mirror on :3080
+// expressly to avoid SSL-verification issues, so for loopback/private hosts we
+// prefer that (no TLS at all). Public/DNS hosts keep HTTPS (real cert).
+const api = await probeApi(baseUrl);
 if (typeof cfg.model !== "object" || cfg.model === null || Array.isArray(cfg.model)) cfg.model = {};
 cfg.model.provider = "custom";
-cfg.model.base_url = `${baseUrl}/v1`;
+cfg.model.base_url = `${api.base}/v1`;
 cfg.model.api_key = apiKey;
-const first = await firstModelId();
-if (first) {
-    cfg.model.default = first;          // always refresh so a stale id is corrected
+if (api.modelId) {
+    cfg.model.default = api.modelId;    // always refresh so a stale id is corrected
 } else if (!cfg.model.default) {
-    console.error("[hermes-configure] WARNING: couldn't reach /v1/models to pick a default model.");
+    console.error("[hermes-configure] WARNING: couldn't reach the model API to pick a default model.");
     console.error("[hermes-configure]   Load a model in the webapp, then run `hermes model` (or re-run this installer).");
 }
+console.error(`[hermes-configure] model API: ${api.base}/v1 ${api.base.startsWith("http://") ? "(plain HTTP — avoids self-signed-cert errors)" : "(HTTPS)"}`);
 
 // Clean up the old (incorrect) array-form custom_providers entry a prior install
 // may have written — the simple model form above supersedes it.
@@ -92,7 +100,9 @@ cfg.mcp_servers.modelserver = {
     command: "node",
     args: [mcpServerPath],
     env: {
-        MODELSERVER_BASE_URL: baseUrl,
+        // Use the same base the model calls use (HTTP mirror on loopback/private)
+        // so the skill server also sidesteps self-signed-cert issues.
+        MODELSERVER_BASE_URL: api.base,
         MODELSERVER_API_KEY: apiKey,
     },
 };
@@ -117,13 +127,24 @@ console.error(`[hermes-configure] wrote MODELSERVER_API_KEY to ${ENV_PATH}`);
 console.error("[hermes-configure] done. Launch Hermes with `hermes` (or `hermes --tui`).");
 
 // ---- helpers ----------------------------------------------------------------
-async function firstModelId() {
+function isLoopbackOrPrivate(host) {
+    const h = (host || "").replace(/^\[|\]$/g, "").toLowerCase();
+    if (h === "localhost" || h === "::1") return true;
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+        const [a, b] = h.split(".").map(Number);
+        if (a === 127 || a === 10) return true;
+        if (a === 192 && b === 168) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 169 && b === 254) return true;
+        return false;
+    }
+    return h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80:");
+}
+
+// Fetch /v1/models from a candidate base; returns the first model id, or null.
+async function modelIdFrom(base) {
     try {
-        if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1)/.test(new URL(baseUrl).hostname)
-            && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0") {
-            process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-        }
-        const r = await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+        const r = await fetch(`${base}/v1/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
         if (!r.ok) return null;
         const j = await r.json();
         const id = j?.data?.[0]?.id;
@@ -131,4 +152,40 @@ async function firstModelId() {
     } catch {
         return null;
     }
+}
+
+// Probe which base URL the model API is reachable on. For loopback/private
+// hosts, try the plain-HTTP mirror first (default port 3080, overridable via
+// MODELSERVER_HTTP_PORT) so a cert-verifying client never trips on the
+// self-signed cert; fall back to the original HTTPS (relaxing Node's own TLS
+// check for the probe only). Returns { base, modelId }.
+async function probeApi(httpsBase) {
+    const candidates = [];
+    try {
+        const u = new URL(httpsBase);
+        if ((u.protocol === "https:") && isLoopbackOrPrivate(u.hostname)) {
+            const httpPort = process.env.MODELSERVER_HTTP_PORT || "3080";
+            candidates.push(`http://${u.hostname}:${httpPort}`);
+        }
+        if (isLoopbackOrPrivate(u.hostname) && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0") {
+            process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // let the HTTPS probe succeed past a self-signed cert
+        }
+    } catch { /* ignore */ }
+    candidates.push(httpsBase);
+
+    let firstReachable = null;
+    for (const base of candidates) {
+        const id = await modelIdFrom(base);
+        if (id) return { base, modelId: id };           // reachable AND has a model
+        if (firstReachable === null) {
+            // distinguish "reachable but no model loaded" from "unreachable"
+            try {
+                const r = await fetch(`${base}/v1/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+                if (r.status < 500) firstReachable = base;
+            } catch { /* unreachable */ }
+        }
+    }
+    // Nothing had a model; prefer the first reachable base (HTTP mirror if it
+    // answered), else the original HTTPS base.
+    return { base: firstReachable || httpsBase, modelId: null };
 }
