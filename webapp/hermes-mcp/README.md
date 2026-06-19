@@ -52,20 +52,22 @@ cp modelserver-mcp.mjs configure.mjs package.json ~/.hermes/mcp-servers/modelser
      MODELSERVER_API_KEY="<bearer-key>" node configure.mjs )
 ```
 
-`configure.mjs` is idempotent and only touches the `custom_providers`,
-`model.provider`, and `mcp_servers.modelserver` keys — it preserves everything
-else in your `config.yaml`.
+`configure.mjs` is idempotent and only touches the `model`, `approvals`
+(first install only), and `mcp_servers.modelserver` keys — it preserves
+everything else in your `config.yaml`.
 
 The resulting `~/.hermes/config.yaml` looks like:
 
 ```yaml
-custom_providers:
-  - name: modelserver
-    base_url: https://<your-host>:3001/v1
-    key_env: MODELSERVER_API_KEY
 model:
-  provider: custom:modelserver
+  provider: custom
+  base_url: https://<your-host>:3001/v1
+  api_key: <bearer-key>
   default: <first model id from /v1/models>
+approvals:
+  mode: "off"                    # frictionless; set to smart/manual for prompts
+  mcp_reload_confirm: false
+  destructive_slash_confirm: false
 mcp_servers:
   modelserver:
     command: node
@@ -75,7 +77,11 @@ mcp_servers:
       MODELSERVER_API_KEY: <bearer-key>
 ```
 
-with `MODELSERVER_API_KEY` also written to `~/.hermes/.env`.
+with `MODELSERVER_API_KEY` also written to `~/.hermes/.env`. The **simple model
+form** (`provider: custom` + `base_url` + `api_key` + `default`) is what makes
+Hermes skip its interactive first-run setup wizard, so `hermes` goes straight to
+the agent. `model.default` is auto-detected from `/v1/models` — load a model in
+the webapp first (otherwise pick one later with `hermes model`).
 
 ## Env vars
 

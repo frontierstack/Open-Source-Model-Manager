@@ -52,21 +52,37 @@ if (fs.existsSync(CONFIG_PATH)) {
     }
 }
 
-// custom_providers[] — replace the "modelserver" entry in place.
-if (!Array.isArray(cfg.custom_providers)) cfg.custom_providers = [];
-cfg.custom_providers = cfg.custom_providers.filter((p) => p && p.name !== "modelserver");
-cfg.custom_providers.push({
-    name: "modelserver",
-    base_url: `${baseUrl}/v1`,
-    key_env: "MODELSERVER_API_KEY",
-});
-
-// model.provider — point at our provider, keep any existing default model.
+// model — SIMPLE custom-provider form (provider/base_url/api_key/default). This
+// is the form that makes Hermes skip its interactive first-run setup wizard
+// (confirmed headless workaround): with all four set, `hermes` goes straight to
+// the agent instead of prompting for provider/model/key. The key is inlined so
+// there's no env-resolution prompt. We preserve any other model.* keys.
 if (typeof cfg.model !== "object" || cfg.model === null || Array.isArray(cfg.model)) cfg.model = {};
-cfg.model.provider = "custom:modelserver";
-if (!cfg.model.default) {
-    const first = await firstModelId();
-    if (first) cfg.model.default = first;
+cfg.model.provider = "custom";
+cfg.model.base_url = `${baseUrl}/v1`;
+cfg.model.api_key = apiKey;
+const first = await firstModelId();
+if (first) {
+    cfg.model.default = first;          // always refresh so a stale id is corrected
+} else if (!cfg.model.default) {
+    console.error("[hermes-configure] WARNING: couldn't reach /v1/models to pick a default model.");
+    console.error("[hermes-configure]   Load a model in the webapp, then run `hermes model` (or re-run this installer).");
+}
+
+// Clean up the old (incorrect) array-form custom_providers entry a prior install
+// may have written — the simple model form above supersedes it.
+if (Array.isArray(cfg.custom_providers)) {
+    cfg.custom_providers = cfg.custom_providers.filter((p) => p && p.name !== "modelserver");
+    if (!cfg.custom_providers.length) delete cfg.custom_providers;
+}
+
+// approvals — only seed on FIRST install (absent), so a user's later choice is
+// preserved. Default to frictionless: no per-tool approval prompts and no MCP
+// reload / destructive-command confirmations, so the agent runs straight away.
+// Dial it back up any time with `hermes config set approvals.mode smart` (auto-
+// approves safe ops, asks on risky ones) or `manual` (asks on every tool).
+if (typeof cfg.approvals !== "object" || cfg.approvals === null || Array.isArray(cfg.approvals)) {
+    cfg.approvals = { mode: "off", mcp_reload_confirm: false, destructive_slash_confirm: false };
 }
 
 // mcp_servers.modelserver — stdio launch. The key is written into the env block
@@ -81,7 +97,11 @@ cfg.mcp_servers.modelserver = {
     },
 };
 
-fs.writeFileSync(CONFIG_PATH, YAML.stringify(cfg), { mode: 0o600 });
+// Emit with YAML 1.1 semantics to match Hermes' Python (PyYAML) parser: in 1.1,
+// off/on/yes/no are boolean keywords, so the emitter quotes the STRING "off"
+// (approvals.mode) instead of writing a bare `off` that PyYAML would read as the
+// boolean false. Without this, approvals.mode silently becomes `false`.
+fs.writeFileSync(CONFIG_PATH, YAML.stringify(cfg, { version: "1.1" }), { mode: 0o600 });
 console.error(`[hermes-configure] wrote ${CONFIG_PATH}`);
 
 // ---- .env -------------------------------------------------------------------

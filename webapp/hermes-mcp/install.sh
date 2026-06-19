@@ -197,6 +197,39 @@ else
     fi
 fi
 
+# ---------- step 3b: ensure npm, and make node/npm/npx GLOBALLY visible ----------
+# Two real-world failures this fixes:
+#   (1) The Hermes TUI shells out to `node` with a MINIMAL PATH — an nvm-only
+#       install lives in ~/.nvm/.../bin and isn't on that PATH, so the TUI reports
+#       "Node.js not found" even though `node -v` works in your login shell.
+#   (2) Some setups have node without npm.
+# Symlinking into /usr/local/bin (on every PATH, incl. non-interactive
+# subprocesses) makes node/npm/npx resolvable for Hermes regardless of how Node
+# was installed. The symlink targets are self-contained binaries, so they work
+# without nvm being sourced.
+log "Step 3b: npm + global node/npm/npx"
+if ! have npm; then
+    warn "  npm not found alongside node; attempting to install"
+    if [ -n "${NVM_DIR:-}" ] && [ -f "$NVM_DIR/nvm.sh" ]; then
+        # shellcheck disable=SC1091
+        . "$NVM_DIR/nvm.sh" 2>/dev/null || true
+    fi
+    if ! have npm && have apt-get; then
+        sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y npm >/dev/null 2>&1 \
+            || sudo_run apt-get install -y npm >/dev/null 2>&1 || true
+    fi
+fi
+sudo_run mkdir -p /usr/local/bin 2>/dev/null || true
+for bin in node npm npx; do
+    p="$(command -v "$bin" 2>/dev/null)"
+    if [ -n "$p" ] && [ "$p" != "/usr/local/bin/$bin" ]; then
+        if sudo_run ln -sf "$p" "/usr/local/bin/$bin" 2>/dev/null; then
+            log "  linked $bin -> /usr/local/bin/$bin ($p)"
+        fi
+    fi
+done
+if have node; then log "  node: $(node -v 2>/dev/null), npm: $(npm -v 2>/dev/null || echo MISSING)"; fi
+
 # ---------- step 4: ensure Hermes Agent ----------
 log "Step 4/6: Hermes Agent CLI"
 if have hermes && hermes --version >/dev/null 2>&1; then
@@ -285,8 +318,11 @@ echo "  MCP server:  $MCP_DIR"
 echo "  Config:      $HOME/.hermes/config.yaml"
 echo "  Base URL:    $BASE_URL"
 echo
-echo "Run Hermes:"
+echo "Provider, model, API key, and tool-approvals are pre-configured — no setup"
+echo "wizard. Just run Hermes:"
 echo "  hermes          # classic CLI"
 echo "  hermes --tui    # modern TUI (recommended)"
 echo
 echo "(If 'hermes' isn't found, run 'source ~/.bashrc' — or 'source ~/.zshrc' — first.)"
+echo "(Tool approvals default to OFF for frictionless runs — dial back up with"
+echo " 'hermes config set approvals.mode smart'.)"
