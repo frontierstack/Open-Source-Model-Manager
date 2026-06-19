@@ -2748,7 +2748,7 @@ app.use(express.json({ limit: '50mb' }));
 // "simple" request (form POST, etc.) but cannot set a custom header
 // cross-origin without a CORS preflight we never approve. So we require a
 // custom header on state-changing requests that rely on the session cookie.
-// API-key / Bearer callers (Pi, /v1/*, scripts) are unaffected: they
+// API-key / Bearer callers (Hermes, /v1/*, scripts) are unaffected: they
 // authenticate via a non-forgeable header and don't carry the session cookie.
 // Both frontends tag every same-origin request via a window.fetch wrapper
 // (src/csrfFetch.js), so this is transparent to normal use.
@@ -9957,15 +9957,15 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
             console.log(`[Agent ${agentId}] Executing skill: ${skillName}`);
         }
 
-        // Broadcast to Process Logs so API-key callers (Pi, scripts) are
+        // Broadcast to Process Logs so API-key callers (Hermes, scripts) are
         // visible in the webapp Logs tab — previously these only hit stdout
-        // and never surfaced in the UI, so users couldn't tell whether Pi
+        // and never surfaced in the UI, so users couldn't tell whether Hermes
         // was actually invoking tools against the server.
         if (req.apiKeyData) {
             try {
                 broadcast({
                     type: 'log',
-                    message: `[Pi/API] ${req.apiKeyData.name || 'key'} → skill ${skillName}`,
+                    message: `[Hermes/API] ${req.apiKeyData.name || 'key'} → skill ${skillName}`,
                     level: 'info',
                     targetUserId: req.userId
                 });
@@ -9974,9 +9974,9 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
 
         let result;
 
-        // Bearer-key (Pi) and other API-key callers get one persistent,
+        // Bearer-key (Hermes) and other API-key callers get one persistent,
         // user-manageable workspace per key: 'agent-<apiKeyId>'. This is what
-        // lets a Pi agent build a file across turns (create_file → append_to_file
+        // lets a Hermes agent build a file across turns (create_file → append_to_file
         // → create_pdf contentFile=...) and have it survive, instead of landing
         // in the shared 'global' bucket. Session (UI) callers have no apiKeyData,
         // so they fall through to conversation/global scoping unchanged.
@@ -10015,7 +10015,7 @@ app.post('/api/skills/:skillName/execute', requireAuth, async (req, res) => {
                 const ok = !(result && result.success === false);
                 broadcast({
                     type: 'log',
-                    message: `[Pi/API] skill ${skillName} ${ok ? 'completed' : 'failed'}`,
+                    message: `[Hermes/API] skill ${skillName} ${ok ? 'completed' : 'failed'}`,
                     level: ok ? 'success' : 'warning',
                     targetUserId: req.userId
                 });
@@ -10136,9 +10136,9 @@ app.delete('/api/agent-workspaces/:owner/:bucket', requireAuth, async (req, res)
     }
 });
 
-// --- host <-> server-workspace file bridge (powers Pi's auto-bridge) --------
-// These let a Pi/API agent move a file BETWEEN the two filesystems it lives in:
-// its host (Pi's own read/write/bash) and the server sandbox workspace (where
+// --- host <-> server-workspace file bridge (powers Hermes' auto-bridge) -----
+// These let a Hermes/API agent move a file BETWEEN the two filesystems it lives in:
+// its host (Hermes' own read/write/bash) and the server sandbox workspace (where
 // read_pdf/create_pdf/transform_image/... run). Scoped to the caller's own
 // agent-<apiKeyId> bucket, so the uploaded file is exactly what the next skill
 // call (same key -> same bucket) sees mounted at /workspace.
@@ -10299,9 +10299,9 @@ async function executePythonSkill(skill, params, ctx = null) {
                 // (falls back to the 'global' bucket).
                 conversationId: (ctx && ctx.conversationId) || null,
                 // workspaceBucket pins a persistent per-agent workspace for
-                // bearer-key (Pi) callers — 'agent-<apiKeyId>'. Set by the
+                // bearer-key (Hermes) callers — 'agent-<apiKeyId>'. Set by the
                 // /api/skills/:name/execute route from req.apiKeyData.id so
-                // every turn of a Pi agent shares one manageable workspace.
+                // every turn of a Hermes agent shares one manageable workspace.
                 workspaceBucket: (ctx && ctx.workspaceBucket) || null,
             });
             if (run.timedOut) {
@@ -13808,20 +13808,20 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
 }
 
 // ============================================================================
-// Pi (/v1 passthrough) memory bridge
+// Hermes (/v1 passthrough) memory bridge
 // ============================================================================
-// The /v1/chat/completions passthrough is otherwise transparent. Pi is the
+// The /v1/chat/completions passthrough is otherwise transparent. Hermes is the
 // webapp's OWN agent (authenticated with a bearerOnly key), so we give it the
-// SAME persona/experience the web chat gets — that's what lets Pi reuse what
+// SAME persona/experience the web chat gets — that's what lets Hermes reuse what
 // worked and stop flailing (the climbing 119k-token loop). Memory is keyed on
 // `req.userId` (the owning ACCOUNT), which equals the web-session memory id, so
-// web + Pi share ONE persona. Gated to bearer callers + memory-enabled + only
-// when there's context headroom — raw OpenAI-SDK clients (key+secret) keep the
-// fully-transparent contract, and a near-full Pi context is never pushed over
-// (which would trip the backend's max_tokens floor → truncated tool calls).
+// web + Hermes share ONE persona. Gated to bearer callers + memory-enabled +
+// only when there's context headroom — raw OpenAI-SDK clients (key+secret) keep
+// the fully-transparent contract, and a near-full Hermes context is never pushed
+// over (which would trip the backend's max_tokens floor → truncated tool calls).
 
-const PI_MEMORY_BUDGET = 800;        // fallback budget — Pi runs near the limit, so smaller than chat
-const PI_MEMORY_RESERVE = 2048;      // headroom for the response
+const HERMES_MEMORY_BUDGET = 800;    // fallback budget — Hermes runs near the limit, so smaller than chat
+const HERMES_MEMORY_RESERVE = 2048;  // headroom for the response
 const v1RecordInFlight = new Set();  // (userId:convKey) currently being recorded — anti-double-record guard
 
 function v1LatestUserText(messages) {
@@ -13839,9 +13839,9 @@ function v1LatestUserText(messages) {
 // Inject the persona/experience block into req.body.messages (mutates in place;
 // both passthrough branches read req.body). Returns a short summary or null.
 async function injectPersonaForV1(req, instance) {
-    // Account id when the key is associated with one (real Pi keys created in a
-    // web session are) — unifies with web-chat memory. Falls back to the key id
-    // for unassociated keys so memory still works (per-key persona).
+    // Account id when the key is associated with one (real Hermes keys created
+    // in a web session are) — unifies with web-chat memory. Falls back to the
+    // key id for unassociated keys so memory still works (per-key persona).
     const userId = req.userId || req.apiKeyData?.id;
     const messages = req.body?.messages;
     if (!userId || userId === 'default' || !Array.isArray(messages) || !messages.length) return null;
@@ -13859,16 +13859,16 @@ async function injectPersonaForV1(req, instance) {
     }
     const activityHint = (classifyTurnActivity({ toolLabels, userText: latestUserText, attachmentKinds: new Set() }) || {}).activity || null;
 
-    // Room-check: never push an already-large Pi context past the model window.
+    // Room-check: never push an already-large Hermes context past the model window.
     const ctx = instance?.config?.contextSize || instance?.config?.maxModelLen || 131072;
-    // Pi budget scales with the window too, but capped leaner than chat (Pi
-    // contexts run hot): clamped 300-1600, falling back to the old fixed 800.
-    const piBudget = memoryBudgetForCtx(ctx, { base: PI_MEMORY_BUDGET, min: 300, max: 1600 });
+    // Hermes budget scales with the window too, but capped leaner than chat
+    // (Hermes contexts run hot): clamped 300-1600, falling back to fixed 800.
+    const hermesBudget = memoryBudgetForCtx(ctx, { base: HERMES_MEMORY_BUDGET, min: 300, max: 1600 });
     let inputEst = 0;
     try { inputEst = estimateTokenCount(JSON.stringify(messages)); } catch (_) { inputEst = 0; }
-    if (inputEst + piBudget + PI_MEMORY_RESERVE > ctx) return null; // no headroom → skip silently
+    if (inputEst + hermesBudget + HERMES_MEMORY_RESERVE > ctx) return null; // no headroom → skip silently
 
-    const mem = await retrieveRelevantMemories(userId, null, latestUserText, piBudget, { activityHint });
+    const mem = await retrieveRelevantMemories(userId, null, latestUserText, hermesBudget, { activityHint });
     if (!mem || !mem.block) return null;
 
     const sys = messages[0];
@@ -13883,8 +13883,8 @@ async function injectPersonaForV1(req, instance) {
     return { count: mem.count, procedures: mem.procedures || 0, learnings: mem.learnings || 0, facts: mem.facts || 0, tokens: mem.tokens, activityHint };
 }
 
-// Build the model's persona FROM Pi usage too. /v1 is stateless — Pi resends
-// the whole history each turn — and a single agentic task spans many requests
+// Build the model's persona FROM Hermes usage too. /v1 is stateless — Hermes
+// resends the whole history each turn — and a single agentic task spans many requests
 // (tool rounds) without a new user message, so we record the CURRENT in-progress
 // task (tools after the latest user message) and re-reinforce it as it accrues
 // tools, throttled by a per-key "taskId:toolCount" cursor. Reuses
@@ -13893,7 +13893,7 @@ async function injectPersonaForV1(req, instance) {
 // the model can refine via record_learning.
 async function recordV1TurnActivity(userId, apiKeyData, messages) {
     if (!userId || userId === 'default' || !Array.isArray(messages)) return;
-    const convKey = 'pi-' + (apiKeyData?.id || 'key');
+    const convKey = 'hermes-' + (apiKeyData?.id || 'key');
     const lockKey = `${userId}:${convKey}`;
     // In-flight guard: the cursor read→write isn't atomic, so a concurrent
     // retry of the same session could double-record (inflating the experience
@@ -13935,15 +13935,15 @@ async function recordV1TurnActivity(userId, apiKeyData, messages) {
         const uc = messages[taskStart]?.content;
         const userText = typeof uc === 'string' ? uc
             : (Array.isArray(uc) ? uc.filter(p => p?.type === 'text').map(p => p.text || '').join('\n') : '');
-        // Pi resolves tools client-side; we only see results, so treat them as
-        // successful. steps:null → reinforce + refresh the recipe to the current
+        // Hermes resolves tools client-side; we only see results, so treat them
+        // as successful. steps:null → reinforce + refresh the recipe to the current
         // (fuller) task path WITHOUT the bestSteps comparison (an in-progress
         // snapshot must not masquerade as a leaner "best" recipe and clobber one).
         const okChips = toolLabels.map(l => ({ status: 'success', label: l }));
         await recordTurnActivity({ userId, conversationId: convKey, toolChips: okChips, userText, attachments: [], steps: null });
         await memoryService.setCursor(userId, convKey, `${taskId}:${toolCount}`);
     } catch (e) {
-        console.warn('[Pi/Memory] activity record failed:', e.message);
+        console.warn('[Hermes/Memory] activity record failed:', e.message);
     } finally {
         v1RecordInFlight.delete(lockKey);
     }
@@ -21714,70 +21714,70 @@ function sanitizeHost(hostHeader) {
 }
 
 // ============================================================================
-// Pi (pi.dev) auto-config — returns a settings.json snippet, the bundled
-// extension files, and a copy-paste install script that drops the extension
-// at ~/.pi/agent/extensions/modelserver/. The caller's host header is the
-// canonical base URL, sanitized through sanitizeHost above.
+// Hermes Agent auto-config — returns the bundled MCP server files and a
+// copy-paste install script that installs Hermes (if missing), drops the
+// modelserver MCP server at ~/.hermes/mcp-servers/modelserver/, and merges the
+// provider + MCP config into ~/.hermes/config.yaml. The caller's host header is
+// the canonical base URL, sanitized through sanitizeHost above.
 // ============================================================================
 
-const PI_EXTENSION_DIR = path.join(__dirname, 'pi-extension');
-const PI_INSTALL_SCRIPT_PATH = path.join(PI_EXTENSION_DIR, 'install.sh');
+const HERMES_DIR = path.join(__dirname, 'hermes-mcp');
+const HERMES_INSTALL_SCRIPT_PATH = path.join(HERMES_DIR, 'install.sh');
 
-function piBaseUrlForRequest(req) {
+function hermesBaseUrlForRequest(req) {
     const host = sanitizeHost(req.get('host'));
     const protocol = (req.protocol === 'http' || req.protocol === 'https') ? req.protocol : 'https';
     return `${protocol}://${host}`;
 }
 
 // Load install.sh from disk and substitute the placeholder with the
-// caller's actual base URL. Cached read on disk error since install.sh
-// is small and rarely changes.
-async function buildPiInstallScript(baseUrl) {
-    const raw = await fs.readFile(PI_INSTALL_SCRIPT_PATH, 'utf8');
+// caller's actual base URL. Re-read each time since install.sh is small.
+async function buildHermesInstallScript(baseUrl) {
+    const raw = await fs.readFile(HERMES_INSTALL_SCRIPT_PATH, 'utf8');
     return raw.replace(/__MODELSERVER_BASE_URL__/g, baseUrl);
 }
 
 // Bash-pipeable installer. Curl this with the bearer key and pipe to
-// bash — the script handles MITM TLS, missing/old Node, missing Pi,
+// bash — the script handles MITM TLS, missing/old Node, missing Hermes,
 // missing curl, broken sudo, and is idempotent across re-runs.
-app.get('/api/pi/install', requireAuth, async (req, res) => {
+app.get('/api/hermes/install', requireAuth, async (req, res) => {
     try {
-        const baseUrl = piBaseUrlForRequest(req);
-        const script = await buildPiInstallScript(baseUrl);
+        const baseUrl = hermesBaseUrlForRequest(req);
+        const script = await buildHermesInstallScript(baseUrl);
         res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
         res.send(script);
     } catch (err) {
-        console.error('[pi-install] error:', err);
+        console.error('[hermes-install] error:', err);
         res.status(500).json({ error: 'Failed to load install script' });
     }
 });
 
-app.get('/api/pi/extension/:file', requireAuth, async (req, res) => {
-    const allowed = new Set(['modelserver.ts', 'package.json', 'README.md', 'install.sh']);
+app.get('/api/hermes/files/:file', requireAuth, async (req, res) => {
+    const allowed = new Set(['modelserver-mcp.mjs', 'configure.mjs', 'package.json', 'README.md', 'install.sh']);
     const file = req.params.file;
     if (!allowed.has(file)) {
-        return res.status(404).json({ error: 'Unknown extension file' });
+        return res.status(404).json({ error: 'Unknown MCP server file' });
     }
     try {
-        const filePath = path.join(PI_EXTENSION_DIR, file);
+        const filePath = path.join(HERMES_DIR, file);
         let content = await fs.readFile(filePath, 'utf8');
-        // install.sh and modelserver.ts both have __MODELSERVER_BASE_URL__
-        // placeholders. Substitute on the way out so the served file is
-        // self-contained — install.sh works as a curl|bash, and the
-        // extension still phones home correctly when the user forgets
-        // to export MODELSERVER_BASE_URL in their shell.
-        if (file === 'install.sh' || file === 'modelserver.ts') {
-            content = content.replace(/__MODELSERVER_BASE_URL__/g, piBaseUrlForRequest(req));
+        // install.sh, modelserver-mcp.mjs and configure.mjs carry the
+        // __MODELSERVER_BASE_URL__ placeholder. Substitute on the way out so the
+        // served file is self-contained — install.sh works as a curl|bash, and
+        // the MCP server / configurator still phone home correctly when the user
+        // forgets to export MODELSERVER_BASE_URL in their shell.
+        if (file === 'install.sh' || file === 'modelserver-mcp.mjs' || file === 'configure.mjs') {
+            content = content.replace(/__MODELSERVER_BASE_URL__/g, hermesBaseUrlForRequest(req));
         }
         const contentType = file.endsWith('.json') ? 'application/json'
             : file.endsWith('.md') ? 'text/markdown; charset=utf-8'
             : file.endsWith('.sh') ? 'text/x-shellscript; charset=utf-8'
-            : 'text/typescript; charset=utf-8';
+            : 'text/javascript; charset=utf-8';
         res.setHeader('Content-Type', contentType);
         res.send(content);
     } catch (err) {
-        console.error('[pi-extension] read failed:', err);
-        res.status(500).json({ error: 'Failed to read extension file' });
+        console.error('[hermes-files] read failed:', err);
+        res.status(500).json({ error: 'Failed to read MCP server file' });
     }
 });
 
@@ -21827,11 +21827,11 @@ app.all('/v1/*', requireAuth, async (req, res) => {
         console.log(`[Proxy] Forwarding to ${targetUrl}`);
 
         // Special handling for GET /v1/models — sglang and llama.cpp both
-        // omit context_window from this response, so Pi (and any other
+        // omit context_window from this response, so Hermes (and any other
         // OpenAI-compatible client that reads it) defaults to 32768 and
         // throttles itself even when the loaded model has a much larger
         // window. Augment each entry with contextSize from the matched
-        // instance config so Pi's status line reflects reality.
+        // instance config so Hermes' status line reflects reality.
         if (req.method === 'GET' && req.path === '/v1/models') {
             try {
                 const upstream = await axios.get(targetUrl, { timeout: 8000 });
@@ -21870,7 +21870,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
             console.log(`[Proxy] Stream parameter:`, streamParam, `(type: ${typeof streamParam}, isStreaming: ${isStreaming})`);
         }
 
-        // Surface external chat-completions calls (Pi, OpenAI SDK clients,
+        // Surface external chat-completions calls (Hermes, OpenAI SDK clients,
         // scripts) in the Process Logs tab. Skip /v1/models polls (handled
         // above) — they're noisy and never carry usage.
         if (req.apiKeyData && req.path !== '/v1/models') {
@@ -21879,30 +21879,30 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 const toolCount = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
                 broadcast({
                     type: 'log',
-                    message: `[Pi/API] ${authName} → ${req.method} ${req.path} (${msgCount} msgs${toolCount ? `, ${toolCount} tools` : ''}${isStreaming ? ', stream' : ''})`,
+                    message: `[Hermes/API] ${authName} → ${req.method} ${req.path} (${msgCount} msgs${toolCount ? `, ${toolCount} tools` : ''}${isStreaming ? ', stream' : ''})`,
                     level: 'info',
                     targetUserId: req.userId
                 });
             } catch (_) { /* ignore */ }
         }
 
-        // ── Pi memory bridge ────────────────────────────────────────────────
-        // For Pi (bearerOnly key) POSTing chat completions: (1) record the
+        // ── Hermes memory bridge ────────────────────────────────────────────
+        // For Hermes (bearerOnly key) POSTing chat completions: (1) record the
         // experience from the most-recently completed task, then (2) inject the
         // persona/experience so this turn reuses what worked. Gated to bearer
         // callers so raw OpenAI-SDK clients keep the transparent passthrough.
         // Mutating req.body.messages here is picked up by BOTH branches below
         // (streaming clones req.body; non-streaming sends it directly).
-        const piMemId = req.userId || req.apiKeyData?.id;
+        const hermesMemId = req.userId || req.apiKeyData?.id;
         if (req.method === 'POST'
             && req.path === '/v1/chat/completions'
             && req.apiKeyData?.bearerOnly === true
-            && piMemId
+            && hermesMemId
             && Array.isArray(req.body?.messages)
             && req.body.messages.length) {
-            // (1) build persona from Pi usage (fire-and-forget). Pass a shallow
-            // snapshot so the async walk can't race with (2) mutating the array.
-            recordV1TurnActivity(piMemId, req.apiKeyData, req.body.messages.slice()).catch(() => {});
+            // (1) build persona from Hermes usage (fire-and-forget). Pass a
+            // shallow snapshot so the async walk can't race with (2) mutating it.
+            recordV1TurnActivity(hermesMemId, req.apiKeyData, req.body.messages.slice()).catch(() => {});
             // (2) inject persona into THIS request (awaited — must land before
             // forward). Bounded by a timeout so a slow/large memory read can
             // never stall the proxy: on timeout we forward without memory.
@@ -21912,11 +21912,11 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     new Promise(resolve => setTimeout(() => resolve(null), 2000)),
                 ]);
                 if (injected && injected.count) {
-                    logUserActivity(piMemId,
-                        `Pi memory: injected ${injected.count} (${injected.procedures} experience, ${injected.learnings} learnings, ${injected.facts} facts, ${injected.tokens} tok)` +
+                    logUserActivity(hermesMemId,
+                        `Hermes memory: injected ${injected.count} (${injected.procedures} experience, ${injected.learnings} learnings, ${injected.facts} facts, ${injected.tokens} tok)` +
                         (injected.activityHint ? ` [activity: ${injected.activityHint}]` : ''));
                 }
-            } catch (e) { console.warn('[Pi/Memory] injection skipped:', e.message); }
+            } catch (e) { console.warn('[Hermes/Memory] injection skipped:', e.message); }
         }
 
         if (isStreaming) {
@@ -21936,7 +21936,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                 };
             }
 
-            // Abort the upstream generation if the client (Pi, OpenAI SDK,
+            // Abort the upstream generation if the client (Hermes, OpenAI SDK,
             // etc.) disconnects mid-stream. Without this the backend keeps
             // decoding to max_tokens for a dead connection; on a single-slot
             // llama.cpp that abandoned generation BLOCKS the next request,
@@ -22054,7 +22054,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                         try {
                             broadcast({
                                 type: 'log',
-                                message: `[Pi/API] ${req.apiKeyData.name} ← ${lastSeenTotalTokens} tokens`,
+                                message: `[Hermes/API] ${req.apiKeyData.name} ← ${lastSeenTotalTokens} tokens`,
                                 level: 'success',
                                 targetUserId: req.userId
                             });
@@ -22096,7 +22096,7 @@ app.all('/v1/*', requireAuth, async (req, res) => {
                     try {
                         broadcast({
                             type: 'log',
-                            message: `[Pi/API] ${req.apiKeyData.name} ← ${tokens} tokens`,
+                            message: `[Hermes/API] ${req.apiKeyData.name} ← ${tokens} tokens`,
                             level: 'success',
                             targetUserId: req.userId
                         });

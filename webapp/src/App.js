@@ -361,7 +361,7 @@ const docNavItemSx = (active) => ({
 const DOC_SECTIONS = [
     { id: 'quick-start',     label: 'Quick Start'         },
     { id: 'api-builder',     label: 'API Code Builder'    },
-    { id: 'pi-setup',        label: 'Pi setup'            },
+    { id: 'hermes-setup',    label: 'Hermes setup'        },
     { id: 'automation',      label: 'Automation'          },
     { id: 'web-search',      label: 'Web Search & Fetch'  },
     { id: 'sandbox-skills',  label: 'Sandbox Skills'      },
@@ -563,7 +563,7 @@ const App = () => {
 
     // API Keys state
     const [apiKeys, setApiKeys] = useState([]);
-    // Pi-setup picker: which bearer key to embed in the install one-liner
+    // Hermes-setup picker: which bearer key to embed in the install one-liner
     const [piSelectedKeyId, setPiSelectedKeyId] = useState('');
     const [piRevealKey, setPiRevealKey] = useState(false);
     const [newKeyName, setNewKeyName] = useState('');
@@ -5718,7 +5718,7 @@ fetch(\`${baseUrl}/api/conversations/\${conversationId}/messages\`, {
             // ============================================================================
             '/api/memories': {
                 curl: `# List ACCOUNT memory (persona): preferences, learnings, and per-activity
-# EXPERIENCE. Account-scoped, so it's shared across the web chat and Pi.
+# EXPERIENCE. Account-scoped, so it's shared across the web chat and Hermes.
 curl -k -X GET "${baseUrl}/api/memories" \\
   -H "Authorization: Bearer your_bearer_token"
 
@@ -6379,68 +6379,68 @@ fetch('${baseUrl}/api/model-configs', {
 .then(configs => console.log(configs))
 .catch(err => console.error(err));`
             },
-            '/api/pi/install': {
-                curl: `# Bash-pipeable installer. Self-corrects: MITM TLS, missing/old Node
-# (NodeSource → nvm fallback), missing Pi, missing curl, broken sudo.
-# Idempotent.
+            '/api/hermes/install': {
+                curl: `# Bash-pipeable installer. Installs Hermes Agent if missing, drops the
+# modelserver MCP server, and merges the provider + MCP config into
+# ~/.hermes/config.yaml. Self-corrects: MITM TLS, missing/old Node
+# (NodeSource → nvm fallback), missing curl, broken sudo. Idempotent.
 
 # Auth required — bearer-mode API key (Authorization: Bearer …).
 export MODELSERVER_API_KEY="your_bearer_key"
 curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\
-  ${baseUrl}/api/pi/install | bash`,
+  ${baseUrl}/api/hermes/install | bash`,
                 python: `import os, subprocess, requests
 
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-script = requests.get(f'${baseUrl}/api/pi/install', headers=H, verify=False).text
+script = requests.get(f'${baseUrl}/api/hermes/install', headers=H, verify=False).text
 
 # Run the installer. The script is idempotent.
 env = {**os.environ, 'MODELSERVER_API_KEY': os.environ['MODELSERVER_API_KEY']}
 subprocess.run(['bash', '-c', script], check=True, env=env)`,
-                powershell: `# Pi's installer is bash-only. From PowerShell, hand off to WSL:
+                powershell: `# The installer is bash-only. From PowerShell, hand off to WSL:
 $env:MODELSERVER_API_KEY = "your_bearer_key"
-$script = Invoke-RestMethod -Uri "${baseUrl}/api/pi/install" \`
+$script = Invoke-RestMethod -Uri "${baseUrl}/api/hermes/install" \`
   -Headers @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" } \`
   -SkipCertificateCheck
 $script | wsl bash -c "MODELSERVER_API_KEY=$env:MODELSERVER_API_KEY bash"`,
                 javascript: `// Fetch the script, then exec via Node's child_process.
 import { execSync } from 'node:child_process';
-const r = await fetch('${baseUrl}/api/pi/install', {
+const r = await fetch('${baseUrl}/api/hermes/install', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 });
 const script = await r.text();
 execSync(script, { stdio: 'inherit', shell: '/bin/bash', env: process.env });`
             },
-            '/api/pi/extension/modelserver.ts': {
-                curl: `# Raw TypeScript source for the bundled Pi extension that registers this
-# server as an OpenAI-compatible provider and proxies the skill catalog.
-# Auth required.
+            '/api/hermes/files/modelserver-mcp.mjs': {
+                curl: `# Source for the bundled Hermes MCP server that exposes the skill catalog
+# as tools over the Model Context Protocol. Auth required.
 curl -sk -H "Authorization: Bearer your_bearer_key" \\
-  ${baseUrl}/api/pi/extension/modelserver.ts \\
-  -o ~/.pi/agent/extensions/modelserver/modelserver.ts`,
+  ${baseUrl}/api/hermes/files/modelserver-mcp.mjs \\
+  -o ~/.hermes/mcp-servers/modelserver/modelserver-mcp.mjs`,
                 python: `import requests, os
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-src = requests.get(f'${baseUrl}/api/pi/extension/modelserver.ts', headers=H, verify=False).text
+src = requests.get(f'${baseUrl}/api/hermes/files/modelserver-mcp.mjs', headers=H, verify=False).text
 print(src[:400])`,
                 powershell: `$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
-Invoke-WebRequest -Uri "${baseUrl}/api/pi/extension/modelserver.ts" -Headers $h \`
-  -SkipCertificateCheck -OutFile "$HOME\\.pi\\agent\\extensions\\modelserver\\modelserver.ts"`,
-                javascript: `const r = await fetch('${baseUrl}/api/pi/extension/modelserver.ts', {
+Invoke-WebRequest -Uri "${baseUrl}/api/hermes/files/modelserver-mcp.mjs" -Headers $h \`
+  -SkipCertificateCheck -OutFile "$HOME\\.hermes\\mcp-servers\\modelserver\\modelserver-mcp.mjs"`,
+                javascript: `const r = await fetch('${baseUrl}/api/hermes/files/modelserver-mcp.mjs', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 });
 const src = await r.text();
 console.log(src.slice(0, 400));`
             },
-            '/api/pi/extension/package.json': {
-                curl: `# Manifest for the bundled Pi extension (declares the typebox dep that
-# Pi's npm install --omit=dev will pull in).
+            '/api/hermes/files/package.json': {
+                curl: `# Manifest for the bundled MCP server (declares the @modelcontextprotocol/sdk
+# and yaml deps that npm install --omit=dev will pull in).
 curl -sk -H "Authorization: Bearer your_bearer_key" \\
-  ${baseUrl}/api/pi/extension/package.json`,
+  ${baseUrl}/api/hermes/files/package.json`,
                 python: `import requests, os
 H = {'Authorization': 'Bearer ' + os.environ['MODELSERVER_API_KEY']}
-print(requests.get(f'${baseUrl}/api/pi/extension/package.json', headers=H, verify=False).json())`,
+print(requests.get(f'${baseUrl}/api/hermes/files/package.json', headers=H, verify=False).json())`,
                 powershell: `$h = @{ Authorization = "Bearer $env:MODELSERVER_API_KEY" }
-Invoke-RestMethod -Uri "${baseUrl}/api/pi/extension/package.json" -Headers $h -SkipCertificateCheck | ConvertTo-Json`,
-                javascript: `const pkg = await fetch('${baseUrl}/api/pi/extension/package.json', {
+Invoke-RestMethod -Uri "${baseUrl}/api/hermes/files/package.json" -Headers $h -SkipCertificateCheck | ConvertTo-Json`,
+                javascript: `const pkg = await fetch('${baseUrl}/api/hermes/files/package.json', {
   headers: { Authorization: 'Bearer ' + process.env.MODELSERVER_API_KEY }
 }).then(r => r.json());
 console.log(pkg.name, pkg.version);`
@@ -10408,7 +10408,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                                         size="small"
                                                                         label="Disabled Skills"
                                                                         placeholder="Block specific tools (optional)"
-                                                                        helperText="By default the key can call every enabled skill. Pick one or more here to BLOCK them for this key (e.g. disable file-write skills for a read-only Pi key)."
+                                                                        helperText="By default the key can call every enabled skill. Pick one or more here to BLOCK them for this key (e.g. disable file-write skills for a read-only Hermes key)."
                                                                     />
                                                                 )}
                                                             />
@@ -10917,7 +10917,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                         <Typography sx={{ fontWeight: 600, fontSize: '0.85rem' }}>Choose Interface</Typography>
                                                     </Box>
                                                     <Typography variant="body2" sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                                                        <strong style={{ color: 'var(--text-primary)' }}>AI Chat</strong> for web • <strong style={{ color: 'var(--text-primary)' }}>Pi</strong> for terminal • <strong style={{ color: 'var(--text-primary)' }}>API</strong> for code
+                                                        <strong style={{ color: 'var(--text-primary)' }}>AI Chat</strong> for web • <strong style={{ color: 'var(--text-primary)' }}>Hermes</strong> for terminal • <strong style={{ color: 'var(--text-primary)' }}>API</strong> for code
                                                     </Typography>
                                                 </Box>
                                             </Grid>
@@ -10952,9 +10952,9 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                             <TableCell sx={{ color: 'var(--text-secondary)' }}>Web chat interface with streaming</TableCell>
                                                         </TableRow>
                                                         <TableRow>
-                                                            <TableCell sx={{ fontWeight: 600, color: 'var(--accent-primary)' }}>Pi</TableCell>
-                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>npm install -g @earendil-works/pi-coding-agent</TableCell>
-                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Terminal, automation (see Pi section below)</TableCell>
+                                                            <TableCell sx={{ fontWeight: 600, color: 'var(--accent-primary)' }}>Hermes</TableCell>
+                                                            <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>curl -fsSk …/api/hermes/install | bash</TableCell>
+                                                            <TableCell sx={{ color: 'var(--text-secondary)' }}>Terminal, automation (see Hermes setup below)</TableCell>
                                                         </TableRow>
                                                         <TableRow>
                                                             <TableCell sx={{ fontWeight: 600, color: 'var(--success)' }}>Direct API</TableCell>
@@ -10970,7 +10970,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                         <Box sx={{ mt: 2, p: 1.75, bgcolor: 'rgba(56, 189, 248, 0.06)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.82rem', mb: 0.5 }}>It remembers and gets faster ✨</Typography>
                                             <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
-                                                As you chat (web <em>or</em> Pi), the assistant builds an account <strong style={{ color: 'var(--text-primary)' }}>persona</strong>: your preferences, plus <strong style={{ color: 'var(--text-primary)' }}>experience</strong> for each kind of task (&ldquo;reading emails&rdquo;, &ldquo;web research&rdquo;, &ldquo;code analysis&rdquo;) — the approach that worked. Next time a similar task comes up, it reuses that approach instead of re-exploring, so repeat work needs fewer tool calls and finishes faster. Browse, edit, or clear it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab. Turn it off per-chat with the memory toggle. See the <strong style={{ color: 'var(--text-primary)' }}>Pi setup</strong> section for how Pi shares the same persona.
+                                                As you chat (web <em>or</em> Hermes), the assistant builds an account <strong style={{ color: 'var(--text-primary)' }}>persona</strong>: your preferences, plus <strong style={{ color: 'var(--text-primary)' }}>experience</strong> for each kind of task (&ldquo;reading emails&rdquo;, &ldquo;web research&rdquo;, &ldquo;code analysis&rdquo;) — the approach that worked. Next time a similar task comes up, it reuses that approach instead of re-exploring, so repeat work needs fewer tool calls and finishes faster. Browse, edit, or clear it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab. Turn it off per-chat with the memory toggle. See the <strong style={{ color: 'var(--text-primary)' }}>Hermes setup</strong> section for how Hermes shares the same persona.
                                             </Typography>
                                         </Box>
 
@@ -11139,10 +11139,10 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                             <MenuItem value="/api/api-keys/:id/delete">DELETE /api/api-keys/:id - Delete API Key</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/clear-usage">POST /api/api-keys/:id/clear-usage - Clear Usage Stats</MenuItem>
                                                             <MenuItem value="/api/api-keys/:id/stats">GET /api/api-keys/:id/stats - Get Key Stats</MenuItem>
-                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Pi (Terminal Agent) ───</MenuItem>
-                                                            <MenuItem value="/api/pi/install">GET /api/pi/install - Pi auto-installer (curl | bash)</MenuItem>
-                                                            <MenuItem value="/api/pi/extension/modelserver.ts">GET /api/pi/extension/modelserver.ts - Pi extension source</MenuItem>
-                                                            <MenuItem value="/api/pi/extension/package.json">GET /api/pi/extension/package.json - Pi extension manifest</MenuItem>
+                                                            <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Hermes (Terminal Agent) ───</MenuItem>
+                                                            <MenuItem value="/api/hermes/install">GET /api/hermes/install - Hermes auto-installer (curl | bash)</MenuItem>
+                                                            <MenuItem value="/api/hermes/files/modelserver-mcp.mjs">GET /api/hermes/files/modelserver-mcp.mjs - MCP server source</MenuItem>
+                                                            <MenuItem value="/api/hermes/files/package.json">GET /api/hermes/files/package.json - MCP server manifest</MenuItem>
                                                             <MenuItem disabled sx={{ fontWeight: 600, opacity: 1 }}>─── Automation & Chips ───</MenuItem>
                                                             <MenuItem value="/api/automations">GET/POST /api/automations - List / Create Automation</MenuItem>
                                                             <MenuItem value="/api/automations/:id/run-sync">POST /api/automations/:id/run-sync - Run (final JSON)</MenuItem>
@@ -11223,16 +11223,16 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                 )}
 
 
-                                {/* Pi setup */}
-                                {activeDocSection === 'pi-setup' && (
+                                {/* Hermes setup */}
+                                {activeDocSection === 'hermes-setup' && (
 
                                 <Box sx={docSectionSx}>
 
                                     <Box sx={docSectionHeaderSx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                                             <Box>
-                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Pi setup</Typography>
-                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Install Pi (pi.dev) and connect it to this server</Typography>
+                                                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Hermes setup</Typography>
+                                                <Typography variant="caption" sx={{ color: 'var(--text-secondary)' }}>Install Hermes Agent and connect it to this server</Typography>
                                             </Box>
                                         </Box>
 
@@ -11242,7 +11242,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                     <Box sx={docSectionBodySx}>
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, p: 1.5, bgcolor: 'var(--accent-muted)', borderRadius: 2, border: '1px solid var(--accent-muted)' }}>
                                             <Typography sx={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                <strong style={{ color: 'var(--text-primary)' }}>Pi</strong> is a third-party minimal coding harness (<a href="https://pi.dev" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>pi.dev</a>) for the terminal. The bundled extension below registers this server as an OpenAI-compatible provider and exposes every enabled skill as a Pi tool.
+                                                <strong style={{ color: 'var(--text-primary)' }}>Hermes Agent</strong> is an open-source terminal agent from Nous Research (<a href="https://hermes-agent.nousresearch.com" target="_blank" rel="noopener" style={{ color: 'var(--accent-secondary)' }}>hermes-agent.nousresearch.com</a>). The installer below registers this server as a native OpenAI-compatible provider and exposes every enabled skill as a Hermes tool over the Model Context Protocol (a local MCP server).
                                             </Typography>
                                         </Box>
 
@@ -11253,8 +11253,8 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                             const keyDisplay = selectedKey
                                                 ? (piRevealKey ? selectedKey.key : `${selectedKey.key.slice(0, 8)}…${selectedKey.key.slice(-4)}`)
                                                 : '<your-bearer-key>';
-                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash`;
-                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/pi/install | bash`;
+                                            const cmdReveal = `export MODELSERVER_API_KEY="${keyDisplay}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/hermes/install | bash`;
+                                            const cmdFull = `export MODELSERVER_API_KEY="${keyForCmd}"\ncurl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \\\n  ${baseUrl}/api/hermes/install | bash`;
                                             const missingAgents = selectedKey && !(selectedKey.permissions || []).includes('agents');
                                             return (
                                                 <>
@@ -11266,7 +11266,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                                     No bearer-mode keys yet.
                                                                 </Typography>
                                                                 <Typography sx={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                                                                    Open the <strong style={{ color: 'var(--text-primary)' }}>API Keys</strong> tab → create a key with the <code>Bearer Only</code> flag and the <code>agents</code> permission (Pi sends <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch).
+                                                                    Open the <strong style={{ color: 'var(--text-primary)' }}>API Keys</strong> tab → create a key with the <code>Bearer Only</code> flag and the <code>agents</code> permission (Hermes sends <code>Authorization: Bearer &lt;key&gt;</code>; standard key+secret pairs won&apos;t dispatch).
                                                                 </Typography>
                                                             </Box>
                                                         ) : (
@@ -11302,7 +11302,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                                 </Box>
                                                                 {missingAgents && (
                                                                     <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--warning)' }}>
-                                                                        ⚠ This key lacks the <code>agents</code> permission. Pi will register the model provider but <code>/api/skills</code> will return 403 — the skill catalog won&apos;t load. Edit the key (API Keys tab) to add it.
+                                                                        ⚠ This key lacks the <code>agents</code> permission. Hermes will register the model provider but <code>/api/skills</code> will return 403 — the skill catalog won&apos;t load. Edit the key (API Keys tab) to add it.
                                                                     </Typography>
                                                                 )}
                                                             </>
@@ -11329,7 +11329,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                                 : <>Pick a key above and the command auto-populates. Or replace <code>&lt;your-bearer-key&gt;</code> by hand.</>}
                                                         </Typography>
                                                         <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                            One script handles every common failure: corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing Pi, missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
+                                                            One script handles every common failure: installs Hermes Agent if missing, then drops the MCP server and merges <code>~/.hermes/config.yaml</code>. Self-corrects for corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
                                                         </Typography>
                                                     </Box>
                                                 </>
@@ -11338,8 +11338,8 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
 
                                         <Box sx={{ mb: 2, p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>3. Run</Typography>
-                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                                <span>{`pi  # picks up MODELSERVER_BASE_URL + MODELSERVER_API_KEY automatically`}</span>
+                                            <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.75rem', whiteSpace: 'pre-wrap' }}>
+                                                <span>{`hermes        # classic CLI\nhermes --tui  # modern TUI (recommended)`}</span>
                                             </Box>
                                         </Box>
 
@@ -11347,15 +11347,15 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>What gets registered</Typography>
                                             <Table size="small" sx={compactTableSx}>
                                                 <TableBody>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>modelserver</code> — populated from <code>/v1/models</code>; pick any loaded model from Pi&apos;s model picker</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>One per enabled skill — <code>web_search</code>, <code>fetch_url</code>, <code>grep_code</code>, <code>outline_file</code>, <code>replace_lines</code>, file ops, OCR, PDF, and the rest of the 120+ catalog</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>provider</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}><code>custom:modelserver</code> in <code>~/.hermes/config.yaml</code> — populated from <code>/v1/models</code>; pick any loaded model from Hermes&apos; model picker</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>tools</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>An MCP server (<code>mcp_servers.modelserver</code>) exposing one tool per enabled skill — <code>web_search</code>, <code>fetch_url</code>, file ops, OCR, PDF, and the rest of the 120+ catalog, plus <code>workspace_get</code></TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>auth</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bearer key reused for both <code>/v1/*</code> chat completions and <code>/api/skills/:name/execute</code></TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>memory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Pi shares your account&apos;s <strong style={{ color: 'var(--text-primary)' }}>persona &amp; experience memory</strong> — the server injects what worked on similar past tasks into each turn and records new experience from Pi&apos;s tool use, so repeat work gets faster. Raw OpenAI-SDK clients (key+secret) stay fully transparent.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--success)' }}>memory</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Hermes shares your account&apos;s <strong style={{ color: 'var(--text-primary)' }}>persona &amp; experience memory</strong> — the server injects what worked on similar past tasks into each turn and records new experience from Hermes&apos; tool use, so repeat work gets faster. Raw OpenAI-SDK clients (key+secret) stay fully transparent.</TableCell></TableRow>
                                                 </TableBody>
                                             </Table>
                                             <Box sx={{ mt: 1.25, p: 1.25, bgcolor: 'rgba(56, 189, 248, 0.06)', borderRadius: 1, border: '1px solid var(--accent-muted)' }}>
                                                 <Typography sx={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-                                                    <strong style={{ color: 'var(--text-primary)' }}>One persona across web + Pi:</strong> create the bearer key while signed in to the web UI so it&apos;s tied to your account — then Pi and the web chat share the <em>same</em> memory/persona (manage it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab). A key created without a session falls back to its own isolated memory. Don&apos;t share one bearer token across people — a shared token is a shared identity and a shared memory bucket.
+                                                    <strong style={{ color: 'var(--text-primary)' }}>One persona across web + Hermes:</strong> create the bearer key while signed in to the web UI so it&apos;s tied to your account — then Hermes and the web chat share the <em>same</em> memory/persona (manage it in the <strong style={{ color: 'var(--text-primary)' }}>Memory</strong> tab). A key created without a session falls back to its own isolated memory. Don&apos;t share one bearer token across people — a shared token is a shared identity and a shared memory bucket.
                                                 </Typography>
                                             </Box>
                                         </Box>
@@ -11363,16 +11363,17 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                         <Box sx={{ p: 1.5, bgcolor: 'var(--bg-tertiary)', borderRadius: 2 }}>
                                             <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)', mb: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Manual install</Typography>
                                             <Typography variant="caption" sx={{ display: 'block', color: 'var(--text-secondary)', mb: 1 }}>
-                                                Don&apos;t want to pipe to bash? Fetch the files directly and edit <code>~/.pi/agent/settings.json</code> by hand:
+                                                Don&apos;t want to pipe to bash? Install Hermes (<code>curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash</code>), then fetch the MCP server files and run <code>configure.mjs</code> to merge <code>~/.hermes/config.yaml</code> by hand:
                                             </Typography>
                                             <Box sx={{ bgcolor: 'rgba(0,0,0,0.4)', p: 1.5, borderRadius: 1, fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>
-                                                <span>{`# Auto-installer (raw bash; what /api/pi/install serves)
-${baseUrl}/api/pi/extension/install.sh
+                                                <span>{`# Auto-installer (raw bash; what /api/hermes/install serves)
+${baseUrl}/api/hermes/files/install.sh
 
-# Individual extension files (auth required on all of these)
-${baseUrl}/api/pi/extension/modelserver.ts
-${baseUrl}/api/pi/extension/package.json
-${baseUrl}/api/pi/extension/README.md`}</span>
+# Individual MCP server files (auth required on all of these)
+${baseUrl}/api/hermes/files/modelserver-mcp.mjs
+${baseUrl}/api/hermes/files/configure.mjs
+${baseUrl}/api/hermes/files/package.json
+${baseUrl}/api/hermes/files/README.md`}</span>
                                             </Box>
                                         </Box>
 
@@ -12124,20 +12125,20 @@ GET    ${baseUrl}/api/node-types/builtin    # built-in palette`}</span>
                                                     </TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/chat/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible chat (proxied to first running instance)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/completions</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>POST</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible text completion</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible model list (used by Pi extension)</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/models</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>OpenAI-compatible model list (used by the Hermes provider)</TableCell></TableRow>
                                                     <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--warning)' }}>/v1/*</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>ALL</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Catch-all proxy: any other sglang/llama.cpp endpoint forwards verbatim</TableCell></TableRow>
 
-                                                    {/* Pi Terminal Agent */}
+                                                    {/* Hermes Terminal Agent */}
                                                     <TableRow>
                                                         <TableCell colSpan={3} sx={{ bgcolor: 'rgba(168, 85, 247, 0.1)', py: 0.75 }}>
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                <Chip label="Pi" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--border-focus)', color: 'var(--text-primary)' }} />
-                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Pi Terminal Agent (bearer-only auth)</Typography>
+                                                                <Chip label="Hermes" size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: 'var(--border-focus)', color: 'var(--text-primary)' }} />
+                                                                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600 }}>Hermes Terminal Agent (bearer-only auth)</Typography>
                                                             </Box>
                                                         </TableCell>
                                                     </TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bash auto-installer (curl | bash). Self-corrects MITM TLS, missing/old Node, missing Pi.</TableCell></TableRow>
-                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/pi/extension/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver.ts, package.json, README.md, install.sh</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/hermes/install</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Bash auto-installer (curl | bash). Installs Hermes; self-corrects MITM TLS, missing/old Node.</TableCell></TableRow>
+                                                    <TableRow><TableCell sx={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>/api/hermes/files/:file</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>GET</TableCell><TableCell sx={{ color: 'var(--text-secondary)' }}>Serves modelserver-mcp.mjs, configure.mjs, package.json, README.md, install.sh</TableCell></TableRow>
 
                                                 </TableBody>
                                             </Table>
