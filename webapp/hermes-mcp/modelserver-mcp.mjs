@@ -37,7 +37,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import * as fs from "fs";
-import { basename, dirname } from "path";
+import { basename, dirname, resolve as resolvePath } from "path";
+import { execFile } from "child_process";
 
 // Largest host file the auto-bridge will upload into the server workspace.
 const MAX_BRIDGE_BYTES = 50 * 1024 * 1024;
@@ -267,6 +268,69 @@ async function buildCatalog() {
     });
     dispatch.set("workspace_get", { builtin: "workspace_get" });
 
+    // ---- fast LOCAL code tools (run on the host, no server round-trip) -------
+    // These exist so coding stays fast: locate with a string search, read only a
+    // bounded slice, and patch in place — instead of loading whole files (slow on
+    // large files). read_lines REFUSES to dump an entire big file, which makes
+    // grep→slice→patch the path of least resistance.
+    tools.push({
+        name: "code_search",
+        description:
+            "FIRST STEP for any code change: search the project for a string/symbol and get `file:line: text` hits. " +
+            "Much faster than reading files — use this to LOCATE code instead of reading whole files. " +
+            "Then read_lines around a hit and apply_patch to edit. Runs on your local working directory.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                pattern: { type: "string", description: "Text or regex to find (fixed-string by default; set regex:true for a regex)" },
+                path: { type: "string", description: "File or directory to search (default: current working directory)" },
+                regex: { type: "boolean", description: "Treat pattern as a regular expression (default false = literal text)" },
+                ignore_case: { type: "boolean", description: "Case-insensitive search" },
+                max_results: { type: "number", description: "Cap on hits returned (default 60)" },
+            },
+            required: ["pattern"],
+        },
+    });
+    dispatch.set("code_search", { builtin: "code_search" });
+
+    tools.push({
+        name: "read_lines",
+        description:
+            "Read a BOUNDED slice of a file (with line numbers) — pair with code_search. " +
+            "Pass start/end, or `around` a line number to get a window. Do NOT use this to read a whole large " +
+            "file: it caps output and points you back to code_search. This is the fast alternative to a full read.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "File to read (relative to the working dir or absolute)" },
+                start: { type: "number", description: "First line (1-indexed)" },
+                end: { type: "number", description: "Last line (1-indexed, inclusive)" },
+                around: { type: "number", description: "Center on this line and return ~8 lines either side (shortcut for start/end)" },
+            },
+            required: ["path"],
+        },
+    });
+    dispatch.set("read_lines", { builtin: "read_lines" });
+
+    tools.push({
+        name: "apply_patch",
+        description:
+            "Patch a file by replacing old_string with new_string — a TARGETED edit, no need to rewrite the file. " +
+            "old_string must match exactly (copy it verbatim from read_lines, including indentation) and be unique " +
+            "(add surrounding lines if not). Set all:true to replace every occurrence. The fast way to change code.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "File to edit" },
+                old_string: { type: "string", description: "Exact text to replace (must appear exactly once unless all:true)" },
+                new_string: { type: "string", description: "Replacement text" },
+                all: { type: "boolean", description: "Replace every occurrence instead of requiring uniqueness" },
+            },
+            required: ["path", "old_string", "new_string"],
+        },
+    });
+    dispatch.set("apply_patch", { builtin: "apply_patch" });
+
     if (skippedStub > 0) console.error(`[modelserver-mcp] skipped ${skippedStub} stub skill(s) with no def execute and no native route`);
     if (skippedShadow > 0) console.error(`[modelserver-mcp] skipped ${skippedShadow} skill(s) that shadow local tools (set MODELSERVER_INCLUDE_LOCAL_SHADOW=1 to register them)`);
     console.error(`[modelserver-mcp] exposing ${tools.length} tool(s) from ${baseUrl}`);
@@ -278,7 +342,11 @@ async function callSkill(name, args, signal) {
     const entry = dispatch.get(name);
     if (!entry) throw new Error(`unknown tool: ${name}`);
 
-    if (entry.builtin === "workspace_get") return workspaceGet(args, signal);
+    if (entry.builtin) {
+        const local = { workspace_get: workspaceGet, code_search: localCodeSearch, read_lines: localReadLines, apply_patch: localApplyPatch };
+        const fn = local[entry.builtin];
+        if (fn) return fn(args, signal);
+    }
 
     const { nativeRoute } = entry;
     let r;
@@ -336,6 +404,146 @@ async function workspaceGet(a, signal) {
     fs.mkdirSync(dirname(hp), { recursive: true });
     fs.writeFileSync(hp, buf);
     return `Saved ${buf.length} bytes to ${hp}`;
+}
+
+// ---- local code tools (host filesystem) -------------------------------------
+const READ_LINES_DEFAULT = 200;     // default window when no end given
+const READ_LINES_MAX = 400;         // hard cap per call — can't dump a whole big file
+const SEARCH_SKIP_DIRS = new Set([".git", "node_modules", ".hermes", "dist", "build", ".cache", ".next", "vendor"]);
+
+function resolveHostPath(p) {
+    if (!p) return process.cwd();
+    return resolvePath(process.cwd(), String(p));
+}
+
+function execFileP(cmd, args) {
+    return new Promise((res) => {
+        execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+            res({ err, stdout: stdout || "", stderr: stderr || "" });
+        });
+    });
+}
+
+// Search via ripgrep → grep → JS walk. Returns an array of "file:line:text".
+async function searchLines(target, pattern, { ignoreCase, fixed, maxResults }) {
+    // ripgrep
+    {
+        const args = ["--line-number", "--no-heading", "--color", "never", "--max-count", String(maxResults)];
+        if (ignoreCase) args.push("-i");
+        if (fixed) args.push("-F");
+        args.push("-e", pattern, target);
+        const { err, stdout } = await execFileP("rg", args);
+        if (!err) return splitNonEmpty(stdout);
+        if (err.code === 1) return [];           // ripgrep: no matches
+        // any other code (2 = error, ENOENT = not installed) → fall through
+    }
+    // grep
+    {
+        const args = ["-rnI", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=.hermes"];
+        if (ignoreCase) args.push("-i");
+        if (fixed) args.push("-F");
+        args.push("-e", pattern, target);
+        const { err, stdout } = await execFileP("grep", args);
+        if (!err) return splitNonEmpty(stdout);
+        if (err.code === 1) return [];            // grep: no matches
+    }
+    // JS fallback (bounded)
+    return jsGrep(target, pattern, { ignoreCase, fixed, maxResults });
+}
+
+function splitNonEmpty(s) { return s ? s.split("\n").filter(Boolean) : []; }
+
+function jsGrep(target, pattern, { ignoreCase, fixed, maxResults }) {
+    const out = [];
+    const src = fixed ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
+    let re;
+    try { re = new RegExp(src, ignoreCase ? "i" : ""); }
+    catch { re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ignoreCase ? "i" : ""); }
+    let filesScanned = 0;
+    const scanFile = (full) => {
+        let st; try { st = fs.statSync(full); } catch { return; }
+        if (!st.isFile() || st.size > 2 * 1024 * 1024) return;
+        let c; try { c = fs.readFileSync(full, "utf8"); } catch { return; }
+        if (c.indexOf("\u0000") !== -1) return;   // looks binary — skip
+        const ls = c.split("\n");
+        for (let i = 0; i < ls.length && out.length < maxResults; i++) {
+            if (re.test(ls[i])) out.push(`${full}:${i + 1}:${ls[i]}`);
+        }
+    };
+    const walk = (dir) => {
+        if (out.length >= maxResults || filesScanned > 5000) return;
+        let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+            if (out.length >= maxResults || filesScanned > 5000) return;
+            const full = dir + "/" + e.name;
+            if (e.isDirectory()) { if (!SEARCH_SKIP_DIRS.has(e.name)) walk(full); }
+            else if (e.isFile()) { filesScanned++; scanFile(full); }
+        }
+    };
+    try {
+        const st = fs.statSync(target);
+        if (st.isFile()) scanFile(target); else walk(target);
+    } catch { /* ignore */ }
+    return out;
+}
+
+async function localCodeSearch(a) {
+    const pattern = String(a?.pattern ?? "");
+    if (!pattern) throw new Error("code_search needs a `pattern`");
+    const target = resolveHostPath(a?.path || ".");
+    const maxResults = Math.min(Math.max(Number(a?.max_results) || 60, 1), 300);
+    const hits = await searchLines(target, pattern, {
+        ignoreCase: a?.ignore_case === true,
+        fixed: a?.regex !== true,   // literal text unless regex:true
+        maxResults: maxResults + 1, // +1 to detect overflow
+    });
+    if (!hits.length) return `No matches for ${JSON.stringify(pattern)} in ${a?.path || "."}`;
+    const shown = hits.slice(0, maxResults);
+    let out = shown.join("\n");
+    if (hits.length > maxResults) out += `\n… more matches (narrow the pattern or pass a path/max_results).`;
+    out += `\n\n[Next: read_lines around a hit (bounded), then apply_patch — don't read the whole file.]`;
+    return out;
+}
+
+async function localReadLines(a) {
+    if (!a?.path) throw new Error("read_lines needs a `path`");
+    const file = resolveHostPath(a.path);
+    let content;
+    try { content = fs.readFileSync(file, "utf8"); }
+    catch (e) { throw new Error(`read_lines: ${e.code === "ENOENT" ? "no such file" : e.message}: ${file}`); }
+    const all = content.split("\n");
+    const n = all.length;
+    let start, end;
+    if (a.around != null) { const c = Math.max(1, Number(a.around) || 1); start = Math.max(1, c - 8); end = c + 8; }
+    else { start = Math.max(1, Number(a.start) || 1); end = Number(a.end) || 0; }
+    if (!end || end < start) end = Math.min(n, start + READ_LINES_DEFAULT - 1);
+    if (end - start + 1 > READ_LINES_MAX) end = start + READ_LINES_MAX - 1;
+    end = Math.min(end, n);
+    const body = all.slice(start - 1, end).map((ln, i) => `${start + i}: ${ln}`).join("\n");
+    const truncated = start > 1 || end < n;
+    const note = truncated
+        ? `\n\n[lines ${start}-${end} of ${n}. Use code_search to locate other regions, then read_lines there — don't read the whole file.]`
+        : "";
+    return body + note;
+}
+
+async function localApplyPatch(a) {
+    if (!a?.path) throw new Error("apply_patch needs a `path`");
+    const oldS = a?.old_string, newS = a?.new_string;
+    if (typeof oldS !== "string" || typeof newS !== "string") throw new Error("apply_patch needs string `old_string` and `new_string`");
+    if (oldS === "") throw new Error("apply_patch: old_string is empty — provide the exact text to replace");
+    const file = resolveHostPath(a.path);
+    let content;
+    try { content = fs.readFileSync(file, "utf8"); }
+    catch (e) { throw new Error(`apply_patch: cannot read ${file}: ${e.code === "ENOENT" ? "no such file" : e.message}`); }
+    const occurrences = content.split(oldS).length - 1;
+    if (occurrences === 0) throw new Error(`apply_patch: old_string not found in ${a.path}. Copy it verbatim from read_lines (exact whitespace/indentation).`);
+    if (occurrences > 1 && a?.all !== true) throw new Error(`apply_patch: old_string occurs ${occurrences}× in ${a.path} — add surrounding lines to make it unique, or pass all:true.`);
+    const idx = content.indexOf(oldS);
+    const updated = a?.all === true ? content.split(oldS).join(newS) : content.slice(0, idx) + newS + content.slice(idx + oldS.length);
+    fs.writeFileSync(file, updated);
+    const lineNo = content.slice(0, idx).split("\n").length;
+    return `Patched ${a.path} — replaced ${a.all === true ? occurrences + " occurrence(s)" : "1 occurrence"} near line ${lineNo}.`;
 }
 
 // ---- MCP wiring -------------------------------------------------------------
