@@ -565,7 +565,7 @@ const App = () => {
     const [apiKeys, setApiKeys] = useState([]);
     // Hermes-setup picker: which bearer key to embed in the install one-liner
     const [piSelectedKeyId, setPiSelectedKeyId] = useState('');
-    const [piRevealKey, setPiRevealKey] = useState(false);
+    const [piRevealKey, setPiRevealKey] = useState(true); // default revealed: the snippet is meant to be copied as-is
     const [newKeyName, setNewKeyName] = useState('');
     const [newKeyPermissions, setNewKeyPermissions] = useState(['query', 'models']);
     // Denylist of skills the new key is forbidden from calling. Empty = allow all.
@@ -11254,6 +11254,10 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                             const bearerKeys = (apiKeys || []).filter(k => k && k.bearerOnly && k.active !== false);
                                             const selectedKey = bearerKeys.find(k => k.id === piSelectedKeyId) || null;
                                             const keyForCmd = selectedKey ? selectedKey.key : '<your-bearer-key>';
+                                            // Default to the FULL key in the displayed command (piRevealKey
+                                            // starts true): users select-and-copy the visible text, and a
+                                            // first8…last4 mask silently produces a truncated key → 401.
+                                            // The eye toggle still lets them mask it (e.g. for screen-sharing).
                                             const keyDisplay = selectedKey
                                                 ? (piRevealKey ? selectedKey.key : `${selectedKey.key.slice(0, 8)}…${selectedKey.key.slice(-4)}`)
                                                 : '<your-bearer-key>';
@@ -11330,7 +11334,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                         </Box>
                                                         <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
                                                             {selectedKey
-                                                                ? <>The copy button grabs the full command with the cleartext key. The key is masked in the displayed snippet by default — click <VisibilityIcon sx={{ fontSize: 12, verticalAlign: 'middle' }} /> above to reveal.</>
+                                                                ? <>The snippet shows the full cleartext key by default, so the copy button and a manual select-and-copy both give a working command. Click <VisibilityOffIcon sx={{ fontSize: 12, verticalAlign: 'middle' }} /> above to mask it.</>
                                                                 : <>Pick a key above and the command auto-populates. Or replace <code>&lt;your-bearer-key&gt;</code> by hand.</>}
                                                         </Typography>
                                                         <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
