@@ -77,11 +77,16 @@ mcp_servers:
       MODELSERVER_API_KEY: <bearer-key>
 ```
 
-with `MODELSERVER_API_KEY` also written to `~/.hermes/.env`. The **simple model
-form** (`provider: custom` + `base_url` + `api_key` + `default`) is what makes
-Hermes skip its interactive first-run setup wizard, so `hermes` goes straight to
-the agent. `model.default` is auto-detected from `/v1/models` — load a model in
-the webapp first (otherwise pick one later with `hermes model`).
+`~/.hermes/.env` gets three keys: `MODELSERVER_API_KEY` plus `OPENAI_BASE_URL`
+and `OPENAI_API_KEY`. The OpenAI pair is the **universal "a provider is
+configured" signal** Hermes checks first (`_has_any_provider_configured`), on
+every version — including older builds whose check predates the `config.yaml`
+`model.provider` branch. Writing them is what reliably makes `hermes` skip its
+interactive first-run setup wizard ("How would you like to set up Hermes?") and
+go straight to the agent; the `config.yaml` **simple model form**
+(`provider: custom` + `base_url` + `api_key` + `default`) supplies the actual
+model + routing. `model.default` is auto-detected from `/v1/models` — load a
+model in the webapp first (otherwise pick one later with `hermes model`).
 
 ## Env vars
 

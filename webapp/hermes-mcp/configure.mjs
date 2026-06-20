@@ -115,14 +115,29 @@ fs.writeFileSync(CONFIG_PATH, YAML.stringify(cfg, { version: "1.1" }), { mode: 0
 console.error(`[hermes-configure] wrote ${CONFIG_PATH}`);
 
 // ---- .env -------------------------------------------------------------------
+// Besides MODELSERVER_API_KEY (the MCP server + provider key_env), also write
+// OPENAI_BASE_URL + OPENAI_API_KEY. Those two are the UNIVERSAL "a provider is
+// configured" signal Hermes checks FIRST in _has_any_provider_configured() — on
+// every version, including older builds whose check predates the config.yaml
+// `model.provider` branch. Without them such a build decides nothing is
+// configured and launches the first-run setup wizard ("How would you like to
+// set up Hermes?") even though our config.yaml is complete. They also serve as
+// the OpenAI-compatible fallback creds, and point at the same base/key the
+// custom provider uses, so there's no runtime conflict.
+const apiV1 = `${api.base}/v1`;
 let envText = "";
 if (fs.existsSync(ENV_PATH)) envText = fs.readFileSync(ENV_PATH, "utf8");
-const lines = envText.split("\n").filter((l) => !/^\s*MODELSERVER_API_KEY\s*=/.test(l));
+const managedEnvKeys = ["MODELSERVER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY"];
+const lines = envText.split("\n").filter(
+    (l) => !managedEnvKeys.some((k) => new RegExp(`^\\s*${k}\\s*=`).test(l))
+);
 // Trim trailing blank lines, then append.
 while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
 lines.push(`MODELSERVER_API_KEY=${apiKey}`);
+lines.push(`OPENAI_BASE_URL=${apiV1}`);
+lines.push(`OPENAI_API_KEY=${apiKey}`);
 fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", { mode: 0o600 });
-console.error(`[hermes-configure] wrote MODELSERVER_API_KEY to ${ENV_PATH}`);
+console.error(`[hermes-configure] wrote MODELSERVER_API_KEY, OPENAI_BASE_URL, OPENAI_API_KEY to ${ENV_PATH}`);
 
 console.error("[hermes-configure] done. Launch Hermes with `hermes` (or `hermes --tui`).");
 

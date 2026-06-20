@@ -361,6 +361,46 @@ else
 fi
 
 # ============================================================================
+# Step 4b · Hermes tool dependencies (ripgrep, ffmpeg)
+# ============================================================================
+# Hermes' optional tool deps that "degrade gracefully" when missing: ripgrep
+# (fast file search; falls back to grep) and ffmpeg (TTS voice messages).
+# Installing them makes every Hermes feature work out of the box. node + a
+# browser engine are handled by Hermes' own installer above.
+section "Step 4b · Hermes tool dependencies"
+missing_deps=""
+for pair in "ripgrep:rg" "ffmpeg:ffmpeg"; do
+    pkg="${pair%%:*}"; bin="${pair##*:}"
+    if have "$bin"; then
+        log_skip "$pkg present"
+    else
+        missing_deps="$missing_deps $pkg"
+    fi
+done
+missing_deps="$(echo "$missing_deps" | xargs 2>/dev/null || true)"
+if [ -z "$missing_deps" ]; then
+    :
+elif have apt-get && { [ -n "$SUDO" ] || [ "$(id -u)" -eq 0 ]; }; then
+    start_spinner "Installing Hermes tool deps: $missing_deps"
+    {
+        sudo_run apt-get update -y
+        sudo_run apt-get -o Acquire::https::Verify-Peer=false install -y $missing_deps \
+            || sudo_run apt-get install -y $missing_deps
+    } >/dev/null 2>&1
+    stop_spinner
+    still_missing=""
+    for pair in "ripgrep:rg" "ffmpeg:ffmpeg"; do
+        pkg="${pair%%:*}"; bin="${pair##*:}"
+        case " $missing_deps " in
+            *" $pkg "*) if have "$bin"; then log_success "$pkg installed"; else still_missing="$still_missing $pkg"; fi ;;
+        esac
+    done
+    [ -n "$still_missing" ] && log_warning "could not install:$still_missing (optional — Hermes degrades gracefully: ripgrep→grep, ffmpeg→skip TTS)"
+else
+    log_warning "missing:$missing_deps — can't apt-install (no sudo/apt). Optional; Hermes degrades gracefully."
+fi
+
+# ============================================================================
 # Step 5/6 · modelserver MCP server
 # ============================================================================
 section "Step 5/6 · modelserver MCP server"
