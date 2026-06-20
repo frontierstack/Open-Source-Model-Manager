@@ -13023,8 +13023,27 @@ function isJunkMemoryLine(sentence) {
     if ((t.match(/\|/g) || []).length >= 2) return true;
     // Table separator / alignment row ( |---|:--:| ).
     if (/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{0,}:?\s*)*\|?$/.test(t)) return true;
-    // A bare markdown heading with no following prose ("## Findings").
-    if (/^#{1,6}\s+\S+$/.test(t)) return true;
+    // Any markdown heading ("## Findings", "## What We Know So Far") — a section
+    // label from the assistant's formatted answer, not a durable fact.
+    if (/^#{1,6}\s+/.test(t)) return true;
+    // Markdown list item / numbered or analysis step ("- Watch …", "2. **Recipient**: …").
+    // These are pieces of a formatted answer, not standalone facts about the user.
+    if (/^[\s>]*([-*+]|\d+[.)])\s+/.test(t)) return true;
+    // A line that LEADS with a bolded span ("**Subject**: …", "**The irony:**
+    // …", "**Links**: …") — a row/label out of an assistant's structured
+    // breakdown, never a durable user fact (which reads as prose).
+    if (/^\s*\*\*[^*]+\*\*/.test(t)) return true;
+    // Code-ish line: shell/PowerShell pipelines, variable assignments, calls, or
+    // statement punctuation. Real facts mentioning code survive (the cue must be
+    // structural), code FRAGMENTS stored verbatim do not.
+    if (/^\s*\$\w+\s*=/.test(t)) return true;                         // $x = …
+    if (/\b(Where-Object|Write-Host|ForEach-Object|Select-Object|Invoke-RestMethod)\b/.test(t)) return true;
+    if (/=>|;\s*$|\{\s*$|^\s*(function|const|let|var|def|class|import|return|public|private)\b/.test(t)) return true;
+    // Link-dominated line ("📖 Read more: [Vogue HK](https://…)", "https://… for updates"):
+    // strip markdown links + bare URLs; if barely any prose remains, it's a
+    // pointer/citation, not a fact worth keeping.
+    const noLinks = t.replace(/\[[^\]]*\]\([^)]*\)/g, ' ').replace(/https?:\/\/\S+/g, ' ');
+    if ((t.match(/https?:\/\/|\]\(/g) || []).length >= 1 && (noLinks.match(/[a-zA-Z]/g) || []).length < 20) return true;
     // Almost no letters (separator rules "---"/"===", pure number/symbol lines)
     // — not a real fact. Kept low (<4) so genuine short facts ("Pi is 3.14",
     // "IP 1.2.3.4") survive; the scoreFactuality length gate backstops the rest.
@@ -13065,6 +13084,7 @@ const LLM_EXTRACT_SYSTEM_PROMPT =
     '- Only items worth remembering WEEKS from now, in unrelated conversations.\n' +
     '- NO content whose VALUE is time-bound (current date/time, today\'s news, live prices).\n' +
     '- A durable change phrased with time words ("we are migrating to X this year", "I use Y now") IS worth keeping — rephrase it atemporally as the new steady state (e.g. "The user\'s hospital is migrating its network from Cisco to Juniper"), do not drop it.\n' +
+    '- DO NOT extract the assistant\'s OWN output as facts: article/search-result summaries, quoted passages, headings/bullets/tables, code snippets, commands, links/citations, or "what we found" write-ups are NOT memories. A memory is about the USER (their life/work/projects/environment) or their stable preferences/corrections — never the content the assistant produced this turn.\n' +
     '- NO one-off task details, pleasantries, restatements of the question, or generic knowledge the assistant already has.\n' +
     '- Each text must stand alone without this conversation as context (resolve "it"/"that").\n' +
     '- 0 to 5 items. If nothing qualifies, return [].';
@@ -13181,6 +13201,14 @@ function extractMemoriesFromTurn(userText, assistantText, maxKeep = 5) {
             // before they could ever be classified. Those are exactly what the
             // user wants remembered, so a directive cue overrides the gate.
             const isDirectiveType = type !== 'fact';
+            // Plain FACTS from the ASSISTANT side are almost always the model's
+            // own generated content (article summaries, search results, code,
+            // citations) — not durable facts ABOUT THE USER. scoreFactuality
+            // rewards URLs/paths/code/numbers, so that content scored high and
+            // flooded the store. Keep assistant-side ONLY for behavioral memories
+            // (corrections / workarounds / learnings the exchange established);
+            // real user facts come from the USER side (or the LLM extractor).
+            if (role === 'assistant' && !isDirectiveType) continue;
             if (score < MEMORY_MIN_SCORE && !isDirectiveType) continue;
             // Drop time-bound / live-news facts: their truth is anchored to this
             // moment, so persisting them poisons future turns (a cached "today
@@ -13401,6 +13429,14 @@ async function extractNewMemoriesFromSave(userId, conversationId, messages) {
     }
     if (newestCursor && newestCursor !== cursor) {
         await memoryService.setCursor(userId, conversationId, newestCursor);
+    }
+    // Background self-consolidation: once the store grows past the soft cap, merge
+    // any near-duplicate clusters that have accumulated. Fire-and-forget, no LLM
+    // (keep-strongest text), so it stays cheap. Only does work when over the cap.
+    if (added > 0) {
+        memoryService.consolidateUser(userId, { auto: true }).then((r) => {
+            if (r && r.merged > 0) logUserActivity(userId, `Memory: consolidated ${r.merged} near-duplicate memories (${r.before} → ${r.after})`);
+        }).catch(() => {});
     }
     if (added > 0 || superseded > 0) {
         const total = await memoryService.countForUser(userId).catch(() => -1);
@@ -13700,13 +13736,16 @@ async function retrieveRelevantMemories(userId, currentConvId, query, tokenBudge
     const procCands = all.filter(isProcedure)
         .filter(m => (activityHint && m.activity === activityHint) || isRelevant(m))
         .map(m => ({ m, s: procScoreOf(m) })).sort((a, b) => b.s - a.s);
-    // Directives: curated ones (manual / model learnings) always apply — they
-    // shape behavior across topics. AUTO-extracted directives (a heuristically
-    // typed preference/limitation/correction) must be topically relevant AND
-    // non-ephemeral, exactly like facts, so a stray one-off doesn't inject
-    // everywhere.
+    // Directives: only GLOBAL ones apply across topics — a pinned memory or a
+    // genuine standing rule ("from now on, be concise", "I use tabs"). A directive
+    // that is merely curated/important/non-fact but TOPICAL (a coding tip, a tool
+    // preference) must be topically relevant AND non-ephemeral, exactly like
+    // facts — otherwise it surfaces everywhere (the "coding tip on a cyber-news
+    // query" leak). This holds for manual AND model-recorded directives: being
+    // user- or model-authored no longer buys an unconditional inject; only being
+    // global (marker/pinned) does.
     const directives = all.filter(isDirective)
-        .filter(m => isCurated(m) || isGlobalBehavioralDirective(m) || (!isEphemeralFact(m.text) && isRelevant(m)))
+        .filter(m => m.pinned || isGlobalBehavioralDirective(m) || (!isEphemeralFact(m.text) && isRelevant(m)))
         .map(m => ({ m, s: scoreOf(m) })).sort((a, b) => b.s - a.s);
     // Facts inject only on a substantive query match (semantic cosine ≥
     // threshold, or the keyword rule) AND only if not ephemeral — the
@@ -22416,6 +22455,74 @@ app.post('/api/memories', requireAuth, async (req, res) => {
             impact,
         });
         res.status(201).json({ memory: mem });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Maintenance: clean junk + consolidate near-duplicates for the CALLER'S OWN
+// account. Dry-run by default (apply:false) → returns what WOULD change so the
+// user can review before committing. apply:true performs it. Owner-scoped via
+// memAccountId — never touches another account's memories.
+//   body: { apply?: boolean=false, llm?: boolean=true }
+app.post('/api/memories/maintenance', requireAuth, async (req, res) => {
+    try {
+        const userId = memAccountId(req);
+        if (!userId || userId === 'default') return res.status(400).json({ error: 'no account memory context' });
+        const apply = req.body?.apply === true;
+        const useLlm = req.body?.llm !== false;
+        const minSem = (typeof req.body?.minSem === 'number' && req.body.minSem > 0 && req.body.minSem < 1) ? req.body.minSem : undefined;
+
+        const all = await memoryService.listMemories(userId);
+        const before = all.length;
+
+        // 1) JUNK — only AUTO-extracted non-procedure lines the (strengthened)
+        // junk filter now flags. Never deletes manual/user-authored or procedures.
+        const junk = all.filter(m => m.source === 'auto' && m.type !== 'procedure' && isJunkMemoryLine(String(m.text || '')));
+        const junkSample = junk.slice(0, 15).map(m => ({ id: m.id, type: m.type, text: (m.text || '').slice(0, 90) }));
+        if (apply) {
+            for (const m of junk) { try { await memoryService.deleteMemory(m.id); } catch (_) { /* continue */ } }
+        }
+
+        // 2) CONSOLIDATE near-duplicate clusters. LLM-author the merged text when
+        // a model is running (else keep-strongest). Force the pass (auto:false).
+        const mergeText = useLlm ? (async (members) => {
+            let running = false;
+            for (const inst of modelInstances.values()) if (inst.status === 'running') { running = true; break; }
+            if (!running) return null;                       // → keep strongest member's text
+            const lines = members.map((x, i) => `${i + 1}. ${x.text}`).join('\n');
+            const raw = await Promise.race([
+                runModelCompletion({
+                    messages: [
+                        { role: 'system', content: 'You merge several memory notes that are about the SAME thing into ONE concise note with the same meaning and no duplication. Keep it a single short statement about the user or their preference. Output ONLY the merged note, no preamble, no list.' },
+                        { role: 'user', content: lines },
+                    ], temperature: 0, maxTokens: 160,
+                }),
+                new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('merge timeout')), 20000); if (t.unref) t.unref(); }),
+            ]);
+            const text = String(raw || '').replace(/<(think|thinking|reasoning|reasoning_engine)>[\s\S]*?<\/\1>/gi, '').trim();
+            return (text && !isJunkMemoryLine(text)) ? text : null;
+        }) : null;
+
+        const consol = await memoryService.consolidateUser(userId, { apply, mergeText, ...(minSem ? { minSem } : {}) });
+
+        const after = apply
+            ? await memoryService.countForUser(userId).catch(() => before - junk.length - consol.merged)
+            : before;                                        // dry-run: store unchanged
+        const projected = before - junk.length - (consol.merged || consol.merges.reduce((n, x) => n + x.dropped.length, 0));
+
+        res.json({
+            apply,
+            before,
+            after: apply ? after : undefined,
+            projectedAfter: apply ? undefined : projected,
+            junk: { count: junk.length, sample: junkSample },
+            consolidation: {
+                clusters: consol.clusters,
+                merged: apply ? consol.merged : consol.merges.reduce((n, x) => n + x.dropped.length, 0),
+                sample: consol.merges.slice(0, 10),
+            },
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

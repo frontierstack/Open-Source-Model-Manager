@@ -69,13 +69,27 @@ const DEDUP_THRESHOLD = 0.75;
 // keyword floor as an anchor against embedding quirks.
 const SUPERSEDE_RATIO = 0.6;
 const SUPERSEDE_MIN_SHARED = 3;
-const SUPERSEDE_SEM = 0.6;
+// Lowered 0.6→0.5: still sits well above the measured must-NOT-merge pair
+// (0.337) and below the should-merge pair (0.656), but now catches the common
+// case of one preference re-stated with different filler that scored ~0.5 and
+// used to sprawl into a near-duplicate. The ≥2 shared-keyword floor stays as the
+// anchor against embedding quirks.
+const SUPERSEDE_SEM = 0.5;
 const SUPERSEDE_SEM_MIN_SHARED = 2;
+// Cosine for the background consolidation pass (consolidateUser). Calibrated on
+// the real store: 0.55 leaves obvious dup clusters un-merged, 0.45 starts fusing
+// DISTINCT preferences (video-download absorbing image-extraction); 0.5 collapses
+// genuine near-duplicates (paraphrases of one preference) without losing distinct
+// signal. The ≥2 shared-keyword floor anchors against embedding quirks.
+const CONSOLIDATE_SEM = 0.5;
+const CONSOLIDATE_MIN_SHARED = 2;
+const CONSOLIDATE_SOFT_CAP = 90;   // run the pass once a user's store grows past this
 // Experience variants: how many distinct recipes one activity may hold, and
 // how close a new recipe must be (topic overlap) to refine an existing one
 // instead of becoming a new variant. Practice specializes: "coding" on a React
-// app and "coding" on a CUDA build deserve separate recipes.
-const MAX_ACTIVITY_VARIANTS = 3;
+// app and "coding" on a CUDA build deserve separate recipes. Kept tight (2) so
+// activities don't accumulate near-duplicate recipes.
+const MAX_ACTIVITY_VARIANTS = 2;
 const VARIANT_MATCH_RATIO = 0.5;
 
 const VALID_SOURCES = new Set(['auto', 'manual', 'model']);
@@ -89,6 +103,19 @@ const VALID_TYPES = new Set([
     'procedure',
 ]);
 const VALID_IMPACTS = new Set(['important', 'medium', 'low']);
+
+// Behavioral (non-fact, non-procedure) memory types. They describe HOW the user
+// wants things / what worked, so two same-topic ones phrased as different types
+// (a "preference" and a "learning" about the same image-extraction habit) are
+// still the same lesson and should merge. Facts only merge with facts; a fact
+// and a preference are genuinely different kinds of memory.
+const BEHAVIORAL_TYPES = new Set(['feedback', 'issue', 'preference', 'workaround', 'correction', 'limitation', 'learning']);
+function typesMergeable(a, b) {
+    const ta = a || 'fact', tb = b || 'fact';
+    if (ta === tb) return true;
+    if (ta === 'fact' || tb === 'fact' || ta === 'procedure' || tb === 'procedure') return false;
+    return BEHAVIORAL_TYPES.has(ta) && BEHAVIORAL_TYPES.has(tb);
+}
 
 // Canonicalize a free-form activity label into a stable consolidation key.
 function normalizeActivity(a) {
@@ -527,7 +554,7 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
             let target = null, bestMatch = 0;
             for (const m of list) {
                 if (m.source !== 'auto' || m.pinned || m.type === 'procedure') continue;
-                if ((m.type || 'fact') !== cType) continue;
+                if (!typesMergeable(m.type, cType)) continue;
                 const { ratio, inter } = topicOverlap(m.keywords || [], kw);
                 const sem = candSem[ci] ? (candSem[ci].get(m.id) ?? 0) : 0;
                 const keywordHit = inter >= SUPERSEDE_MIN_SHARED && ratio >= SUPERSEDE_RATIO;
@@ -581,6 +608,107 @@ async function addAutoMemories(userId, candidates, { sourceConvId = null } = {})
     for (const rec of touched) memoryIndex.upsert(userId, rec).catch(() => {});
     if (dropped.length) memoryIndex.removeMany(userId, dropped).catch(() => {});
     return { added, superseded, items };
+}
+
+// Background/maintenance CONSOLIDATION: cluster near-duplicate stored memories by
+// embedding cosine + shared-keyword anchor, and merge each cluster into its
+// strongest member (highest impact, then score, then most recent). This is what
+// keeps the store from sprawling into paraphrase piles — the per-candidate
+// supersedence in addAutoMemories only catches a NEW memory vs an existing one;
+// this catches dups that already coexist. Pinned + procedure memories are left
+// alone (procedures consolidate via upsertActivityMemory).
+//   opts.apply    — actually mutate (default true); false = dry-run report only
+//   opts.auto     — only run when the store exceeds CONSOLIDATE_SOFT_CAP
+//   opts.mergeText(members)→string — optional async (LLM) to author the merged
+//                   text; falls back to the strongest member's text
+//   opts.minSem   — cosine threshold (default CONSOLIDATE_SEM)
+// Returns { before, after, merged, clusters, merges:[{keep, dropped[]}] }.
+async function consolidateUser(userId, opts = {}) {
+    const { apply = true, auto = false, mergeText = null, minSem = CONSOLIDATE_SEM } = opts;
+    const list = await listMemories(userId);
+    const before = list.length;
+    if (auto && before <= CONSOLIDATE_SOFT_CAP) return { before, after: before, merged: 0, clusters: 0, merges: [] };
+
+    const eligible = (m) => m && !m.pinned && m.type !== 'procedure';
+    const byId = new Map(list.map((m) => [m.id, m]));
+
+    // Union-find over "near-duplicate" edges.
+    const parent = new Map(list.map((m) => [m.id, m.id]));
+    const find = (x) => { let r = x; while (parent.get(r) !== r) r = parent.get(r); while (parent.get(x) !== r) { const n = parent.get(x); parent.set(x, r); x = n; } return r; };
+    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+
+    for (const m of list) {
+        if (!eligible(m)) continue;
+        let res = null;
+        try { res = await memoryIndex.search(userId, String(m.text || ''), 8); } catch (_) { res = null; }
+        if (!res || !res.scores) continue;                 // engine down → no merges this pass (safe)
+        for (const [otherId, score] of res.scores) {
+            if (otherId === m.id || score < minSem) continue;
+            const o = byId.get(otherId);
+            if (!eligible(o) || !typesMergeable(m.type, o.type)) continue;
+            const { inter } = topicOverlap(m.keywords || [], o.keywords || []);
+            if (inter < CONSOLIDATE_MIN_SHARED) continue;  // shared-keyword anchor vs embedding quirks
+            union(m.id, o.id);
+        }
+    }
+
+    // Group into clusters, pick the winner per cluster.
+    const impactRank = { important: 3, medium: 2, low: 1 };
+    const clusters = new Map();
+    for (const m of list) {
+        if (!eligible(m)) continue;
+        const r = find(m.id);
+        if (!clusters.has(r)) clusters.set(r, []);
+        clusters.get(r).push(m);
+    }
+    const plan = [];
+    for (const members of clusters.values()) {
+        if (members.length < 2) continue;
+        members.sort((a, b) =>
+            ((impactRank[b.impact] || 2) - (impactRank[a.impact] || 2))
+            || ((b.score || 0) - (a.score || 0))
+            || (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''));
+        plan.push({ winner: members[0], losers: members.slice(1) });
+    }
+    const merges = plan.map((p) => ({ keep: p.winner.text, dropped: p.losers.map((l) => l.text) }));
+    if (!apply || !plan.length) {
+        return { before, after: before - plan.reduce((n, p) => n + p.losers.length, 0) * (apply ? 1 : 0), merged: 0, clusters: plan.length, merges };
+    }
+
+    // Optional LLM-authored merged text per cluster — computed BEFORE the sync mutate.
+    const winnerText = new Map();
+    if (mergeText) {
+        for (const p of plan) {
+            try {
+                const t = await mergeText([p.winner, ...p.losers]);
+                if (t && typeof t === 'string' && t.trim()) winnerText.set(p.winner.id, t.trim().slice(0, MEMORY_TEXT_MAX));
+            } catch (_) { /* keep winner text */ }
+        }
+    }
+
+    const removedIds = [];
+    const touched = [];
+    await mutateUser(userId, (l) => {
+        const idx = new Map(l.map((m) => [m.id, m]));
+        for (const p of plan) {
+            const w = idx.get(p.winner.id);
+            if (!w) continue;
+            const kw = new Set(w.keywords || []);
+            for (const lz of p.losers) for (const k of (lz.keywords || [])) kw.add(k);
+            w.keywords = Array.from(kw).slice(0, 40);
+            const nt = winnerText.get(p.winner.id);
+            if (nt) { w.text = nt; w.tokens = estimateTokens(nt); }
+            w.title = deriveMemoryTitle(w);
+            w.updatedAt = nowIso();
+            touched.push({ ...w });
+            for (const lz of p.losers) removedIds.push(lz.id);
+        }
+        const drop = new Set(removedIds);
+        for (let i = l.length - 1; i >= 0; i--) if (drop.has(l[i].id)) l.splice(i, 1);
+    });
+    for (const rec of touched) memoryIndex.upsert(userId, rec).catch(() => {});
+    if (removedIds.length) memoryIndex.removeMany(userId, removedIds).catch(() => {});
+    return { before, after: before - removedIds.length, merged: removedIds.length, clusters: plan.length, merges };
 }
 
 async function countForUser(userId) {
@@ -968,6 +1096,7 @@ module.exports = {
     deleteMemory,
     clearMemories,
     addAutoMemories,
+    consolidateUser,
     upsertModelLearning,
     upsertActivityMemory,
     normalizeActivity,
