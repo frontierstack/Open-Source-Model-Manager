@@ -2,7 +2,7 @@
 
 Wires the local model-server install into [Hermes Agent](https://hermes-agent.nousresearch.com) (Nous Research):
 
-- registers an OpenAI-compatible provider named **modelserver** (populated from `/v1/models`) as a native Hermes `custom_providers` entry
+- registers an OpenAI-compatible provider via the **simple custom-provider model form** in `config.yaml` (`model.provider=custom` + `base_url`/`api_key`/`default` from `/v1/models`), plus `OPENAI_BASE_URL`/`OPENAI_API_KEY` in `~/.hermes/.env` (the universal "configured" signal that skips Hermes' first-run wizard)
 - exposes every enabled skill from `/api/skills` as a Hermes tool over the **Model Context Protocol** (a local stdio MCP server that proxies to `/api/skills/:name/execute`)
 
 The 120+ default skills (web search, URL fetch, code navigation, file ops, OCR, PDF, etc.) become callable from any Hermes conversation without further configuration. The provider half is pure config (Hermes speaks OpenAI natively); this MCP server is only the tools half.
@@ -15,16 +15,26 @@ The 120+ default skills (web search, URL fetch, code navigation, file ops, OCR, 
 
    ```bash
    export MODELSERVER_API_KEY="<bearer-mode-key>"
-   curl -fsSk -H "Authorization: Bearer $MODELSERVER_API_KEY" \
-     https://<your-host>:3001/api/hermes/install | bash
+   code=$(curl -sSk -w '%{http_code}' -H "Authorization: Bearer $MODELSERVER_API_KEY" \
+     -o /tmp/hermes-install.sh https://<your-host>:3001/api/hermes/install)
+   [ "$code" = 200 ] && bash /tmp/hermes-install.sh \
+     || { echo "Install fetch failed (HTTP $code) — is the key Bearer Only + active?"; cat /tmp/hermes-install.sh; }
    ```
 
-   `install.sh` installs Hermes Agent if missing, drops this MCP server under
+   (Downloading-then-checking the HTTP status surfaces a 401 — a wrong/non-bearer/
+   inactive key — instead of silently piping an empty script to `bash`.)
+
+   `install.sh` installs Hermes Agent if missing, installs its optional tool deps
+   (**ripgrep + ffmpeg**), drops this MCP server under
    `~/.hermes/mcp-servers/modelserver/`, and merges the provider + MCP config into
-   `~/.hermes/config.yaml`. It self-corrects for corporate MITM proxies (writes
-   `~/.curlrc`, sets `NODE_TLS_REJECT_UNAUTHORIZED=0`, `npm strict-ssl=false`),
-   missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to
-   nvm), missing curl, broken sudo, root vs non-root. Idempotent — re-run anytime.
+   `~/.hermes/config.yaml` (writing `OPENAI_BASE_URL`/`OPENAI_API_KEY` to
+   `~/.hermes/.env` so Hermes goes straight to the agent — no first-run wizard).
+   It self-corrects for corporate MITM proxies (writes `~/.curlrc`, sets
+   `NODE_TLS_REJECT_UNAUTHORIZED=0`, `npm strict-ssl=false`), missing or too-old
+   Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing curl,
+   broken sudo, root vs non-root, and surfaces auth failures (HTTP status + a
+   401/403 hint) instead of failing silently. Progress shows as sectioned steps
+   with a spinner. Idempotent — re-run anytime.
 
 3. Run Hermes:
 

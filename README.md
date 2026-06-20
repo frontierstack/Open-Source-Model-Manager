@@ -104,14 +104,14 @@ Lightweight React + Tailwind CSS chat UI at `https://localhost:3002`:
 
 The terminal experience for this project is **[Hermes Agent](https://hermes-agent.nousresearch.com)** (Nous Research), an open-source autonomous agent — we don't ship our own TUI, we wire Hermes in. Run the installer once and any model loaded in **My Models** becomes a Hermes-driven agent backed by the 130+ skills the webapp already exposes.
 
-- **Native OpenAI provider** — registered as a `custom:modelserver` provider in `~/.hermes/config.yaml` pointing at `/v1`; no code needed for the model half (Hermes speaks OpenAI natively)
+- **Native OpenAI provider** — registered via the simple custom-provider model form (`model.provider=custom` + `base_url`/`api_key`/`default`) in `~/.hermes/config.yaml` pointing at `/v1`, with `OPENAI_BASE_URL`/`OPENAI_API_KEY` written to `~/.hermes/.env` so Hermes skips its first-run setup wizard and goes straight to the agent; no code needed for the model half (Hermes speaks OpenAI natively)
 - **Skills surface as MCP tools** — the bundled MCP server at `webapp/hermes-mcp/modelserver-mcp.mjs` exposes each enabled skill (`web_search`, `fetch_url`, `playwright_*`, `scrapling_fetch`, OCR, PDF, email parsing, …) over the Model Context Protocol and proxies execution to `/api/skills/:name/execute`
 - **Hermes handles the local FS** — read/write/bash/edit/grep run on the user's host via Hermes' built-ins, not on the server's `/workspace`; a host⇆workspace bridge (auto-upload + `workspace_get`) moves files for the sandbox skills that need them
 - **Real context window** — `/v1/models` is augmented server-side to inject the running instance's actual `context_window`, so Hermes' status line and auto-truncation match the loaded model's true ceiling instead of defaulting to 32k
 - **Real token usage** — `/v1/*` streaming requests inject `stream_options.include_usage: true` and tap the SSE for the final usage chunk, so per-key token counters update on every Hermes turn instead of sitting at `0/max`
 - **Shared persona/experience memory** — the `/v1` passthrough injects the account's persona and records new experience from Hermes' tool use (bearer-only keys), so web chat and Hermes share one memory
 - **Bearer-mode API key required** — Hermes uses `Authorization: Bearer <key>`, so create a bearer-only key in the **API Keys** tab
-- **Auto-config in Docs tab** — the install one-liner, MCP server, and `config.yaml` merge are all pre-baked with your API key + endpoint
+- **Auto-config in Docs tab** — the install one-liner, MCP server, and `config.yaml` merge are all pre-baked with your API key + endpoint; the one-liner downloads-then-checks the HTTP status (a wrong/non-bearer/inactive key surfaces a 401 instead of silently doing nothing), and the installer also pulls Hermes' `ripgrep` + `ffmpeg` tool deps and shows sectioned progress with a spinner
 
 ### Automation — Workflow Engine
 

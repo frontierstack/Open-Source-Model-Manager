@@ -6380,10 +6380,12 @@ fetch('${baseUrl}/api/model-configs', {
 .catch(err => console.error(err));`
             },
             '/api/hermes/install': {
-                curl: `# Bash-pipeable installer. Installs Hermes Agent if missing, drops the
-# modelserver MCP server, and merges the provider + MCP config into
-# ~/.hermes/config.yaml. Self-corrects: MITM TLS, missing/old Node
-# (NodeSource → nvm fallback), missing curl, broken sudo. Idempotent.
+                curl: `# Bash-pipeable installer. Installs Hermes Agent (+ ripgrep/ffmpeg tool
+# deps) if missing, drops the modelserver MCP server, and merges the provider
+# + MCP config into ~/.hermes/config.yaml (writes OPENAI_BASE_URL/OPENAI_API_KEY
+# to ~/.hermes/.env so Hermes skips its first-run setup wizard). Self-corrects:
+# MITM TLS, missing/old Node (NodeSource → nvm fallback), missing curl, broken
+# sudo. Sectioned progress + spinner; surfaces 401/403 auth errors. Idempotent.
 
 # Auth required — bearer-mode API key (Authorization: Bearer …).
 # Downloads to a temp file and checks the HTTP status so a 401 (wrong/
@@ -11338,7 +11340,7 @@ const resp = await fetch('${baseUrl}/api/knowledge-bases/KB_ID/search', {
                                                                 : <>Pick a key above and the command auto-populates. Or replace <code>&lt;your-bearer-key&gt;</code> by hand.</>}
                                                         </Typography>
                                                         <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'var(--text-secondary)' }}>
-                                                            One script handles every common failure: installs Hermes Agent if missing, then drops the MCP server and merges <code>~/.hermes/config.yaml</code>. Self-corrects for corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing curl, broken sudo, root vs non-root. Idempotent — safe to re-run.
+                                                            One script handles every common failure: installs Hermes Agent if missing, installs its optional tool deps (<code>ripgrep</code> + <code>ffmpeg</code>), drops the MCP server, and merges <code>~/.hermes/config.yaml</code> — writing <code>OPENAI_BASE_URL</code>/<code>OPENAI_API_KEY</code> to <code>~/.hermes/.env</code> so Hermes skips its first-run setup wizard and goes straight to the agent. Self-corrects for corporate MITM proxies (writes <code>~/.curlrc</code>, sets <code>NODE_TLS_REJECT_UNAUTHORIZED=0</code>, <code>npm strict-ssl=false</code>), missing or too-old Node (installs Node 22 LTS via NodeSource, falls back to nvm), missing curl, broken sudo, root vs non-root. Shows sectioned progress with a spinner and surfaces auth failures (HTTP status + a 401/403 hint). Idempotent — safe to re-run.
                                                         </Typography>
                                                     </Box>
                                                 </>
